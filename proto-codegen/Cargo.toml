@@ -7,3 +7,6 @@ edition = "2018"
 [dependencies]
 structopt="0.2.16"
 structopt-derive="0.2.16"
+failure = "0.1.5"
+tracing = "0.1.12"
+tracing-subscriber = "0.1.6"
