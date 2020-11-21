@@ -1,5 +1,5 @@
 [package]
-name = "proto-codegen"
+name = "cornflakes-codegen"
 version = "0.1.0"
 authors = ["deeptir <deeptir@cs.stanford.edu>"]
 edition = "2018"
