@@ -1,80 +1,104 @@
 use bindgen::Builder;
 use std::env;
 use std::fs;
+use std::fs::canonicalize;
 use std::path::Path;
 use std::process::Command;
 
 fn main() {
-    // BUILD DPDK
-    println!("cargo:rerun-if-changed=.git/modules/dpdk/HEAD");
-
+    // Following https://github.com/sujayakar/dpdk-rs/blob/main/build.rs
+    // BUILD DPDK: only if the HEAD commit has changed
+    println!("cargo:rerun-if-changed=.git/cornflakes-libos/3rdparty/dpdk/HEAD");
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let cargo_dir = Path::new(&cargo_manifest_dir);
-    // config MLX5 drivers
+
     println!("cargo:warning=Building DPDK...");
-    let dpdk_dir = cargo_dir.clone().join("3rdparty").join("dpdk");
-    println!("DPDK PATH: {:?}", dpdk_dir);
+    let dpdk_path = canonicalize(cargo_dir.clone().join("3rdparty").join("dpdk")).unwrap();
+    let dpdk_dir = dpdk_path.as_path();
     Command::new("./build-dpdk.sh")
         .args(&[dpdk_dir.to_str().unwrap()])
         .status()
         .unwrap_or_else(|e| panic!("Failed to build DPDK: {:?}", e));
 
-    let dpdk_build = dpdk_dir.clone().join("build");
-    let dpdk_libs = dpdk_build.clone().join("lib");
+    let dpdk_install = dpdk_dir.clone().join("install");
+    let pkg_config_path = dpdk_install.join("lib/x86_64-linux-gnu/pkgconfig");
 
-    println!("DPDK lib path: {:?}", dpdk_libs.to_str().unwrap());
-    // change to static lib
-    /*Command::new("ar")
-    .args(&["crus", "libdpdk.a", "dpdk.o"])
-    .current_dir(&dpdk_libs)
-    .status()
-    .unwrap();*/
-    // use DPDK directory as -L
-    println!(
-        "cargo:rustc-env=LD_LIBRARY_PATH={}",
-        dpdk_libs.to_str().unwrap()
-    );
+    let cflags_bytes = Command::new("pkg-config")
+        .env("PKG_CONFIG_PATH", &pkg_config_path)
+        .args(&["--cflags", "libdpdk"])
+        .output()
+        .unwrap_or_else(|e| panic!("Failed pkg-config cflags: {:?}", e))
+        .stdout;
+    let cflags = String::from_utf8(cflags_bytes).unwrap();
+
+    let mut header_locations = vec![];
+
+    for flag in cflags.split(' ') {
+        if flag.starts_with("-I") {
+            let header_location = &flag[2..];
+            header_locations.push(header_location);
+        }
+    }
+
+    let ldflags_bytes = Command::new("pkg-config")
+        .env("PKG_CONFIG_PATH", &pkg_config_path)
+        .args(&["--libs", "libdpdk"])
+        .output()
+        .unwrap_or_else(|e| panic!("Failed pkg-config ldflags: {:?}", e))
+        .stdout;
+    let ldflags = String::from_utf8(ldflags_bytes).unwrap();
+
+    let mut library_location = None;
+    let mut lib_names = vec![];
+
+    for flag in ldflags.split(' ') {
+        if flag.starts_with("-L") {
+            library_location = Some(&flag[2..]);
+        } else if flag.starts_with("-l") {
+            lib_names.push(&flag[2..]);
+        }
+    }
+
+    // Link in `librte_net_mlx5` and its dependencies if desired.
+    #[cfg(feature = "mlx5")]
+    {
+        lib_names.extend(&[
+            "rte_net_mlx5",
+            "rte_bus_pci",
+            "rte_bus_vdev",
+            "rte_common_mlx5",
+        ]);
+    }
+
+    // Step 1: Now that we've compiled and installed DPDK, point cargo to the libraries.
     println!(
         "cargo:rustc-link-search=native={}",
-        dpdk_libs.to_str().unwrap()
+        library_location.unwrap()
     );
-
-    if dpdk_libs.join("libdpdk.so").exists() {
-        println!("cargo:rustc-link-lib=dpdk");
-        println!("cargo:rustc-link-lib=rte_eal");
-        println!("cargo:rustc-link-lib=rte_kvargs");
+    for lib_name in &lib_names {
+        println!("cargo:rustc-link-lib={}", lib_name);
     }
+
     let header_path = Path::new(&cargo_dir)
         .join("src")
         .join("native_include")
         .join("dpdk-headers.h");
-    let dpdk_include_path = dpdk_build.clone().join("include");
-    println!("Header path {:?}", header_path.to_str());
-    let bindings = Builder::default()
+
+    let mut builder = Builder::default();
+    for header_location in &header_locations {
+        builder = builder.clang_arg(&format!("-I{}", header_location));
+    }
+    let bindings = builder
         .header(header_path.to_str().unwrap())
         .blacklist_type("rte_arp_ipv4")
         .blacklist_type("rte_arp_hdr")
-        .clang_args(vec!["-I", dpdk_include_path.to_str().unwrap()].iter())
-        .blacklist_type("max_align_t") // https://github.com/servo/rust-bindgen/issues/550
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .generate()
-        .expect("Unable to generate DPDK bindings");
+        .unwrap_or_else(|e| panic!("Failed to generate bindings: {:?}", e));
     let out_dir = env::var("OUT_DIR").unwrap();
     println!("Out dir: {:?}", out_dir);
     let dpdk_bindings = Path::new(&out_dir).join("dpdk_bindings.rs");
     bindings
         .write_to_file(dpdk_bindings)
         .expect("Could not write bindings");
-    let dynamic_libs = &[
-        "ibverbs",
-        "mlx4",
-        "mlx5",
-        "nl-3",
-        "nl-route-3",
-        "numa",
-        "pcap",
-    ];
-    for dynamic_lib in dynamic_libs {
-        println!("cargo:rustc-link-lib=dylib={}", dynamic_lib);
-    }
 }

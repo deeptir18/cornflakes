@@ -1,3 +1,4 @@
+#include <rte_build_config.h>
 #include <rte_ethdev.h>
 #include <rte_common.h>
 #include <rte_cycles.h>

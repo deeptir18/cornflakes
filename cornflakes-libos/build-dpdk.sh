@@ -1,12 +1,13 @@
 #!/bin/bash
-# this script builds DPDK with support for MLX5 drivers
-# assumes x86
-# works for versions 19.11
-DIR=$1
-pushd $DIR
-echo "IN BUILD DPDK SCRIPT"
-sed -i 's/CONFIG_RTE_LIBRTE_MLX5_PMD=n/CONFIG_RTE_LIBRTE_MLX5_PMD=y/g' config/common_base
-sed -i 's/CONFIG_RTE_BUILD_SHARED_LIB=n/CONFIG_RTE_BUILD_SHARED_LIB=y/g' config/common_base
-make config T=x86_64-native-linuxapp-gcc
-make -j
+# this script builds DPDK using meson and ninja
+# builds into DPDK/build
+# installs into DPDK/install
+DPDK=$1 # has to be a full path
+pushd $DPDK
+INSTALL_DIR="$DPDK/install"
+meson --prefix=$INSTALL_DIR build
+pushd build
+ninja
+ninja install
+popd
 popd

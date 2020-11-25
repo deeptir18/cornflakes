@@ -9,3 +9,8 @@ bindgen = "0.55.1"
 cc = "1.0.63"
 
 [dependencies]
+
+[features]
+mlx5 = []
+
+default = ["mlx5"]

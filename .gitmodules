@@ -2,3 +2,4 @@
     path = cornflakes-libos/3rdparty/dpdk
     url = https://github.com/DPDK/dpdk.git
     branch=releases
+    ignore = untracked
