@@ -1,4 +1,4 @@
 [submodule "cornflakes-libos/3rdparty/dpdk"]
     path = cornflakes-libos/3rdparty/dpdk
     url = https://github.com/DPDK/dpdk.git
-    branch=v19.11
+    branch=releases
