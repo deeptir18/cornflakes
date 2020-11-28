@@ -1,6 +1,5 @@
 use bindgen::Builder;
 use std::env;
-use std::fs;
 use std::fs::canonicalize;
 use std::path::Path;
 use std::process::Command;
@@ -81,7 +80,7 @@ fn main() {
 
     let header_path = Path::new(&cargo_dir)
         .join("src")
-        .join("native_include")
+        .join("dpdk_bindings")
         .join("dpdk-headers.h");
 
     let mut builder = Builder::default();
@@ -101,4 +100,19 @@ fn main() {
     bindings
         .write_to_file(dpdk_bindings)
         .expect("Could not write bindings");
+
+    // Compile stubs for inlined functions
+    let mut compiler = cc::Build::new();
+    compiler.opt_level(3);
+    compiler.pic(true);
+    compiler.flag("-march=native");
+    let inlined_file = Path::new(&cargo_dir)
+        .join("src")
+        .join("dpdk_bindings")
+        .join("inlined.c");
+    compiler.file(inlined_file.to_str().unwrap());
+    for header_location in &header_locations {
+        compiler.include(header_location);
+    }
+    compiler.compile("inlined");
 }

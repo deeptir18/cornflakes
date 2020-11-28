@@ -1,16 +1,10 @@
-pub mod native_include;
+//! Welcome to cornflakes!
+//!
+//! This crate, cornflakes-libos, implements the networking layer for cornflakes.
+//! This includes:
+//!  1. An interface for datapaths to implement.
+//!  2. DPDK bindings, which are used to implement the DPDK datapath.
+//!  3. A DPDK based libos.
 
-#[cfg(feature = "mlx5")]
-#[link(name = "rte_net_mlx5")]
-extern "C" {
-    fn rte_pmd_mlx5_get_dyn_flag_names();
-}
-
-#[inline(never)]
-pub fn load_mlx5_driver() {
-    if std::env::var("DONT_SET_THIS").is_ok() {
-        unsafe {
-            rte_pmd_mlx5_get_dyn_flag_names();
-        }
-    }
-}
+pub mod dpdk_bindings;
+pub mod dpdk_libos;
