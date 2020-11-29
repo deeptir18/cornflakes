@@ -2,6 +2,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(dead_code)]
+#![allow(improper_ctypes)]
 
 include!(concat!(env!("OUT_DIR"), "/dpdk_bindings.rs"));
 
@@ -21,6 +22,7 @@ extern "C" {
         rx_pkts: *mut *mut rte_mbuf,
         nb_pkts: u16,
     ) -> u16;
+    fn rte_errno_() -> ::std::os::raw::c_int;
 }
 
 #[cfg(feature = "mlx5")]
@@ -66,4 +68,9 @@ pub unsafe fn rte_eth_rx_burst(
     nb_pkts: u16,
 ) -> u16 {
     rte_eth_rx_burst_(port_id, queue_id, rx_pkts, nb_pkts)
+}
+
+#[inline]
+pub unsafe fn rte_errno() -> ::std::os::raw::c_int {
+    rte_errno_()
 }

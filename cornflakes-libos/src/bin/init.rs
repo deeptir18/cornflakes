@@ -1,17 +1,54 @@
 use cornflakes_libos::dpdk_bindings;
-use std::env;
-use std::ffi::CString;
+use cornflakes_libos::dpdk_libos::wrapper;
+use cornflakes_libos::utils::TraceLevel;
+use structopt::StructOpt;
+use tracing::Level;
+use tracing_subscriber::{filter::LevelFilter, FmtSubscriber};
+
+#[derive(Debug, StructOpt)]
+#[structopt(name = "DPDK server", about = "DPDK server program")]
+
+struct Opt {
+    #[structopt(
+        short = "trace",
+        long = "tracing_level",
+        help = "Configure tracing settings.",
+        default_value = "warn"
+    )]
+    trace_level: TraceLevel,
+    #[structopt(
+        short = "f",
+        long = "config_file",
+        help = "Folder containing shared config information."
+    )]
+    config_file: String,
+}
 fn main() {
     dpdk_bindings::load_mlx5_driver();
-    let mut args = vec![];
-    let mut ptrs = vec![];
-    for arg in env::args().skip(1) {
-        let s = CString::new(arg).unwrap();
-        ptrs.push(s.as_ptr() as *mut u8);
-        args.push(s);
-    }
-    println!("Args: {:?}", args);
-    unsafe {
-        dpdk_bindings::rte_eal_init(ptrs.len() as i32, ptrs.as_ptr() as *mut _);
+    let opt = Opt::from_args();
+    let trace_level = opt.trace_level;
+    let subscriber = match trace_level {
+        TraceLevel::Debug => FmtSubscriber::builder()
+            .with_max_level(Level::DEBUG)
+            .finish(),
+        TraceLevel::Info => FmtSubscriber::builder()
+            .with_max_level(Level::INFO)
+            .finish(),
+        TraceLevel::Warn => FmtSubscriber::builder()
+            .with_max_level(Level::WARN)
+            .finish(),
+        TraceLevel::Error => FmtSubscriber::builder()
+            .with_max_level(Level::ERROR)
+            .finish(),
+        TraceLevel::Off => FmtSubscriber::builder()
+            .with_max_level(LevelFilter::OFF)
+            .finish(),
     };
+    tracing::subscriber::set_global_default(subscriber).expect("setting defualt subscriber failed");
+    match wrapper::dpdk_init(&opt.config_file) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("Error from init func: {:?}", e);
+        }
+    }
 }
