@@ -1,3 +1,4 @@
+use color_eyre::eyre::Result;
 use cornflakes_libos::dpdk_bindings;
 use cornflakes_libos::dpdk_libos::wrapper;
 use cornflakes_libos::utils::TraceLevel;
@@ -23,7 +24,8 @@ struct Opt {
     )]
     config_file: String,
 }
-fn main() {
+fn main() -> Result<()> {
+    color_eyre::install()?;
     dpdk_bindings::load_mlx5_driver();
     let opt = Opt::from_args();
     let trace_level = opt.trace_level;
@@ -45,10 +47,6 @@ fn main() {
             .finish(),
     };
     tracing::subscriber::set_global_default(subscriber).expect("setting defualt subscriber failed");
-    match wrapper::dpdk_init(&opt.config_file) {
-        Ok(_) => {}
-        Err(e) => {
-            panic!("Error from init func: {:?}", e);
-        }
-    }
+    wrapper::dpdk_init(&opt.config_file)?;
+    Ok(())
 }

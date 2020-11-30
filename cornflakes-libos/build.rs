@@ -7,9 +7,14 @@ use std::process::Command;
 fn main() {
     // Following https://github.com/sujayakar/dpdk-rs/blob/main/build.rs
     // BUILD DPDK: only if the HEAD commit has changed
-    println!("cargo:rerun-if-changed=.git/modules/cornflakes-libos/3rdparty/dpdk/HEAD");
+    println!("cargo:rerun-if-env-changed=LD_LIBRARY_PATH");
+
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let cargo_dir = Path::new(&cargo_manifest_dir);
+    let header_path = Path::new(&cargo_dir)
+        .join("src")
+        .join("dpdk_bindings")
+        .join("dpdk-headers.h");
 
     println!("cargo:warning=Building DPDK...");
     let dpdk_path = canonicalize(cargo_dir.clone().join("3rdparty").join("dpdk")).unwrap();
@@ -77,11 +82,6 @@ fn main() {
     for lib_name in &lib_names {
         println!("cargo:rustc-link-lib={}", lib_name);
     }
-
-    let header_path = Path::new(&cargo_dir)
-        .join("src")
-        .join("dpdk_bindings")
-        .join("dpdk-headers.h");
 
     let mut builder = Builder::default();
     for header_location in &header_locations {

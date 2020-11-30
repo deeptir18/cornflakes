@@ -9,7 +9,7 @@ bindgen = "0.55.1"
 cc = "1.0.63"
 
 [dependencies]
-color-eyre = { version = "0.5", default-features = false }
+color-eyre = "0.5"
 tracing = "0.1.12"
 tracing-subscriber = "0.1.6"
 structopt="0.2.16"
