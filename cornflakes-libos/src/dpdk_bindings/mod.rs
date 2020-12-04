@@ -23,6 +23,8 @@ extern "C" {
         nb_pkts: u16,
     ) -> u16;
     fn rte_errno_() -> ::std::os::raw::c_int;
+    fn rte_get_timer_cycles_() -> u64;
+    fn rte_get_timer_hz_() -> u64;
 }
 
 #[cfg(feature = "mlx5")]
@@ -73,4 +75,14 @@ pub unsafe fn rte_eth_rx_burst(
 #[inline]
 pub unsafe fn rte_errno() -> ::std::os::raw::c_int {
     rte_errno_()
+}
+
+#[inline]
+pub unsafe fn rte_get_timer_cycles() -> u64 {
+    rte_get_timer_cycles_()
+}
+
+#[inline]
+pub unsafe fn rte_get_timer_hz() -> u64 {
+    rte_get_timer_hz_()
 }

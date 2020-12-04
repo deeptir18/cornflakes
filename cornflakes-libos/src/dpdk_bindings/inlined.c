@@ -2,6 +2,7 @@
 #include <rte_ethdev.h>
 #include <rte_ether.h>
 #include <rte_errno.h>
+#include <rte_cycles.h>
 
 void rte_pktmbuf_free_(struct rte_mbuf *packet) {
     rte_pktmbuf_free(packet);
@@ -21,4 +22,12 @@ uint16_t rte_eth_rx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf 
 
 int rte_errno_() {
     return rte_errno;
+}
+
+uint64_t rte_get_timer_cycles_() {
+    return rte_get_timer_cycles();
+}
+
+uint64_t rte_get_timer_hz_() {
+    return rte_get_timer_hz_();
 }

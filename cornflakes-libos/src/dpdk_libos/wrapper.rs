@@ -1,11 +1,17 @@
-use super::super::{dpdk_call, dpdk_check_not_failed, dpdk_ok};
-use super::{dpdk_bindings::*, dpdk_check, dpdk_error};
-use color_eyre::eyre::{bail, Result};
-use std::ffi::CString;
-use std::fs::read_to_string;
-use std::mem::MaybeUninit;
-use std::path::Path;
-use std::time::Duration;
+use super::{
+    super::{dpdk_call, dpdk_check_not_failed, dpdk_ok, utils, MsgID},
+    dpdk_bindings::*,
+    dpdk_check, dpdk_error,
+};
+use color_eyre::eyre::{bail, Result, WrapErr};
+use std::{
+    ffi::CString,
+    fs::read_to_string,
+    mem::{size_of, MaybeUninit},
+    path::Path,
+    ptr, slice,
+    time::Duration,
+};
 use tracing::{debug, info, warn};
 use yaml_rust::{Yaml, YamlLoader};
 
@@ -57,7 +63,6 @@ fn dpdk_eal_init(config_path: &str) -> Result<()> {
                     bail!("Yaml config dpdk has no eal_init entry");
                 }
             };
-            debug!("Eal init: {:?}", eal_init);
             for entry in eal_init.as_vec().unwrap() {
                 //let entry_str = std::str::from_utf8(entry).unwrap();
                 let s = CString::new(entry.as_str().unwrap()).unwrap();
@@ -194,9 +199,52 @@ fn initialize_dpdk_port(port_id: u16, mbuf_pool: *mut rte_mempool) -> Result<()>
     Ok(())
 }
 
-pub fn dpdk_init(config_path: &str) -> Result<*mut rte_mempool> {
+/// Returns a mempool meant for attaching external databuffers: no buffers are allocated for packet
+/// data except the rte_mbuf data structures themselves.
+///
+/// Arguments
+/// * name - A string slice with the intended name of the mempool.
+/// * nb_ports - A u16 with the number of valid DPDK ports.
+fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
+    let name = CString::new(name)?;
+    let elt_size: u32 = size_of::<rte_mbuf>() as u32;
+    let mbuf_pool = dpdk_call!(rte_mempool_create_empty(
+        name.as_ptr(),
+        (NUM_MBUFS * nb_ports) as u32,
+        elt_size,
+        0,
+        0, // TODO: should there be a private data structure here?
+        rte_socket_id() as i32,
+        0
+    ));
+    if mbuf_pool.is_null() {
+        bail!("Mempool created with rte_mempool_create_empty is null.");
+    }
+
+    // set ops name
+    dpdk_call!(rte_mempool_set_ops_byname(
+        mbuf_pool,
+        name.as_ptr(),
+        ptr::null_mut()
+    ));
+
+    // initialize any private data (right now there is none)
+    dpdk_call!(rte_pktmbuf_pool_init(mbuf_pool, ptr::null_mut()));
+
+    Ok(mbuf_pool)
+}
+
+/// Initializes DPDK EAL and ports given a yaml-config file.
+/// Returns two mempools:
+/// (1) One that allocates mbufs with `MBUF_BUF_SIZE` of buffer space.
+/// (2) One that allocates empty mbuf structs, meant for attaching external data buffers.
+///
+/// Arguments:
+/// * config_path: - A string slice that holds the path to a config file with DPDK initialization.
+/// information.
+pub fn dpdk_init(config_path: &str) -> Result<(*mut rte_mempool, *mut rte_mempool)> {
     // EAL initialization
-    dpdk_eal_init(config_path)?;
+    dpdk_eal_init(config_path).wrap_err("EAL initialization failed.")?;
 
     let nb_ports = dpdk_call!(rte_eth_dev_count_avail());
     if nb_ports <= 0 {
@@ -208,7 +256,7 @@ pub fn dpdk_init(config_path: &str) -> Result<*mut rte_mempool> {
     );
 
     // create an mbuf pool to register the rx queues
-    let name = CString::new("default_mbuf_pool").unwrap();
+    let name = CString::new("default_mbuf_pool")?;
     let mbuf_pool = dpdk_call!(rte_pktmbuf_pool_create(
         name.as_ptr(),
         (NUM_MBUFS * nb_ports) as u32,
@@ -230,5 +278,93 @@ pub fn dpdk_init(config_path: &str) -> Result<*mut rte_mempool> {
         warn!("Too many lcores enabled. Only 1 used.");
     }
 
-    Ok(mbuf_pool)
+    let extbuf_mempool = init_extbuf_mempool("extbuf_pool", nb_ports)
+        .wrap_err("Unable to init mempool for attaching external buffers")?;
+
+    Ok((mbuf_pool, extbuf_mempool))
+}
+
+/// Returns the result of a mutable ptr to an rte_mbuf allocated from a particular mempool.
+///
+/// Arguments:
+/// * mempool - *mut rte_mempool where packet should be allocated from.
+pub fn alloc_mbuf(mempool: *mut rte_mempool) -> Result<*mut rte_mbuf> {
+    let mbuf = dpdk_call!(rte_pktmbuf_alloc(mempool));
+    if mbuf.is_null() {
+        bail!("Allocated null mbuf from rte_pktmbuf_alloc.");
+    }
+    Ok(mbuf)
+}
+
+/// Takes an rte_mbuf, header information, and adds:
+/// (1) An Ethernet header
+/// (2) An Ipv4 header
+/// (3) A Udp header
+///
+/// Arguments:
+/// * pkt - The rte_mbuf where header information will be filled in.
+/// * header_info - Struct that contains information about udp, ethernet, and ipv4 headers.
+/// * data_len - The payload size, as these headers depend on knowing the size of the upcoming
+/// payloads.
+pub fn fill_in_header(
+    pkt: *mut rte_mbuf,
+    header_info: &utils::HeaderInfo,
+    data_len: usize,
+    id: MsgID,
+) -> Result<()> {
+    let write_ptr = unsafe { ((*pkt).buf_addr as *mut u8).offset((*pkt).data_off as isize) };
+    let eth_hdr_slice = unsafe {
+        slice::from_raw_parts_mut(
+            ((*pkt).buf_addr as *mut u8).offset((*pkt).data_off as isize),
+            utils::ETHERNET2_HEADER2_SIZE,
+        )
+    };
+    let ipv4_hdr_slice = unsafe {
+        slice::from_raw_parts_mut(
+            ((*pkt).buf_addr as *mut u8)
+                .offset((*pkt).data_off as isize + utils::ETHERNET2_HEADER2_SIZE as isize),
+            utils::IPV4_HEADER2_SIZE,
+        )
+    };
+    let udp_hdr_slice = unsafe {
+        slice::from_raw_parts_mut(
+            ((*pkt).buf_addr as *mut u8).offset(
+                (*pkt).data_off as isize
+                    + utils::ETHERNET2_HEADER2_SIZE as isize
+                    + utils::IPV4_HEADER2_SIZE as isize,
+            ),
+            utils::UDP_HEADER2_SIZE,
+        )
+    };
+    let id_hdr_slice = unsafe {
+        slice::from_raw_parts_mut(
+            ((*pkt).buf_addr as *mut u8).offset(
+                (*pkt).data_off as isize
+                    + utils::ETHERNET2_HEADER2_SIZE as isize
+                    + utils::IPV4_HEADER2_SIZE as isize
+                    + utils::UDP_HEADER2_SIZE as isize,
+            ),
+            4,
+        )
+    };
+
+    utils::write_udp_hdr(header_info, udp_hdr_slice, data_len)?;
+    utils::write_ipv4_hdr(
+        header_info,
+        ipv4_hdr_slice,
+        data_len + utils::UDP_HEADER2_SIZE,
+    )?;
+    utils::write_eth_hdr(header_info, eth_hdr_slice)?;
+
+    // Write per-packet-id in
+    utils::write_pkt_id(id, id_hdr_slice)?;
+
+    Ok(())
+}
+
+pub fn get_my_macaddr(port_id: u16) -> Result<rte_ether_addr> {
+    let mut ether_addr: MaybeUninit<rte_ether_addr> = MaybeUninit::zeroed();
+    dpdk_ok!(rte_eth_macaddr_get(port_id, ether_addr.as_mut_ptr()));
+    let ether_addr = unsafe { ether_addr.assume_init() };
+    Ok(ether_addr)
 }

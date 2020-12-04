@@ -1,7 +1,9 @@
-use color_eyre::eyre::Result;
-use cornflakes_libos::dpdk_bindings;
-use cornflakes_libos::dpdk_libos::wrapper;
-use cornflakes_libos::utils::TraceLevel;
+use color_eyre::eyre::{Result, WrapErr};
+use cornflakes_libos::{
+    dpdk_bindings,
+    dpdk_libos::connection::{DPDKConnection, DPDKMode},
+    utils::TraceLevel,
+};
 use structopt::StructOpt;
 use tracing::Level;
 use tracing_subscriber::{filter::LevelFilter, FmtSubscriber};
@@ -47,6 +49,8 @@ fn main() -> Result<()> {
             .finish(),
     };
     tracing::subscriber::set_global_default(subscriber).expect("setting defualt subscriber failed");
-    wrapper::dpdk_init(&opt.config_file)?;
+
+    let connection = DPDKConnection::new(&opt.config_file, DPDKMode::Server)
+        .wrap_err("Failed to initialize DPDK server connection.")?;
     Ok(())
 }

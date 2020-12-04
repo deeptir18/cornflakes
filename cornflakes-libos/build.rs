@@ -7,7 +7,7 @@ use std::process::Command;
 fn main() {
     // Following https://github.com/sujayakar/dpdk-rs/blob/main/build.rs
     // BUILD DPDK: only if the HEAD commit has changed
-    println!("cargo:rerun-if-env-changed=LD_LIBRARY_PATH");
+    println!("cargo:rerun-if-env-changed=DPDK_PATH");
 
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let cargo_dir = Path::new(&cargo_manifest_dir);
@@ -15,14 +15,13 @@ fn main() {
         .join("src")
         .join("dpdk_bindings")
         .join("dpdk-headers.h");
-
     println!("cargo:warning=Building DPDK...");
     let dpdk_path = canonicalize(cargo_dir.clone().join("3rdparty").join("dpdk")).unwrap();
     let dpdk_dir = dpdk_path.as_path();
-    Command::new("./build-dpdk.sh")
-        .args(&[dpdk_dir.to_str().unwrap()])
-        .status()
-        .unwrap_or_else(|e| panic!("Failed to build DPDK: {:?}", e));
+    /*Command::new("./build-dpdk.sh")
+    .args(&[dpdk_dir.to_str().unwrap()])
+    .status()
+    .unwrap_or_else(|e| panic!("Failed to build DPDK: {:?}", e));*/
 
     let dpdk_install = dpdk_dir.clone().join("install");
     let pkg_config_path = dpdk_install.join("lib/x86_64-linux-gnu/pkgconfig");

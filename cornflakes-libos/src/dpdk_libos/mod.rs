@@ -49,7 +49,7 @@ macro_rules! dpdk_check_not_failed(
 #[macro_export]
 macro_rules! dpdk_ok (
     ($x: ident ($($arg: expr),*)) => { unsafe {
-        dpdk_check(stringify!($x), $x($($arg),*))?
+        dpdk_check(stringify!($x), $x($($arg),*)).wrap_err("Error running dpdk function.")?
     } }
 );
 
@@ -58,4 +58,5 @@ macro_rules! dpdk_call (
     ($x: expr) => { unsafe { $x } }
 );
 
-pub mod wrapper;
+pub mod connection;
+mod wrapper;
