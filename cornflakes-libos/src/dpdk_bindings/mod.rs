@@ -25,6 +25,14 @@ extern "C" {
     fn rte_errno_() -> ::std::os::raw::c_int;
     fn rte_get_timer_cycles_() -> u64;
     fn rte_get_timer_hz_() -> u64;
+    fn rte_pktmbuf_attach_extbuf_(
+        m: *mut rte_mbuf,
+        buf_addr: *mut ::std::os::raw::c_void,
+        buf_iova: rte_iova_t,
+        buf_len: u16,
+        shinfo: *mut rte_mbuf_ext_shared_info,
+    );
+    pub fn general_free_cb_(addr: *mut ::std::os::raw::c_void, opaque: *mut ::std::os::raw::c_void);
 }
 
 #[cfg(feature = "mlx5")]
@@ -85,4 +93,15 @@ pub unsafe fn rte_get_timer_cycles() -> u64 {
 #[inline]
 pub unsafe fn rte_get_timer_hz() -> u64 {
     rte_get_timer_hz_()
+}
+
+#[inline]
+pub unsafe fn rte_pktmbuf_attach_extbuf(
+    m: *mut rte_mbuf,
+    buf_addr: *mut ::std::os::raw::c_void,
+    buf_iova: rte_iova_t,
+    buf_len: u16,
+    shinfo: *mut rte_mbuf_ext_shared_info,
+) {
+    rte_pktmbuf_attach_extbuf_(m, buf_addr, buf_iova, buf_len, shinfo);
 }

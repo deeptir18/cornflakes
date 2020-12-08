@@ -105,6 +105,7 @@ fn main() {
     compiler.opt_level(3);
     compiler.pic(true);
     compiler.flag("-march=native");
+    compiler.flag("-Wno-unused-parameter");
     let inlined_file = Path::new(&cargo_dir)
         .join("src")
         .join("dpdk_bindings")

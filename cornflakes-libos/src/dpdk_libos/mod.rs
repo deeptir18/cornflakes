@@ -50,7 +50,19 @@ macro_rules! dpdk_check_not_failed(
 macro_rules! dpdk_ok (
     ($x: ident ($($arg: expr),*)) => { unsafe {
         dpdk_check(stringify!($x), $x($($arg),*)).wrap_err("Error running dpdk function.")?
-    } }
+    } };
+    ($x: ident ($($arg: expr),*), $y: ident ($($arg2: expr),*)) => {
+        unsafe {
+            match dpdk_check(stringify!($x), $x($($arg),*)) {
+                Ok(_) => {}
+                Err(e) => {
+                    // y is an error function to call
+                    $y($($arg2),*);
+                    bail!("{:?}", e);
+                }
+            }
+        }
+    };
 );
 
 #[macro_export]

@@ -83,6 +83,7 @@ impl HeaderInfo {
     }
 }
 
+#[inline]
 pub fn write_udp_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize) -> Result<()> {
     let fixed_buf: &mut [u8; UDP_HEADER2_SIZE] = (&mut buf[..UDP_HEADER2_SIZE]).try_into().unwrap();
     NetworkEndian::write_u16(&mut fixed_buf[0..2], header_info.udp_src_port);
@@ -93,6 +94,7 @@ pub fn write_udp_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize) 
     Ok(())
 }
 
+#[inline]
 fn ipv4_checksum(buf: &[u8]) -> u16 {
     let buf: &[u8; IPV4_HEADER2_SIZE] = buf.try_into().expect("Invalid header size");
     let mut state = 0xffffu32;
@@ -110,6 +112,7 @@ fn ipv4_checksum(buf: &[u8]) -> u16 {
     !state as u16
 }
 
+#[inline]
 pub fn write_ipv4_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize) -> Result<()> {
     // currently, this only sets some fields
     let buf: &mut [u8; IPV4_HEADER2_SIZE] = buf.try_into()?;
@@ -126,6 +129,7 @@ pub fn write_ipv4_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize)
     Ok(())
 }
 
+#[inline]
 pub fn write_eth_hdr(header_info: &HeaderInfo, buf: &mut [u8]) -> Result<()> {
     let buf: &mut [u8; ETHERNET2_HEADER2_SIZE] = buf.try_into()?;
     buf[0..6].copy_from_slice(header_info.ether_dst_addr.as_bytes());
@@ -134,6 +138,7 @@ pub fn write_eth_hdr(header_info: &HeaderInfo, buf: &mut [u8]) -> Result<()> {
     Ok(())
 }
 
+#[inline]
 pub fn write_pkt_id(id: MsgID, buf: &mut [u8]) -> Result<()> {
     let buf: &mut [u8; 4] = buf.try_into()?;
     NetworkEndian::write_u32(&mut buf[0..4], id);

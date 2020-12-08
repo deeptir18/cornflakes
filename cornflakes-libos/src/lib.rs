@@ -10,9 +10,9 @@ pub mod dpdk_libos;
 pub mod utils;
 
 use color_eyre::eyre::Result;
+use core::slice::Iter;
 use std::{net::Ipv4Addr, time::Duration};
 
-const MAX_ENTRIES: u8 = 64;
 pub type MsgID = u32;
 
 /// Represents either a borrowed piece of memory.
@@ -26,13 +26,12 @@ pub enum CornPtr<'a> {
 
 /// A Cornflake represents a scatter-gather array.
 /// Datapaths must be able to send and receive cornflakes.
+/// TODO: might not be necessary to separately keep track of lengths.
 pub struct Cornflake<'a> {
     /// Id for message. If None, datapath doesn't need to keep track of per-packet timeouts.
     id: MsgID,
     /// Pointers to scattered memory segments.
-    entries: Vec<CornPtr<'a>>,
-    /// Lenghts of corresponding segments
-    lengths: Vec<u32>,
+    entries: Vec<(CornPtr<'a>, usize)>,
 }
 
 impl<'a> Default for Cornflake<'a> {
@@ -40,35 +39,57 @@ impl<'a> Default for Cornflake<'a> {
         Cornflake {
             id: 0,
             entries: Vec::new(),
-            lengths: Vec::new(),
         }
     }
 }
 
 impl<'a> Cornflake<'a> {
+    /// Returns the id of this cornflake.
     pub fn get_id(&self) -> MsgID {
         self.id
     }
 
+    /// Sets the id.
     pub fn set_id(&mut self, id: MsgID) {
         self.id = id;
     }
 
+    /// Returns number of entries in this cornflake.
     pub fn num_entries(&self) -> usize {
         self.entries.len()
     }
 
-    pub fn add_scatter(&mut self, ptr: CornPtr<'a>, length: u32) {
-        self.entries.push(ptr);
-        self.lengths.push(length);
+    /// Returns the number of scatter-gathers needed to represent this data structure.
+    /// Number of separate borrowed memory regions, plus 1 for the header.
+    pub fn num_scattered_entries(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|(ptr, _)| match ptr {
+                CornPtr::Borrowed(_) => true,
+                CornPtr::Owned(_) => false,
+            })
+            .map(|_| 1)
+            .sum::<usize>()
+            + 1
     }
 
-    pub fn get_entries(&self) -> &Vec<CornPtr<'a>> {
-        &self.entries
+    /// Adds a scatter-gather entry to this cornflake.
+    /// Passes ownership of the CornPtr.
+    /// Arguments:
+    /// * ptr - CornPtr<'a> representing owned or borrowed memory.
+    /// * length - usize representing length of memory region.
+    pub fn add_scatter(&mut self, ptr: CornPtr<'a>, length: usize) {
+        self.entries.push((ptr, length));
     }
 
+    /// Amount of data represented by this scatter-gather array.
     pub fn data_len(&self) -> usize {
-        self.lengths.iter().sum::<u32>() as usize
+        self.entries.iter().map(|(_, len)| len).sum()
+    }
+
+    /// Exposes an iterator over the entries in the scatter-gather array.
+    pub fn iter(&self) -> Iter<(CornPtr<'a>, usize)> {
+        self.entries.iter()
     }
 }
 
@@ -82,10 +103,9 @@ pub trait Datapath {
     /// Receive the next packet (from any) underlying `connection`, if any.
     /// Application is responsible for freeing any memory referred to by Cornflake.
     /// None response means no packet received.
-    fn pop(&mut self) -> Result<Option<(Cornflake, Duration)>>;
+    fn pop(&mut self) -> Result<Vec<(Cornflake, Duration)>>;
 
     /// Check if any outstanding packets have timed-out.
-    /// TODO: should this return a vec?
     fn timed_out(&self, time_out: Duration) -> Result<Vec<MsgID>>;
 
     /// Some datapaths use specific timing functions.
@@ -94,6 +114,12 @@ pub trait Datapath {
 
     /// Number of cycles per second.
     fn timer_hz(&self) -> u64;
+
+    /// Max scatter-gather entries.
+    fn max_scatter_entries(&self) -> usize;
+
+    /// Max packet len.
+    fn max_packet_len(&self) -> usize;
 }
 
 /// For applications that want to follow a simple open-loop request processing model at the client,
