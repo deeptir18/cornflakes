@@ -1,6 +1,7 @@
 use super::{
     super::{
-        dpdk_bindings::*, dpdk_call, utils, CornType, Datapath, MsgID, PtrAttributes, ScatterGather,
+        dpdk_bindings::*, dpdk_call, mbuf_slice, utils, CornType, Datapath, MsgID, PtrAttributes,
+        ReceivedPacket, ScatterGather,
     },
     dpdk_utils, wrapper,
 };
@@ -13,6 +14,7 @@ use std::{
     ptr, slice,
     time::{Duration, Instant},
 };
+use tracing::warn;
 
 const MAX_ENTRIES: usize = 60;
 const RECEIVE_BURST_SIZE: u16 = 32;
@@ -27,6 +29,24 @@ pub struct MbufWrapper {
     pub header_size: usize,
 }
 
+impl AsRef<[u8]> for MbufWrapper {
+    fn as_ref(&self) -> &[u8] {
+        // length of the payload ends up being pkt_len - header_size
+        let payload_len = unsafe { (*self.mbuf).pkt_len as usize - self.header_size };
+        mbuf_slice!(self.mbuf, self.header_size, payload_len)
+    }
+}
+
+impl PtrAttributes for MbufWrapper {
+    fn buf_type(&self) -> CornType {
+        CornType::Borrowed
+    }
+
+    fn buf_size(&self) -> usize {
+        unsafe { (*self.mbuf).pkt_len as usize - self.header_size }
+    }
+}
+
 /// The DPDK datapath returns this on the datapath pop function.
 /// Exposes methods around the mbuf.
 pub struct DPDKReceivedPkt {
@@ -34,21 +54,25 @@ pub struct DPDKReceivedPkt {
     id: MsgID,
     // pointer to underlying rte_mbuf
     mbuf_wrapper: MbufWrapper,
+    // the address information about the received packet
+    addr_info: utils::AddressInfo,
 }
 
 impl DPDKReceivedPkt {
-    fn new(id: MsgID, mbuf: *mut rte_mbuf, header_size: usize) -> DPDKReceivedPkt {
+    fn new(
+        id: MsgID,
+        mbuf: *mut rte_mbuf,
+        header_size: usize,
+        addr_info: utils::AddressInfo,
+    ) -> DPDKReceivedPkt {
         DPDKReceivedPkt {
             id: id,
             mbuf_wrapper: MbufWrapper {
                 mbuf: mbuf,
                 header_size: header_size,
             },
+            addr_info: addr_info,
         }
-    }
-
-    fn get_payload(&self) -> &[u8] {
-        self.mbuf_wrapper.as_ref()
     }
 }
 
@@ -60,27 +84,9 @@ impl Drop for DPDKReceivedPkt {
     }
 }
 
-impl AsRef<[u8]> for MbufWrapper {
-    fn as_ref(&self) -> &[u8] {
-        unsafe {
-            // length of the payload ends up being pkt_len - header_size
-            let payload_len = (*self.mbuf).pkt_len as usize - self.header_size;
-            slice::from_raw_parts_mut(
-                ((*self.mbuf).buf_addr as *mut u8)
-                    .offset((*self.mbuf).data_off as isize + self.header_size as isize),
-                payload_len,
-            )
-        }
-    }
-}
-
-impl PtrAttributes for MbufWrapper {
-    fn buf_type(&self) -> CornType {
-        CornType::Borrowed
-    }
-
-    fn buf_size(&self) -> usize {
-        unsafe { (*self.mbuf).pkt_len as usize - self.header_size }
+impl ReceivedPacket for DPDKReceivedPkt {
+    fn get_addr(&self) -> utils::AddressInfo {
+        self.addr_info.clone()
     }
 }
 
@@ -137,7 +143,7 @@ pub struct DPDKConnection {
     /// Empty mempool for allocating external buffers.
     extbuf_mempool: *mut rte_mempool,
     /// Header information
-    header_info: utils::HeaderInfo,
+    addr_info: utils::AddressInfo,
     /// shinfo: TODO: it is unclear how to ``properly'' use the shinfo.
     /// There might be one shinfo per external memory region.
     /// Here, so far, we're assuming one memory region.
@@ -178,7 +184,7 @@ impl DPDKConnection {
             }
         };
 
-        let header_info = utils::HeaderInfo::new(udp_port, my_ip_addr, &my_mac_addr);
+        let addr_info = utils::AddressInfo::new(udp_port, *my_ip_addr, my_mac_addr);
         let mut shared_info: MaybeUninit<rte_mbuf_ext_shared_info> = MaybeUninit::zeroed();
         unsafe {
             (*shared_info.as_mut_ptr()).refcnt = 1;
@@ -194,7 +200,7 @@ impl DPDKConnection {
             outgoing_window: outgoing_window,
             default_mempool: mempool,
             extbuf_mempool: ext_mempool,
-            header_info: header_info,
+            addr_info: addr_info,
             shared_info: shared_info.as_mut_ptr(),
         })
     }
@@ -205,7 +211,7 @@ impl DPDKConnection {
     /// * dst_addr - Ipv4Addr that is the destination.
     fn get_outgoing_header(&self, dst_addr: Ipv4Addr) -> Result<utils::HeaderInfo> {
         match self.ip_to_mac.get(&dst_addr) {
-            Some(mac) => Ok(self.header_info.get_outgoing(dst_addr, mac.clone())),
+            Some(mac) => Ok(self.addr_info.get_outgoing(dst_addr, mac.clone())),
             None => {
                 bail!("Don't know ethernet address for Ip address: {:?}", dst_addr);
             }
@@ -301,25 +307,55 @@ impl Datapath for DPDKConnection {
     }
 
     /// Checks to see if any packet has arrived, if any packet is valid.
-    /// If anything is valid, returns the received data in a new Cornflake.
+    /// Feturns a Vec<(DPDKReceivedPkt, Duration)> for each valid packet.
     /// For client mode, provides duration since sending sga with this id.
     /// FOr server mode, returns 0 duration.
     fn pop(&mut self) -> Result<Vec<(Self::ReceivedPkt, Duration)>> {
-        let mut mbuf_array_raw: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] =
+        let mut mbuf_array: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] =
             [ptr::null_mut(); RECEIVE_BURST_SIZE as usize];
-        let num_received = wrapper::rx_burst(
+        let received = wrapper::rx_burst(
             self.dpdk_port,
             0,
-            mbuf_array_raw.as_mut_ptr(),
+            mbuf_array.as_mut_ptr(),
             RECEIVE_BURST_SIZE,
+            &self.addr_info,
         )
         .wrap_err("Error on calling rte_eth_rx_burst.")?;
-        let mut ret: Vec<(Self::ReceivedPkt, Duration)> = Vec::new();
-        for i in num_received {
-            unimplemented!();
-            // let pkt = unsafe { *mbuf_array_raw.offset(i as isize) };
-        }
+        let mut ret: Vec<(DPDKReceivedPkt, Duration)> = Vec::new();
+        for (idx, (msg_id, addr_info)) in received.into_iter() {
+            // also check if the mac address / ip address ifnromation matches with our expectation
+            match self.mac_to_ip.get(&addr_info.ether_addr) {
+                Some(ip) => {
+                    if *ip != addr_info.ipv4_addr {
+                        bail!("Ipv4 addr {:?} does not map with mac addr {:?} in our map, our map has {:?}", addr_info.ipv4_addr, addr_info.ether_addr, ip);
+                    }
+                }
+                None => {
+                    bail!(
+                        "We don't have information about this ether addr: {:?}",
+                        addr_info.ether_addr
+                    );
+                }
+            }
+            let duration = match self.mode {
+                DPDKMode::Client => match self.outgoing_window.remove(&msg_id) {
+                    Some(start) => start.elapsed(),
+                    None => {
+                        warn!("Received packet for an old msg_id: {}", msg_id);
+                        continue;
+                    }
+                },
+                DPDKMode::Server => Duration::new(0, 0),
+            };
+            let mbuf = mbuf_array[idx];
+            if mbuf.is_null() {
+                bail!("Mbuf for index {} in returned array is null.", idx);
+            }
+            let received_pkt =
+                DPDKReceivedPkt::new(msg_id, mbuf_array[idx], utils::TOTAL_HEADER_SIZE, addr_info);
 
+            ret.push((received_pkt, duration));
+        }
         Ok(ret)
     }
 

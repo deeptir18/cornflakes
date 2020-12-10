@@ -50,7 +50,7 @@ fn main() -> Result<()> {
     };
     tracing::subscriber::set_global_default(subscriber).expect("setting defualt subscriber failed");
 
-    let connection = DPDKConnection::new(&opt.config_file, DPDKMode::Server)
+    let _connection = DPDKConnection::new(&opt.config_file, DPDKMode::Server)
         .wrap_err("Failed to initialize DPDK server connection.")?;
     Ok(())
 }

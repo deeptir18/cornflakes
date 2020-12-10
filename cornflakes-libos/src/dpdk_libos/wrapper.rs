@@ -1,9 +1,10 @@
 use super::{
-    super::{dpdk_call, dpdk_check_not_failed, dpdk_ok, utils, MsgID, ScatterGather},
+    super::{dpdk_call, dpdk_check_not_failed, dpdk_ok, mbuf_slice, utils, MsgID, ScatterGather},
     dpdk_bindings::*,
     dpdk_check, dpdk_error,
 };
 use color_eyre::eyre::{bail, Result, WrapErr};
+use hashbrown::HashMap;
 use std::{
     ffi::CString,
     fs::read_to_string,
@@ -92,13 +93,7 @@ impl Pkt {
         if (buf.len() + self.data_offset) < RX_PACKET_LEN as usize {
             bail!("Cannot set payload: mbuf would be too large");
         }
-        let mbuf_buffer = unsafe {
-            slice::from_raw_parts_mut(
-                ((*self.mbuf).buf_addr as *mut u8)
-                    .offset((*self.mbuf).data_off as isize + self.data_offset as isize),
-                buf.len(),
-            )
-        };
+        let mbuf_buffer = mbuf_slice!(self.mbuf, self.data_offset, buf.len());
         mbuf_buffer.copy_from_slice(buf);
         unsafe {
             // only update the data_len
@@ -464,42 +459,33 @@ pub fn fill_in_header(
     data_len: usize,
     id: MsgID,
 ) -> Result<usize> {
-    let eth_hdr_slice = unsafe {
-        slice::from_raw_parts_mut(
-            ((*pkt).buf_addr as *mut u8).offset((*pkt).data_off as isize),
-            utils::ETHERNET2_HEADER2_SIZE,
-        )
-    };
-    let ipv4_hdr_slice = unsafe {
-        slice::from_raw_parts_mut(
-            ((*pkt).buf_addr as *mut u8)
-                .offset((*pkt).data_off as isize + utils::ETHERNET2_HEADER2_SIZE as isize),
-            utils::IPV4_HEADER2_SIZE,
-        )
-    };
-    let udp_hdr_slice = unsafe {
-        slice::from_raw_parts_mut(
-            ((*pkt).buf_addr as *mut u8).offset(
-                (*pkt).data_off as isize
-                    + utils::ETHERNET2_HEADER2_SIZE as isize
-                    + utils::IPV4_HEADER2_SIZE as isize,
-            ),
-            utils::UDP_HEADER2_SIZE,
-        )
-    };
-    let id_hdr_slice = unsafe {
-        slice::from_raw_parts_mut(
-            ((*pkt).buf_addr as *mut u8).offset(
-                (*pkt).data_off as isize
-                    + utils::ETHERNET2_HEADER2_SIZE as isize
-                    + utils::IPV4_HEADER2_SIZE as isize
-                    + utils::UDP_HEADER2_SIZE as isize,
-            ),
-            4,
-        )
-    };
+    let data_offset = unsafe { (*pkt).data_off as usize };
+
+    let eth_hdr_slice = mbuf_slice!(pkt, data_offset, utils::ETHERNET2_HEADER2_SIZE);
+
+    let ipv4_hdr_slice = mbuf_slice!(
+        pkt,
+        data_offset + utils::ETHERNET2_HEADER2_SIZE,
+        utils::IPV4_HEADER2_SIZE
+    );
+
+    let udp_hdr_slice = mbuf_slice!(
+        pkt,
+        data_offset + utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
+        utils::UDP_HEADER2_SIZE
+    );
+
+    let id_hdr_slice = mbuf_slice!(
+        pkt,
+        data_offset
+            + utils::ETHERNET2_HEADER2_SIZE
+            + utils::IPV4_HEADER2_SIZE
+            + utils::UDP_HEADER2_SIZE,
+        4
+    );
 
     utils::write_udp_hdr(header_info, udp_hdr_slice, data_len)?;
+
     utils::write_ipv4_hdr(
         header_info,
         ipv4_hdr_slice,
@@ -549,7 +535,7 @@ pub fn tx_burst(
 }
 
 /// Tries to receive a packet on the given transmit queue for the given ethernet advice.
-/// Returns the indices of valid packets and stores packets in the rx_pkts argument if successful.
+/// Returns a Vec of (MsgID,
 /// Frees any invalid packets.
 /// On error, bails out.
 ///
@@ -566,16 +552,17 @@ pub fn rx_burst(
     queue_id: u16,
     rx_pkts: *mut *mut rte_mbuf,
     nb_pkts: u16,
-) -> Result<Vec<usize>> {
-    let mut valid_packets: Vec<usize> = Vec::new();
+    my_addr_info: &utils::AddressInfo,
+) -> Result<HashMap<usize, (MsgID, utils::AddressInfo)>> {
+    let mut valid_packets: HashMap<usize, (MsgID, utils::AddressInfo)> = HashMap::new();
     let num_received = dpdk_call!(rte_eth_rx_burst(port_id, queue_id, rx_pkts, nb_pkts));
     for i in 0..num_received {
         let pkt = unsafe { *rx_pkts.offset(i as isize) };
-        match check_valid_packet(pkt) {
-            true => {
-                valid_packets.push(i as usize);
+        match check_valid_packet(pkt, my_addr_info) {
+            Some((id, hdr)) => {
+                valid_packets.insert(i as usize, (id, hdr));
             }
-            false => {
+            None => {
                 dpdk_call!(rte_pktmbuf_free(pkt));
             }
         }
@@ -589,15 +576,68 @@ pub fn rx_burst(
 /// (1) packets with the right destination eth addr
 /// (2) packets with the protocol UDP in the ip header, and the right destination IP address.
 /// (3) packets with the right destination udp port in the udp header.
-/// Returns true if packet is valid, false otherwise.
+/// Returns the msg ID, and header info for the parse packet.
 ///
 /// Arguments:
 /// pkt - *mut rte_mbuf : pointer to rte_mbuf to check validity for.
 #[inline]
-fn check_valid_packet(pkt: *mut rte_mbuf) -> bool {
-    return false;
+fn check_valid_packet(
+    pkt: *mut rte_mbuf,
+    my_addr_info: &utils::AddressInfo,
+) -> Option<(MsgID, utils::AddressInfo)> {
+    let data_offset = unsafe { (*pkt).data_off as usize };
+
+    let eth_hdr_slice = mbuf_slice!(pkt, data_offset, utils::ETHERNET2_HEADER2_SIZE);
+    let src_eth = match utils::check_eth_hdr(eth_hdr_slice, &my_addr_info.ether_addr) {
+        Ok((eth, _)) => eth,
+        Err(_) => {
+            return None;
+        }
+    };
+
+    let ipv4_hdr_slice = mbuf_slice!(
+        pkt,
+        data_offset + utils::ETHERNET2_HEADER2_SIZE,
+        utils::IPV4_HEADER2_SIZE
+    );
+
+    let src_ip = match utils::check_ipv4_hdr(ipv4_hdr_slice, &my_addr_info.ipv4_addr) {
+        Ok((ip, _)) => ip,
+        Err(_) => {
+            return None;
+        }
+    };
+
+    let udp_hdr_slice = mbuf_slice!(
+        pkt,
+        data_offset + utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
+        utils::UDP_HEADER2_SIZE
+    );
+
+    let src_port = match utils::check_udp_hdr(udp_hdr_slice, my_addr_info.udp_port) {
+        Ok((port, _)) => port,
+        Err(_) => {
+            return None;
+        }
+    };
+
+    let id_hdr_slice = mbuf_slice!(
+        pkt,
+        data_offset
+            + utils::ETHERNET2_HEADER2_SIZE
+            + utils::IPV4_HEADER2_SIZE
+            + utils::UDP_HEADER2_SIZE,
+        4
+    );
+
+    let msg_id = utils::parse_msg_id(id_hdr_slice);
+
+    Some((msg_id, (utils::AddressInfo::new(src_port, src_ip, src_eth))))
 }
 
+/// Frees the mbuf, returns it to it's original mempool.
+/// Arguments:
+/// * pkt - *mut rte_mbuf to free.
 #[inline]
 pub fn free_mbuf(pkt: *mut rte_mbuf) {
     dpdk_call!(rte_pktmbuf_free(pkt));

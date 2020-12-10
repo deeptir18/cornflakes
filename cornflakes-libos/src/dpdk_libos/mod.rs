@@ -2,6 +2,19 @@ use super::dpdk_bindings;
 use color_eyre::eyre::{bail, Result};
 use std::ffi::CStr;
 
+#[macro_export]
+macro_rules! mbuf_slice(
+    ($mbuf: expr, $offset: expr, $len: expr) => {
+        unsafe {
+            slice::from_raw_parts_mut(
+                ((*$mbuf).buf_addr as *mut u8)
+                    .offset((*$mbuf).data_off as isize + $offset as isize),
+                 $len,
+            )
+        }
+    }
+);
+
 pub unsafe fn dpdk_check(func_name: &str, ret: ::std::os::raw::c_int) -> Result<()> {
     if ret != 0 {
         dpdk_error(func_name, Some(ret))?;

@@ -2,8 +2,9 @@ use super::MsgID;
 use byteorder::{ByteOrder, NetworkEndian};
 use color_eyre::eyre::{bail, Result};
 use eui48::MacAddress;
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::net::Ipv4Addr;
+use tracing::debug;
 
 // Header setting taken from Demikernel's catnip OS:
 // https://github.com/demikernel/demikernel/blob/master/src/rust/catnip/src/protocols/
@@ -15,9 +16,29 @@ pub const IPV4_IHL_NO_OPTIONS: u8 = 5;
 pub const IPV4_VERSION: u8 = 4;
 pub const IPDEFTTL: u8 = 64;
 pub const IPPROTO_UDP: u8 = 17;
-pub const ETHERTYPE_IPV4: u16 = 0x800 as u16;
 pub const TOTAL_HEADER_SIZE: usize =
     ETHERNET2_HEADER2_SIZE + IPV4_HEADER2_SIZE + UDP_HEADER2_SIZE + 4;
+
+#[repr(u16)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum EtherType2 {
+    Arp = 0x806,
+    Ipv4 = 0x800,
+}
+
+impl TryFrom<u16> for EtherType2 {
+    type Error = color_eyre::eyre::Error;
+
+    fn try_from(n: u16) -> Result<Self> {
+        if n == EtherType2::Arp as u16 {
+            Ok(EtherType2::Arp)
+        } else if n == EtherType2::Ipv4 as u16 {
+            Ok(EtherType2::Ipv4)
+        } else {
+            bail!("Unsupported ether type: {}", n);
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum TraceLevel {
@@ -43,51 +64,59 @@ impl std::str::FromStr for TraceLevel {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct HeaderInfo {
-    pub udp_src_port: u16,
-    pub udp_dst_port: u16,
-    pub ipv4_src_addr: Ipv4Addr,
-    pub ipv4_dst_addr: Ipv4Addr,
-    pub ether_src_addr: MacAddress,
-    pub ether_dst_addr: MacAddress,
+pub struct AddressInfo {
+    pub udp_port: u16,
+    pub ipv4_addr: Ipv4Addr,
+    pub ether_addr: MacAddress,
 }
 
-impl HeaderInfo {
-    pub fn new(udp_port: u16, src_ip: &Ipv4Addr, src_mac: &MacAddress) -> HeaderInfo {
-        HeaderInfo {
-            udp_src_port: udp_port,
-            udp_dst_port: udp_port,
-            ipv4_src_addr: *src_ip,
-            ipv4_dst_addr: Ipv4Addr::LOCALHOST,
-            ether_src_addr: *src_mac,
-            ether_dst_addr: MacAddress::nil(),
+impl Default for AddressInfo {
+    fn default() -> AddressInfo {
+        AddressInfo {
+            udp_port: 12345,
+            ipv4_addr: Ipv4Addr::LOCALHOST,
+            ether_addr: MacAddress::default(),
         }
     }
+}
 
-    pub fn reverse(&self) -> HeaderInfo {
-        HeaderInfo {
-            udp_src_port: self.udp_dst_port,
-            udp_dst_port: self.udp_src_port,
-            ipv4_src_addr: self.ipv4_dst_addr,
-            ipv4_dst_addr: self.ipv4_src_addr,
-            ether_src_addr: self.ether_dst_addr,
-            ether_dst_addr: self.ether_src_addr,
+impl AddressInfo {
+    pub fn new(port: u16, ipv4: Ipv4Addr, mac: MacAddress) -> AddressInfo {
+        AddressInfo {
+            udp_port: port,
+            ipv4_addr: ipv4,
+            ether_addr: mac,
         }
     }
 
     pub fn get_outgoing(&self, dst_ip: Ipv4Addr, dst_mac: MacAddress) -> HeaderInfo {
-        let mut ret = self.clone();
-        ret.ipv4_dst_addr = dst_ip;
-        ret.ether_dst_addr = dst_mac;
-        ret
+        HeaderInfo::new(
+            self.clone(),
+            AddressInfo::new(self.udp_port, dst_ip, dst_mac),
+        )
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Default)]
+pub struct HeaderInfo {
+    src_info: AddressInfo,
+    dst_info: AddressInfo,
+}
+
+impl HeaderInfo {
+    pub fn new(src_info: AddressInfo, dst_info: AddressInfo) -> HeaderInfo {
+        HeaderInfo {
+            src_info: src_info,
+            dst_info: dst_info,
+        }
     }
 }
 
 #[inline]
 pub fn write_udp_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize) -> Result<()> {
-    let fixed_buf: &mut [u8; UDP_HEADER2_SIZE] = (&mut buf[..UDP_HEADER2_SIZE]).try_into().unwrap();
-    NetworkEndian::write_u16(&mut fixed_buf[0..2], header_info.udp_src_port);
-    NetworkEndian::write_u16(&mut fixed_buf[2..4], header_info.udp_dst_port);
+    let fixed_buf: &mut [u8; UDP_HEADER2_SIZE] = (&mut buf[..UDP_HEADER2_SIZE]).try_into()?;
+    NetworkEndian::write_u16(&mut fixed_buf[0..2], header_info.src_info.udp_port);
+    NetworkEndian::write_u16(&mut fixed_buf[2..4], header_info.dst_info.udp_port);
     NetworkEndian::write_u16(&mut fixed_buf[4..6], (UDP_HEADER2_SIZE + data_len) as u16);
     // no checksum
     NetworkEndian::write_u16(&mut fixed_buf[6..8], 0);
@@ -95,8 +124,8 @@ pub fn write_udp_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize) 
 }
 
 #[inline]
-fn ipv4_checksum(buf: &[u8]) -> u16 {
-    let buf: &[u8; IPV4_HEADER2_SIZE] = buf.try_into().expect("Invalid header size");
+fn ipv4_checksum(buf: &[u8]) -> Result<u16> {
+    let buf: &[u8; IPV4_HEADER2_SIZE] = buf.try_into()?;
     let mut state = 0xffffu32;
     for i in 0..5 {
         state += NetworkEndian::read_u16(&buf[(2 * i)..(2 * i + 2)]) as u32;
@@ -109,7 +138,7 @@ fn ipv4_checksum(buf: &[u8]) -> u16 {
     while state > 0xffff {
         state -= 0xffff;
     }
-    !state as u16
+    Ok(!state as u16)
 }
 
 #[inline]
@@ -121,10 +150,10 @@ pub fn write_ipv4_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize)
     buf[8] = IPDEFTTL; // time to live
     buf[9] = IPPROTO_UDP; // next_proto_id
 
-    buf[12..16].copy_from_slice(&header_info.ipv4_src_addr.octets());
-    buf[16..20].copy_from_slice(&header_info.ipv4_dst_addr.octets());
+    buf[12..16].copy_from_slice(&header_info.src_info.ipv4_addr.octets());
+    buf[16..20].copy_from_slice(&header_info.dst_info.ipv4_addr.octets());
 
-    let checksum = ipv4_checksum(buf);
+    let checksum = ipv4_checksum(buf)?;
     NetworkEndian::write_u16(&mut buf[10..12], checksum);
     Ok(())
 }
@@ -132,9 +161,9 @@ pub fn write_ipv4_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize)
 #[inline]
 pub fn write_eth_hdr(header_info: &HeaderInfo, buf: &mut [u8]) -> Result<()> {
     let buf: &mut [u8; ETHERNET2_HEADER2_SIZE] = buf.try_into()?;
-    buf[0..6].copy_from_slice(header_info.ether_dst_addr.as_bytes());
-    buf[6..12].copy_from_slice(header_info.ether_src_addr.as_bytes());
-    NetworkEndian::write_u16(&mut buf[12..14], ETHERTYPE_IPV4);
+    buf[0..6].copy_from_slice(header_info.dst_info.ether_addr.as_bytes());
+    buf[6..12].copy_from_slice(header_info.src_info.ether_addr.as_bytes());
+    NetworkEndian::write_u16(&mut buf[12..14], EtherType2::Ipv4 as u16);
     Ok(())
 }
 
@@ -143,4 +172,76 @@ pub fn write_pkt_id(id: MsgID, buf: &mut [u8]) -> Result<()> {
     let buf: &mut [u8; 4] = buf.try_into()?;
     NetworkEndian::write_u32(&mut buf[0..4], id);
     Ok(())
+}
+
+#[inline]
+pub fn check_eth_hdr(
+    hdr_buf: &mut [u8],
+    my_ether: &MacAddress,
+) -> Result<(MacAddress, MacAddress)> {
+    let dst_addr = MacAddress::from_bytes(&hdr_buf[0..6])?;
+    let src_addr = MacAddress::from_bytes(&hdr_buf[6..12])?;
+    let ether_type = EtherType2::try_from(NetworkEndian::read_u16(&hdr_buf[12..14]))?;
+    if (dst_addr != *my_ether) && (dst_addr != MacAddress::broadcast()) {
+        debug!(
+            "(recv: dropped) Destination ether addr: {:?}, does not match mine {:?}, and is not broadcast.",
+            dst_addr, my_ether
+        );
+        bail!("Destination ether address does not match mine and is not broadcast.");
+    }
+
+    if ether_type != EtherType2::Ipv4 {
+        bail!("Not correct ether type.");
+    }
+
+    Ok((src_addr, dst_addr))
+}
+
+#[inline]
+pub fn check_ipv4_hdr(hdr_buf: &mut [u8], my_ip: &Ipv4Addr) -> Result<(Ipv4Addr, Ipv4Addr)> {
+    let src_addr = Ipv4Addr::from(NetworkEndian::read_u32(&hdr_buf[12..16]));
+    let dst_addr = Ipv4Addr::from(NetworkEndian::read_u32(&hdr_buf[16..20]));
+    if hdr_buf[9] != IPPROTO_UDP {
+        debug!("(recv: dropped)  ipv4 hdr does not have IPPROTO_UDP.");
+        bail!("(recv: dropped)  ipv4 hdr does not have IPPROTO_UDP.");
+    }
+
+    if dst_addr != *my_ip {
+        debug!(
+            "(recv: dropped) Dest ipv4 addr: {:?} does not match mine {:?}",
+            dst_addr, my_ip
+        );
+        bail!(
+            "Dest ipv4 addr: {:?} does not match mine {:?}",
+            dst_addr,
+            my_ip
+        );
+    }
+
+    Ok((src_addr, dst_addr))
+}
+
+#[inline]
+pub fn check_udp_hdr(hdr_buf: &mut [u8], my_udp_port: u16) -> Result<(u16, u16)> {
+    let src_port = NetworkEndian::read_u16(&hdr_buf[0..2]);
+    let dst_port = NetworkEndian::read_u16(&hdr_buf[2..4]);
+
+    if dst_port != my_udp_port {
+        debug!(
+            "recv dropped) Dst udp port {} does not match ours {}.",
+            dst_port, my_udp_port
+        );
+        bail!(
+            "recv dropped) Dst udp port {} does not match ours {}.",
+            dst_port,
+            my_udp_port
+        );
+    }
+
+    Ok((src_port, dst_port))
+}
+
+#[inline]
+pub fn parse_msg_id(hdr_buf: &mut [u8]) -> MsgID {
+    NetworkEndian::read_u32(&hdr_buf[0..4])
 }

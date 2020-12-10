@@ -46,6 +46,12 @@ pub trait ScatterGather {
     fn collection(&self) -> Self::Collection;
 }
 
+/// Trait defining functionality any _received_ packets should have.
+/// So the receiver can access address and any other relevant information.
+pub trait ReceivedPacket {
+    fn get_addr(&self) -> utils::AddressInfo;
+}
+
 /// Whether an underlying buffer is borrowed or
 /// actually owned (most likely on the heap).
 pub enum CornType {
@@ -174,7 +180,7 @@ impl<'a> Cornflake<'a> {
 /// as well as optionally keep track of per-packet timeouts.
 pub trait Datapath {
     /// Each datapath must expose a received packet type that implements the ScatterGather trait.
-    type ReceivedPkt: ScatterGather;
+    type ReceivedPkt: ScatterGather + ReceivedPacket;
 
     /// Send a scatter-gather array to the specified address.
     fn push_sga(&mut self, sga: impl ScatterGather, addr: Ipv4Addr) -> Result<()>;
@@ -219,10 +225,10 @@ pub trait ClientSM {
 /// For applications that send requests to the server at a constant rate,
 /// they can use the open loop functionality defined here to implement their app.
 pub fn open_loop_client(
-    datapath: &mut impl Datapath,
-    client: &mut impl ClientSM,
-    intersend_rate: u64,
-    total_time: u64,
+    _datapath: &mut impl Datapath,
+    _client: &mut impl ClientSM,
+    _intersend_rate: u64,
+    _total_time: u64,
 ) -> Result<()> {
     unimplemented!();
 }
