@@ -1,24 +1,119 @@
 use super::{
-    super::{dpdk_bindings::*, dpdk_call, utils, CornPtr, Cornflake, Datapath, MsgID},
-    wrapper,
+    super::{
+        dpdk_bindings::*, dpdk_call, utils, CornType, Datapath, MsgID, PtrAttributes, ScatterGather,
+    },
+    dpdk_utils, wrapper,
 };
 use color_eyre::eyre::{bail, Result, WrapErr};
 use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
-    fs::read_to_string,
     mem::MaybeUninit,
     net::Ipv4Addr,
-    path::Path,
-    ptr,
-    str::FromStr,
+    ptr, slice,
     time::{Duration, Instant},
 };
-use tracing::debug;
-use yaml_rust::{Yaml, YamlLoader};
 
 const MAX_ENTRIES: usize = 60;
 const RECEIVE_BURST_SIZE: u16 = 32;
+
+/// Wrapper around rte_mbuf.
+#[derive(Copy, Clone)]
+pub struct MbufWrapper {
+    /// Mbuf this wraps around.
+    pub mbuf: *mut rte_mbuf,
+    /// Any networking header size.
+    /// For example, could be udp + ethernet + ip header.
+    pub header_size: usize,
+}
+
+/// The DPDK datapath returns this on the datapath pop function.
+/// Exposes methods around the mbuf.
+pub struct DPDKReceivedPkt {
+    /// ID of received message.
+    id: MsgID,
+    // pointer to underlying rte_mbuf
+    mbuf_wrapper: MbufWrapper,
+}
+
+impl DPDKReceivedPkt {
+    fn new(id: MsgID, mbuf: *mut rte_mbuf, header_size: usize) -> DPDKReceivedPkt {
+        DPDKReceivedPkt {
+            id: id,
+            mbuf_wrapper: MbufWrapper {
+                mbuf: mbuf,
+                header_size: header_size,
+            },
+        }
+    }
+
+    fn get_payload(&self) -> &[u8] {
+        self.mbuf_wrapper.as_ref()
+    }
+}
+
+/// Implementing drop for DPDKReceivedPkt ensures that the underlying mbuf is freed,
+/// once all references to this struct are out of scope.
+impl Drop for DPDKReceivedPkt {
+    fn drop(&mut self) {
+        wrapper::free_mbuf(self.mbuf_wrapper.mbuf);
+    }
+}
+
+impl AsRef<[u8]> for MbufWrapper {
+    fn as_ref(&self) -> &[u8] {
+        unsafe {
+            // length of the payload ends up being pkt_len - header_size
+            let payload_len = (*self.mbuf).pkt_len as usize - self.header_size;
+            slice::from_raw_parts_mut(
+                ((*self.mbuf).buf_addr as *mut u8)
+                    .offset((*self.mbuf).data_off as isize + self.header_size as isize),
+                payload_len,
+            )
+        }
+    }
+}
+
+impl PtrAttributes for MbufWrapper {
+    fn buf_type(&self) -> CornType {
+        CornType::Borrowed
+    }
+
+    fn buf_size(&self) -> usize {
+        unsafe { (*self.mbuf).pkt_len as usize - self.header_size }
+    }
+}
+
+/// DPDKReceivedPkt implements ScatterGather so it can be returned by the pop function in the
+/// Datapath trait.
+impl ScatterGather for DPDKReceivedPkt {
+    type Ptr = MbufWrapper;
+    type Collection = Option<Self::Ptr>;
+
+    fn get_id(&self) -> MsgID {
+        self.id
+    }
+
+    fn set_id(&mut self, id: MsgID) {
+        self.id = id;
+    }
+
+    fn num_segments(&self) -> usize {
+        1
+    }
+
+    fn num_borrowed_segments(&self) -> usize {
+        0
+    }
+
+    fn data_len(&self) -> usize {
+        self.mbuf_wrapper.buf_size()
+    }
+
+    fn collection(&self) -> Self::Collection {
+        Some(self.mbuf_wrapper)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DPDKMode {
@@ -49,58 +144,6 @@ pub struct DPDKConnection {
     shared_info: *mut rte_mbuf_ext_shared_info,
 }
 
-fn parse_yaml_map(
-    config_file: &str,
-) -> Result<(
-    HashMap<Ipv4Addr, MacAddress>,
-    HashMap<MacAddress, Ipv4Addr>,
-    u16,
-)> {
-    let file_str = read_to_string(Path::new(&config_file))?;
-    let yamls = match YamlLoader::load_from_str(&file_str) {
-        Ok(docs) => docs,
-        Err(e) => {
-            bail!("Could not parse config yaml: {:?}", e);
-        }
-    };
-
-    let yaml = &yamls[0];
-    debug!("Yaml: {:?}", yaml);
-    let mut ip_to_mac: HashMap<Ipv4Addr, MacAddress> = HashMap::new();
-    let mut mac_to_ip: HashMap<MacAddress, Ipv4Addr> = HashMap::new();
-    match yaml["lwip"].as_hash() {
-        Some(lwip_map) => {
-            let known_hosts = match lwip_map.get(&Yaml::from_str("known_hosts")) {
-                Some(map) => map.as_hash().unwrap(),
-                None => {
-                    bail!("Yaml config dpdk has no known_hosts entry");
-                }
-            };
-            for (key, value) in known_hosts.iter() {
-                let mac_addr = MacAddress::from_str(key.as_str().unwrap())?;
-                let ip_addr = Ipv4Addr::from_str(value.as_str().unwrap())?;
-                ip_to_mac.insert(ip_addr, mac_addr);
-                mac_to_ip.insert(mac_addr, ip_addr);
-            }
-        }
-        None => {
-            bail!("Yaml config dpdk has no lwip entry");
-        }
-    }
-
-    let udp_port = match yaml.as_hash().unwrap().get(&Yaml::from_str("port")) {
-        Some(port_str) => {
-            let val = port_str.as_i64().unwrap() as u16;
-            val
-        }
-        None => {
-            bail!("Yaml config has no port entry.");
-        }
-    };
-
-    Ok((ip_to_mac, mac_to_ip, udp_port))
-}
-
 impl DPDKConnection {
     /// Returns a new DPDK connection, or error if there was any problem in initializing and
     /// configuring DPDK.
@@ -114,7 +157,7 @@ impl DPDKConnection {
     /// (2) DPDK rte_eal_init information.
     /// (3) UDP port information for UDP packet headers.
     pub fn new(config_file: &str, mode: DPDKMode) -> Result<DPDKConnection> {
-        let (ip_to_mac, mac_to_ip, udp_port) = parse_yaml_map(config_file).wrap_err(
+        let (ip_to_mac, mac_to_ip, udp_port) = dpdk_utils::parse_yaml_map(config_file).wrap_err(
             "Failed to get ip to mac address mapping, or udp port information from yaml config.",
         )?;
         let outgoing_window: HashMap<MsgID, Instant> = HashMap::new();
@@ -156,6 +199,10 @@ impl DPDKConnection {
         })
     }
 
+    /// Returns a HeaderInfo struct with udp, ethernet and ipv4 header information.
+    ///
+    /// Arguments:
+    /// * dst_addr - Ipv4Addr that is the destination.
     fn get_outgoing_header(&self, dst_addr: Ipv4Addr) -> Result<utils::HeaderInfo> {
         match self.ip_to_mac.get(&dst_addr) {
             Some(mac) => Ok(self.header_info.get_outgoing(dst_addr, mac.clone())),
@@ -167,6 +214,7 @@ impl DPDKConnection {
 }
 
 impl Datapath for DPDKConnection {
+    type ReceivedPkt = DPDKReceivedPkt;
     /// Sends out a cornflake to the given Ipv4Addr.
     /// Returns an error if the address is not present in the ip_to_mac table,
     /// or if there is a problem constructing a linked list of mbufs to copy/attach the cornflake
@@ -177,10 +225,10 @@ impl Datapath for DPDKConnection {
     /// * sga - reference to a cornflake which contains the scatter-gather array to send
     /// out.
     /// * addr - Ipv4Addr to send the given scatter-gather array to.
-    fn push_sga(&mut self, sga: &Cornflake, addr: Ipv4Addr) -> Result<()> {
+    fn push_sga(&mut self, sga: impl ScatterGather, addr: Ipv4Addr) -> Result<()> {
         let pkt_id = sga.get_id();
         // check the SGA meets this datapath's allowed sending criteria
-        if sga.num_scattered_entries() > self.max_scatter_entries()
+        if sga.num_borrowed_segments() + 1 > self.max_scatter_entries()
             || sga.data_len() > self.max_packet_len()
         {
             bail!("Sga either has too many scatter-gather entries ( > {} ) or the packet data is too large ( < {} bytes ).", self.max_scatter_entries(), self.max_packet_len());
@@ -189,23 +237,24 @@ impl Datapath for DPDKConnection {
         // allocate header mbuf and fill in header information
         let mut head_pkt = wrapper::Pkt::new(self.default_mempool)?;
         head_pkt
-            .set_header(&self.get_outgoing_header(addr)?, sga)
+            .set_header(&self.get_outgoing_header(addr)?, &sga)
             .wrap_err("Unable to set header on packet.")?;
 
         let mut pkts: Vec<wrapper::Pkt> = vec![head_pkt];
         let mut finished_copied_buffers = false;
 
         // copy in all owned memory regions into the pkt
-        for (i, (cornptr, len)) in sga.iter().enumerate() {
-            match cornptr {
-                CornPtr::Borrowed(buf) => {
+        for (i, cornptr) in sga.collection().into_iter().enumerate() {
+            match cornptr.buf_type() {
+                CornType::Borrowed => {
+                    let buf: &[u8] = cornptr.as_ref();
                     finished_copied_buffers = true;
                     // need to allocate a new pkt and attach externally
                     let mut pkt = wrapper::Pkt::new(self.extbuf_mempool).wrap_err(format!(
                         "Failed to allocate mbuf for external buffer for sga {}, entry {}.",
                         pkt_id, i
                     ))?;
-                    pkt.set_external_payload(buf, *len as u16, self.shared_info)
+                    pkt.set_external_payload(buf, self.shared_info)
                         .wrap_err(format!(
                             "Failed to set external payload for sga {}, entry {}.",
                             pkt_id, i
@@ -215,12 +264,13 @@ impl Datapath for DPDKConnection {
                     last_packet.set_next(&pkt);
                     pkts.push(pkt);
                 }
-                CornPtr::Owned(buf) => {
+                CornType::Owned => {
                     if finished_copied_buffers {
                         bail!("Sga cannot have owned buffers after borrowed buffers.");
                     }
+                    let buf: &[u8] = cornptr.as_ref();
                     let head_pkt = &mut pkts[0];
-                    head_pkt.copy_payload(buf.as_ref()).wrap_err(format!(
+                    head_pkt.copy_payload(buf).wrap_err(format!(
                         "Failed to copy payload into header mbuf for sga {}, entry {}.",
                         pkt_id, i
                     ))?;
@@ -231,7 +281,7 @@ impl Datapath for DPDKConnection {
         // set scatter-gather relevant fields in the head packet.
         let pkt = &mut pkts[0];
         pkt.add_pkt_len(sga.data_len() as u32);
-        pkt.set_nb_segs(sga.num_scattered_entries() as u16);
+        pkt.set_nb_segs(sga.num_borrowed_segments() as u16 + 1);
 
         // if client, add start time for packet
         match self.mode {
@@ -254,7 +304,7 @@ impl Datapath for DPDKConnection {
     /// If anything is valid, returns the received data in a new Cornflake.
     /// For client mode, provides duration since sending sga with this id.
     /// FOr server mode, returns 0 duration.
-    fn pop(&mut self) -> Result<Vec<(Cornflake, Duration)>> {
+    fn pop(&mut self) -> Result<Vec<(Self::ReceivedPkt, Duration)>> {
         let mut mbuf_array_raw: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] =
             [ptr::null_mut(); RECEIVE_BURST_SIZE as usize];
         let num_received = wrapper::rx_burst(
@@ -264,8 +314,11 @@ impl Datapath for DPDKConnection {
             RECEIVE_BURST_SIZE,
         )
         .wrap_err("Error on calling rte_eth_rx_burst.")?;
-        let mut ret: Vec<(Cornflake, Duration)> = Vec::new();
-        for _i in num_received {}
+        let mut ret: Vec<(Self::ReceivedPkt, Duration)> = Vec::new();
+        for i in num_received {
+            unimplemented!();
+            // let pkt = unsafe { *mbuf_array_raw.offset(i as isize) };
+        }
 
         Ok(ret)
     }
@@ -291,19 +344,26 @@ impl Datapath for DPDKConnection {
         dpdk_call!(rte_get_timer_cycles())
     }
 
+    /// Number of cycles per second.
+    /// Can ve used in conjunction with `current_cycles` for time.
     fn timer_hz(&self) -> u64 {
         dpdk_call!(rte_get_timer_hz())
     }
 
+    /// The maximum number of scattered segments that this datapath supports.
     fn max_scatter_entries(&self) -> usize {
         return MAX_ENTRIES;
     }
 
+    /// Maxmimum packet length this datapath supports.
+    /// We do not yet support sending payloads larger than an MTU.
     fn max_packet_len(&self) -> usize {
         return wrapper::RX_PACKET_LEN as usize;
     }
 }
 
+/// When the DPDKConnection goes out of scope,
+/// we make sure that the underlying mempools are freed as well.
 impl Drop for DPDKConnection {
     fn drop(&mut self) {
         wrapper::free_mempool(self.default_mempool);

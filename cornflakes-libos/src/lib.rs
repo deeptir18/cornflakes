@@ -10,13 +10,58 @@ pub mod dpdk_libos;
 pub mod utils;
 
 use color_eyre::eyre::Result;
-use core::slice::Iter;
 use std::{net::Ipv4Addr, time::Duration};
 
 pub type MsgID = u32;
 
+/// Trait defining functionality any ``scatter-gather'' types should have,
+/// that datapaths can access or modify about these types,
+/// to be able to be able to send scattered memory packets, or receive datapath packets.
+/// For transmitting packets, most systems can just use the Cornflake struct, which implements this
+/// trait.
+pub trait ScatterGather {
+    /// Pointer type, to refer to scattered memory segments
+    type Ptr: AsRef<[u8]> + PtrAttributes;
+
+    /// A collection type over the pointer type.
+    type Collection: IntoIterator<Item = Self::Ptr>;
+
+    /// Returns ID field for this packet.
+    /// Should be unique per connection.
+    fn get_id(&self) -> MsgID;
+
+    /// Sets the id field for this packet.
+    fn set_id(&mut self, id: MsgID);
+
+    /// Returns total number of memory regions represented by this packet.
+    fn num_segments(&self) -> usize;
+
+    /// Returns total number of borrowed memory regions represented by this packet.
+    fn num_borrowed_segments(&self) -> usize;
+
+    /// Amount of data in total represented by this packet.
+    fn data_len(&self) -> usize;
+
+    /// Returns an iterator over the scattered memory regions this packet represents.
+    fn collection(&self) -> Self::Collection;
+}
+
+/// Whether an underlying buffer is borrowed or
+/// actually owned (most likely on the heap).
+pub enum CornType {
+    Borrowed,
+    Owned,
+}
+
+/// Must be implemented by any Ptr type referred to in the ScatterGather trait.
+pub trait PtrAttributes {
+    fn buf_type(&self) -> CornType;
+    fn buf_size(&self) -> usize;
+}
+
 /// Represents either a borrowed piece of memory.
 /// Or an owned value.
+/// TODO: having this be an enum might double storage necessary for IOvecs
 pub enum CornPtr<'a> {
     /// Reference to some other memory (used for zero-copy send).
     Borrowed(&'a [u8]),
@@ -24,14 +69,39 @@ pub enum CornPtr<'a> {
     Owned(Box<[u8]>),
 }
 
-/// A Cornflake represents a scatter-gather array.
+impl<'a> AsRef<[u8]> for &'a CornPtr<'a> {
+    fn as_ref(&self) -> &[u8] {
+        match *self {
+            CornPtr::Borrowed(buf) => buf,
+            CornPtr::Owned(buf) => buf.as_ref(),
+        }
+    }
+}
+
+impl<'a> PtrAttributes for &'a CornPtr<'a> {
+    fn buf_type(&self) -> CornType {
+        match *self {
+            CornPtr::Borrowed(_) => CornType::Borrowed,
+            CornPtr::Owned(_) => CornType::Owned,
+        }
+    }
+
+    fn buf_size(&self) -> usize {
+        match *self {
+            CornPtr::Borrowed(buf) => buf.len(),
+            CornPtr::Owned(buf) => buf.as_ref().len(),
+        }
+    }
+}
+
+/// A Cornflake represents a general-purpose scatter-gather array.
 /// Datapaths must be able to send and receive cornflakes.
 /// TODO: might not be necessary to separately keep track of lengths.
 pub struct Cornflake<'a> {
     /// Id for message. If None, datapath doesn't need to keep track of per-packet timeouts.
     id: MsgID,
     /// Pointers to scattered memory segments.
-    entries: Vec<(CornPtr<'a>, usize)>,
+    entries: Vec<CornPtr<'a>>,
 }
 
 impl<'a> Default for Cornflake<'a> {
@@ -43,53 +113,59 @@ impl<'a> Default for Cornflake<'a> {
     }
 }
 
-impl<'a> Cornflake<'a> {
+impl<'a> ScatterGather for Cornflake<'a> {
+    /// Pointer type is reference to CornPtr.
+    type Ptr = &'a CornPtr<'a>;
+    /// Can return an iterator over CornPtr references.
+    type Collection = Vec<Self::Ptr>;
+
     /// Returns the id of this cornflake.
-    pub fn get_id(&self) -> MsgID {
+    fn get_id(&self) -> MsgID {
         self.id
     }
 
     /// Sets the id.
-    pub fn set_id(&mut self, id: MsgID) {
+    fn set_id(&mut self, id: MsgID) {
         self.id = id;
     }
 
     /// Returns number of entries in this cornflake.
-    pub fn num_entries(&self) -> usize {
+    fn num_segments(&self) -> usize {
         self.entries.len()
     }
 
-    /// Returns the number of scatter-gathers needed to represent this data structure.
-    /// Number of separate borrowed memory regions, plus 1 for the header.
-    pub fn num_scattered_entries(&self) -> usize {
+    /// Returns the number of borrowed memory regions in this cornflake.
+    fn num_borrowed_segments(&self) -> usize {
         self.entries
             .iter()
-            .filter(|(ptr, _)| match ptr {
+            .filter(|ptr| match ptr {
                 CornPtr::Borrowed(_) => true,
                 CornPtr::Owned(_) => false,
             })
             .map(|_| 1)
             .sum::<usize>()
-            + 1
     }
 
+    /// Amount of data represented by this scatter-gather array.
+    fn data_len(&self) -> usize {
+        self.collection().iter().map(|ptr| ptr.buf_size()).sum()
+    }
+
+    /// Exposes an iterator over the entries in the scatter-gather array.
+    fn collection(&self) -> Self::Collection {
+        unimplemented!();
+        // self.entries.iter()
+    }
+}
+
+impl<'a> Cornflake<'a> {
     /// Adds a scatter-gather entry to this cornflake.
     /// Passes ownership of the CornPtr.
     /// Arguments:
     /// * ptr - CornPtr<'a> representing owned or borrowed memory.
     /// * length - usize representing length of memory region.
-    pub fn add_scatter(&mut self, ptr: CornPtr<'a>, length: usize) {
-        self.entries.push((ptr, length));
-    }
-
-    /// Amount of data represented by this scatter-gather array.
-    pub fn data_len(&self) -> usize {
-        self.entries.iter().map(|(_, len)| len).sum()
-    }
-
-    /// Exposes an iterator over the entries in the scatter-gather array.
-    pub fn iter(&self) -> Iter<(CornPtr<'a>, usize)> {
-        self.entries.iter()
+    pub fn add_entry(&mut self, ptr: CornPtr<'a>) {
+        self.entries.push(ptr);
     }
 }
 
@@ -97,13 +173,16 @@ impl<'a> Cornflake<'a> {
 /// Datapaths must be able to send a receive packets,
 /// as well as optionally keep track of per-packet timeouts.
 pub trait Datapath {
+    /// Each datapath must expose a received packet type that implements the ScatterGather trait.
+    type ReceivedPkt: ScatterGather;
+
     /// Send a scatter-gather array to the specified address.
-    fn push_sga(&mut self, sga: &Cornflake, addr: Ipv4Addr) -> Result<()>;
+    fn push_sga(&mut self, sga: impl ScatterGather, addr: Ipv4Addr) -> Result<()>;
 
     /// Receive the next packet (from any) underlying `connection`, if any.
     /// Application is responsible for freeing any memory referred to by Cornflake.
     /// None response means no packet received.
-    fn pop(&mut self) -> Result<Vec<(Cornflake, Duration)>>;
+    fn pop(&mut self) -> Result<Vec<(Self::ReceivedPkt, Duration)>>;
 
     /// Check if any outstanding packets have timed-out.
     fn timed_out(&self, time_out: Duration) -> Result<Vec<MsgID>>;

@@ -1,5 +1,5 @@
 use super::{
-    super::{dpdk_call, dpdk_check_not_failed, dpdk_ok, utils, Cornflake, MsgID},
+    super::{dpdk_call, dpdk_check_not_failed, dpdk_ok, utils, MsgID, ScatterGather},
     dpdk_bindings::*,
     dpdk_check, dpdk_error,
 };
@@ -70,7 +70,11 @@ impl Pkt {
         })
     }
 
-    pub fn set_header(&mut self, header_info: &utils::HeaderInfo, sga: &Cornflake) -> Result<()> {
+    pub fn set_header(
+        &mut self,
+        header_info: &utils::HeaderInfo,
+        sga: &impl ScatterGather,
+    ) -> Result<()> {
         if self.has_header {
             bail!("This mbuf already has header set.");
         }
@@ -142,7 +146,6 @@ impl Pkt {
     pub fn set_external_payload(
         &mut self,
         buf: &[u8],
-        len: u16,
         shinfo: *mut rte_mbuf_ext_shared_info,
     ) -> Result<()> {
         if self.has_external {
@@ -153,9 +156,9 @@ impl Pkt {
             // we need to cast our borrowed pointer to a mut ptr
             // for the FFI boundary
             let mut_ptr = buf.as_ptr() as _;
-            rte_pktmbuf_attach_extbuf(self.mbuf, mut_ptr, 0, len, shinfo);
+            rte_pktmbuf_attach_extbuf(self.mbuf, mut_ptr, 0, buf.len() as u16, shinfo);
             // set the data length of this mbuf
-            (*self.mbuf).data_len = len;
+            (*self.mbuf).data_len = buf.len() as u16;
         }
         // TODO: how do we know what the shinfo for this particular memory region is?
         // possibly the datapath should keep track of memory regions that have been externally
@@ -593,4 +596,9 @@ pub fn rx_burst(
 #[inline]
 fn check_valid_packet(pkt: *mut rte_mbuf) -> bool {
     return false;
+}
+
+#[inline]
+pub fn free_mbuf(pkt: *mut rte_mbuf) {
+    dpdk_call!(rte_pktmbuf_free(pkt));
 }
