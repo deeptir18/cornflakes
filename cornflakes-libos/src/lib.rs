@@ -68,6 +68,7 @@ pub trait PtrAttributes {
 /// Represents either a borrowed piece of memory.
 /// Or an owned value.
 /// TODO: having this be an enum might double storage necessary for IOvecs
+#[derive(Clone, PartialEq, Eq)]
 pub enum CornPtr<'a> {
     /// Reference to some other memory (used for zero-copy send).
     Borrowed(&'a [u8]),
@@ -75,25 +76,25 @@ pub enum CornPtr<'a> {
     Owned(Box<[u8]>),
 }
 
-impl<'a> AsRef<[u8]> for &'a CornPtr<'a> {
+impl<'a> AsRef<[u8]> for CornPtr<'a> {
     fn as_ref(&self) -> &[u8] {
-        match *self {
+        match self {
             CornPtr::Borrowed(buf) => buf,
             CornPtr::Owned(buf) => buf.as_ref(),
         }
     }
 }
 
-impl<'a> PtrAttributes for &'a CornPtr<'a> {
+impl<'a> PtrAttributes for CornPtr<'a> {
     fn buf_type(&self) -> CornType {
-        match *self {
+        match self {
             CornPtr::Borrowed(_) => CornType::Borrowed,
             CornPtr::Owned(_) => CornType::Owned,
         }
     }
 
     fn buf_size(&self) -> usize {
-        match *self {
+        match self {
             CornPtr::Borrowed(buf) => buf.len(),
             CornPtr::Owned(buf) => buf.as_ref().len(),
         }
@@ -121,7 +122,7 @@ impl<'a> Default for Cornflake<'a> {
 
 impl<'a> ScatterGather for Cornflake<'a> {
     /// Pointer type is reference to CornPtr.
-    type Ptr = &'a CornPtr<'a>;
+    type Ptr = CornPtr<'a>;
     /// Can return an iterator over CornPtr references.
     type Collection = Vec<Self::Ptr>;
 
@@ -159,8 +160,7 @@ impl<'a> ScatterGather for Cornflake<'a> {
 
     /// Exposes an iterator over the entries in the scatter-gather array.
     fn collection(&self) -> Self::Collection {
-        unimplemented!();
-        // self.entries.iter()
+        self.entries.clone()
     }
 }
 
@@ -211,11 +211,12 @@ pub trait Datapath {
 /// they can implement this trait that defines how the next message to be sent is produced,
 /// how received messages are processed.
 pub trait ClientSM {
+    type T: ScatterGather;
     /// Server ip.
     fn server_ip(&self) -> Ipv4Addr;
 
     /// Generate next request to be sent.
-    fn generate_next_sga(&mut self) -> &Cornflake;
+    fn generate_next_sga(&mut self) -> Self::T;
 
     /// What to do with a received request.
     /// Passes ownership of the underlying data to this object.

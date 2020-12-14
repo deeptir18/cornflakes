@@ -2,6 +2,19 @@ use super::dpdk_bindings;
 use color_eyre::eyre::{bail, Result};
 use std::ffi::CStr;
 
+#[cfg(test)]
+#[macro_export]
+macro_rules! test_init(
+        () => {
+            let subscriber = tracing_subscriber::registry()
+                .with(tracing_subscriber::fmt::layer())
+                .with(tracing_subscriber::EnvFilter::from_default_env())
+                .with(ErrorLayer::default());
+            let _guard = subscriber.set_default();
+            color_eyre::install().unwrap_or_else(|_| ());
+        }
+    );
+
 #[macro_export]
 macro_rules! mbuf_slice(
     ($mbuf: expr, $offset: expr, $len: expr) => {
@@ -23,11 +36,14 @@ pub unsafe fn dpdk_check(func_name: &str, ret: ::std::os::raw::c_int) -> Result<
 }
 
 pub unsafe fn dpdk_error(func_name: &str, retval: Option<std::os::raw::c_int>) -> Result<()> {
-    let errno = match retval {
+    let mut errno = match retval {
         Some(x) => x,
         None => dpdk_bindings::rte_errno(),
     };
-    let c_buf = dpdk_bindings::rte_strerror(-1 * errno);
+    if errno < 0 {
+        errno *= -1;
+    }
+    let c_buf = dpdk_bindings::rte_strerror(errno);
     let c_str: &CStr = CStr::from_ptr(c_buf);
     let str_slice: &str = c_str.to_str().unwrap();
     bail!(

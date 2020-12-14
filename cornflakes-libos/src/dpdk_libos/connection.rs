@@ -232,7 +232,6 @@ impl Datapath for DPDKConnection {
     /// out.
     /// * addr - Ipv4Addr to send the given scatter-gather array to.
     fn push_sga(&mut self, sga: impl ScatterGather, addr: Ipv4Addr) -> Result<()> {
-        let pkt_id = sga.get_id();
         // check the SGA meets this datapath's allowed sending criteria
         if sga.num_borrowed_segments() + 1 > self.max_scatter_entries()
             || sga.data_len() > self.max_packet_len()
@@ -240,54 +239,16 @@ impl Datapath for DPDKConnection {
             bail!("Sga either has too many scatter-gather entries ( > {} ) or the packet data is too large ( < {} bytes ).", self.max_scatter_entries(), self.max_packet_len());
         }
 
-        // allocate header mbuf and fill in header information
-        let mut head_pkt = wrapper::Pkt::new(self.default_mempool)?;
-        head_pkt
-            .set_header(&self.get_outgoing_header(addr)?, &sga)
-            .wrap_err("Unable to set header on packet.")?;
-
-        let mut pkts: Vec<wrapper::Pkt> = vec![head_pkt];
-        let mut finished_copied_buffers = false;
-
-        // copy in all owned memory regions into the pkt
-        for (i, cornptr) in sga.collection().into_iter().enumerate() {
-            match cornptr.buf_type() {
-                CornType::Borrowed => {
-                    let buf: &[u8] = cornptr.as_ref();
-                    finished_copied_buffers = true;
-                    // need to allocate a new pkt and attach externally
-                    let mut pkt = wrapper::Pkt::new(self.extbuf_mempool).wrap_err(format!(
-                        "Failed to allocate mbuf for external buffer for sga {}, entry {}.",
-                        pkt_id, i
-                    ))?;
-                    pkt.set_external_payload(buf, self.shared_info)
-                        .wrap_err(format!(
-                            "Failed to set external payload for sga {}, entry {}.",
-                            pkt_id, i
-                        ))?;
-                    let current_length = pkts.len();
-                    let last_packet = &mut pkts[current_length];
-                    last_packet.set_next(&pkt);
-                    pkts.push(pkt);
-                }
-                CornType::Owned => {
-                    if finished_copied_buffers {
-                        bail!("Sga cannot have owned buffers after borrowed buffers.");
-                    }
-                    let buf: &[u8] = cornptr.as_ref();
-                    let head_pkt = &mut pkts[0];
-                    head_pkt.copy_payload(buf).wrap_err(format!(
-                        "Failed to copy payload into header mbuf for sga {}, entry {}.",
-                        pkt_id, i
-                    ))?;
-                }
-            }
-        }
-
-        // set scatter-gather relevant fields in the head packet.
-        let pkt = &mut pkts[0];
-        pkt.add_pkt_len(sga.data_len() as u32);
-        pkt.set_nb_segs(sga.num_borrowed_segments() as u16 + 1);
+        // initialize a linked list of mbufs to represent the sga
+        let mut pkt = wrapper::Pkt::init(sga.num_borrowed_segments() + 1);
+        pkt.construct_from_sga(
+            &sga,
+            self.default_mempool,
+            self.extbuf_mempool,
+            &self.get_outgoing_header(addr)?,
+            self.shared_info,
+        )
+        .wrap_err("Unable to construct pkt from sga.")?;
 
         // if client, add start time for packet
         match self.mode {
@@ -298,9 +259,7 @@ impl Datapath for DPDKConnection {
         }
 
         // send out the scatter-gather array
-        let mut head_mbuf = pkt.get_mbuf();
-        let mbuf_list = &mut head_mbuf;
-        wrapper::tx_burst(self.dpdk_port, 0, mbuf_list, 1)
+        wrapper::tx_burst(self.dpdk_port, 0, pkt.mbuf_list_ptr(), 1)
             .wrap_err(format!("Failed to send SGA with id {}.", sga.get_id()))?;
 
         Ok(())

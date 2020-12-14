@@ -63,7 +63,7 @@ impl std::str::FromStr for TraceLevel {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct AddressInfo {
     pub udp_port: u16,
     pub ipv4_addr: Ipv4Addr,
@@ -97,7 +97,7 @@ impl AddressInfo {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Default)]
+#[derive(Debug, PartialEq, Clone, Default, Copy)]
 pub struct HeaderInfo {
     src_info: AddressInfo,
     dst_info: AddressInfo,
