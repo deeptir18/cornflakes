@@ -9,8 +9,8 @@ pub mod dpdk_bindings;
 pub mod dpdk_libos;
 pub mod utils;
 
-use color_eyre::eyre::Result;
-use std::{net::Ipv4Addr, time::Duration};
+use color_eyre::eyre::{Result, WrapErr};
+use std::{net::Ipv4Addr, ops::FnMut, time::Duration};
 
 pub type MsgID = u32;
 
@@ -44,6 +44,9 @@ pub trait ScatterGather {
 
     /// Returns an iterator over the scattered memory regions this packet represents.
     fn collection(&self) -> Self::Collection;
+
+    // Applies the provided closure on all of the pointer types.
+    fn iter_apply(&self, consume_element: impl FnMut(&Self::Ptr) -> Result<()>) -> Result<()>;
 }
 
 /// Trait defining functionality any _received_ packets should have.
@@ -161,6 +164,18 @@ impl<'a> ScatterGather for Cornflake<'a> {
     /// Exposes an iterator over the entries in the scatter-gather array.
     fn collection(&self) -> Self::Collection {
         self.entries.clone()
+    }
+
+    /// Apply an iterator to entries of the scatter-gather array, without consuming the
+    /// scatter-gather array.
+    fn iter_apply(&self, mut consume_element: impl FnMut(&Self::Ptr) -> Result<()>) -> Result<()> {
+        for (i, entry) in self.entries.iter().enumerate() {
+            consume_element(&entry).wrap_err(format!(
+                "Unable to run function on pointer {} in cornflake",
+                i
+            ))?;
+        }
+        Ok(())
     }
 }
 

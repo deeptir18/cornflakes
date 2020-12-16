@@ -119,6 +119,10 @@ impl ScatterGather for DPDKReceivedPkt {
     fn collection(&self) -> Self::Collection {
         Some(self.mbuf_wrapper)
     }
+
+    fn iter_apply(&self, mut consume_element: impl FnMut(&Self::Ptr) -> Result<()>) -> Result<()> {
+        consume_element(&self.mbuf_wrapper)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -227,16 +227,13 @@ impl Pkt {
         sga: &impl ScatterGather,
         shared_info: *mut rte_mbuf_ext_shared_info,
     ) -> Result<()> {
-        let mut current_idx: usize = 0;
-        for (sga_idx, cornptr) in sga.collection().into_iter().enumerate() {
+        sga.iter_apply(|cornptr| {
+            let mut current_idx = 0;
             match cornptr.buf_type() {
                 CornType::Borrowed => {
                     current_idx += 1;
                     self.set_external_payload(current_idx, cornptr.as_ref(), shared_info)
-                        .wrap_err(format!(
-                            "Failed to set external payload {} into pkt list.",
-                            sga_idx
-                        ))?;
+                        .wrap_err("Failed to set external payload into pkt list.")?;
                 }
                 CornType::Owned => {
                     if current_idx > 0 {
@@ -244,14 +241,13 @@ impl Pkt {
                     }
                     // copy thi payload into the head buffer
                     self.copy_payload(current_idx, cornptr.as_ref())
-                        .wrap_err(format!(
-                            "Failed to copy sga owned entry {} into pkt list.",
-                            sga_idx
-                        ))?;
+                        .wrap_err(
+                            "Failed to copy sga owned entry {} into pkt list."
+                        )?;
                 }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Copies the payload into the mbuf at index idx.
