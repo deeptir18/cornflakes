@@ -300,6 +300,12 @@ impl Datapath for DPDKConnection {
                     );
                 }
             }
+            let mbuf = mbuf_array[idx];
+            if mbuf.is_null() {
+                bail!("Mbuf for index {} in returned array is null.", idx);
+            }
+            let received_pkt =
+                DPDKReceivedPkt::new(msg_id, mbuf_array[idx], utils::TOTAL_HEADER_SIZE, addr_info);
             let duration = match self.mode {
                 DPDKMode::Client => match self.outgoing_window.remove(&msg_id) {
                     Some(start) => start.elapsed(),
@@ -310,12 +316,6 @@ impl Datapath for DPDKConnection {
                 },
                 DPDKMode::Server => Duration::new(0, 0),
             };
-            let mbuf = mbuf_array[idx];
-            if mbuf.is_null() {
-                bail!("Mbuf for index {} in returned array is null.", idx);
-            }
-            let received_pkt =
-                DPDKReceivedPkt::new(msg_id, mbuf_array[idx], utils::TOTAL_HEADER_SIZE, addr_info);
 
             ret.push((received_pkt, duration));
         }
