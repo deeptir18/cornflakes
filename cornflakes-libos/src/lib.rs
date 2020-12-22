@@ -260,14 +260,36 @@ pub trait ClientSM {
         send_fn: impl FnMut(Self::OutgoingMsg) -> Result<()>,
     ) -> Result<()>;
 
-    fn _run_closed_loop(
+    fn run_closed_loop(
         &mut self,
-        _datapath: &mut Self::Datapath,
-        _num_pkts: u64,
-        _time_out: Duration,
+        datapath: &mut Self::Datapath,
+        num_pkts: u64,
+        time_out: Duration,
     ) -> Result<()> {
-        let mut _recved = 0;
-        let _server_ip = self.server_ip();
+        let mut recved = 0;
+        let server_ip = self.server_ip();
+
+        while recved < num_pkts {
+            self.send_next_msg(|sga| datapath.push_sga(sga, server_ip))?;
+            let recved_pkts = loop {
+                let pkts = datapath.pop()?;
+                if pkts.len() > 0 {
+                    break pkts;
+                }
+                for id in datapath.timed_out(time_out)?.iter() {
+                    self.msg_timeout_cb(*id, |sga| datapath.push_sga(sga, server_ip))?;
+                }
+            };
+
+            for (pkt, rtt) in recved_pkts.into_iter() {
+                let msg_id = pkt.get_id();
+                self.process_received_msg(pkt, rtt).wrap_err(format!(
+                    "Error in processing received response for pkt {}.",
+                    msg_id
+                ))?;
+                recved += 1;
+            }
+        }
         Ok(())
     }
 

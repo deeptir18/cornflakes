@@ -30,6 +30,15 @@ struct Opt {
         help = "Folder containing shared config information."
     )]
     config_file: String,
+    #[structopt(short = "cl", long = "closed_loop", help = "Run in closed loop mode.")]
+    closed_loop: bool,
+    #[structopt(
+        short = "i",
+        long = "iterations",
+        help = "Number of packets for closed loop mode",
+        default_value = "100"
+    )]
+    iterations: u64,
     #[structopt(short = "m", long = "mode", help = "DPDK server or client mode.")]
     mode: DPDKMode,
     #[structopt(
@@ -96,12 +105,20 @@ fn main() -> Result<()> {
         }
         DPDKMode::Client => {
             let mut client = EchoClient::new(opt.size, opt.server_ip);
-            client.run_open_loop(
-                &mut connection,
-                (1e9 / opt.rate as f64) as u64,
-                opt.total_time,
-                Duration::new(0, 1000000),
-            )?;
+            if opt.closed_loop {
+                client.run_closed_loop(
+                    &mut connection,
+                    opt.iterations,
+                    Duration::new(0, 1000000),
+                )?;
+            } else {
+                client.run_open_loop(
+                    &mut connection,
+                    (1e9 / opt.rate as f64) as u64,
+                    opt.total_time,
+                    Duration::new(0, 1000000),
+                )?;
+            }
             client.dump_stats();
         }
     }
