@@ -7,7 +7,7 @@ use std::process::Command;
 fn main() {
     // Following https://github.com/sujayakar/dpdk-rs/blob/main/build.rs
     // BUILD DPDK: only if the HEAD commit has changed
-    println!("cargo:rerun-if-env-changed=DPDK_PATH");
+    //println!("cargo:rerun-if-env-changed=DPDK_PATH");
 
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let cargo_dir = Path::new(&cargo_manifest_dir);

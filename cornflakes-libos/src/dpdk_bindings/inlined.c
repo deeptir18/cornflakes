@@ -3,6 +3,11 @@
 #include <rte_ether.h>
 #include <rte_errno.h>
 #include <rte_cycles.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <inttypes.h>
+#include <ctype.h>
+#include <stdint.h>
 
 void rte_pktmbuf_free_(struct rte_mbuf *packet) {
     rte_pktmbuf_free(packet);
@@ -17,7 +22,8 @@ uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf 
 }
 
 uint16_t rte_eth_rx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **rx_pkts, const uint16_t nb_pkts) {
-    return rte_eth_rx_burst(port_id, queue_id, rx_pkts, nb_pkts);
+    uint16_t ret = rte_eth_rx_burst(port_id, queue_id, rx_pkts, nb_pkts);
+    return ret;
 }
 
 int rte_errno_() {

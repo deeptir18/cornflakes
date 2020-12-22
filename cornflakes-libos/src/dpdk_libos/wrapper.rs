@@ -208,19 +208,6 @@ impl Pkt {
         }
 
         self.mbufs.push(mbuf);
-        debug!("Now mbuf list is {}", self.mbufs.len());
-        unsafe {
-            for i in 0..self.mbufs.len() {
-                debug!("---");
-                debug!("Printing mbuf {}", i);
-                let mbuf = self.mbufs[i];
-                debug!("Data_len: {}", (*mbuf).data_len);
-                debug!("Pkt len: {}", (*mbuf).pkt_len);
-                debug!("nb segs: {}", (*mbuf).nb_segs);
-                debug!("Next is null: {}", ((*mbuf).next).is_null());
-                debug!("---");
-            }
-        }
         Ok(())
     }
 
@@ -258,19 +245,6 @@ impl Pkt {
             }
             Ok(())
         })?;
-        debug!("After putting in payloads for {} mbufs", self.mbufs.len());
-        unsafe {
-            for i in 0..self.mbufs.len() {
-                debug!("---");
-                debug!("Printing mbuf {}", i);
-                let mbuf = self.mbufs[i];
-                debug!("Data_len: {}", (*mbuf).data_len);
-                debug!("Pkt len: {}", (*mbuf).pkt_len);
-                debug!("nb segs: {}", (*mbuf).nb_segs);
-                debug!("Next is null: {}", ((*mbuf).next).is_null());
-                debug!("---");
-            }
-        }
         Ok(())
     }
 
@@ -395,8 +369,10 @@ fn initialize_dpdk_port(port_id: u16, mbuf_pool: *mut rte_mempool) -> Result<()>
     let mut port_conf: MaybeUninit<rte_eth_conf> = MaybeUninit::zeroed();
     unsafe {
         (*port_conf.as_mut_ptr()).rxmode.max_rx_pkt_len = RX_PACKET_LEN;
-        (*port_conf.as_mut_ptr()).rxmode.offloads =
-            DEV_RX_OFFLOAD_JUMBO_FRAME as u64 | DEV_RX_OFFLOAD_TIMESTAMP as u64;
+        (*port_conf.as_mut_ptr()).rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME as u64;
+        //(*port_conf.as_mut_ptr()).rxmode.mq_mode = rte_eth_rx_mq_mode_ETH_MQ_RX_RSS;
+        //(*port_conf.as_mut_ptr()).rx_adv_conf.rss_conf.rss_hf =
+        //    ETH_RSS_IP as u64 | (*dev_info.as_mut_ptr()).flow_type_rss_offloads;
         (*port_conf.as_mut_ptr()).txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS as u64;
         (*port_conf.as_mut_ptr()).txmode.mq_mode = rte_eth_rx_mq_mode_ETH_MQ_RX_NONE;
     }
@@ -620,28 +596,19 @@ pub fn fill_in_header(
     data_len: usize,
     id: MsgID,
 ) -> Result<usize> {
-    let data_offset = unsafe { (*pkt).data_off as usize };
+    let eth_hdr_slice = mbuf_slice!(pkt, 0, utils::ETHERNET2_HEADER2_SIZE);
 
-    let eth_hdr_slice = mbuf_slice!(pkt, data_offset, utils::ETHERNET2_HEADER2_SIZE);
-
-    let ipv4_hdr_slice = mbuf_slice!(
-        pkt,
-        data_offset + utils::ETHERNET2_HEADER2_SIZE,
-        utils::IPV4_HEADER2_SIZE
-    );
+    let ipv4_hdr_slice = mbuf_slice!(pkt, utils::ETHERNET2_HEADER2_SIZE, utils::IPV4_HEADER2_SIZE);
 
     let udp_hdr_slice = mbuf_slice!(
         pkt,
-        data_offset + utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
+        utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
         utils::UDP_HEADER2_SIZE
     );
 
     let id_hdr_slice = mbuf_slice!(
         pkt,
-        data_offset
-            + utils::ETHERNET2_HEADER2_SIZE
-            + utils::IPV4_HEADER2_SIZE
-            + utils::UDP_HEADER2_SIZE,
+        utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE + utils::UDP_HEADER2_SIZE,
         4
     );
 
@@ -746,9 +713,7 @@ fn check_valid_packet(
     pkt: *mut rte_mbuf,
     my_addr_info: &utils::AddressInfo,
 ) -> Option<(MsgID, utils::AddressInfo)> {
-    let data_offset = unsafe { (*pkt).data_off as usize };
-
-    let eth_hdr_slice = mbuf_slice!(pkt, data_offset, utils::ETHERNET2_HEADER2_SIZE);
+    let eth_hdr_slice = mbuf_slice!(pkt, 0, utils::ETHERNET2_HEADER2_SIZE);
     let src_eth = match utils::check_eth_hdr(eth_hdr_slice, &my_addr_info.ether_addr) {
         Ok((eth, _)) => eth,
         Err(_) => {
@@ -756,11 +721,7 @@ fn check_valid_packet(
         }
     };
 
-    let ipv4_hdr_slice = mbuf_slice!(
-        pkt,
-        data_offset + utils::ETHERNET2_HEADER2_SIZE,
-        utils::IPV4_HEADER2_SIZE
-    );
+    let ipv4_hdr_slice = mbuf_slice!(pkt, utils::ETHERNET2_HEADER2_SIZE, utils::IPV4_HEADER2_SIZE);
 
     let src_ip = match utils::check_ipv4_hdr(ipv4_hdr_slice, &my_addr_info.ipv4_addr) {
         Ok((ip, _)) => ip,
@@ -771,7 +732,7 @@ fn check_valid_packet(
 
     let udp_hdr_slice = mbuf_slice!(
         pkt,
-        data_offset + utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
+        utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
         utils::UDP_HEADER2_SIZE
     );
 
@@ -784,10 +745,7 @@ fn check_valid_packet(
 
     let id_hdr_slice = mbuf_slice!(
         pkt,
-        data_offset
-            + utils::ETHERNET2_HEADER2_SIZE
-            + utils::IPV4_HEADER2_SIZE
-            + utils::UDP_HEADER2_SIZE,
+        utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE + utils::UDP_HEADER2_SIZE,
         4
     );
 
@@ -812,7 +770,7 @@ mod tests {
     use eui48::MacAddress;
     use libc;
     use rand::Rng;
-    use std::{convert::TryInto, mem::MaybeUninit, net::Ipv4Addr, ptr};
+    use std::{convert::TryInto, mem::MaybeUninit, net::Ipv4Addr, ptr, rc::Rc};
     use tracing::info;
     use tracing_error::ErrorLayer;
     use tracing_subscriber;
@@ -1035,8 +993,8 @@ mod tests {
         }
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = payload1.clone();
-        cornflake.add_entry(CornPtr::Owned(Box::new(payload1)));
-        cornflake.add_entry(CornPtr::Owned(Box::new(payload2)));
+        cornflake.add_entry(CornPtr::Owned(Rc::new(payload1.to_vec())));
+        cornflake.add_entry(CornPtr::Owned(Rc::new(payload2.to_vec())));
         pkt.construct_from_test_sga(
             &cornflake,
             vec![test_mbuf.get_pointer()],
@@ -1068,7 +1026,7 @@ mod tests {
         cornflake.set_id(1);
 
         let payload = rand::thread_rng().gen::<[u8; 32]>();
-        cornflake.add_entry(CornPtr::Owned(Box::new(payload)));
+        cornflake.add_entry(CornPtr::Owned(Rc::new(payload.to_vec())));
 
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
@@ -1103,8 +1061,8 @@ mod tests {
 
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = rand::thread_rng().gen::<[u8; 32]>();
-        cornflake.add_entry(CornPtr::Owned(Box::new(payload1)));
-        cornflake.add_entry(CornPtr::Owned(Box::new(payload2)));
+        cornflake.add_entry(CornPtr::Owned(Rc::new(payload1.to_vec())));
+        cornflake.add_entry(CornPtr::Owned(Rc::new(payload2.to_vec())));
 
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
@@ -1235,7 +1193,6 @@ mod tests {
             assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 32 + 32);
             assert!((*(pkt.get_mbuf(0))).nb_segs as usize == 3);
             assert!((*(pkt.get_mbuf(1))).data_len as usize == 32);
-            debug!("Data len of 2nd segment: {}", (*(pkt.get_mbuf(2))).data_len);
             assert!((*(pkt.get_mbuf(2))).data_len as usize == 32);
             assert!((*(pkt.get_mbuf(1))).pkt_len as usize == 0);
             assert!((*(pkt.get_mbuf(2))).pkt_len as usize == 0);
@@ -1274,7 +1231,7 @@ mod tests {
 
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = rand::thread_rng().gen::<[u8; 32]>();
-        cornflake.add_entry(CornPtr::Owned(Box::new(payload1)));
+        cornflake.add_entry(CornPtr::Owned(Rc::new(payload1.to_vec())));
         cornflake.add_entry(CornPtr::Borrowed(payload2.as_ref()));
 
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
@@ -1333,7 +1290,7 @@ mod tests {
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = rand::thread_rng().gen::<[u8; 32]>();
         cornflake.add_entry(CornPtr::Borrowed(payload2.as_ref()));
-        cornflake.add_entry(CornPtr::Owned(Box::new(payload1)));
+        cornflake.add_entry(CornPtr::Owned(Rc::new(payload1.to_vec())));
 
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());

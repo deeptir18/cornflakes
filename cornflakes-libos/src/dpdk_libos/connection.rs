@@ -9,6 +9,7 @@ use color_eyre::eyre::{bail, Result, WrapErr};
 use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
+    mem::zeroed,
     mem::MaybeUninit,
     net::Ipv4Addr,
     ptr, slice,
@@ -125,10 +126,21 @@ impl ScatterGather for DPDKReceivedPkt {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Copy)]
 pub enum DPDKMode {
     Server,
     Client,
+}
+
+impl std::str::FromStr for DPDKMode {
+    type Err = color_eyre::eyre::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(match s {
+            "client" => DPDKMode::Client,
+            "server" => DPDKMode::Server,
+            x => bail!("Unknown DPDKMode: {:?}", x),
+        })
+    }
 }
 
 pub struct DPDKConnection {
@@ -274,8 +286,7 @@ impl Datapath for DPDKConnection {
     /// For client mode, provides duration since sending sga with this id.
     /// FOr server mode, returns 0 duration.
     fn pop(&mut self) -> Result<Vec<(Self::ReceivedPkt, Duration)>> {
-        let mut mbuf_array: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] =
-            [ptr::null_mut(); RECEIVE_BURST_SIZE as usize];
+        let mut mbuf_array: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
         let received = wrapper::rx_burst(
             self.dpdk_port,
             0,
@@ -285,6 +296,11 @@ impl Datapath for DPDKConnection {
         )
         .wrap_err("Error on calling rte_eth_rx_burst.")?;
         let mut ret: Vec<(DPDKReceivedPkt, Duration)> = Vec::new();
+        if ret.len() > 0 {
+            for key in self.outgoing_window.keys() {
+                tracing::debug!(pkt = key, "Outstanding pkt: ");
+            }
+        }
         for (idx, (msg_id, addr_info)) in received.into_iter() {
             // also check if the mac address / ip address ifnromation matches with our expectation
             match self.mac_to_ip.get(&addr_info.ether_addr) {
@@ -331,6 +347,7 @@ impl Datapath for DPDKConnection {
         let mut timed_out: Vec<MsgID> = Vec::new();
         for (id, start) in self.outgoing_window.iter() {
             if start.elapsed().as_nanos() > time_out.as_nanos() {
+                tracing::debug!(elapsed = ?start.elapsed().as_nanos(), id = *id, "Timing out");
                 timed_out.push(*id);
             }
         }

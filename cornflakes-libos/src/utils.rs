@@ -99,8 +99,8 @@ impl AddressInfo {
 
 #[derive(Debug, PartialEq, Clone, Default, Copy)]
 pub struct HeaderInfo {
-    src_info: AddressInfo,
-    dst_info: AddressInfo,
+    pub src_info: AddressInfo,
+    pub dst_info: AddressInfo,
 }
 
 impl HeaderInfo {
@@ -160,7 +160,7 @@ pub fn write_ipv4_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize)
 
 #[inline]
 pub fn write_eth_hdr(header_info: &HeaderInfo, buf: &mut [u8]) -> Result<()> {
-    let buf: &mut [u8; ETHERNET2_HEADER2_SIZE] = buf.try_into()?;
+    //let buf: &mut [u8; ETHERNET2_HEADER2_SIZE] = buf.try_into()?;
     buf[0..6].copy_from_slice(header_info.dst_info.ether_addr.as_bytes());
     buf[6..12].copy_from_slice(header_info.src_info.ether_addr.as_bytes());
     NetworkEndian::write_u16(&mut buf[12..14], EtherType2::Ipv4 as u16);

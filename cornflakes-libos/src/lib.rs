@@ -10,7 +10,13 @@ pub mod dpdk_libos;
 pub mod utils;
 
 use color_eyre::eyre::{Result, WrapErr};
-use std::{net::Ipv4Addr, ops::FnMut, time::Duration};
+use hdrhistogram::Histogram;
+use std::{
+    net::Ipv4Addr,
+    ops::FnMut,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 pub type MsgID = u32;
 
@@ -75,15 +81,17 @@ pub trait PtrAttributes {
 pub enum CornPtr<'a> {
     /// Reference to some other memory (used for zero-copy send).
     Borrowed(&'a [u8]),
-    /// Owned heap memory (typically for receive path).
-    Owned(Box<[u8]>),
+    /// "Owned" Reference to un-registered memory.
+    /// TODO: does this ever need to be mutable?
+    /// Or will it always be immutable?
+    Owned(Rc<Vec<u8>>),
 }
 
 impl<'a> AsRef<[u8]> for CornPtr<'a> {
     fn as_ref(&self) -> &[u8] {
         match self {
             CornPtr::Borrowed(buf) => buf,
-            CornPtr::Owned(buf) => buf.as_ref(),
+            CornPtr::Owned(buf) => buf.as_ref().as_ref(),
         }
     }
 }
@@ -107,6 +115,7 @@ impl<'a> PtrAttributes for CornPtr<'a> {
 /// A Cornflake represents a general-purpose scatter-gather array.
 /// Datapaths must be able to send and receive cornflakes.
 /// TODO: might not be necessary to separately keep track of lengths.
+#[derive(Clone, Eq, PartialEq)]
 pub struct Cornflake<'a> {
     /// Id for message. If None, datapath doesn't need to keep track of per-packet timeouts.
     id: MsgID,
@@ -194,7 +203,8 @@ impl<'a> Cornflake<'a> {
 /// Datapaths must be able to send a receive packets,
 /// as well as optionally keep track of per-packet timeouts.
 pub trait Datapath {
-    /// Each datapath must expose a received packet type that implements the ScatterGather trait.
+    /// Each datapath must expose a received packet type that implements the ScatterGather trait
+    /// and the ReceivedPacket trait.
     type ReceivedPkt: ScatterGather + ReceivedPacket;
 
     /// Send a scatter-gather array to the specified address.
@@ -226,25 +236,153 @@ pub trait Datapath {
 /// they can implement this trait that defines how the next message to be sent is produced,
 /// how received messages are processed.
 pub trait ClientSM {
-    type T: ScatterGather;
+    type Datapath: Datapath;
+    type OutgoingMsg: ScatterGather;
+
     /// Server ip.
     fn server_ip(&self) -> Ipv4Addr;
 
-    /// Generate next request to be sent.
-    fn generate_next_sga(&mut self) -> Self::T;
+    /// Generate next request to be sent and send it with the provided callback.
+    fn send_next_msg(&mut self, send_fn: impl FnMut(Self::OutgoingMsg) -> Result<()>)
+        -> Result<()>;
 
     /// What to do with a received request.
-    /// Passes ownership of the underlying data to this object.
-    fn process_cornflake(&mut self, sga: Cornflake) -> Result<()>;
+    fn process_received_msg(
+        &mut self,
+        sga: <<Self as ClientSM>::Datapath as Datapath>::ReceivedPkt,
+        rtt: Duration,
+    ) -> Result<()>;
+
+    /// What to do when a particular message times out.
+    fn msg_timeout_cb(
+        &mut self,
+        id: MsgID,
+        send_fn: impl FnMut(Self::OutgoingMsg) -> Result<()>,
+    ) -> Result<()>;
+
+    fn _run_closed_loop(
+        &mut self,
+        _datapath: &mut Self::Datapath,
+        _num_pkts: u64,
+        _time_out: Duration,
+    ) -> Result<()> {
+        let mut _recved = 0;
+        let _server_ip = self.server_ip();
+        Ok(())
+    }
+
+    /// Run open loop client
+    fn run_open_loop(
+        &mut self,
+        datapath: &mut Self::Datapath,
+        intersend_rate: u64,
+        total_time: u64,
+        time_out: Duration,
+    ) -> Result<()> {
+        let freq = datapath.timer_hz();
+        let cycle_wait = (((intersend_rate * freq) as f64) / 1e9) as u64;
+        let server_ip = self.server_ip();
+        let time_start = Instant::now();
+        let mut last_called_pop = Instant::now();
+
+        let start = datapath.current_cycles();
+        while datapath.current_cycles() < (total_time * freq + start) {
+            // Send the next message
+            tracing::debug!(time = ?time_start.elapsed(), "About to send next packet");
+            self.send_next_msg(|sga| datapath.push_sga(sga, server_ip))?;
+            let last_sent = datapath.current_cycles();
+
+            while datapath.current_cycles() <= last_sent + cycle_wait {
+                tracing::debug!(last_called = ?last_called_pop.elapsed(), "Calling pop on client");
+                last_called_pop = Instant::now();
+                let recved_pkts = datapath.pop()?;
+                for (pkt, rtt) in recved_pkts.into_iter() {
+                    let msg_id = pkt.get_id();
+                    self.process_received_msg(pkt, rtt).wrap_err(format!(
+                        "Error in processing received response for pkt {}.",
+                        msg_id
+                    ))?;
+                }
+
+                for id in datapath.timed_out(time_out)?.iter() {
+                    self.msg_timeout_cb(*id, |sga| datapath.push_sga(sga, server_ip))?;
+                }
+            }
+        }
+        Ok(())
+
+        // send first message
+        // while time < total_time:
+        // while time < time to send next packet:
+        //  try:
+        //  datapath.pop()
+        //  check:
+        //  has anything timed out?
+        //      if so, call the callback on all the id's that have timed out.
+        //
+    }
 }
 
-/// For applications that send requests to the server at a constant rate,
-/// they can use the open loop functionality defined here to implement their app.
-pub fn open_loop_client(
-    _datapath: &mut impl Datapath,
-    _client: &mut impl ClientSM,
-    _intersend_rate: u64,
-    _total_time: u64,
-) -> Result<()> {
-    unimplemented!();
+/// For server applications that want to follow a simple state-machine request processing model.
+pub trait ServerSM {
+    type Datapath: Datapath;
+    type OutgoingMsg: ScatterGather;
+
+    /// Process incoming message, possibly mutating internal state.
+    /// Then send the next message with the given callback.
+    ///
+    /// Arguments:
+    /// * sga - Something that implements ScatterGather + ReceivedPkt; used to query the received
+    /// message id, received payload, and received message header information.
+    /// * send_fn - A send callback to send a response to this request back.
+    fn process_request(
+        &mut self,
+        sga: &<<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
+        send_fn: impl FnMut(Self::OutgoingMsg, Ipv4Addr) -> Result<()>,
+    ) -> Result<()>;
+
+    /// Runs the state machine, which responds to requests in a single-threaded fashion.
+    /// Loops on calling the datapath pop function, and then responds to each valid packet.
+    /// Returns a result on error.
+    ///
+    /// Arguments:
+    /// * datapath - Object that implements Datapath trait, representing a connection using the
+    /// underlying networking stack.
+    fn run_state_machine(&mut self, datapath: &mut Self::Datapath) -> Result<()> {
+        loop {
+            let pkts = datapath.pop()?;
+            for (pkt, _) in pkts.iter() {
+                self.process_request(pkt, |sga, ip_addr| {
+                    datapath
+                        .push_sga(sga, ip_addr)
+                        .wrap_err("Failed to send pkt response.")
+                })?;
+            }
+        }
+    }
+}
+
+pub trait RTTHistogram {
+    fn get_histogram(&mut self) -> &mut Histogram<u64>;
+
+    fn add_latency(&mut self, val: u64) -> Result<()> {
+        tracing::debug!(val_ns = val, "Adding latency to hist");
+        self.get_histogram().record(val)?;
+        Ok(())
+    }
+
+    fn dump(&mut self, msg: &str) {
+        tracing::info!(
+            msg,
+            p5_ns = self.get_histogram().value_at_quantile(0.05),
+            p25_ns = self.get_histogram().value_at_quantile(0.25),
+            p50_ns = self.get_histogram().value_at_quantile(0.5),
+            p75_ns = self.get_histogram().value_at_quantile(0.75),
+            p95_ns = self.get_histogram().value_at_quantile(0.95),
+            pkts_sent = self.get_histogram().len(),
+            min_ns = self.get_histogram().min(),
+            max_ns = self.get_histogram().max(),
+            avg_ns = ?self.get_histogram().mean(),
+        );
+    }
 }
