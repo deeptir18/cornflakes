@@ -28,9 +28,17 @@ macro_rules! mbuf_slice(
     }
 );
 
-pub unsafe fn dpdk_check(func_name: &str, ret: ::std::os::raw::c_int) -> Result<()> {
+pub unsafe fn dpdk_check(
+    func_name: &str,
+    ret: ::std::os::raw::c_int,
+    use_errno: bool,
+) -> Result<()> {
     if ret != 0 {
-        dpdk_error(func_name, Some(ret))?;
+        if use_errno {
+            dpdk_error(func_name, None)?;
+        } else {
+            dpdk_error(func_name, Some(ret))?;
+        }
     }
     Ok(())
 }
@@ -78,7 +86,7 @@ macro_rules! dpdk_check_not_failed(
 #[macro_export]
 macro_rules! dpdk_ok (
     ($x: ident ($($arg: expr),*)) => { unsafe {
-        dpdk_check(stringify!($x), $x($($arg),*)).wrap_err("Error running dpdk function.")?
+        dpdk_check(stringify!($x), $x($($arg),*), false).wrap_err("Error running dpdk function.")?
     } };
     ($x: ident ($($arg: expr),*), $y: ident ($($arg2: expr),*)) => {
         unsafe {
@@ -92,6 +100,13 @@ macro_rules! dpdk_ok (
             }
         }
     };
+);
+
+#[macro_export]
+macro_rules! dpdk_ok_with_errno (
+    ($x: ident ($($arg: expr),*)) => { unsafe {
+        dpdk_check(stringify!($x), $x($($arg),*), true).wrap_err("Error running dpdk function.")?
+    } };
 );
 
 #[macro_export]

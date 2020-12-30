@@ -1,12 +1,14 @@
-#include <rte_mbuf.h>
+#include <ctype.h>
+#include <inttypes.h>
+#include <rte_cycles.h>
+#include <rte_dev.h>
+#include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_ether.h>
-#include <rte_errno.h>
-#include <rte_cycles.h>
+#include <rte_mbuf.h>
+#include <rte_memcpy.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <inttypes.h>
-#include <ctype.h>
 #include <stdint.h>
 
 void rte_pktmbuf_free_(struct rte_mbuf *packet) {
@@ -43,3 +45,17 @@ void rte_pktmbuf_attach_extbuf_(struct rte_mbuf *m, void *buf_addr, rte_iova_t b
 }
 
 void general_free_cb_(void  *addr, void *opaque) {}
+
+void rte_memcpy_(void *dst, const void *src, size_t n) {
+    rte_memcpy(dst, src, n);
+}
+
+int rte_dev_dma_map_(uint16_t device_id, void * addr, uint64_t iova, size_t len) {
+    struct rte_eth_dev *dev = &rte_eth_devices[device_id];
+    return rte_dev_dma_map(dev->device, addr, iova, len);
+}
+
+int rte_dev_dma_unmap_(uint16_t device_id, void *addr, uint64_t iova, size_t len) {
+    struct rte_eth_dev *dev = &rte_eth_devices[device_id];
+    return rte_dev_dma_unmap(dev->device, addr, iova, len);
+}

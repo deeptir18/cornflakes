@@ -1,7 +1,7 @@
 use super::{
     super::{
-        dpdk_bindings::*, dpdk_call, mbuf_slice, utils, CornType, Datapath, MsgID, PtrAttributes,
-        ReceivedPacket, ScatterGather,
+        dpdk_bindings::*, dpdk_call, mbuf_slice, mem, utils, CornType, Datapath, MsgID,
+        PtrAttributes, ReceivedPacket, ScatterGather,
     },
     dpdk_utils, wrapper,
 };
@@ -163,7 +163,9 @@ pub struct DPDKConnection {
     /// shinfo: TODO: it is unclear how to ``properly'' use the shinfo.
     /// There might be one shinfo per external memory region.
     /// Here, so far, we're assuming one memory region.
-    shared_info: *mut rte_mbuf_ext_shared_info,
+    /// Theoretically should be like HashMap<metadata, shinfo>
+    /// And whenever we have a reference -- check which shinfo is the relevant one.
+    shared_info: HashMap<mem::MmapMetadata, MaybeUninit<rte_mbuf_ext_shared_info>>,
 }
 
 impl DPDKConnection {
@@ -201,12 +203,6 @@ impl DPDKConnection {
         };
 
         let addr_info = utils::AddressInfo::new(udp_port, *my_ip_addr, my_mac_addr);
-        let mut shared_info: MaybeUninit<rte_mbuf_ext_shared_info> = MaybeUninit::zeroed();
-        unsafe {
-            (*shared_info.as_mut_ptr()).refcnt = 1;
-            (*shared_info.as_mut_ptr()).fcb_opaque = ptr::null_mut();
-            (*shared_info.as_mut_ptr()).free_cb = Some(general_free_cb_);
-        }
 
         Ok(DPDKConnection {
             mode: mode,
@@ -217,7 +213,7 @@ impl DPDKConnection {
             default_mempool: mempool,
             extbuf_mempool: ext_mempool,
             addr_info: addr_info,
-            shared_info: shared_info.as_mut_ptr(),
+            shared_info: HashMap::new(),
         })
     }
 
@@ -257,12 +253,13 @@ impl Datapath for DPDKConnection {
 
         // initialize a linked list of mbufs to represent the sga
         let mut pkt = wrapper::Pkt::init(sga.num_borrowed_segments() + 1);
+
         pkt.construct_from_sga(
             &sga,
             self.default_mempool,
             self.extbuf_mempool,
             &self.get_outgoing_header(addr)?,
-            self.shared_info,
+            &mut self.shared_info,
         )
         .wrap_err("Unable to construct pkt from sga.")?;
 
@@ -375,6 +372,35 @@ impl Datapath for DPDKConnection {
     /// We do not yet support sending payloads larger than an MTU.
     fn max_packet_len(&self) -> usize {
         return wrapper::RX_PACKET_LEN as usize;
+    }
+
+    /// Registers this external piece of memory with DPDK,
+    /// so regions of this memory can be used while sending external mbufs.
+    fn register_external_region(&mut self, metadata: mem::MmapMetadata) -> Result<()> {
+        wrapper::dpdk_register_extmem(&metadata)?;
+        let mut shared_info: MaybeUninit<rte_mbuf_ext_shared_info> = MaybeUninit::zeroed();
+        unsafe {
+            (*shared_info.as_mut_ptr()).refcnt = 1;
+            (*shared_info.as_mut_ptr()).fcb_opaque = ptr::null_mut();
+            (*shared_info.as_mut_ptr()).free_cb = Some(general_free_cb_);
+        }
+
+        self.shared_info.insert(metadata, shared_info);
+
+        Ok(())
+    }
+
+    fn unregister_external_region(&mut self, metadata: mem::MmapMetadata) -> Result<()> {
+        wrapper::dpdk_unregister_extmem(&metadata)?;
+        match self.shared_info.remove(&metadata) {
+            Some(_) => Ok(()),
+            None => {
+                bail!(
+                "DPDK datapath doesn't have reference to particular external memory region: {:?}",
+                metadata
+            );
+            }
+        }
     }
 }
 

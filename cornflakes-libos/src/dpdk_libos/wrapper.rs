@@ -1,7 +1,7 @@
 use super::{
     super::{
-        dpdk_call, dpdk_check_not_failed, dpdk_ok, mbuf_slice, utils, CornType, MsgID,
-        PtrAttributes, ScatterGather,
+        dpdk_call, dpdk_check_not_failed, dpdk_ok, dpdk_ok_with_errno, mbuf_slice, mem, utils,
+        CornType, MsgID, PtrAttributes, ScatterGather,
     },
     dpdk_bindings::*,
     dpdk_check, dpdk_error, dpdk_utils,
@@ -81,15 +81,15 @@ impl Pkt {
     /// pointers to borrowed external memory.
     /// * header_info - Header information to fill in at the front of the first mbuf, for the
     /// entire packet (currently ethernet, ipv4 and udp packet headers).
-    /// * shared_info - Shared info (including freeing function) for any potential external
-    /// memory.
+    /// * shared_info - Shared info map (including freeing function) for any potential external
+    /// memory that maps the index in the sga to the necessary shared info.
     pub fn construct_from_sga(
         &mut self,
         sga: &impl ScatterGather,
         header_mempool: *mut rte_mempool,
         extbuf_mempool: *mut rte_mempool,
         header_info: &utils::HeaderInfo,
-        shared_info: *mut rte_mbuf_ext_shared_info,
+        shared_info: &mut HashMap<mem::MmapMetadata, MaybeUninit<rte_mbuf_ext_shared_info>>,
     ) -> Result<()> {
         assert!(self.num_entries == sga.num_borrowed_segments() + 1);
 
@@ -129,15 +129,14 @@ impl Pkt {
     /// allocated from an actual mempool.
     /// * header_info - Header information to fill in at the front of the first mbuf, for the
     /// entire packet (currently ethernet, ipv4 and udp packet headers).
-    /// * shared_info - Shared info (including freeing function) for any potential external
-    /// memory.
+    /// * shared_info - Shared info map for registered memory regions.
     #[cfg(test)]
     pub fn construct_from_test_sga(
         &mut self,
         sga: &impl ScatterGather,
         mbufs: Vec<*mut rte_mbuf>,
         header_info: &utils::HeaderInfo,
-        shared_info: *mut rte_mbuf_ext_shared_info,
+        shared_info: &mut HashMap<mem::MmapMetadata, MaybeUninit<rte_mbuf_ext_shared_info>>,
     ) -> Result<()> {
         assert!(self.num_entries == sga.num_borrowed_segments() + 1);
         assert!(self.num_entries == mbufs.len());
@@ -216,12 +215,11 @@ impl Pkt {
     ///
     /// Arguments:
     /// * sga - Object that implements the scatter-gather trait to copy payloads from.
-    /// * shared_info - *mut rte_mbuf_ext_shared_info - Pointer to the shared info for any
-    /// potentially external memory.
+    /// * shared_info - Shared info map for registered memory regions.
     fn copy_sga_payloads(
         &mut self,
         sga: &impl ScatterGather,
-        shared_info: *mut rte_mbuf_ext_shared_info,
+        shared_info: &mut HashMap<mem::MmapMetadata, MaybeUninit<rte_mbuf_ext_shared_info>>,
     ) -> Result<()> {
         let mut current_attached_idx = 0;
         sga.iter_apply(|cornptr| {
@@ -229,14 +227,28 @@ impl Pkt {
             match cornptr.buf_type() {
                 CornType::Borrowed => {
                     current_attached_idx += 1;
-                    self.set_external_payload(current_attached_idx, cornptr.as_ref(), shared_info)
+
+                    let mut shared_info_uninit: MaybeUninit<rte_mbuf_ext_shared_info> = MaybeUninit::zeroed();
+                    unsafe {
+                        (*shared_info_uninit.as_mut_ptr()).refcnt = 1;
+                        (*shared_info_uninit.as_mut_ptr()).fcb_opaque = ptr::null_mut();
+                        (*shared_info_uninit.as_mut_ptr()).free_cb = Some(general_free_cb_);
+                    }
+                    let mut shared_info_ptr = shared_info_uninit.as_mut_ptr();
+                    for (metadata, info) in shared_info.iter_mut() {
+                        if metadata.in_range(cornptr.as_ref().as_ptr()) {
+                            shared_info_ptr = info.as_mut_ptr();
+                        }
+                    }
+
+                    self.set_external_payload(current_attached_idx, cornptr.as_ref(), shared_info_ptr)
                         .wrap_err("Failed to set external payload into pkt list.")?;
                 }
                 CornType::Owned => {
                     if current_attached_idx > 0 {
                         bail!("Sga cannot have owned buffers after borrowed buffers; all owned buffers must be at the front.");
                     }
-                    // copy thi payload into the head buffer
+                    // copy this payload into the head buffer
                     self.copy_payload(current_attached_idx, cornptr.as_ref())
                         .wrap_err(
                             "Failed to copy sga owned entry {} into pkt list."
@@ -255,7 +267,13 @@ impl Pkt {
             bail!("Cannot set payload of size {}, as data offset is {}: mbuf would be too large, and limit is {}.", buf.len(), self.data_offsets[idx], RX_PACKET_LEN as usize);
         }
         let mbuf_buffer = mbuf_slice!(self.mbufs[idx], self.data_offsets[idx], buf.len());
-        mbuf_buffer.copy_from_slice(buf);
+        // run rte_memcpy, as an alternate to rust's copy
+        dpdk_call!(rte_memcpy_wrapper(
+            mbuf_buffer.as_mut_ptr() as _,
+            buf.as_ptr() as _,
+            buf.len()
+        ));
+        //mbuf_buffer.copy_from_slice(buf);
         unsafe {
             // update the data_len of this mbuf.
             (*self.mbufs[idx]).data_len += buf.len() as u16;
@@ -762,6 +780,52 @@ pub fn free_mbuf(pkt: *mut rte_mbuf) {
     dpdk_call!(rte_pktmbuf_free(pkt));
 }
 
+#[inline]
+pub fn dpdk_register_extmem(metadata: &mem::MmapMetadata) -> Result<()> {
+    dpdk_check_not_failed!(rte_extmem_register(
+        metadata.ptr as _,
+        metadata.length as u64,
+        ptr::null_mut(),
+        0,
+        mem::PAGESIZE as u64
+    ));
+
+    // map the external memory per port
+    let owner = RTE_ETH_DEV_NO_OWNER as u64;
+    let mut p = dpdk_call!(rte_eth_find_next_owned_by(0, owner)) as u16;
+    while p < RTE_MAX_ETHPORTS as u16 {
+        dpdk_ok_with_errno!(rte_dev_dma_map_wrapper(
+            p,
+            metadata.ptr as _,
+            0,
+            metadata.length as u64
+        ));
+        p = dpdk_call!(rte_eth_find_next_owned_by(p + 1, owner)) as u16;
+    }
+    Ok(())
+}
+
+#[inline]
+pub fn dpdk_unregister_extmem(metadata: &mem::MmapMetadata) -> Result<()> {
+    dpdk_check_not_failed!(rte_extmem_unregister(
+        metadata.ptr as _,
+        metadata.length as u64
+    ));
+
+    let owner = RTE_ETH_DEV_NO_OWNER as u64;
+    let mut p = dpdk_call!(rte_eth_find_next_owned_by(0, owner)) as u16;
+    while p < RTE_MAX_ETHPORTS as u16 {
+        dpdk_ok_with_errno!(rte_dev_dma_unmap_wrapper(
+            p,
+            metadata.ptr as _,
+            0,
+            metadata.length as u64
+        ));
+        p = dpdk_call!(rte_eth_find_next_owned_by(p + 1, owner)) as u16;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,7 +921,7 @@ mod tests {
             &cornflake,
             vec![test_mbuf.get_pointer()],
             &hdr_info,
-            ptr::null_mut(),
+            &mut HashMap::default(),
         )
         .unwrap();
 
@@ -926,7 +990,7 @@ mod tests {
             &cornflake,
             vec![test_mbuf.get_pointer()],
             &hdr_info,
-            ptr::null_mut(),
+            &mut HashMap::default(),
         )
         .unwrap();
 
@@ -985,12 +1049,6 @@ mod tests {
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
         let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
-        let mut shared_info: MaybeUninit<rte_mbuf_ext_shared_info> = MaybeUninit::zeroed();
-        unsafe {
-            (*shared_info.as_mut_ptr()).refcnt = 1;
-            (*shared_info.as_mut_ptr()).fcb_opaque = ptr::null_mut();
-            (*shared_info.as_mut_ptr()).free_cb = Some(general_free_cb_);
-        }
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = payload1.clone();
         cornflake.add_entry(CornPtr::Owned(Rc::new(payload1.to_vec())));
@@ -999,7 +1057,7 @@ mod tests {
             &cornflake,
             vec![test_mbuf.get_pointer()],
             &hdr_info,
-            shared_info.as_mut_ptr(),
+            &mut HashMap::default(),
         )
         .unwrap();
 
@@ -1036,7 +1094,7 @@ mod tests {
             &cornflake,
             vec![test_mbuf.get_pointer()],
             &hdr_info,
-            ptr::null_mut(),
+            &mut HashMap::default(),
         )
         .unwrap();
 
@@ -1073,7 +1131,7 @@ mod tests {
             &cornflake,
             vec![test_mbuf.get_pointer()],
             &hdr_info,
-            ptr::null_mut(),
+            &mut HashMap::default(),
         )
         .unwrap();
 
@@ -1103,12 +1161,6 @@ mod tests {
         let mut test_mbuf = TestMbuf::new_external();
         let mut cornflake = Cornflake::default();
         cornflake.set_id(1);
-        let mut shared_info: MaybeUninit<rte_mbuf_ext_shared_info> = MaybeUninit::zeroed();
-        unsafe {
-            (*shared_info.as_mut_ptr()).refcnt = 1;
-            (*shared_info.as_mut_ptr()).fcb_opaque = ptr::null_mut();
-            (*shared_info.as_mut_ptr()).free_cb = Some(general_free_cb_);
-        }
 
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         cornflake.add_entry(CornPtr::Borrowed(payload1.as_ref()));
@@ -1123,7 +1175,7 @@ mod tests {
             &cornflake,
             vec![header_mbuf.get_pointer(), test_mbuf.get_pointer()],
             &hdr_info,
-            shared_info.as_mut_ptr(),
+            &mut HashMap::default(),
         )
         .unwrap();
         info!("Constructed packet successfully");
@@ -1157,13 +1209,6 @@ mod tests {
         let mut cornflake = Cornflake::default();
         cornflake.set_id(1);
 
-        let mut shared_info: MaybeUninit<rte_mbuf_ext_shared_info> = MaybeUninit::zeroed();
-        unsafe {
-            (*shared_info.as_mut_ptr()).refcnt = 1;
-            (*shared_info.as_mut_ptr()).fcb_opaque = ptr::null_mut();
-            (*shared_info.as_mut_ptr()).free_cb = Some(general_free_cb_);
-        }
-
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = rand::thread_rng().gen::<[u8; 32]>();
         cornflake.add_entry(CornPtr::Borrowed(payload1.as_ref()));
@@ -1182,7 +1227,7 @@ mod tests {
                 test_mbuf2.get_pointer(),
             ],
             &hdr_info,
-            shared_info.as_mut_ptr(),
+            &mut HashMap::default(),
         )
         .unwrap();
 
@@ -1222,13 +1267,6 @@ mod tests {
         let mut cornflake = Cornflake::default();
         cornflake.set_id(3);
 
-        let mut shared_info: MaybeUninit<rte_mbuf_ext_shared_info> = MaybeUninit::zeroed();
-        unsafe {
-            (*shared_info.as_mut_ptr()).refcnt = 1;
-            (*shared_info.as_mut_ptr()).fcb_opaque = ptr::null_mut();
-            (*shared_info.as_mut_ptr()).free_cb = Some(general_free_cb_);
-        }
-
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = rand::thread_rng().gen::<[u8; 32]>();
         cornflake.add_entry(CornPtr::Owned(Rc::new(payload1.to_vec())));
@@ -1243,7 +1281,7 @@ mod tests {
             &cornflake,
             vec![header_mbuf.get_pointer(), test_mbuf1.get_pointer()],
             &hdr_info,
-            shared_info.as_mut_ptr(),
+            &mut HashMap::default(),
         )
         .unwrap();
 
@@ -1280,13 +1318,6 @@ mod tests {
         let mut cornflake = Cornflake::default();
         cornflake.set_id(3);
 
-        let mut shared_info: MaybeUninit<rte_mbuf_ext_shared_info> = MaybeUninit::zeroed();
-        unsafe {
-            (*shared_info.as_mut_ptr()).refcnt = 1;
-            (*shared_info.as_mut_ptr()).fcb_opaque = ptr::null_mut();
-            (*shared_info.as_mut_ptr()).free_cb = Some(general_free_cb_);
-        }
-
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = rand::thread_rng().gen::<[u8; 32]>();
         cornflake.add_entry(CornPtr::Borrowed(payload2.as_ref()));
@@ -1301,7 +1332,7 @@ mod tests {
             &cornflake,
             vec![header_mbuf.get_pointer(), test_mbuf1.get_pointer()],
             &hdr_info,
-            shared_info.as_mut_ptr(),
+            &mut HashMap::default(),
         ) {
             Ok(_) => {
                 panic!("Should have failed to construct SGA because owned region comes after borrowed region.");

@@ -7,10 +7,12 @@
 //!  3. A DPDK based datapath.
 pub mod dpdk_bindings;
 pub mod dpdk_libos;
+pub mod mem;
 pub mod utils;
 
 use color_eyre::eyre::{Result, WrapErr};
 use hdrhistogram::Histogram;
+use mem::MmapMetadata;
 use std::{
     net::Ipv4Addr,
     ops::FnMut,
@@ -230,6 +232,18 @@ pub trait Datapath {
 
     /// Max packet len.
     fn max_packet_len(&self) -> usize;
+
+    /// Register external pages.
+    ///
+    /// Arguments:
+    /// * mmap metadata (contains the beginning, end, alignment of region)
+    fn register_external_region(&mut self, metadata: MmapMetadata) -> Result<()>;
+
+    /// Unregister external pages.
+    ///
+    /// Arguments:
+    /// * mmap metadata (contains beginning, end, alignment of region)
+    fn unregister_external_region(&mut self, metadata: MmapMetadata) -> Result<()>;
 }
 
 /// For applications that want to follow a simple open-loop request processing model at the client,

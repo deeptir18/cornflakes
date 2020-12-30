@@ -33,6 +33,19 @@ extern "C" {
         shinfo: *mut rte_mbuf_ext_shared_info,
     );
     pub fn general_free_cb_(addr: *mut ::std::os::raw::c_void, opaque: *mut ::std::os::raw::c_void);
+    fn rte_memcpy_(dst: *mut ::std::os::raw::c_void, src: *const ::std::os::raw::c_void, n: usize);
+    fn rte_dev_dma_map_(
+        device_id: u16,
+        addr: *mut ::std::os::raw::c_void,
+        iova: u64,
+        len: size_t,
+    ) -> ::std::os::raw::c_int;
+    fn rte_dev_dma_unmap_(
+        device_id: u16,
+        addr: *mut ::std::os::raw::c_void,
+        iova: u64,
+        len: size_t,
+    ) -> ::std::os::raw::c_int;
 }
 
 #[cfg(feature = "mlx5")]
@@ -104,4 +117,32 @@ pub unsafe fn rte_pktmbuf_attach_extbuf(
     shinfo: *mut rte_mbuf_ext_shared_info,
 ) {
     rte_pktmbuf_attach_extbuf_(m, buf_addr, buf_iova, buf_len, shinfo);
+}
+
+#[inline]
+pub unsafe fn rte_memcpy_wrapper(
+    dst: *mut ::std::os::raw::c_void,
+    src: *const ::std::os::raw::c_void,
+    n: usize,
+) {
+    rte_memcpy_(dst, src, n);
+}
+
+#[inline]
+pub unsafe fn rte_dev_dma_map_wrapper(
+    device_id: u16,
+    addr: *mut ::std::os::raw::c_void,
+    iova: u64,
+    len: size_t,
+) -> ::std::os::raw::c_int {
+    rte_dev_dma_map_(device_id, addr, iova, len)
+}
+
+pub unsafe fn rte_dev_dma_unmap_wrapper(
+    device_id: u16,
+    addr: *mut ::std::os::raw::c_void,
+    iova: u64,
+    len: size_t,
+) -> ::std::os::raw::c_int {
+    rte_dev_dma_unmap_(device_id, addr, iova, len)
 }
