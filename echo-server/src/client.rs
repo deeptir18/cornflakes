@@ -79,6 +79,10 @@ where
         Ok(())
     }
 
+    fn init(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
+        Ok(())
+    }
+
     fn msg_timeout_cb(
         &mut self,
         _id: MsgID,

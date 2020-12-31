@@ -17,6 +17,8 @@ use tracing_subscriber::{filter::LevelFilter, FmtSubscriber};
 #[structopt(name = "DPDK server", about = "DPDK server program")]
 
 struct Opt {
+    #[structopt(short = "z", long = "zero_copy", help = "Zero-copy mode.")]
+    zero_copy: bool,
     #[structopt(
         short = "debug",
         long = "debug_level",
@@ -33,7 +35,7 @@ struct Opt {
     #[structopt(short = "cl", long = "closed_loop", help = "Run in closed loop mode.")]
     closed_loop: bool,
     #[structopt(
-        short = "i",
+        short = "n",
         long = "iterations",
         help = "Number of packets for closed loop mode",
         default_value = "100"
@@ -100,11 +102,13 @@ fn main() -> Result<()> {
         .wrap_err("Failed to initialize DPDK server connection.")?;
     match opt.mode {
         DPDKMode::Server => {
-            let mut server = EchoServer::new(opt.size);
+            let mut server = EchoServer::new(opt.size, opt.zero_copy)?;
+            server.init(&mut connection)?;
             server.run_state_machine(&mut connection)?;
         }
         DPDKMode::Client => {
-            let mut client = EchoClient::new(opt.size, opt.server_ip);
+            let mut client = EchoClient::new(opt.size, opt.server_ip, opt.zero_copy)?;
+            client.init(&mut connection)?;
             if opt.closed_loop {
                 client.run_closed_loop(
                     &mut connection,

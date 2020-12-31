@@ -53,8 +53,11 @@ pub trait ScatterGather {
     /// Returns an iterator over the scattered memory regions this packet represents.
     fn collection(&self) -> Self::Collection;
 
-    // Applies the provided closure on all of the pointer types.
+    /// Applies the provided closure on all of the pointer types.
     fn iter_apply(&self, consume_element: impl FnMut(&Self::Ptr) -> Result<()>) -> Result<()>;
+
+    /// Returns a buffer where all the scatter-gather entries are copied into a contiguous array.
+    fn contiguous_repr(&self) -> Vec<u8>;
 }
 
 /// Trait defining functionality any _received_ packets should have.
@@ -188,6 +191,14 @@ impl<'a> ScatterGather for Cornflake<'a> {
         }
         Ok(())
     }
+
+    fn contiguous_repr(&self) -> Vec<u8> {
+        let mut ret: Vec<u8> = Vec::new();
+        for entry in self.entries.iter() {
+            ret.extend_from_slice(entry.as_ref());
+        }
+        ret
+    }
 }
 
 impl<'a> Cornflake<'a> {
@@ -273,6 +284,10 @@ pub trait ClientSM {
         id: MsgID,
         send_fn: impl FnMut(Self::OutgoingMsg) -> Result<()>,
     ) -> Result<()>;
+
+    /// Initializes any internal state with any datapath specific configuration,
+    /// e.g., registering external memory.
+    fn init(&mut self, connection: &mut Self::Datapath) -> Result<()>;
 
     fn run_closed_loop(
         &mut self,
@@ -396,6 +411,10 @@ pub trait ServerSM {
             }
         }
     }
+
+    /// Initializes any internal state with any datapath specific configuration,
+    /// e.g., registering external memory.
+    fn init(&mut self, connection: &mut Self::Datapath) -> Result<()>;
 }
 
 pub trait RTTHistogram {

@@ -124,6 +124,12 @@ impl ScatterGather for DPDKReceivedPkt {
     fn iter_apply(&self, mut consume_element: impl FnMut(&Self::Ptr) -> Result<()>) -> Result<()> {
         consume_element(&self.mbuf_wrapper)
     }
+
+    fn contiguous_repr(&self) -> Vec<u8> {
+        let mut ret: Vec<u8> = Vec::new();
+        ret.extend_from_slice(self.mbuf_wrapper.as_ref());
+        ret
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -408,6 +414,15 @@ impl Datapath for DPDKConnection {
 /// we make sure that the underlying mempools are freed as well.
 impl Drop for DPDKConnection {
     fn drop(&mut self) {
+        tracing::debug!("DPDK connection is being dropped");
+        for (metadata, _) in self.shared_info.iter() {
+            match wrapper::dpdk_unregister_extmem(metadata) {
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(metadata = ?metadata, e = ?e, "Error from calling unregister extmem");
+                }
+            }
+        }
         wrapper::free_mempool(self.default_mempool);
         wrapper::free_mempool(self.extbuf_mempool);
     }

@@ -474,13 +474,23 @@ fn initialize_dpdk_port(port_id: u16, mbuf_pool: *mut rte_mempool) -> Result<()>
 /// * nb_ports - A u16 with the number of valid DPDK ports.
 fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
     let name = CString::new(name)?;
-    let elt_size: u32 = size_of::<rte_mbuf>() as u32;
+
+    let mut mbp_priv_uninit: MaybeUninit<rte_pktmbuf_pool_private> = MaybeUninit::zeroed();
+    unsafe {
+        (*mbp_priv_uninit.as_mut_ptr()).mbuf_data_room_size = 0;
+        // TODO: should the priv size be more?
+        (*mbp_priv_uninit.as_mut_ptr()).mbuf_priv_size = 0;
+    }
+
+    let elt_size: u32 = size_of::<rte_mbuf>() as u32 + size_of::<rte_pktmbuf_pool_private>() as u32;
+
+    tracing::debug!(elt_size, "Trying to init extbuf mempool with elt_size");
     let mbuf_pool = dpdk_call!(rte_mempool_create_empty(
         name.as_ptr(),
         (NUM_MBUFS * nb_ports) as u32,
         elt_size,
         0,
-        0, // TODO: should there be a private data structure here?
+        size_of::<rte_pktmbuf_pool_private>() as u32,
         rte_socket_id() as i32,
         0
     ));
@@ -498,7 +508,10 @@ fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
     );*/
 
     // initialize any private data (right now there is none)
-    dpdk_call!(rte_pktmbuf_pool_init(mbuf_pool, ptr::null_mut()));
+    dpdk_call!(rte_pktmbuf_pool_init(
+        mbuf_pool,
+        mbp_priv_uninit.as_mut_ptr() as _
+    ));
 
     // allocate the mempool
     // on error free the mempool
@@ -508,11 +521,12 @@ fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
     }
 
     // initialize each mbuf
-    let _ = dpdk_call!(rte_mempool_obj_iter(
+    let num = dpdk_call!(rte_mempool_obj_iter(
         mbuf_pool,
         Some(rte_pktmbuf_init),
         ptr::null_mut()
     ));
+    assert!(num == (NUM_MBUFS * nb_ports) as u32);
 
     Ok(mbuf_pool)
 }
@@ -802,16 +816,12 @@ pub fn dpdk_register_extmem(metadata: &mem::MmapMetadata) -> Result<()> {
         ));
         p = dpdk_call!(rte_eth_find_next_owned_by(p + 1, owner)) as u16;
     }
+    tracing::debug!(metadata =? metadata, "Successfully called register extmem.");
     Ok(())
 }
 
 #[inline]
 pub fn dpdk_unregister_extmem(metadata: &mem::MmapMetadata) -> Result<()> {
-    dpdk_check_not_failed!(rte_extmem_unregister(
-        metadata.ptr as _,
-        metadata.length as u64
-    ));
-
     let owner = RTE_ETH_DEV_NO_OWNER as u64;
     let mut p = dpdk_call!(rte_eth_find_next_owned_by(0, owner)) as u16;
     while p < RTE_MAX_ETHPORTS as u16 {
@@ -823,6 +833,12 @@ pub fn dpdk_unregister_extmem(metadata: &mem::MmapMetadata) -> Result<()> {
         ));
         p = dpdk_call!(rte_eth_find_next_owned_by(p + 1, owner)) as u16;
     }
+
+    dpdk_check_not_failed!(rte_extmem_unregister(
+        metadata.ptr as _,
+        metadata.length as u64
+    ));
+
     Ok(())
 }
 
