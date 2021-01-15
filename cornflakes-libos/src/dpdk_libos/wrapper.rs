@@ -17,14 +17,15 @@ use std::{
 use tracing::{debug, info, warn};
 
 /// Constants related to DPDK
-const NUM_MBUFS: u16 = 8191;
-const MBUF_CACHE_SIZE: u16 = 250;
+pub const MBUF_PADDING: u32 = 200;
+pub const NUM_MBUFS: u16 = 8191;
+pub const MBUF_CACHE_SIZE: u16 = 250;
 const RX_RING_SIZE: u16 = 2048;
 const TX_RING_SIZE: u16 = 2048;
 
 // TODO: figure out how to turn jumbo frames on and of
 pub const RX_PACKET_LEN: u32 = 9216;
-const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
+pub const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
 
 /// RX and TX Prefetch, Host, and Write-back threshold values should be
 /// carefully set for optimal performance. Consult the network
@@ -93,6 +94,7 @@ impl Pkt {
     ) -> Result<()> {
         assert!(self.num_entries == sga.num_borrowed_segments() + 1);
 
+        // TODO: change this back
         // 1: allocate and add header mbuf
         let header_mbuf =
             alloc_mbuf(header_mempool).wrap_err("Unable to allocate mbuf from mempool.")?;
@@ -112,9 +114,24 @@ impl Pkt {
             ))?;
         }
 
+        if sga.num_borrowed_segments() >= 1 {
+            unsafe {
+                (*self.mbufs[0]).data_len += MBUF_PADDING as u16;
+                (*self.mbufs[0]).pkt_len += MBUF_PADDING as u32;
+            }
+        }
         // 3: copy the payloads from the sga into the mbufs
         self.copy_sga_payloads(sga, shared_info)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
+
+        // TODO: delete this
+        // now take the first mbuf and add the header inside it
+        /*let _ = fill_in_header(
+            self.mbufs[0],
+            header_info,
+            sga.data_len() - utils::TOTAL_HEADER_SIZE,
+            sga.get_id(),
+        )?;*/
 
         Ok(())
     }
@@ -226,6 +243,7 @@ impl Pkt {
             // any attached mbufs will start at index 1 (1 after header)
             match cornptr.buf_type() {
                 CornType::Borrowed => {
+                    // TODO: uncomment this
                     current_attached_idx += 1;
 
                     let mut shared_info_uninit: MaybeUninit<rte_mbuf_ext_shared_info> = MaybeUninit::zeroed();
@@ -273,7 +291,7 @@ impl Pkt {
             buf.as_ptr() as _,
             buf.len()
         ));
-        //mbuf_buffer.copy_from_slice(buf);
+        mbuf_buffer.copy_from_slice(buf);
         unsafe {
             // update the data_len of this mbuf.
             (*self.mbufs[idx]).data_len += buf.len() as u16;
@@ -301,9 +319,10 @@ impl Pkt {
             rte_pktmbuf_attach_extbuf(self.mbufs[idx], mut_ptr, 0, buf.len() as u16, shinfo);
             // set the data length of this mbuf
             // update pkt len of entire packet
-            (*self.mbufs[idx]).data_len = buf.len() as u16;
+            (*self.mbufs[idx]).data_len += buf.len() as u16;
             (*self.mbufs[0]).pkt_len += buf.len() as u32;
             // update the number of segments
+            // TODO: change this back by uncommenting
             (*self.mbufs[0]).nb_segs += 1;
         }
         self.data_offsets[idx] = buf.len();
@@ -317,6 +336,7 @@ impl Pkt {
 
     /// Returns handle to pointer to the mbuf array.
     pub fn mbuf_list_ptr(&mut self) -> *mut *mut rte_mbuf {
+        tracing::debug!(len = self.mbufs.len(), "Mbufs has length");
         self.mbufs.as_mut_ptr()
     }
 
@@ -498,6 +518,9 @@ fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
         bail!("Mempool created with rte_mempool_create_empty is null.");
     }
 
+    // TODO: remove this
+    // init the mbuf pool to have the payload (with space for the header)
+
     // set ops name
     // on error free the mempool
     // this is only necessary for a custom mempool
@@ -655,7 +678,6 @@ pub fn fill_in_header(
 
     // Write per-packet-id in
     utils::write_pkt_id(id, id_hdr_slice)?;
-
     Ok(utils::TOTAL_HEADER_SIZE)
 }
 

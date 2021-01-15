@@ -8,17 +8,19 @@
 pub mod dpdk_bindings;
 pub mod dpdk_libos;
 pub mod mem;
+pub mod timing;
 pub mod utils;
 
 use color_eyre::eyre::{Result, WrapErr};
-use hdrhistogram::Histogram;
 use mem::MmapMetadata;
 use std::{
     net::Ipv4Addr,
     ops::FnMut,
-    rc::Rc,
+    sync::{Arc, Mutex},
+    //rc::Rc,
     time::{Duration, Instant},
 };
+use timing::HistogramWrapper;
 
 pub type MsgID = u32;
 
@@ -68,6 +70,7 @@ pub trait ReceivedPacket {
 
 /// Whether an underlying buffer is borrowed or
 /// actually owned (most likely on the heap).
+#[derive(Clone, PartialEq, Eq)]
 pub enum CornType {
     Borrowed,
     Owned,
@@ -89,14 +92,15 @@ pub enum CornPtr<'a> {
     /// "Owned" Reference to un-registered memory.
     /// TODO: does this ever need to be mutable?
     /// Or will it always be immutable?
-    Owned(Rc<Vec<u8>>),
+    Owned(&'a [u8]),
+    // Owned(Rc<Vec<u8>>),
 }
 
 impl<'a> AsRef<[u8]> for CornPtr<'a> {
     fn as_ref(&self) -> &[u8] {
         match self {
             CornPtr::Borrowed(buf) => buf,
-            CornPtr::Owned(buf) => buf.as_ref().as_ref(),
+            CornPtr::Owned(buf) => buf,
         }
     }
 }
@@ -112,7 +116,7 @@ impl<'a> PtrAttributes for CornPtr<'a> {
     fn buf_size(&self) -> usize {
         match self {
             CornPtr::Borrowed(buf) => buf.len(),
-            CornPtr::Owned(buf) => buf.as_ref().len(),
+            CornPtr::Owned(buf) => buf.len(),
         }
     }
 }
@@ -126,6 +130,10 @@ pub struct Cornflake<'a> {
     id: MsgID,
     /// Pointers to scattered memory segments.
     entries: Vec<CornPtr<'a>>,
+    /// Num borrowed segments
+    num_borrowed: usize,
+    /// Data size
+    data_size: usize,
 }
 
 impl<'a> Default for Cornflake<'a> {
@@ -133,6 +141,8 @@ impl<'a> Default for Cornflake<'a> {
         Cornflake {
             id: 0,
             entries: Vec::new(),
+            num_borrowed: 0,
+            data_size: 0,
         }
     }
 }
@@ -160,19 +170,12 @@ impl<'a> ScatterGather for Cornflake<'a> {
 
     /// Returns the number of borrowed memory regions in this cornflake.
     fn num_borrowed_segments(&self) -> usize {
-        self.entries
-            .iter()
-            .filter(|ptr| match ptr {
-                CornPtr::Borrowed(_) => true,
-                CornPtr::Owned(_) => false,
-            })
-            .map(|_| 1)
-            .sum::<usize>()
+        self.num_borrowed
     }
 
     /// Amount of data represented by this scatter-gather array.
     fn data_len(&self) -> usize {
-        self.collection().iter().map(|ptr| ptr.buf_size()).sum()
+        self.data_size
     }
 
     /// Exposes an iterator over the entries in the scatter-gather array.
@@ -208,6 +211,10 @@ impl<'a> Cornflake<'a> {
     /// * ptr - CornPtr<'a> representing owned or borrowed memory.
     /// * length - usize representing length of memory region.
     pub fn add_entry(&mut self, ptr: CornPtr<'a>) {
+        self.data_size += ptr.buf_size();
+        if ptr.buf_type() == CornType::Borrowed {
+            self.num_borrowed += 1;
+        }
         self.entries.push(ptr);
     }
 }
@@ -360,17 +367,8 @@ pub trait ClientSM {
                 }
             }
         }
-        Ok(())
 
-        // send first message
-        // while time < total_time:
-        // while time < time to send next packet:
-        //  try:
-        //  datapath.pop()
-        //  check:
-        //  has anything timed out?
-        //      if so, call the callback on all the id's that have timed out.
-        //
+        Ok(())
     }
 }
 
@@ -415,29 +413,6 @@ pub trait ServerSM {
     /// Initializes any internal state with any datapath specific configuration,
     /// e.g., registering external memory.
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()>;
-}
 
-pub trait RTTHistogram {
-    fn get_histogram(&mut self) -> &mut Histogram<u64>;
-
-    fn add_latency(&mut self, val: u64) -> Result<()> {
-        tracing::debug!(val_ns = val, "Adding latency to hist");
-        self.get_histogram().record(val)?;
-        Ok(())
-    }
-
-    fn dump(&mut self, msg: &str) {
-        tracing::info!(
-            msg,
-            p5_ns = self.get_histogram().value_at_quantile(0.05),
-            p25_ns = self.get_histogram().value_at_quantile(0.25),
-            p50_ns = self.get_histogram().value_at_quantile(0.5),
-            p75_ns = self.get_histogram().value_at_quantile(0.75),
-            p95_ns = self.get_histogram().value_at_quantile(0.95),
-            pkts_sent = self.get_histogram().len(),
-            min_ns = self.get_histogram().min(),
-            max_ns = self.get_histogram().max(),
-            avg_ns = ?self.get_histogram().mean(),
-        );
-    }
+    fn get_histograms(&self) -> Vec<Arc<Mutex<HistogramWrapper>>>;
 }

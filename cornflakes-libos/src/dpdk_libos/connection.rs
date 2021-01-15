@@ -1,7 +1,9 @@
 use super::{
     super::{
-        dpdk_bindings::*, dpdk_call, mbuf_slice, mem, utils, CornType, Datapath, MsgID,
-        PtrAttributes, ReceivedPacket, ScatterGather,
+        dpdk_bindings::*,
+        dpdk_call, mbuf_slice, mem,
+        timing::{record, timefunc, HistogramWrapper},
+        utils, CornType, Datapath, MsgID, PtrAttributes, ReceivedPacket, ScatterGather,
     },
     dpdk_utils, wrapper,
 };
@@ -13,12 +15,19 @@ use std::{
     mem::MaybeUninit,
     net::Ipv4Addr,
     ptr, slice,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tracing::warn;
 
 const MAX_ENTRIES: usize = 60;
 const RECEIVE_BURST_SIZE: u16 = 32;
+const PROCESSING_TIMER: &str = "E2E_PROCESSING_TIME";
+const RX_BURST_TIMER: &str = "RX_BURST_TIMER";
+const TX_BURST_TIMER: &str = "TX_BURST_TIMER";
+const PKT_CONSTRUCT_TIMER: &str = "PKT_CONSTRUCT_TIMER";
+const POP_PROCESSING_TIMER: &str = "POP_PROCESSING_TIMER";
+const PUSH_PROCESSING_TIMER: &str = "PUSH_PROCESSING_TIMER";
 
 /// Wrapper around rte_mbuf.
 #[derive(Copy, Clone)]
@@ -33,8 +42,14 @@ pub struct MbufWrapper {
 impl AsRef<[u8]> for MbufWrapper {
     fn as_ref(&self) -> &[u8] {
         // length of the payload ends up being pkt_len - header_size
-        let payload_len = unsafe { (*self.mbuf).pkt_len as usize - self.header_size };
-        mbuf_slice!(self.mbuf, self.header_size, payload_len)
+        let payload_len = unsafe {
+            (*self.mbuf).pkt_len as usize - self.header_size - wrapper::MBUF_PADDING as usize
+        };
+        mbuf_slice!(
+            self.mbuf,
+            self.header_size + wrapper::MBUF_PADDING as usize,
+            payload_len
+        )
     }
 }
 
@@ -157,7 +172,7 @@ pub struct DPDKConnection {
     /// Maps ip addresses to corresponding mac addresses.
     ip_to_mac: HashMap<Ipv4Addr, MacAddress>,
     /// Maps mac addresses to corresponding ip address.
-    mac_to_ip: HashMap<MacAddress, Ipv4Addr>,
+    //mac_to_ip: HashMap<MacAddress, Ipv4Addr>,
     /// Current window of outgoing packets mapped to start time.
     outgoing_window: HashMap<MsgID, Instant>,
     /// Default mempool for allocating mbufs to copy into.
@@ -172,6 +187,8 @@ pub struct DPDKConnection {
     /// Theoretically should be like HashMap<metadata, shinfo>
     /// And whenever we have a reference -- check which shinfo is the relevant one.
     shared_info: HashMap<mem::MmapMetadata, MaybeUninit<rte_mbuf_ext_shared_info>>,
+    /// Debugging timers.
+    timers: HashMap<String, Arc<Mutex<HistogramWrapper>>>,
 }
 
 impl DPDKConnection {
@@ -210,18 +227,111 @@ impl DPDKConnection {
 
         let addr_info = utils::AddressInfo::new(udp_port, *my_ip_addr, my_mac_addr);
 
+        // initialize any debugging histograms
+        let mut timers: HashMap<String, Arc<Mutex<HistogramWrapper>>> = HashMap::default();
+        if cfg!(feature = "timers") {
+            if mode == DPDKMode::Server {
+                timers.insert(
+                    PROCESSING_TIMER.to_string(),
+                    Arc::new(Mutex::new(HistogramWrapper::new(PROCESSING_TIMER)?)),
+                );
+                timers.insert(
+                    POP_PROCESSING_TIMER.to_string(),
+                    Arc::new(Mutex::new(HistogramWrapper::new(POP_PROCESSING_TIMER)?)),
+                );
+            }
+            timers.insert(
+                RX_BURST_TIMER.to_string(),
+                Arc::new(Mutex::new(HistogramWrapper::new(RX_BURST_TIMER)?)),
+            );
+            timers.insert(
+                PKT_CONSTRUCT_TIMER.to_string(),
+                Arc::new(Mutex::new(HistogramWrapper::new(PKT_CONSTRUCT_TIMER)?)),
+            );
+            timers.insert(
+                TX_BURST_TIMER.to_string(),
+                Arc::new(Mutex::new(HistogramWrapper::new(TX_BURST_TIMER)?)),
+            );
+            timers.insert(
+                PUSH_PROCESSING_TIMER.to_string(),
+                Arc::new(Mutex::new(HistogramWrapper::new(PUSH_PROCESSING_TIMER)?)),
+            );
+        }
+
         Ok(DPDKConnection {
             mode: mode,
             dpdk_port: nb_ports - 1,
             ip_to_mac: ip_to_mac,
-            mac_to_ip: mac_to_ip,
+            //mac_to_ip: mac_to_ip,
             outgoing_window: outgoing_window,
             default_mempool: mempool,
             extbuf_mempool: ext_mempool,
             addr_info: addr_info,
             shared_info: HashMap::new(),
+            timers: timers,
         })
     }
+
+    pub fn get_timers(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {
+        self.timers.iter().map(|(_, hist)| hist.clone()).collect()
+    }
+
+    fn get_timer(
+        &self,
+        timer_name: &str,
+        cond: bool,
+    ) -> Result<Option<Arc<Mutex<HistogramWrapper>>>> {
+        if !cond {
+            tracing::debug!(timer_name, "Returning none timer");
+            return Ok(None);
+        }
+        match self.timers.get(timer_name) {
+            Some(h) => Ok(Some(h.clone())),
+            None => bail!("Failed to find timer {}", timer_name),
+        }
+    }
+
+    fn start_entry(&mut self, timer_name: &str, id: MsgID, src: Ipv4Addr) -> Result<()> {
+        let mut hist = match self.timers.contains_key(timer_name) {
+            true => match self.timers.get(timer_name).unwrap().lock() {
+                Ok(h) => h,
+                Err(e) => bail!("Failed to unlock hist: {}", e),
+            },
+            false => {
+                bail!("Entry not in timer map: {}", timer_name);
+            }
+        };
+        hist.start_entry(src, id)?;
+        Ok(())
+    }
+
+    fn end_entry(&mut self, timer_name: &str, id: MsgID, dst: Ipv4Addr) -> Result<()> {
+        let mut hist = match self.timers.contains_key(timer_name) {
+            true => match self.timers.get(timer_name).unwrap().lock() {
+                Ok(h) => h,
+                Err(e) => bail!("Failed to unlock hist: {}", e),
+            },
+            false => {
+                bail!("Entry not in timer map: {}", timer_name);
+            }
+        };
+        hist.end_entry(dst, id)?;
+        Ok(())
+    }
+
+    /*fn add_entry(&mut self, timer_name: &str, val: u64) -> Result<()> {
+        let mut hist = match self.timers.contains_key(timer_name) {
+            true => match self.timers.get(timer_name).unwrap().lock() {
+                Ok(h) => h,
+                Err(e) => bail!("Failed to unlock hist: {}", e),
+            },
+            false => {
+                bail!("Entry not in timer map: {}", timer_name);
+            }
+        };
+        hist.record(val)?;
+        Ok(())
+    }*/
 
     /// Returns a HeaderInfo struct with udp, ethernet and ipv4 header information.
     ///
@@ -251,6 +361,9 @@ impl Datapath for DPDKConnection {
     /// * addr - Ipv4Addr to send the given scatter-gather array to.
     fn push_sga(&mut self, sga: impl ScatterGather, addr: Ipv4Addr) -> Result<()> {
         // check the SGA meets this datapath's allowed sending criteria
+        let push_processing_start = Instant::now();
+        let push_processing_timer =
+            self.get_timer(PUSH_PROCESSING_TIMER, cfg!(feature = "timers"))?;
         if sga.num_borrowed_segments() + 1 > self.max_scatter_entries()
             || sga.data_len() > self.max_packet_len()
         {
@@ -259,15 +372,26 @@ impl Datapath for DPDKConnection {
 
         // initialize a linked list of mbufs to represent the sga
         let mut pkt = wrapper::Pkt::init(sga.num_borrowed_segments() + 1);
+        record(
+            push_processing_timer,
+            push_processing_start.elapsed().as_nanos() as u64,
+        )?;
 
-        pkt.construct_from_sga(
-            &sga,
-            self.default_mempool,
-            self.extbuf_mempool,
-            &self.get_outgoing_header(addr)?,
-            &mut self.shared_info,
-        )
-        .wrap_err("Unable to construct pkt from sga.")?;
+        let pkt_construct_timer = self.get_timer(PKT_CONSTRUCT_TIMER, cfg!(feature = "timers"))?;
+        timefunc(
+            &mut || {
+                pkt.construct_from_sga(
+                    &sga,
+                    self.default_mempool,
+                    self.extbuf_mempool,
+                    &self.get_outgoing_header(addr)?,
+                    &mut self.shared_info,
+                )
+                .wrap_err("Unable to construct pkt from sga.")
+            },
+            cfg!(feature = "timers"),
+            pkt_construct_timer,
+        )?;
 
         // if client, add start time for packet
         match self.mode {
@@ -277,9 +401,19 @@ impl Datapath for DPDKConnection {
             }
         }
 
+        if cfg!(feature = "timers") && self.mode == DPDKMode::Server {
+            self.end_entry(PROCESSING_TIMER, sga.get_id(), addr.clone())?;
+        }
+
         // send out the scatter-gather array
-        wrapper::tx_burst(self.dpdk_port, 0, pkt.mbuf_list_ptr(), 1)
-            .wrap_err(format!("Failed to send SGA with id {}.", sga.get_id()))?;
+        timefunc(
+            &mut || {
+                wrapper::tx_burst(self.dpdk_port, 0, pkt.mbuf_list_ptr(), 1)
+                    .wrap_err(format!("Failed to send SGA with id {}.", sga.get_id()))
+            },
+            cfg!(feature = "timers"),
+            self.get_timer(TX_BURST_TIMER, cfg!(feature = "timers"))?,
+        )?;
 
         Ok(())
     }
@@ -299,44 +433,45 @@ impl Datapath for DPDKConnection {
         )
         .wrap_err("Error on calling rte_eth_rx_burst.")?;
         let mut ret: Vec<(DPDKReceivedPkt, Duration)> = Vec::new();
-        if ret.len() > 0 {
-            for key in self.outgoing_window.keys() {
-                tracing::debug!(pkt = key, "Outstanding pkt: ");
+
+        // Debugging end to end processing time
+        if cfg!(feature = "timers") && self.mode == DPDKMode::Server {
+            for (_, (msg_id, addr_info)) in received.iter() {
+                self.start_entry(PROCESSING_TIMER, *msg_id, addr_info.ipv4_addr.clone())?;
             }
         }
-        for (idx, (msg_id, addr_info)) in received.into_iter() {
-            // also check if the mac address / ip address ifnromation matches with our expectation
-            match self.mac_to_ip.get(&addr_info.ether_addr) {
-                Some(ip) => {
-                    if *ip != addr_info.ipv4_addr {
-                        bail!("Ipv4 addr {:?} does not map with mac addr {:?} in our map, our map has {:?}", addr_info.ipv4_addr, addr_info.ether_addr, ip);
-                    }
-                }
-                None => {
-                    bail!(
-                        "We don't have information about this ether addr: {:?}",
-                        addr_info.ether_addr
-                    );
-                }
-            }
-            let mbuf = mbuf_array[idx];
-            if mbuf.is_null() {
-                bail!("Mbuf for index {} in returned array is null.", idx);
-            }
-            let received_pkt =
-                DPDKReceivedPkt::new(msg_id, mbuf_array[idx], utils::TOTAL_HEADER_SIZE, addr_info);
-            let duration = match self.mode {
-                DPDKMode::Client => match self.outgoing_window.remove(&msg_id) {
-                    Some(start) => start.elapsed(),
-                    None => {
-                        warn!("Received packet for an old msg_id: {}", msg_id);
-                        continue;
-                    }
-                },
-                DPDKMode::Server => Duration::new(0, 0),
-            };
 
-            ret.push((received_pkt, duration));
+        if received.len() > 0 {
+            let pop_processing_timer = self.get_timer(
+                POP_PROCESSING_TIMER,
+                cfg!(feature = "timers") && self.mode == DPDKMode::Server,
+            )?;
+            let start = Instant::now();
+            for (idx, (msg_id, addr_info)) in received.into_iter() {
+                let mbuf = mbuf_array[idx];
+                if mbuf.is_null() {
+                    bail!("Mbuf for index {} in returned array is null.", idx);
+                }
+                let received_pkt = DPDKReceivedPkt::new(
+                    msg_id,
+                    mbuf_array[idx],
+                    utils::TOTAL_HEADER_SIZE,
+                    addr_info,
+                );
+                let duration = match self.mode {
+                    DPDKMode::Client => match self.outgoing_window.remove(&msg_id) {
+                        Some(start) => start.elapsed(),
+                        None => {
+                            warn!("Received packet for an old msg_id: {}", msg_id);
+                            continue;
+                        }
+                    },
+                    DPDKMode::Server => Duration::new(0, 0),
+                };
+
+                ret.push((received_pkt, duration));
+            }
+            record(pop_processing_timer, start.elapsed().as_nanos() as u64)?;
         }
         Ok(ret)
     }

@@ -8,7 +8,7 @@ use cornflakes_libos::{
     utils::TraceLevel,
     ClientSM, ServerSM,
 };
-use std::{net::Ipv4Addr, time::Duration};
+use std::{net::Ipv4Addr, process::exit, time::Duration};
 use structopt::StructOpt;
 use tracing::Level;
 use tracing_subscriber::{filter::LevelFilter, FmtSubscriber};
@@ -17,7 +17,7 @@ use tracing_subscriber::{filter::LevelFilter, FmtSubscriber};
 #[structopt(name = "DPDK server", about = "DPDK server program")]
 
 struct Opt {
-    #[structopt(short = "z", long = "zero_copy", help = "Zero-copy mode.")]
+    #[structopt(short = "z", long = "zero_copy", help = "zero-copy mode.")]
     zero_copy: bool,
     #[structopt(
         short = "debug",
@@ -97,17 +97,37 @@ fn main() -> Result<()> {
             .finish(),
     };
     tracing::subscriber::set_global_default(subscriber).expect("setting defualt subscriber failed");
+    let payload = vec![b'a'; opt.size];
 
     let mut connection = DPDKConnection::new(&opt.config_file, opt.mode)
         .wrap_err("Failed to initialize DPDK server connection.")?;
     match opt.mode {
         DPDKMode::Server => {
-            let mut server = EchoServer::new(opt.size, opt.zero_copy)?;
+            let mut server = EchoServer::new(opt.size, opt.zero_copy, &payload)?;
+            let histograms = connection.get_timers();
+            let echo_histograms = server.get_histograms();
+            {
+                let h = histograms;
+                let h2 = echo_histograms;
+                ctrlc::set_handler(move || {
+                    tracing::info!("In ctrl-c handler");
+                    for timer_m in h.iter() {
+                        let timer = timer_m.lock().unwrap();
+                        timer.dump_stats();
+                    }
+                    for timer_m in h2.iter() {
+                        let timer = timer_m.lock().unwrap();
+                        timer.dump_stats();
+                    }
+                    exit(0);
+                })?;
+            }
+
             server.init(&mut connection)?;
             server.run_state_machine(&mut connection)?;
         }
         DPDKMode::Client => {
-            let mut client = EchoClient::new(opt.size, opt.server_ip, opt.zero_copy)?;
+            let mut client = EchoClient::new(opt.size, opt.server_ip, opt.zero_copy, &payload)?;
             client.init(&mut connection)?;
             if opt.closed_loop {
                 client.run_closed_loop(
@@ -124,6 +144,12 @@ fn main() -> Result<()> {
                 )?;
             }
             client.dump_stats();
+            let load = ((opt.size as f64) * (opt.rate) as f64) / (125000000 as f64);
+            tracing::info!(load_gbps = ?load, "Sent at rate:");
+            for timer_m in connection.get_timers().iter() {
+                let timer = timer_m.lock().unwrap();
+                timer.dump_stats();
+            }
         }
     }
     Ok(())

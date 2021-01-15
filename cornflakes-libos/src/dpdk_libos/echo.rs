@@ -1,20 +1,30 @@
 /// This module contains a test DPDK echo server and client to test basic functionality.
 use super::super::{
-    mem, ClientSM, CornPtr, Cornflake, Datapath, MsgID, RTTHistogram, ReceivedPacket,
-    ScatterGather, ServerSM,
+    mem,
+    timing::{record, HistogramWrapper, RTTHistogram},
+    ClientSM, CornPtr, Cornflake, Datapath, MsgID, ReceivedPacket, ScatterGather, ServerSM,
 };
 use super::connection::DPDKConnection;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{bail, Result};
+use hashbrown::HashMap;
 use hdrhistogram::Histogram;
 use memmap::MmapMut;
-use std::{io::Write, net::Ipv4Addr, rc::Rc, slice, time::Duration};
+use std::{
+    io::Write,
+    net::Ipv4Addr,
+    /*rc::Rc,*/ slice,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
-fn simple_cornflake(size: usize) -> Cornflake<'static> {
-    let cornptr = CornPtr::Owned(Rc::new(vec![b'a'; size]));
+const SERVER_PROCESSING_LATENCY: &str = "SERVER_PROC_LATENCY";
+
+/*fn simple_cornflake(payload: &'a Vec<u8>) -> Cornflake<'a> {
+    let cornptr = CornPtr::Owned(payload.as_ref());
     let mut cornflake = Cornflake::default();
     cornflake.add_entry(cornptr);
     cornflake
-}
+}*/
 
 pub struct EchoClient<'a> {
     sent: usize,
@@ -28,7 +38,12 @@ pub struct EchoClient<'a> {
 }
 
 impl<'a> EchoClient<'a> {
-    pub fn new(size: usize, server_ip: Ipv4Addr, zero_copy: bool) -> Result<EchoClient<'a>> {
+    pub fn new(
+        size: usize,
+        server_ip: Ipv4Addr,
+        zero_copy: bool,
+        payload: &'a Vec<u8>,
+    ) -> Result<EchoClient<'a>> {
         let (sga, external_memory) = match zero_copy {
             true => {
                 let (metadata, mut mmap) = mem::mmap_new(100)?;
@@ -41,7 +56,12 @@ impl<'a> EchoClient<'a> {
                 cornflake.add_entry(cornptr);
                 (cornflake, Some((metadata, mmap)))
             }
-            false => (simple_cornflake(size), None),
+            false => {
+                let cornptr = CornPtr::Owned(payload.as_ref());
+                let mut cornflake = Cornflake::default();
+                cornflake.add_entry(cornptr);
+                (cornflake, None)
+            }
         };
         Ok(EchoClient {
             sent: 0,
@@ -127,7 +147,7 @@ impl<'a> ClientSM for EchoClient<'a> {
         id: MsgID,
         mut send_fn: impl FnMut(Self::OutgoingMsg) -> Result<()>,
     ) -> Result<()> {
-        tracing::debug!(id, "Retry callback");
+        tracing::info!(id, last_sent = self.last_sent_id, "Retry callback");
         self.retries += 1;
         self.sga.set_id(id);
         send_fn(self.sga.clone())
@@ -135,18 +155,23 @@ impl<'a> ClientSM for EchoClient<'a> {
 }
 
 impl<'a> RTTHistogram for EchoClient<'a> {
-    fn get_histogram(&mut self) -> &mut Histogram<u64> {
+    fn get_histogram_mut(&mut self) -> &mut Histogram<u64> {
         &mut self.rtts
+    }
+
+    fn get_histogram(&self) -> &Histogram<u64> {
+        &self.rtts
     }
 }
 
 pub struct EchoServer<'a> {
     sga: Cornflake<'a>,
     external_memory: Option<(mem::MmapMetadata, MmapMut)>,
+    histograms: HashMap<String, Arc<Mutex<HistogramWrapper>>>,
 }
 
 impl<'a> EchoServer<'a> {
-    pub fn new(size: usize, zero_copy: bool) -> Result<EchoServer<'a>> {
+    pub fn new(size: usize, zero_copy: bool, payload: &'a Vec<u8>) -> Result<EchoServer<'a>> {
         let (sga, external_memory) = match zero_copy {
             true => {
                 let (metadata, mut mmap) = mem::mmap_new(100)?;
@@ -161,12 +186,37 @@ impl<'a> EchoServer<'a> {
                 cornflake.add_entry(cornptr);
                 (cornflake, Some((metadata, mmap)))
             }
-            false => (simple_cornflake(size), None),
+            false => {
+                let cornptr = CornPtr::Owned(payload.as_ref());
+                let mut cornflake = Cornflake::default();
+                cornflake.add_entry(cornptr);
+                (cornflake, None)
+            }
         };
+        let mut histograms: HashMap<String, Arc<Mutex<HistogramWrapper>>> = HashMap::default();
+        if cfg!(feature = "timers") {
+            histograms.insert(
+                SERVER_PROCESSING_LATENCY.to_string(),
+                Arc::new(Mutex::new(HistogramWrapper::new(
+                    SERVER_PROCESSING_LATENCY,
+                )?)),
+            );
+        }
         Ok(EchoServer {
             sga: sga,
             external_memory: external_memory,
+            histograms: histograms,
         })
+    }
+
+    fn get_timer(&self, name: &str, cond: bool) -> Result<Option<Arc<Mutex<HistogramWrapper>>>> {
+        if !cond {
+            return Ok(None);
+        }
+        match self.histograms.get(name) {
+            Some(h) => Ok(Some(h.clone())),
+            None => bail!("Timer {} not in histograms."),
+        }
     }
 }
 
@@ -189,9 +239,18 @@ impl<'a> ServerSM for EchoServer<'a> {
         sga: &<<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
         mut send_fn: impl FnMut(Self::OutgoingMsg, Ipv4Addr) -> Result<()>,
     ) -> Result<()> {
+        let proc_timer = self.get_timer(SERVER_PROCESSING_LATENCY, cfg!(feature = "timers"))?;
+        let start = Instant::now();
         let addr = sga.get_addr();
         let mut out_sga = self.sga.clone();
         out_sga.set_id(sga.get_id());
+        if cfg!(feature = "timers") {
+            record(proc_timer, start.elapsed().as_nanos() as u64)?;
+        }
         send_fn(out_sga, addr.ipv4_addr)
+    }
+
+    fn get_histograms(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {
+        self.histograms.iter().map(|(_, h)| h.clone()).collect()
     }
 }
