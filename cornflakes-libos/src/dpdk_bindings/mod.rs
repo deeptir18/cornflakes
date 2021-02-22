@@ -74,6 +74,38 @@ extern "C" {
 
     fn switch_headers_(rx_mbuf: *mut rte_mbuf, tx_mbuf: *mut rte_mbuf, payload_length: usize);
 
+    fn shinfo_init_(
+        extmem_addr: *mut ::std::os::raw::c_void,
+        buf_len: *mut u16,
+    ) -> *mut rte_mbuf_ext_shared_info;
+
+    fn eth_dev_configure_(port_id: u16, rx_rings: u16, tx_rings: u16);
+
+    fn loop_in_c_(
+        port_id: u16,
+        my_eth: *mut rte_ether_addr,
+        my_ip: u32,
+        rx_bufs: *mut *mut rte_mbuf,
+        tx_bufs: *mut *mut rte_mbuf,
+        secondary_bufs: *mut *mut rte_mbuf,
+        mbuf_pool: *mut rte_mempool,
+        header_mbuf_pool: *mut rte_mempool,
+        extbuf_mempool: *mut rte_mempool,
+        num_mbufs: usize,
+        split_payload: usize,
+        zero_copy: bool,
+        use_external: bool,
+        shinfo: *mut rte_mbuf_ext_shared_info,
+        ext_mem_addr: *mut ::std::os::raw::c_void,
+    ) -> ::std::os::raw::c_int;
+
+    fn copy_payload_(
+        src_mbuf: *mut rte_mbuf,
+        src_offset: usize,
+        dst_mbuf: *mut rte_mbuf,
+        dst_offset: usize,
+        len: usize,
+    );
 }
 
 #[cfg(feature = "mlx5")]
@@ -222,4 +254,65 @@ pub unsafe fn switch_headers(
     payload_length: usize,
 ) {
     switch_headers_(rx_mbuf, tx_mbuf, payload_length);
+}
+
+#[inline]
+pub unsafe fn shinfo_init(
+    extmem_addr: *mut ::std::os::raw::c_void,
+    buf_len: *mut u16,
+) -> *mut rte_mbuf_ext_shared_info {
+    shinfo_init_(extmem_addr, buf_len)
+}
+
+#[inline]
+pub unsafe fn eth_dev_configure(port_id: u16, rx_rings: u16, tx_rings: u16) {
+    eth_dev_configure_(port_id, rx_rings, tx_rings);
+}
+
+#[inline]
+pub unsafe fn loop_in_c(
+    port_id: u16,
+    my_eth: *mut rte_ether_addr,
+    my_ip: u32,
+    rx_bufs: *mut *mut rte_mbuf,
+    tx_bufs: *mut *mut rte_mbuf,
+    secondary_bufs: *mut *mut rte_mbuf,
+    mbuf_pool: *mut rte_mempool,
+    header_mbuf_pool: *mut rte_mempool,
+    extbuf_mempool: *mut rte_mempool,
+    num_mbufs: usize,
+    split_payload: usize,
+    zero_copy: bool,
+    use_external: bool,
+    shinfo: *mut rte_mbuf_ext_shared_info,
+    ext_mem_addr: *mut ::std::os::raw::c_void,
+) -> u32 {
+    return loop_in_c_(
+        port_id,
+        my_eth,
+        my_ip,
+        rx_bufs,
+        tx_bufs,
+        secondary_bufs,
+        mbuf_pool,
+        header_mbuf_pool,
+        extbuf_mempool,
+        num_mbufs,
+        split_payload,
+        zero_copy,
+        use_external,
+        shinfo,
+        ext_mem_addr,
+    ) as u32;
+}
+
+#[inline]
+pub unsafe fn copy_payload(
+    src_mbuf: *mut rte_mbuf,
+    src_offset: usize,
+    dst_mbuf: *mut rte_mbuf,
+    dst_offset: usize,
+    len: usize,
+) {
+    copy_payload_(src_mbuf, src_offset, dst_mbuf, dst_offset, len);
 }

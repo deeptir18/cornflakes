@@ -1,17 +1,27 @@
-use super::super::{dpdk_bindings::*, dpdk_call, mbuf_slice, mem, timing::HistogramWrapper};
+use super::super::{
+    dpdk_bindings::*,
+    dpdk_call, mbuf_slice, mem,
+    timing::{record, timefunc, HistogramWrapper, RTTHistogram},
+};
 use super::{dpdk_utils, wrapper};
 use bytes::{ByteOrder, LittleEndian};
 use color_eyre::eyre::{bail, Result, WrapErr};
 use eui48::MacAddress;
+use hashbrown::HashMap;
 use std::{
     ffi::CString,
     io::Write,
     mem::{zeroed, MaybeUninit},
     net::Ipv4Addr,
+    process::exit,
     ptr, slice,
     str::FromStr,
+    sync::{Arc, Mutex},
     time::Instant,
 };
+const TX_BURST_TIMER: &str = "TX_BURST_TIMER";
+const PROC_TIMER: &str = "PROC_TIMER";
+const RX_BURST_TIMER: &str = "RX_BURST_TIMER";
 
 const RECEIVE_BURST_SIZE: u32 = 32;
 
@@ -89,7 +99,8 @@ pub fn do_client(
     let octets = server_ip.octets();
     let server_ip: u32 = dpdk_call!(make_ip(octets[0], octets[1], octets[2], octets[3]));
 
-    let mut last_sent_rs = Instant::now();
+    let start_run = Instant::now();
+    let mut rx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
     while dpdk_call!(rte_get_timer_cycles())
         < (start_time + total_time * dpdk_call!(rte_get_timer_hz()))
     {
@@ -125,10 +136,13 @@ pub fn do_client(
         tracing::debug!("Burst a packet\n");
         sent += 1;
         outstanding += 1;
-        tracing::debug!(cycle_wait = cycle_wait, hz =  dpdk_call!(rte_get_timer_hz()), last_sent = ?last_sent_rs.elapsed(), send_time = send_time, "Calling txburst");
+        tracing::debug!(
+            cycle_wait = cycle_wait,
+            hz = dpdk_call!(rte_get_timer_hz()),
+            send_time = send_time,
+            "Calling txburst"
+        );
         let last_sent = dpdk_call!(rte_get_timer_cycles());
-        last_sent_rs = Instant::now();
-        let mut rx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
 
         /* poll */
         let mut nb_rx;
@@ -165,22 +179,75 @@ pub fn do_client(
             continue;
         }
     }
-
+    let length = start_run.elapsed().as_nanos() as f64 / 1000000000.0;
+    let achieved_load = (histogram.count() as f64) / (rate as f64 * length);
     histogram.dump_stats();
+    let load = ((size as f64) * (rate) as f64) / (125000000 as f64);
+    let intersend = 1.0 / (rate as f64) * 1000000000.0;
+    tracing::info!(
+        "Rate in pkts per sec: {}, Intersend: {:?} ns, Rate in Gbps: {:?}, msg_size: {}, achieved_load: {:?}, time_run: {:?}",
+        rate,
+        intersend,
+        load,
+        size,
+        achieved_load,
+        length
+    );
     Ok(())
 }
 
 pub fn do_server(
     config_path: &str,
-    _zero_copy: bool,
+    zero_copy: bool,
     memory_mode: MemoryMode,
     num_mbufs: usize,
+    split_payload: usize,
+    use_c: bool, // do everything in C as a test
 ) -> Result<()> {
     let (_ip_to_mac, mac_to_ip, _udp_port) = dpdk_utils::parse_yaml_map(config_path).wrap_err(
         "Failed to get ip to mac address mapping, or udp port information from yaml config.",
     )?;
     let (mbuf_pool, extbuf_mempool, nb_ports) = wrapper::dpdk_init(config_path)?;
     let port = nb_ports - 1;
+
+    let mut timers: HashMap<String, Arc<Mutex<HistogramWrapper>>> = HashMap::default();
+    if cfg!(feature = "timers") {
+        timers.insert(
+            TX_BURST_TIMER.to_string(),
+            Arc::new(Mutex::new(HistogramWrapper::new(TX_BURST_TIMER)?)),
+        );
+        timers.insert(
+            PROC_TIMER.to_string(),
+            Arc::new(Mutex::new(HistogramWrapper::new(PROC_TIMER)?)),
+        );
+        timers.insert(
+            RX_BURST_TIMER.to_string(),
+            Arc::new(Mutex::new(HistogramWrapper::new(RX_BURST_TIMER)?)),
+        );
+    }
+    let get_timer = |timer_name: &str| -> Result<Option<Arc<Mutex<HistogramWrapper>>>> {
+        if !cfg!(feature = "timers") {
+            return Ok(None);
+        }
+        match timers.get(timer_name) {
+            Some(h) => Ok(Some(h.clone())),
+            None => bail!("Failed to find timer {}", timer_name),
+        }
+    };
+
+    let h: Vec<Arc<Mutex<HistogramWrapper>>> =
+        timers.iter().map(|(_, hist)| hist.clone()).collect();
+    {
+        let histograms = h;
+        ctrlc::set_handler(move || {
+            tracing::info!("In ctrl-c handler");
+            for timer_m in histograms.iter() {
+                let timer = timer_m.lock().unwrap();
+                timer.dump_stats();
+            }
+            exit(0);
+        })?;
+    }
 
     // what is my ethernet address (rte_ether_addr struct)
     let mut my_eth = wrapper::get_my_macaddr(port)?;
@@ -227,25 +294,64 @@ pub fn do_server(
         (*shared_info_uninit.as_mut_ptr()).fcb_opaque = ptr::null_mut();
         (*shared_info_uninit.as_mut_ptr()).free_cb = Some(general_free_cb_);
     }
-    let shinfo = shared_info_uninit.as_mut_ptr();
-    let (metadata, mut mmap) = mem::mmap_new(100)?;
+    //let shinfo = shared_info_uninit.as_mut_ptr();
+    let (mut metadata, mut mmap) = mem::mmap_new(100)?;
     wrapper::dpdk_register_extmem(&metadata)?;
     let payload = vec![b'a'; 10000];
     (&mut mmap[..]).write_all(payload.as_ref())?;
+    let mut length: u16 = metadata.length as u16;
+    let shinfo = dpdk_call!(shinfo_init(metadata.ptr as _, &mut length as _,));
+    metadata.length = length as usize;
 
     // now, can loop on packet arrival
     let mut rx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
     let mut tx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
     let mut secondary_tx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
 
+    if use_c {
+        let use_external = match memory_mode {
+            MemoryMode::DPDK => false,
+            MemoryMode::EXTERNAL => true,
+        };
+
+        if dpdk_call!(loop_in_c(
+            port,
+            &mut my_eth as _,
+            my_ip,
+            rx_bufs.as_mut_ptr(),
+            tx_bufs.as_mut_ptr(),
+            secondary_tx_bufs.as_mut_ptr(),
+            mbuf_pool,
+            header_mbuf_pool,
+            extbuf_mempool,
+            num_mbufs,
+            split_payload,
+            zero_copy,
+            use_external,
+            shinfo,
+            metadata.ptr as _
+        )) != 0
+        {
+            bail!("Error in loop_in_c.");
+        }
+    }
+
     loop {
+        let rx_burst_start = Instant::now();
         let num_received = dpdk_call!(rte_eth_rx_burst(
             port,
             0,
             rx_bufs.as_mut_ptr(),
             RECEIVE_BURST_SIZE as u16
         ));
+        if num_received > 0 {
+            record(
+                get_timer(RX_BURST_TIMER)?,
+                rx_burst_start.elapsed().as_nanos() as u64,
+            )?;
+        }
         let mut num_valid = 0;
+        let rx_proc_start = Instant::now();
         for i in 0..num_received {
             let n_to_tx = i as usize;
             // first: parse if valid packet, and what the payload size is
@@ -256,7 +362,10 @@ pub fn do_server(
                 continue;
             }
             num_valid += 1;
-            let header_size = unsafe { (*rx_bufs[n_to_tx]).pkt_len - payload_length as u32 };
+            let rx_buf = rx_bufs[n_to_tx];
+            let header_size = unsafe { (*rx_buf).pkt_len - payload_length as u32 };
+            let mut tx_buf: *mut rte_mbuf;
+            let mut secondary_tx: *mut rte_mbuf = secondary_tx_bufs[n_to_tx];
             // first: allocate header mbuf, and if necessary, secondary mbuf
             match memory_mode {
                 MemoryMode::DPDK => {
@@ -264,9 +373,30 @@ pub fn do_server(
                         // allocate header mbuf
                         tx_bufs[n_to_tx] = wrapper::alloc_mbuf(header_mbuf_pool)?;
                         secondary_tx_bufs[n_to_tx] = wrapper::alloc_mbuf(mbuf_pool)?;
+                        tx_buf = tx_bufs[n_to_tx];
+                        secondary_tx = secondary_tx_bufs[n_to_tx];
+
+                        if !zero_copy {
+                            let payload_slice = mbuf_slice!(secondary_tx, 0, payload_length - 8);
+                            dpdk_call!(rte_memcpy_wrapper(
+                                payload_slice.as_mut_ptr() as _,
+                                payload.as_ptr() as _,
+                                payload_length - 8,
+                            ));
+                        }
                     } else {
                         // allocate a single mbuf
                         tx_bufs[n_to_tx] = wrapper::alloc_mbuf(mbuf_pool)?;
+                        tx_buf = tx_bufs[n_to_tx];
+                        if !zero_copy {
+                            let payload_slice =
+                                mbuf_slice!(tx_buf, header_size + 8, payload_length - 8);
+                            dpdk_call!(rte_memcpy_wrapper(
+                                payload_slice.as_mut_ptr() as _,
+                                payload.as_ptr() as _,
+                                payload_length - 8
+                            ));
+                        }
                     }
                 }
                 MemoryMode::EXTERNAL => {
@@ -274,17 +404,20 @@ pub fn do_server(
                         // allocate header from normal pool
                         tx_bufs[n_to_tx] = wrapper::alloc_mbuf(mbuf_pool)?;
                         secondary_tx_bufs[n_to_tx] = wrapper::alloc_mbuf(extbuf_mempool)?;
+                        tx_buf = tx_bufs[n_to_tx];
+                        secondary_tx = secondary_tx_bufs[n_to_tx];
                         dpdk_call!(rte_pktmbuf_attach_extbuf(
-                            secondary_tx_bufs[n_to_tx],
+                            secondary_tx,
                             metadata.ptr as _,
                             0,
                             payload_length as u16,
                             shinfo
                         ));
                     } else {
-                        tx_bufs[n_to_tx] = wrapper::alloc_mbuf(mbuf_pool)?;
+                        tx_bufs[n_to_tx] = wrapper::alloc_mbuf(extbuf_mempool)?;
+                        tx_buf = tx_bufs[n_to_tx];
                         dpdk_call!(rte_pktmbuf_attach_extbuf(
-                            tx_bufs[n_to_tx],
+                            tx_buf,
                             metadata.ptr as _,
                             0,
                             payload_length as u16 + header_size as u16,
@@ -293,31 +426,26 @@ pub fn do_server(
                     }
                 }
             }
-            let tx_buf = tx_bufs[n_to_tx];
-            let rx_buf = rx_bufs[n_to_tx];
-            let secondary_tx = secondary_tx_bufs[n_to_tx];
             // switch the headers between the received mbuf and the header mbuf
             dpdk_call!(switch_headers(rx_buf, tx_buf, payload_length));
 
             // add back in client's timestamp
-            let rx_slice = mbuf_slice!(rx_buf, header_size, 8);
-            let mut tx_slice = match num_mbufs == 1 {
-                true => {
-                    mbuf_slice!(tx_buf, header_size, 8)
-                }
-                false => {
-                    assert!(num_mbufs == 2);
-                    mbuf_slice!(secondary_tx, 0, 8)
-                }
-            };
-            LittleEndian::write_u64(&mut tx_slice, LittleEndian::read_u64(&rx_slice));
+            dpdk_call!(copy_payload(
+                rx_buf,
+                header_size as usize,
+                tx_buf,
+                header_size as usize,
+                8
+            ));
 
             if num_mbufs == 2 {
                 unsafe {
                     (*tx_buf).next = secondary_tx;
-                    (*tx_buf).data_len = ((*rx_buf).pkt_len - payload_length as u32) as u16;
+                    (*tx_buf).data_len = ((*rx_buf).pkt_len - payload_length as u32) as u16
+                        + 8
+                        + split_payload as u16;
                     (*tx_buf).pkt_len = (*rx_buf).pkt_len;
-                    (*secondary_tx).data_len = payload_length as u16;
+                    (*secondary_tx).data_len = payload_length as u16 - 8 - split_payload as u16;
                     (*tx_buf).nb_segs = 2;
                 }
             } else {
@@ -329,12 +457,27 @@ pub fn do_server(
                 }
             }
             // free the rx packet
-            dpdk_call!(rte_pktmbuf_free(rx_bufs[n_to_tx]));
+            dpdk_call!(rte_pktmbuf_free(rx_buf));
         }
 
         // burst all the packets
+        if num_received != num_valid {
+            tracing::info!(
+                recvd = num_received,
+                valid = num_valid,
+                "Situation where received and valid are not equal"
+            );
+        }
         if num_valid > 0 {
-            wrapper::tx_burst(port, 0, tx_bufs.as_mut_ptr(), num_valid)?;
+            record(
+                get_timer(PROC_TIMER)?,
+                rx_proc_start.elapsed().as_nanos() as u64,
+            )?;
+            timefunc(
+                &mut || wrapper::tx_burst(port, 0, tx_bufs.as_mut_ptr(), num_valid),
+                cfg!(feature = "timers"),
+                get_timer(TX_BURST_TIMER)?,
+            )?;
         }
     }
 }

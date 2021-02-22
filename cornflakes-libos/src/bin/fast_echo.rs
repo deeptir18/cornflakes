@@ -77,6 +77,19 @@ struct Opt {
         default_value = "1"
     )]
     num_mbufs: usize,
+    #[structopt(
+        short = "split_payload",
+        long = "split_payload",
+        help = "Amount of payload to put behind header in first mbuf.",
+        default_value = "0"
+    )]
+    split_payload: usize,
+    #[structopt(
+        short = "use_c",
+        long = "use_c",
+        help = "do everything in c for debugging"
+    )]
+    use_c: bool,
 }
 
 fn main() -> Result<()> {
@@ -111,6 +124,8 @@ fn main() -> Result<()> {
                 opt.zero_copy,
                 opt.memory_mode,
                 opt.num_mbufs,
+                opt.split_payload,
+                opt.use_c,
             )?;
         }
         DPDKMode::Client => {

@@ -6,6 +6,7 @@
 #include <rte_ethdev.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
+#include <rte_malloc.h>
 #include <rte_mbuf.h>
 #include <rte_memcpy.h>
 #include <rte_udp.h>
@@ -17,6 +18,7 @@
 #define IP_VERSION 0x40
 #define IP_HDRLEN  0x05 /* default IP header length == five 32-bits words. */
 #define IP_VHL_DEF (IP_VERSION | IP_HDRLEN)
+#define RX_PACKET_LEN 9216
 
 void rte_pktmbuf_free_(struct rte_mbuf *packet) {
     rte_pktmbuf_free(packet);
@@ -89,7 +91,7 @@ int rte_dev_dma_unmap_(uint16_t device_id, void *addr, uint64_t iova, size_t len
 void custom_init_(struct rte_mempool *mp, void *opaque_arg, void *m, unsigned i) {
     struct rte_mbuf *pkt = (struct rte_mbuf *)(m);
     uint8_t *p = rte_pktmbuf_mtod(pkt, uint8_t *);
-    p += 46;
+    // p += 46;
     char *s = (char *)(p);
     memset(s, 'a', 1024);
 }
@@ -228,3 +230,131 @@ void switch_headers_(struct rte_mbuf *rx_buf, struct rte_mbuf *tx_buf, size_t pa
     tx_buf->l3_len = sizeof(struct rte_ipv4_hdr);
     tx_buf->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
 }
+
+struct rte_mbuf_ext_shared_info *shinfo_init_(void *addr, uint16_t *buf_len) {
+    return rte_pktmbuf_ext_shinfo_init_helper(addr, buf_len, general_free_cb_, NULL);
+}
+
+void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) {
+    uint16_t mtu;
+    struct rte_eth_dev_info dev_info = {};
+    rte_eth_dev_info_get(port_id, &dev_info);
+    rte_eth_dev_set_mtu(port_id, RX_PACKET_LEN);
+    rte_eth_dev_get_mtu(port_id, &mtu);
+    fprintf(stderr, "Dev info MTU:%u\n", mtu);
+    struct rte_eth_conf port_conf = {};
+    port_conf.rxmode.max_rx_pkt_len = RX_PACKET_LEN;
+
+    port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_TIMESTAMP;
+    port_conf.txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS | DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM;
+    port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
+
+    rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);
+}
+
+int loop_in_c_(uint16_t port,
+               const struct rte_ether_addr * my_eth,
+               uint32_t my_ip,
+               struct rte_mbuf **rx_bufs,
+               struct rte_mbuf **tx_bufs, 
+               struct rte_mbuf **secondary_mbufs, 
+               struct rte_mempool *mbuf_pool, 
+               struct rte_mempool *header_mbuf_pool, 
+               struct rte_mempool *extbuf_mempool, 
+               size_t num_mbufs, 
+               size_t split_payload, 
+               bool zero_copy,
+               bool use_external, 
+               struct rte_mbuf_ext_shared_info *shinfo, 
+               void *ext_mem_addr) {
+    uint32_t burst_size = 32;
+
+    while (true) {
+        uint16_t num_received = rte_eth_rx_burst(port, 0, rx_bufs, burst_size);
+        size_t num_valid = 0;
+        for (size_t i = 0; i < (size_t)num_received; i++) {
+            size_t n_to_tx = i;
+            // check if packet is valid and what payload size is
+            size_t payload_length = 0;
+            if (!parse_packet_(rx_bufs[n_to_tx], &payload_length, my_eth, my_ip)) {
+                rte_pktmbuf_free(rx_bufs[n_to_tx]);
+                continue;
+            }
+            num_valid++;
+            size_t header_size = rx_bufs[n_to_tx]->pkt_len - payload_length;
+            
+            if (!use_external) {
+                if (num_mbufs == 2) {
+                    tx_bufs[n_to_tx] = rte_pktmbuf_alloc(header_mbuf_pool);
+                    secondary_mbufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
+                    if (tx_bufs[n_to_tx] == NULL || secondary_mbufs[n_to_tx] == NULL) {
+                        printf("[loop_in_c_]: Not able to alloc tx_bufs[%u] or secondary_mbufs[%u]\n", (unsigned)i, (unsigned)i);
+                    }
+                } else if (num_mbufs == 1) {
+                    tx_bufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
+                    printf("[loop_in_c_]: Not able to alloc tx_bufs[%u]\n", (unsigned)i);
+                } else {
+                    if (tx_bufs[n_to_tx] == NULL || secondary_mbufs[n_to_tx] == NULL) { 
+                        printf("[loop_in_c_]: Num mbufs cannot be anything other than 2 or 1: %u\n", (unsigned)num_mbufs);
+                    }
+                    exit(1);
+                }
+            } else {
+                if (num_mbufs == 2) {
+                    tx_bufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
+                    secondary_mbufs[n_to_tx] = rte_pktmbuf_alloc(extbuf_mempool);
+                    if (tx_bufs[n_to_tx] == NULL || secondary_mbufs[n_to_tx] == NULL) {
+                        printf("[loop_in_c_]: Not able to alloc tx_bufs[%u] or extbuf_mempool[%u]\n", (unsigned)i, (unsigned)i);
+                    }
+                    rte_pktmbuf_attach_extbuf(secondary_mbufs[n_to_tx], ext_mem_addr, 0, payload_length + header_size, shinfo);
+                } else {
+                    printf("[loop_in_c_]: For external memory, loop_in_c_ only supports two mbufs.\n");
+                }
+            }
+            struct rte_mbuf *tx_buf = tx_bufs[n_to_tx];
+            struct rte_mbuf *rx_buf = rx_bufs[n_to_tx];
+            struct rte_mbuf *secondary_tx = secondary_mbufs[n_to_tx];
+
+            // switch headers and timestamps
+            switch_headers_(rx_buf, tx_buf, payload_length);
+            char *timestamp_rx = rte_pktmbuf_mtod_offset(rx_buf, char *, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
+            char *timestamp_tx = rte_pktmbuf_mtod_offset(tx_buf, char *, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
+            rte_memcpy(timestamp_tx, timestamp_rx, 8);
+
+            // add in mbuf metadata
+            if (num_mbufs == 2) {
+                tx_buf->next = secondary_tx;
+                tx_buf->data_len = rx_buf->pkt_len - payload_length + 8 + split_payload;
+                tx_buf->pkt_len = rx_buf->pkt_len;
+                secondary_tx->data_len  = payload_length - 8 - split_payload;
+                tx_buf->nb_segs = 2;
+            } else {
+                tx_buf->pkt_len = rx_buf->pkt_len;
+                tx_buf->data_len = rx_buf->data_len;
+                tx_buf->next = NULL;
+                tx_buf->nb_segs = 1;
+            }
+
+            rte_pktmbuf_free(rx_bufs[n_to_tx]);
+        }
+        if (num_valid > 0) {
+            uint16_t nb_recv = 0;
+            while ((size_t)nb_recv < num_valid) {
+                nb_recv = rte_eth_tx_burst(port, 0, tx_bufs, num_valid);
+            }
+        }
+    }
+    return 0;
+}
+
+void copy_payload_(struct rte_mbuf *src_mbuf,
+                   size_t src_offset, 
+                   struct rte_mbuf *dst_mbuf,
+                   size_t dst_offset,
+                   size_t len) {
+    char *rx_slice = rte_pktmbuf_mtod_offset(src_mbuf, char *, src_offset);
+    char *tx_slice = rte_pktmbuf_mtod_offset(dst_mbuf, char *, dst_offset);
+    rte_memcpy(tx_slice, rx_slice, len);
+}
+
+

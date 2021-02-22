@@ -56,6 +56,10 @@ pub trait RTTHistogram {
     fn get_histogram_mut(&mut self) -> &mut Histogram<u64>;
     fn get_histogram(&self) -> &Histogram<u64>;
 
+    fn count(&self) -> u64 {
+        self.get_histogram().len()
+    }
+
     fn add_latency(&mut self, val: u64) -> Result<()> {
         tracing::debug!(val_ns = val, "Adding latency to hist");
         self.get_histogram_mut().record(val)?;

@@ -17,7 +17,6 @@ use std::{
 use tracing::{debug, info, warn};
 
 /// Constants related to DPDK
-pub const MBUF_PADDING: u32 = 200;
 pub const NUM_MBUFS: u16 = 8191;
 pub const MBUF_CACHE_SIZE: u16 = 250;
 const RX_RING_SIZE: u16 = 2048;
@@ -114,12 +113,6 @@ impl Pkt {
             ))?;
         }
 
-        if sga.num_borrowed_segments() >= 1 {
-            unsafe {
-                (*self.mbufs[0]).data_len += MBUF_PADDING as u16;
-                (*self.mbufs[0]).pkt_len += MBUF_PADDING as u32;
-            }
-        }
         // 3: copy the payloads from the sga into the mbufs
         self.copy_sga_payloads(sga, shared_info)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
@@ -291,7 +284,7 @@ impl Pkt {
             buf.as_ptr() as _,
             buf.len()
         ));
-        mbuf_buffer.copy_from_slice(buf);
+        // mbuf_buffer.copy_from_slice(buf);
         unsafe {
             // update the data_len of this mbuf.
             (*self.mbufs[idx]).data_len += buf.len() as u16;
@@ -336,7 +329,6 @@ impl Pkt {
 
     /// Returns handle to pointer to the mbuf array.
     pub fn mbuf_list_ptr(&mut self) -> *mut *mut rte_mbuf {
-        tracing::debug!(len = self.mbufs.len(), "Mbufs has length");
         self.mbufs.as_mut_ptr()
     }
 
@@ -397,14 +389,14 @@ fn initialize_dpdk_port(port_id: u16, mbuf_pool: *mut rte_mempool) -> Result<()>
     let nb_rxd = RX_RING_SIZE;
     let nb_txd = TX_RING_SIZE;
 
-    let mut mtu: u16 = 0;
+    /*let mut mtu: u16 = 0;
     let mut dev_info: MaybeUninit<rte_eth_dev_info> = MaybeUninit::zeroed();
     dpdk_ok!(rte_eth_dev_info_get(port_id, dev_info.as_mut_ptr()));
     dpdk_ok!(rte_eth_dev_set_mtu(port_id, RX_PACKET_LEN as u16));
     dpdk_ok!(rte_eth_dev_get_mtu(port_id, &mut mtu));
-    info!("Dev info MTU: {}", mtu);
+    info!("Dev info MTU: {}", mtu);*/
 
-    let mut port_conf: MaybeUninit<rte_eth_conf> = MaybeUninit::zeroed();
+    /*let mut port_conf: MaybeUninit<rte_eth_conf> = MaybeUninit::zeroed();
     unsafe {
         (*port_conf.as_mut_ptr()).rxmode.max_rx_pkt_len = RX_PACKET_LEN;
         (*port_conf.as_mut_ptr()).rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME as u64;
@@ -413,7 +405,7 @@ fn initialize_dpdk_port(port_id: u16, mbuf_pool: *mut rte_mempool) -> Result<()>
         //    ETH_RSS_IP as u64 | (*dev_info.as_mut_ptr()).flow_type_rss_offloads;
         (*port_conf.as_mut_ptr()).txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS as u64;
         (*port_conf.as_mut_ptr()).txmode.mq_mode = rte_eth_rx_mq_mode_ETH_MQ_RX_NONE;
-    }
+    }*/
 
     let mut rx_conf: MaybeUninit<rte_eth_rxconf> = MaybeUninit::zeroed();
     unsafe {
@@ -431,12 +423,13 @@ fn initialize_dpdk_port(port_id: u16, mbuf_pool: *mut rte_mempool) -> Result<()>
     }
 
     // configure the ethernet device
-    dpdk_ok!(rte_eth_dev_configure(
+    /*dpdk_ok!(rte_eth_dev_configure(
         port_id,
         rx_rings,
         tx_rings,
         port_conf.as_mut_ptr()
-    ));
+    ));*/
+    dpdk_call!(eth_dev_configure(port_id, rx_rings, tx_rings));
 
     // TODO: from demikernel code: what does this do?
     // dpdk_ok!(rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd));
@@ -509,7 +502,7 @@ fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
         name.as_ptr(),
         (NUM_MBUFS * nb_ports) as u32,
         elt_size,
-        0,
+        MBUF_CACHE_SIZE.into(),
         size_of::<rte_pktmbuf_pool_private>() as u32,
         rte_socket_id() as i32,
         0

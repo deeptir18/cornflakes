@@ -42,14 +42,8 @@ pub struct MbufWrapper {
 impl AsRef<[u8]> for MbufWrapper {
     fn as_ref(&self) -> &[u8] {
         // length of the payload ends up being pkt_len - header_size
-        let payload_len = unsafe {
-            (*self.mbuf).pkt_len as usize - self.header_size - wrapper::MBUF_PADDING as usize
-        };
-        mbuf_slice!(
-            self.mbuf,
-            self.header_size + wrapper::MBUF_PADDING as usize,
-            payload_len
-        )
+        let payload_len = unsafe { (*self.mbuf).pkt_len as usize - self.header_size as usize };
+        mbuf_slice!(self.mbuf, self.header_size, payload_len)
     }
 }
 
@@ -96,6 +90,7 @@ impl DPDKReceivedPkt {
 /// once all references to this struct are out of scope.
 impl Drop for DPDKReceivedPkt {
     fn drop(&mut self) {
+        tracing::debug!("Dropping the mbuf!");
         wrapper::free_mbuf(self.mbuf_wrapper.mbuf);
     }
 }
@@ -228,6 +223,7 @@ impl DPDKConnection {
         let addr_info = utils::AddressInfo::new(udp_port, *my_ip_addr, my_mac_addr);
 
         // initialize any debugging histograms
+        // process::exit,
         let mut timers: HashMap<String, Arc<Mutex<HistogramWrapper>>> = HashMap::default();
         if cfg!(feature = "timers") {
             if mode == DPDKMode::Server {
@@ -282,7 +278,6 @@ impl DPDKConnection {
         cond: bool,
     ) -> Result<Option<Arc<Mutex<HistogramWrapper>>>> {
         if !cond {
-            tracing::debug!(timer_name, "Returning none timer");
             return Ok(None);
         }
         match self.timers.get(timer_name) {
