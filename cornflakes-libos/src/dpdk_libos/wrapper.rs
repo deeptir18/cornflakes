@@ -235,7 +235,7 @@ impl Pkt {
         sga.iter_apply(|cornptr| {
             // any attached mbufs will start at index 1 (1 after header)
             match cornptr.buf_type() {
-                CornType::Borrowed => {
+                CornType::Registered => {
                     // TODO: uncomment this
                     current_attached_idx += 1;
 
@@ -255,7 +255,7 @@ impl Pkt {
                     self.set_external_payload(current_attached_idx, cornptr.as_ref(), shared_info_ptr)
                         .wrap_err("Failed to set external payload into pkt list.")?;
                 }
-                CornType::Owned => {
+                CornType::Normal => {
                     if current_attached_idx > 0 {
                         bail!("Sga cannot have owned buffers after borrowed buffers; all owned buffers must be at the front.");
                     }
@@ -1082,8 +1082,8 @@ mod tests {
         let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = payload1.clone();
-        cornflake.add_entry(CornPtr::Owned(Rc::new(payload1.to_vec())));
-        cornflake.add_entry(CornPtr::Owned(Rc::new(payload2.to_vec())));
+        cornflake.add_entry(CornPtr::Normal(payload1.as_ref()));
+        cornflake.add_entry(CornPtr::Normal(payload2.as_ref()));
         pkt.construct_from_test_sga(
             &cornflake,
             vec![test_mbuf.get_pointer()],
@@ -1115,7 +1115,7 @@ mod tests {
         cornflake.set_id(1);
 
         let payload = rand::thread_rng().gen::<[u8; 32]>();
-        cornflake.add_entry(CornPtr::Owned(Rc::new(payload.to_vec())));
+        cornflake.add_entry(CornPtr::Normal(payload.as_ref()));
 
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
@@ -1150,8 +1150,8 @@ mod tests {
 
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = rand::thread_rng().gen::<[u8; 32]>();
-        cornflake.add_entry(CornPtr::Owned(Rc::new(payload1.to_vec())));
-        cornflake.add_entry(CornPtr::Owned(Rc::new(payload2.to_vec())));
+        cornflake.add_entry(CornPtr::Normal(payload1.as_ref()));
+        cornflake.add_entry(CornPtr::Normal(payload2.as_ref()));
 
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
@@ -1194,7 +1194,7 @@ mod tests {
         cornflake.set_id(1);
 
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
-        cornflake.add_entry(CornPtr::Borrowed(payload1.as_ref()));
+        cornflake.add_entry(CornPtr::Registered(payload1.as_ref()));
 
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
@@ -1242,8 +1242,8 @@ mod tests {
 
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = rand::thread_rng().gen::<[u8; 32]>();
-        cornflake.add_entry(CornPtr::Borrowed(payload1.as_ref()));
-        cornflake.add_entry(CornPtr::Borrowed(payload2.as_ref()));
+        cornflake.add_entry(CornPtr::Registered(payload1.as_ref()));
+        cornflake.add_entry(CornPtr::Registered(payload2.as_ref()));
 
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
@@ -1300,8 +1300,8 @@ mod tests {
 
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = rand::thread_rng().gen::<[u8; 32]>();
-        cornflake.add_entry(CornPtr::Owned(Rc::new(payload1.to_vec())));
-        cornflake.add_entry(CornPtr::Borrowed(payload2.as_ref()));
+        cornflake.add_entry(CornPtr::Normal(payload1.as_ref()));
+        cornflake.add_entry(CornPtr::Registered(payload2.as_ref()));
 
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
@@ -1351,8 +1351,8 @@ mod tests {
 
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
         let payload2 = rand::thread_rng().gen::<[u8; 32]>();
-        cornflake.add_entry(CornPtr::Borrowed(payload2.as_ref()));
-        cornflake.add_entry(CornPtr::Owned(Rc::new(payload1.to_vec())));
+        cornflake.add_entry(CornPtr::Registered(payload2.as_ref()));
+        cornflake.add_entry(CornPtr::Normal(payload1.as_ref()));
 
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());

@@ -5,12 +5,10 @@ use cornflakes_libos::{
         connection::DPDKMode,
         fast_echo::{do_client, do_server, MemoryMode},
     },
-    utils::TraceLevel,
 };
+use cornflakes_utils::{global_debug_init, TraceLevel};
 use std::net::Ipv4Addr;
 use structopt::StructOpt;
-use tracing::Level;
-use tracing_subscriber::{filter::LevelFilter, FmtSubscriber};
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -93,29 +91,9 @@ struct Opt {
 }
 
 fn main() -> Result<()> {
-    color_eyre::install()?;
-    dpdk_bindings::load_mlx5_driver();
-
     let opt = Opt::from_args();
-    let trace_level = opt.trace_level;
-    let subscriber = match trace_level {
-        TraceLevel::Debug => FmtSubscriber::builder()
-            .with_max_level(Level::DEBUG)
-            .finish(),
-        TraceLevel::Info => FmtSubscriber::builder()
-            .with_max_level(Level::INFO)
-            .finish(),
-        TraceLevel::Warn => FmtSubscriber::builder()
-            .with_max_level(Level::WARN)
-            .finish(),
-        TraceLevel::Error => FmtSubscriber::builder()
-            .with_max_level(Level::ERROR)
-            .finish(),
-        TraceLevel::Off => FmtSubscriber::builder()
-            .with_max_level(LevelFilter::OFF)
-            .finish(),
-    };
-    tracing::subscriber::set_global_default(subscriber).expect("setting defualt subscriber failed");
+    global_debug_init(opt.trace_level)?;
+    dpdk_bindings::load_mlx5_driver();
 
     match opt.mode {
         DPDKMode::Server => {

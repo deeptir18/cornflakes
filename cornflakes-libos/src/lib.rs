@@ -72,8 +72,8 @@ pub trait ReceivedPacket {
 /// actually owned (most likely on the heap).
 #[derive(Clone, PartialEq, Eq)]
 pub enum CornType {
-    Borrowed,
-    Owned,
+    Registered,
+    Normal,
 }
 
 /// Must be implemented by any Ptr type referred to in the ScatterGather trait.
@@ -88,19 +88,16 @@ pub trait PtrAttributes {
 #[derive(Clone, PartialEq, Eq)]
 pub enum CornPtr<'a> {
     /// Reference to some other memory (used for zero-copy send).
-    Borrowed(&'a [u8]),
-    /// "Owned" Reference to un-registered memory.
-    /// TODO: does this ever need to be mutable?
-    /// Or will it always be immutable?
-    Owned(&'a [u8]),
-    // Owned(Rc<Vec<u8>>),
+    Registered(&'a [u8]),
+    /// "Normal" Reference to un-registered memory.
+    Normal(&'a [u8]),
 }
 
 impl<'a> AsRef<[u8]> for CornPtr<'a> {
     fn as_ref(&self) -> &[u8] {
         match self {
-            CornPtr::Borrowed(buf) => buf,
-            CornPtr::Owned(buf) => buf,
+            CornPtr::Registered(buf) => buf,
+            CornPtr::Normal(buf) => buf,
         }
     }
 }
@@ -108,15 +105,15 @@ impl<'a> AsRef<[u8]> for CornPtr<'a> {
 impl<'a> PtrAttributes for CornPtr<'a> {
     fn buf_type(&self) -> CornType {
         match self {
-            CornPtr::Borrowed(_) => CornType::Borrowed,
-            CornPtr::Owned(_) => CornType::Owned,
+            CornPtr::Registered(_) => CornType::Registered,
+            CornPtr::Normal(_) => CornType::Normal,
         }
     }
 
     fn buf_size(&self) -> usize {
         match self {
-            CornPtr::Borrowed(buf) => buf.len(),
-            CornPtr::Owned(buf) => buf.len(),
+            CornPtr::Registered(buf) => buf.len(),
+            CornPtr::Normal(buf) => buf.len(),
         }
     }
 }
@@ -212,7 +209,7 @@ impl<'a> Cornflake<'a> {
     /// * length - usize representing length of memory region.
     pub fn add_entry(&mut self, ptr: CornPtr<'a>) {
         self.data_size += ptr.buf_size();
-        if ptr.buf_type() == CornType::Borrowed {
+        if ptr.buf_type() == CornType::Registered {
             self.num_borrowed += 1;
         }
         self.entries.push(ptr);
@@ -262,6 +259,9 @@ pub trait Datapath {
     /// Arguments:
     /// * mmap metadata (contains beginning, end, alignment of region)
     fn unregister_external_region(&mut self, metadata: MmapMetadata) -> Result<()>;
+
+    /// For debugging purposes, get timers to print at end of execution.
+    fn get_timers(&self) -> Vec<Arc<Mutex<HistogramWrapper>>>;
 }
 
 /// For applications that want to follow a simple open-loop request processing model at the client,
@@ -375,7 +375,6 @@ pub trait ClientSM {
 /// For server applications that want to follow a simple state-machine request processing model.
 pub trait ServerSM {
     type Datapath: Datapath;
-    type OutgoingMsg: ScatterGather;
 
     /// Process incoming message, possibly mutating internal state.
     /// Then send the next message with the given callback.
@@ -387,7 +386,7 @@ pub trait ServerSM {
     fn process_request(
         &mut self,
         sga: &<<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
-        send_fn: impl FnMut(Self::OutgoingMsg, Ipv4Addr) -> Result<()>,
+        send_fn: impl FnMut(Cornflake, Ipv4Addr) -> Result<()>,
     ) -> Result<()>;
 
     /// Runs the state machine, which responds to requests in a single-threaded fashion.

@@ -20,7 +20,7 @@ use std::{
 const SERVER_PROCESSING_LATENCY: &str = "SERVER_PROC_LATENCY";
 
 /*fn simple_cornflake(payload: &'a Vec<u8>) -> Cornflake<'a> {
-    let cornptr = CornPtr::Owned(payload.as_ref());
+    let cornptr = CornPtr::Normal(payload.as_ref());
     let mut cornflake = Cornflake::default();
     cornflake.add_entry(cornptr);
     cornflake
@@ -51,13 +51,13 @@ impl<'a> EchoClient<'a> {
                 let payload = vec![b'a'; size];
                 (&mut mmap[..]).write_all(payload.as_ref())?;
                 let cornptr =
-                    unsafe { CornPtr::Borrowed(slice::from_raw_parts(metadata.ptr, size)) };
+                    unsafe { CornPtr::Registered(slice::from_raw_parts(metadata.ptr, size)) };
                 let mut cornflake = Cornflake::default();
                 cornflake.add_entry(cornptr);
                 (cornflake, Some((metadata, mmap)))
             }
             false => {
-                let cornptr = CornPtr::Owned(payload.as_ref());
+                let cornptr = CornPtr::Normal(payload.as_ref());
                 let mut cornflake = Cornflake::default();
                 cornflake.add_entry(cornptr);
                 (cornflake, None)
@@ -181,13 +181,13 @@ impl<'a> EchoServer<'a> {
                 // this application is just testing if external memory works at all
                 // so we are just initializing the external memory unsafely
                 let cornptr =
-                    unsafe { CornPtr::Borrowed(slice::from_raw_parts(metadata.ptr, size)) };
+                    unsafe { CornPtr::Registered(slice::from_raw_parts(metadata.ptr, size)) };
                 let mut cornflake = Cornflake::default();
                 cornflake.add_entry(cornptr);
                 (cornflake, Some((metadata, mmap)))
             }
             false => {
-                let cornptr = CornPtr::Owned(payload.as_ref());
+                let cornptr = CornPtr::Normal(payload.as_ref());
                 let mut cornflake = Cornflake::default();
                 cornflake.add_entry(cornptr);
                 (cornflake, None)
@@ -222,7 +222,7 @@ impl<'a> EchoServer<'a> {
 
 impl<'a> ServerSM for EchoServer<'a> {
     type Datapath = DPDKConnection;
-    type OutgoingMsg = Cornflake<'a>;
+    //type OutgoingMsg = Cornflake<'a>;
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
         match self.external_memory {
@@ -237,7 +237,7 @@ impl<'a> ServerSM for EchoServer<'a> {
     fn process_request(
         &mut self,
         sga: &<<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
-        mut send_fn: impl FnMut(Self::OutgoingMsg, Ipv4Addr) -> Result<()>,
+        mut send_fn: impl FnMut(Cornflake, Ipv4Addr) -> Result<()>,
     ) -> Result<()> {
         let proc_timer = self.get_timer(SERVER_PROCESSING_LATENCY, cfg!(feature = "timers"))?;
         let start = Instant::now();

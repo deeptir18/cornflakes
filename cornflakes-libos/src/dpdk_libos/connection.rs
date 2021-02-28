@@ -49,7 +49,7 @@ impl AsRef<[u8]> for MbufWrapper {
 
 impl PtrAttributes for MbufWrapper {
     fn buf_type(&self) -> CornType {
-        CornType::Borrowed
+        CornType::Registered
     }
 
     fn buf_size(&self) -> usize {
@@ -266,10 +266,6 @@ impl DPDKConnection {
             shared_info: HashMap::new(),
             timers: timers,
         })
-    }
-
-    pub fn get_timers(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {
-        self.timers.iter().map(|(_, hist)| hist.clone()).collect()
     }
 
     fn get_timer(
@@ -537,6 +533,10 @@ impl Datapath for DPDKConnection {
             );
             }
         }
+    }
+
+    fn get_timers(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {
+        self.timers.iter().map(|(_, hist)| hist.clone()).collect()
     }
 }
 

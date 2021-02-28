@@ -5,13 +5,11 @@ use cornflakes_libos::{
         connection::{DPDKConnection, DPDKMode},
         echo::{EchoClient, EchoServer},
     },
-    utils::TraceLevel,
-    ClientSM, ServerSM,
+    ClientSM, Datapath, ServerSM,
 };
+use cornflakes_utils::{global_debug_init, TraceLevel};
 use std::{net::Ipv4Addr, process::exit, time::Duration};
 use structopt::StructOpt;
-use tracing::Level;
-use tracing_subscriber::{filter::LevelFilter, FmtSubscriber};
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "DPDK server", about = "DPDK server program")]
@@ -74,29 +72,10 @@ struct Opt {
 }
 
 fn main() -> Result<()> {
-    color_eyre::install()?;
+    let opt = Opt::from_args();
+    global_debug_init(opt.trace_level)?;
     dpdk_bindings::load_mlx5_driver();
 
-    let opt = Opt::from_args();
-    let trace_level = opt.trace_level;
-    let subscriber = match trace_level {
-        TraceLevel::Debug => FmtSubscriber::builder()
-            .with_max_level(Level::DEBUG)
-            .finish(),
-        TraceLevel::Info => FmtSubscriber::builder()
-            .with_max_level(Level::INFO)
-            .finish(),
-        TraceLevel::Warn => FmtSubscriber::builder()
-            .with_max_level(Level::WARN)
-            .finish(),
-        TraceLevel::Error => FmtSubscriber::builder()
-            .with_max_level(Level::ERROR)
-            .finish(),
-        TraceLevel::Off => FmtSubscriber::builder()
-            .with_max_level(LevelFilter::OFF)
-            .finish(),
-    };
-    tracing::subscriber::set_global_default(subscriber).expect("setting defualt subscriber failed");
     let payload = vec![b'a'; opt.size];
 
     let mut connection = DPDKConnection::new(&opt.config_file, opt.mode)
