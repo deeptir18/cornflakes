@@ -26,24 +26,24 @@ const SERVER_PROCESSING_LATENCY: &str = "SERVER_PROC_LATENCY";
     cornflake
 }*/
 
-pub struct EchoClient<'a> {
+pub struct EchoClient<'a, 'b> {
     sent: usize,
     recved: usize,
     last_sent_id: MsgID,
     retries: usize,
-    sga: Cornflake<'a>,
+    sga: Cornflake<'a, 'b>,
     server_ip: Ipv4Addr,
     rtts: Histogram<u64>,
     external_memory: Option<(mem::MmapMetadata, MmapMut)>,
 }
 
-impl<'a> EchoClient<'a> {
+impl<'a, 'b> EchoClient<'a, 'b> {
     pub fn new(
         size: usize,
         server_ip: Ipv4Addr,
         zero_copy: bool,
-        payload: &'a Vec<u8>,
-    ) -> Result<EchoClient<'a>> {
+        payload: &'b [u8],
+    ) -> Result<EchoClient<'a, 'b>> {
         let (sga, external_memory) = match zero_copy {
             true => {
                 let (metadata, mut mmap) = mem::mmap_new(100)?;
@@ -87,9 +87,9 @@ impl<'a> EchoClient<'a> {
     }
 }
 
-impl<'a> ClientSM for EchoClient<'a> {
+impl<'a, 'b> ClientSM for EchoClient<'a, 'b> {
     type Datapath = DPDKConnection;
-    type OutgoingMsg = Cornflake<'a>;
+    type OutgoingMsg = Cornflake<'a, 'b>;
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
         match self.external_memory {
@@ -154,7 +154,7 @@ impl<'a> ClientSM for EchoClient<'a> {
     }
 }
 
-impl<'a> RTTHistogram for EchoClient<'a> {
+impl<'a, 'b> RTTHistogram for EchoClient<'a, 'b> {
     fn get_histogram_mut(&mut self) -> &mut Histogram<u64> {
         &mut self.rtts
     }
@@ -164,14 +164,14 @@ impl<'a> RTTHistogram for EchoClient<'a> {
     }
 }
 
-pub struct EchoServer<'a> {
-    sga: Cornflake<'a>,
+pub struct EchoServer<'a, 'b> {
+    sga: Cornflake<'a, 'b>,
     external_memory: Option<(mem::MmapMetadata, MmapMut)>,
     histograms: HashMap<String, Arc<Mutex<HistogramWrapper>>>,
 }
 
-impl<'a> EchoServer<'a> {
-    pub fn new(size: usize, zero_copy: bool, payload: &'a Vec<u8>) -> Result<EchoServer<'a>> {
+impl<'a, 'b> EchoServer<'a, 'b> {
+    pub fn new(size: usize, zero_copy: bool, payload: &'b [u8]) -> Result<EchoServer<'a, 'b>> {
         let (sga, external_memory) = match zero_copy {
             true => {
                 let (metadata, mut mmap) = mem::mmap_new(100)?;
@@ -220,7 +220,7 @@ impl<'a> EchoServer<'a> {
     }
 }
 
-impl<'a> ServerSM for EchoServer<'a> {
+impl<'a, 'b> ServerSM for EchoServer<'a, 'b> {
     type Datapath = DPDKConnection;
     //type OutgoingMsg = Cornflake<'a>;
 

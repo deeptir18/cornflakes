@@ -37,19 +37,19 @@ where
     }
 }
 
-pub struct FlatbuffersEchoClient<'a> {
+pub struct FlatbuffersEchoClient<'registered, 'normal> {
     message_type: SimpleMessageType,
     payload_ptrs: Vec<(*const u8, usize)>,
     //payloads: Vec<&'a [u8]>,
-    sga: Cornflake<'a>,
+    sga: Cornflake<'registered, 'normal>,
 }
 
-impl<'a, D> CerealizeClient<D> for FlatbuffersEchoClient<'a>
+impl<'registered, 'normal, D> CerealizeClient<D> for FlatbuffersEchoClient<'registered, 'normal>
 where
     D: Datapath,
 {
     type Ctx = ();
-    type OutgoingMsg = Cornflake<'a>;
+    type OutgoingMsg = Cornflake<'registered, 'normal>;
 
     fn new(
         message_type: SimpleMessageType,
@@ -58,7 +58,7 @@ where
         mmap_mut: &mut MmapMut,
     ) -> Result<Self> {
         let payload_ptrs = init_payloads(&field_sizes, &mmap_metadata, mmap_mut)?;
-        let payloads: Vec<&'a [u8]> = payload_ptrs
+        let payloads: Vec<&'registered [u8]> = payload_ptrs
             .clone()
             .iter()
             .map(|(ptr, size)| unsafe { slice::from_raw_parts(*ptr, *size) })
@@ -67,7 +67,7 @@ where
         // TODO: actually initialize the cornflake for real
         let mut sga = Cornflake::default();
         for payload in payloads.iter() {
-            sga.add_entry(CornPtr::Normal(payload));
+            sga.add_entry(CornPtr::Registered(payload));
         }
 
         Ok(FlatbuffersEchoClient {

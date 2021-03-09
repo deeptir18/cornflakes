@@ -86,14 +86,14 @@ pub trait PtrAttributes {
 /// Or an owned value.
 /// TODO: having this be an enum might double storage necessary for IOvecs
 #[derive(Clone, PartialEq, Eq)]
-pub enum CornPtr<'a> {
+pub enum CornPtr<'registered, 'normal> {
     /// Reference to some other memory (used for zero-copy send).
-    Registered(&'a [u8]),
+    Registered(&'registered [u8]),
     /// "Normal" Reference to un-registered memory.
-    Normal(&'a [u8]),
+    Normal(&'normal [u8]),
 }
 
-impl<'a> AsRef<[u8]> for CornPtr<'a> {
+impl<'registered, 'normal> AsRef<[u8]> for CornPtr<'registered, 'normal> {
     fn as_ref(&self) -> &[u8] {
         match self {
             CornPtr::Registered(buf) => buf,
@@ -102,7 +102,7 @@ impl<'a> AsRef<[u8]> for CornPtr<'a> {
     }
 }
 
-impl<'a> PtrAttributes for CornPtr<'a> {
+impl<'registered, 'normal> PtrAttributes for CornPtr<'registered, 'normal> {
     fn buf_type(&self) -> CornType {
         match self {
             CornPtr::Registered(_) => CornType::Registered,
@@ -122,18 +122,18 @@ impl<'a> PtrAttributes for CornPtr<'a> {
 /// Datapaths must be able to send and receive cornflakes.
 /// TODO: might not be necessary to separately keep track of lengths.
 #[derive(Clone, Eq, PartialEq)]
-pub struct Cornflake<'a> {
+pub struct Cornflake<'registered, 'normal> {
     /// Id for message. If None, datapath doesn't need to keep track of per-packet timeouts.
     id: MsgID,
     /// Pointers to scattered memory segments.
-    entries: Vec<CornPtr<'a>>,
+    entries: Vec<CornPtr<'registered, 'normal>>,
     /// Num borrowed segments
     num_borrowed: usize,
     /// Data size
     data_size: usize,
 }
 
-impl<'a> Default for Cornflake<'a> {
+impl<'registered, 'normal> Default for Cornflake<'registered, 'normal> {
     fn default() -> Self {
         Cornflake {
             id: 0,
@@ -144,9 +144,9 @@ impl<'a> Default for Cornflake<'a> {
     }
 }
 
-impl<'a> ScatterGather for Cornflake<'a> {
+impl<'registered, 'normal> ScatterGather for Cornflake<'registered, 'normal> {
     /// Pointer type is reference to CornPtr.
-    type Ptr = CornPtr<'a>;
+    type Ptr = CornPtr<'registered, 'normal>;
     /// Can return an iterator over CornPtr references.
     type Collection = Vec<Self::Ptr>;
 
@@ -201,13 +201,13 @@ impl<'a> ScatterGather for Cornflake<'a> {
     }
 }
 
-impl<'a> Cornflake<'a> {
+impl<'registered, 'normal> Cornflake<'registered, 'normal> {
     /// Adds a scatter-gather entry to this cornflake.
     /// Passes ownership of the CornPtr.
     /// Arguments:
     /// * ptr - CornPtr<'a> representing owned or borrowed memory.
     /// * length - usize representing length of memory region.
-    pub fn add_entry(&mut self, ptr: CornPtr<'a>) {
+    pub fn add_entry(&mut self, ptr: CornPtr<'registered, 'normal>) {
         self.data_size += ptr.buf_size();
         if ptr.buf_type() == CornType::Registered {
             self.num_borrowed += 1;

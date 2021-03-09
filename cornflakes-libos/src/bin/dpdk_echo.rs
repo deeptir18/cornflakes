@@ -82,7 +82,7 @@ fn main() -> Result<()> {
         .wrap_err("Failed to initialize DPDK server connection.")?;
     match opt.mode {
         DPDKMode::Server => {
-            let mut server = EchoServer::new(opt.size, opt.zero_copy, &payload)?;
+            let mut server = EchoServer::new(opt.size, opt.zero_copy, &payload.as_ref())?;
             let histograms = connection.get_timers();
             let echo_histograms = server.get_histograms();
             {
@@ -106,7 +106,8 @@ fn main() -> Result<()> {
             server.run_state_machine(&mut connection)?;
         }
         DPDKMode::Client => {
-            let mut client = EchoClient::new(opt.size, opt.server_ip, opt.zero_copy, &payload)?;
+            let mut client =
+                EchoClient::new(opt.size, opt.server_ip, opt.zero_copy, &payload.as_ref())?;
             client.init(&mut connection)?;
             if opt.closed_loop {
                 client.run_closed_loop(
