@@ -1,6 +1,19 @@
 use color_eyre::eyre::{bail, Result};
 use tracing::Level;
+use tracing_subscriber;
 use tracing_subscriber::{filter::LevelFilter, FmtSubscriber};
+
+#[macro_export]
+macro_rules! test_init(
+        () => {
+            let subscriber = tracing_subscriber::registry()
+                .with(tracing_subscriber::fmt::layer())
+                .with(tracing_subscriber::EnvFilter::from_default_env())
+                .with(ErrorLayer::default());
+            let _guard = subscriber.set_default();
+            color_eyre::install().unwrap_or_else(|_| ());
+        }
+    );
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum NetworkDatapath {

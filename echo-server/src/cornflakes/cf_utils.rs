@@ -1,13 +1,7 @@
 use byteorder::{ByteOrder, LittleEndian};
-use bytes::BytesMut;
+use bytes::{BufMut, BytesMut};
 use cornflakes_libos::{CornPtr, Cornflake, PtrAttributes};
-use std::{
-    fmt::Debug,
-    marker::PhantomData,
-    mem::{size_of, transmute},
-    ops::Index,
-    ptr, slice,
-};
+use std::{fmt::Debug, marker::PhantomData, mem::size_of, ops::Index, ptr, slice, str};
 
 pub const SIZE_FIELD: usize = 4;
 pub const OFFSET_FIELD: usize = 4;
@@ -60,7 +54,7 @@ pub trait HeaderRepr<'registered> {
         let mut cornptrs = self.inner_serialize(header_ptr, copy_func, 0);
         cf.add_entry(CornPtr::Normal(header_buffer));
         cornptrs.sort_by(|a, b| a.0.buf_size().partial_cmp(&b.0.buf_size()).unwrap());
-        let mut cur_offset = self.dynamic_header_size();
+        let mut cur_offset = self.total_header_size();
         for (cornptr, offset) in cornptrs.into_iter() {
             let mut obj_ref = ObjectRef(offset as *const u8);
             obj_ref.write_offset(cur_offset);
@@ -70,8 +64,25 @@ pub trait HeaderRepr<'registered> {
         cf
     }
 
-    fn deserialize(&mut self, buf: &'registered [u8], size: usize) {
-        self.inner_deserialize(buf.as_ptr(), size, 0)
+    fn deserialize(&mut self, buf: &'registered [u8]) {
+        self.inner_deserialize(buf.as_ptr(), buf.len(), 0)
+    }
+}
+
+impl<'registered> CFString<'registered> {
+    pub fn new(ptr: &'registered str) -> Self {
+        CFString {
+            ptr: ptr.as_bytes(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.ptr.len()
+    }
+
+    /// Assumes that the string is utf8-encoded.
+    pub fn to_string(&self) -> String {
+        str::from_utf8(self.ptr).unwrap().to_string()
     }
 }
 
@@ -94,15 +105,25 @@ impl<'registered> HeaderRepr<'registered> for CFString<'registered> {
     ) -> Vec<(CornPtr<'registered, 'normal>, *mut u8)> {
         let mut obj_ref = ObjectRef(header_ptr as _);
         obj_ref.write_size(self.ptr.len());
-        vec![(CornPtr::Registered(self.ptr), obj_ref.get_offset_ptr())]
+        vec![(CornPtr::Registered(self.ptr), header_ptr)]
     }
 
     fn inner_deserialize(&mut self, buf: *const u8, size: usize, relative_offset: usize) {
-        assert!(size == Self::CONSTANT_HEADER_SIZE);
+        assert!(size >= Self::CONSTANT_HEADER_SIZE);
         let object_ref = ObjectRef(buf);
         let payload_buf =
             unsafe { buf.offset((object_ref.get_offset() - relative_offset) as isize) };
         self.ptr = unsafe { slice::from_raw_parts(payload_buf, object_ref.get_size()) };
+    }
+}
+
+impl<'registered> CFBytes<'registered> {
+    pub fn new(ptr: &'registered [u8]) -> Self {
+        CFBytes { ptr: ptr }
+    }
+
+    pub fn len(&self) -> usize {
+        self.ptr.len()
     }
 }
 
@@ -125,11 +146,11 @@ impl<'registered> HeaderRepr<'registered> for CFBytes<'registered> {
     ) -> Vec<(CornPtr<'registered, 'normal>, *mut u8)> {
         let mut obj_ref = ObjectRef(header_ptr as _);
         obj_ref.write_size(self.ptr.len());
-        vec![(CornPtr::Registered(self.ptr), obj_ref.get_offset_ptr())]
+        vec![(CornPtr::Registered(self.ptr), header_ptr)]
     }
 
     fn inner_deserialize(&mut self, buf: *const u8, size: usize, relative_offset: usize) {
-        assert!(size == Self::CONSTANT_HEADER_SIZE);
+        assert!(size >= Self::CONSTANT_HEADER_SIZE);
         let object_ref = ObjectRef(buf);
         let payload_buf =
             unsafe { buf.offset((object_ref.get_offset() - relative_offset) as isize) };
@@ -155,12 +176,29 @@ where
     }
 }
 
+impl<'registered, T> Index<usize> for List<'registered, T>
+where
+    T: Default + Debug + Clone + PartialEq + Eq,
+{
+    type Output = T;
+    fn index(&self, idx: usize) -> &T {
+        match self {
+            List::Owned(owned_list) => owned_list.index(idx),
+            List::Ref(ref_list) => ref_list.index(idx),
+        }
+    }
+}
+
 impl<'registered, T> List<'registered, T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
     pub fn init(size: usize) -> List<'registered, T> {
         List::Owned(OwnedList::init(size))
+    }
+
+    pub fn init_ref() -> List<'registered, T> {
+        List::Ref(RefList::default())
     }
 
     pub fn append(&mut self, val: T) {
@@ -179,14 +217,15 @@ where
         }
     }
 
-    pub fn size(&self) -> usize {
+    pub fn len(&self) -> usize {
         match self {
-            List::Owned(owned_list) => owned_list.size(),
-            List::Ref(ref_list) => ref_list.size(),
+            List::Owned(owned_list) => owned_list.len(),
+            List::Ref(ref_list) => ref_list.len(),
         }
     }
 }
 
+// TODO: use num-traits?
 impl<'registered, T> HeaderRepr<'registered> for List<'registered, T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
@@ -242,7 +281,8 @@ where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
     pub fn init(size: usize) -> OwnedList<'registered, T> {
-        let buf_mut = BytesMut::with_capacity(size * size_of::<T>());
+        let mut buf_mut = BytesMut::with_capacity(size * size_of::<T>());
+        buf_mut.put(vec![0u8; size * size_of::<T>()].as_slice());
         OwnedList {
             num_space: size,
             num_set: 0,
@@ -253,37 +293,28 @@ where
 
     pub fn append(&mut self, val: T) {
         assert!(self.num_set < self.num_space);
-        self.write_val(self.num_set + 1, val);
+        self.write_val(self.num_set, val);
         self.num_set += 1;
     }
 
     pub fn replace(&mut self, idx: usize, val: T) {
+        assert!(idx < self.num_space);
         self.write_val(idx, val);
     }
 
-    pub fn size(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.num_set
     }
 
     fn write_val(&mut self, val_idx: usize, val: T) {
-        let offset = unsafe {
-            self.list_ptr
-                .as_mut_ptr()
-                .offset((val_idx * size_of::<T>()) as isize)
-        };
-        let slice = unsafe { slice::from_raw_parts_mut(offset, size_of::<T>()) };
-        let t_slice = unsafe { transmute::<&mut [u8], &mut [T]>(slice) };
+        let offset = unsafe { (self.list_ptr.as_mut_ptr() as *mut T).offset(val_idx as isize) };
+        let t_slice = unsafe { slice::from_raw_parts_mut(offset, 1) };
         t_slice[0] = val;
     }
 
     fn read_val(&self, val_idx: usize) -> &T {
-        let offset = unsafe {
-            self.list_ptr
-                .as_ptr()
-                .offset((val_idx * size_of::<T>()) as isize)
-        };
-        let slice = unsafe { slice::from_raw_parts(offset, size_of::<T>()) };
-        let t_slice = unsafe { transmute::<&[u8], &[T]>(slice) };
+        let offset = unsafe { (self.list_ptr.as_ptr() as *const T).offset(val_idx as isize) };
+        let t_slice = unsafe { slice::from_raw_parts(offset, 1) };
         &t_slice[0]
     }
 }
@@ -330,12 +361,13 @@ where
 
     // Re-initializing owned list is not 0-copy. 0-copy only works for ref-list.
     fn inner_deserialize(&mut self, buf: *const u8, size: usize, _relative_offset: usize) {
-        self.num_set = size;
-        self.num_space = size;
-        self.list_ptr = BytesMut::with_capacity(size * size_of::<T>());
+        self.num_set = size / size_of::<T>();
+        self.num_space = size / size_of::<T>();
+        self.list_ptr = BytesMut::with_capacity(size);
         // copy the bytes from the buf to the list_ptr
         self.list_ptr
-            .copy_from_slice(unsafe { slice::from_raw_parts(buf, size * size_of::<T>()) });
+            .chunk_mut()
+            .copy_from_slice(unsafe { slice::from_raw_parts(buf, size) });
     }
 }
 
@@ -367,26 +399,23 @@ where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
     pub fn replace(&mut self, idx: usize, val: T) {
+        assert!(idx < self.num_space);
         self.write_val(idx, val);
     }
 
-    pub fn size(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.num_space
     }
 
-    fn write_val(&self, val_idx: usize, val: T) {
-        let offset =
-            unsafe { (self.list_ptr as *mut u8).offset((val_idx * size_of::<T>()) as isize) };
-        // TODO: this is extremely sketchy.
-        let slice = unsafe { slice::from_raw_parts_mut(offset, size_of::<T>()) };
-        let t_slice = unsafe { transmute::<&mut [u8], &mut [T]>(slice) };
+    fn write_val(&mut self, val_idx: usize, val: T) {
+        let offset = unsafe { (self.list_ptr as *mut T).offset(val_idx as isize) };
+        let t_slice = unsafe { slice::from_raw_parts_mut(offset, 1) };
         t_slice[0] = val;
     }
 
     fn read_val(&self, val_idx: usize) -> &T {
-        let offset = unsafe { self.list_ptr.offset((val_idx * size_of::<T>()) as isize) };
-        let slice = unsafe { slice::from_raw_parts(offset, size_of::<T>()) };
-        let t_slice = unsafe { transmute::<&[u8], &[T]>(slice) };
+        let offset = unsafe { (self.list_ptr as *const T).offset(val_idx as isize) };
+        let t_slice = unsafe { slice::from_raw_parts(offset, 1) };
         &t_slice[0]
     }
 }
@@ -432,7 +461,7 @@ where
     }
 
     fn inner_deserialize(&mut self, buf: *const u8, size: usize, _relative_offset: usize) {
-        self.num_space = size;
+        self.num_space = size / size_of::<T>();
         self.list_ptr = buf as _;
     }
 }
@@ -472,7 +501,7 @@ where
         self.elts[idx] = val;
     }
 
-    pub fn size(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.num_set
     }
 
@@ -605,8 +634,595 @@ impl ObjectRef {
             );
         }
     }
+}
 
-    pub fn get_offset_ptr(&self) -> *mut u8 {
-        unsafe { self.0.offset(4) as *mut u8 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cornflakes_libos::{CornPtr, PtrAttributes, ScatterGather};
+    use cornflakes_utils::test_init;
+    use libc;
+    use std::{io::Write, slice, str};
+    use tracing_error::ErrorLayer;
+    use tracing_subscriber;
+    use tracing_subscriber::{layer::SubscriberExt, prelude::*};
+
+    unsafe fn copy_func(
+        dst: *mut ::std::os::raw::c_void,
+        src: *const ::std::os::raw::c_void,
+        n: usize,
+    ) {
+        libc::memcpy(dst, src, n);
+    }
+
+    #[test]
+    fn encode_single_string_ptr() {
+        test_init!();
+        let string = "HELLO".to_string();
+        let cf_string = CFString::new(string.as_str());
+        let ptr = unsafe { libc::malloc(SIZE_FIELD + OFFSET_FIELD) };
+        let header_buffer =
+            unsafe { slice::from_raw_parts_mut(ptr as *mut u8, SIZE_FIELD + OFFSET_FIELD) };
+
+        let cf = cf_string.serialize(header_buffer, copy_func);
+        assert!(cf.num_segments() == 2);
+
+        // check object ref in the first scatter-gather entry
+        let first_entry = cf.get(0).unwrap();
+        assert!(first_entry.buf_size() == 8);
+        assert!(
+            *first_entry
+                == CornPtr::Normal(unsafe {
+                    slice::from_raw_parts(ptr as *const u8, SIZE_FIELD + OFFSET_FIELD)
+                })
+        );
+        // check payload in first cornflake (header)
+        let header_slice = ObjectRef(first_entry.as_ref().as_ptr());
+        // length of HELLO
+        assert!(header_slice.get_size() == 5);
+        // offset it should have
+        assert!(header_slice.get_offset() == 8);
+
+        // check 2nd cornflake
+        let second_entry = cf.get(1).unwrap();
+        assert!(second_entry.buf_size() == 5);
+        // check payload in second cornflake
+        let str_ref = str::from_utf8(second_entry.as_ref()).unwrap();
+        assert!(str_ref == string.as_str());
+        unsafe {
+            libc::free(ptr);
+        }
+    }
+
+    #[test]
+    fn decode_single_string_ptr() {
+        test_init!();
+        let string = "HELLO".to_string();
+        let ptr = unsafe { libc::malloc(SIZE_FIELD + OFFSET_FIELD + string.len()) };
+        let mut object_ref = ObjectRef(ptr as _);
+        object_ref.write_size(5);
+        object_ref.write_offset(8);
+
+        let header_buffer = unsafe {
+            slice::from_raw_parts_mut(ptr as *mut u8, SIZE_FIELD + OFFSET_FIELD + string.len())
+        };
+        let mut header_buffer_slice = &mut header_buffer[8..];
+        header_buffer_slice
+            .write(string.as_str().as_bytes())
+            .unwrap();
+        let final_buffer = unsafe {
+            slice::from_raw_parts(ptr as *const u8, SIZE_FIELD + OFFSET_FIELD + string.len())
+        };
+
+        let mut cf_string = CFString::default();
+        cf_string.deserialize(final_buffer);
+
+        assert!(cf_string.ptr.len() == 5);
+        let str_ref = str::from_utf8(cf_string.ptr).unwrap();
+        assert!(str_ref == string.as_str());
+        unsafe {
+            libc::free(ptr);
+        }
+    }
+
+    #[test]
+    fn encode_single_bytes_ptr() {
+        test_init!();
+        let string = "HELLO".to_string();
+        let cf_bytes = CFBytes::new(string.as_str().as_bytes());
+        let ptr = unsafe { libc::malloc(SIZE_FIELD + OFFSET_FIELD) };
+        let header_buffer =
+            unsafe { slice::from_raw_parts_mut(ptr as *mut u8, SIZE_FIELD + OFFSET_FIELD) };
+
+        let cf = cf_bytes.serialize(header_buffer, copy_func);
+        assert!(cf.num_segments() == 2);
+
+        // check object ref in the first scatter-gather entry
+        let first_entry = cf.get(0).unwrap();
+        assert!(first_entry.buf_size() == 8);
+        assert!(
+            *first_entry
+                == CornPtr::Normal(unsafe {
+                    slice::from_raw_parts(ptr as *const u8, SIZE_FIELD + OFFSET_FIELD)
+                })
+        );
+        // check payload in first cornflake (header)
+        let header_slice = ObjectRef(first_entry.as_ref().as_ptr());
+        // length of HELLO
+        assert!(header_slice.get_size() == 5);
+        // offset it should have
+        assert!(header_slice.get_offset() == 8);
+
+        // check 2nd cornflake
+        let second_entry = cf.get(1).unwrap();
+        assert!(second_entry.buf_size() == 5);
+        // check payload in second cornflake
+        assert!(second_entry.as_ref() == string.as_str().as_bytes());
+        assert!(str::from_utf8(second_entry.as_ref()).unwrap() == string.as_str());
+        unsafe {
+            libc::free(ptr);
+        }
+    }
+
+    #[test]
+    fn decode_single_bytes_ptr() {
+        test_init!();
+        let string = "HELLO".to_string();
+        let ptr = unsafe { libc::malloc(SIZE_FIELD + OFFSET_FIELD + string.len()) };
+        let mut object_ref = ObjectRef(ptr as _);
+        object_ref.write_size(5);
+        object_ref.write_offset(8);
+
+        let header_buffer = unsafe {
+            slice::from_raw_parts_mut(ptr as *mut u8, SIZE_FIELD + OFFSET_FIELD + string.len())
+        };
+        let mut header_buffer_slice = &mut header_buffer[8..];
+        header_buffer_slice
+            .write(string.as_str().as_bytes())
+            .unwrap();
+        let final_buffer = unsafe {
+            slice::from_raw_parts(ptr as *const u8, SIZE_FIELD + OFFSET_FIELD + string.len())
+        };
+
+        let mut cf_bytes = CFBytes::default();
+        cf_bytes.deserialize(final_buffer);
+
+        assert!(cf_bytes.ptr.len() == 5);
+        let str_ref = str::from_utf8(cf_bytes.ptr).unwrap();
+        assert!(str_ref == string.as_str());
+        unsafe {
+            libc::free(ptr);
+        }
+    }
+
+    #[test]
+    fn test_int32_list() {
+        test_init!();
+        let mut list = List::<i32>::init(3);
+        list.append(10);
+        assert!(list[0] == 10);
+        assert!(list.len() == 1);
+        list.append(11);
+        assert!(list[1] == 11);
+        assert!(list.len() == 2);
+        list.append(12);
+        assert!(list[2] == 12);
+        list.replace(0, 15);
+        assert!(list[0] == 15);
+        assert!(list.len() == 3);
+
+        // serialize the int list
+        let ptr = unsafe { libc::malloc(12) };
+        let header_buffer = unsafe { slice::from_raw_parts_mut(ptr as *mut u8, 12) };
+        let cf = list.serialize(header_buffer, copy_func);
+
+        assert!(cf.num_segments() == 1);
+        let header_entry = cf.get(0).unwrap();
+        assert!(
+            *header_entry == CornPtr::Normal(unsafe { slice::from_raw_parts(ptr as *mut u8, 12) })
+        );
+
+        // check the contents of the int list in serialized format
+        let first_int =
+            LittleEndian::read_i32(unsafe { slice::from_raw_parts(ptr as *const u8, 4) });
+        assert!(first_int == 15);
+
+        let second_int = LittleEndian::read_i32(unsafe {
+            slice::from_raw_parts((ptr as *const u8).offset(4), 4)
+        });
+        assert!(second_int == 11);
+        let third_int = LittleEndian::read_i32(unsafe {
+            slice::from_raw_parts((ptr as *const u8).offset(8), 4)
+        });
+        assert!(third_int == 12);
+
+        // deserialize the int list
+        let mut deserialized_list = List::<i32>::init_ref();
+        deserialized_list.deserialize(unsafe { slice::from_raw_parts(ptr as *const u8, 12) });
+        assert!(deserialized_list.len() == 3);
+        assert!(deserialized_list[0] == 15);
+        assert!(deserialized_list[1] == 11);
+        assert!(deserialized_list[2] == 12);
+
+        let mut deserialized_list_owned = List::<i32>::default();
+        deserialized_list_owned.deserialize(unsafe { slice::from_raw_parts(ptr as *const u8, 24) });
+        assert!(deserialized_list.len() == 3);
+        assert!(deserialized_list[0] == 15);
+        assert!(deserialized_list[1] == 11);
+        assert!(deserialized_list[2] == 12);
+        unsafe {
+            libc::free(ptr);
+        }
+    }
+
+    #[test]
+    fn test_u64_list() {
+        test_init!();
+        let mut list = List::<u64>::init(3);
+        list.append(100000);
+        assert!(list[0] == 100000);
+        assert!(list.len() == 1);
+        list.append(110000);
+        assert!(list[1] == 110000);
+        assert!(list.len() == 2);
+        list.append(120000);
+        assert!(list[2] == 120000);
+        list.replace(0, 150000);
+        assert!(list[0] == 150000);
+        assert!(list.len() == 3);
+
+        // serialize the int list
+        let ptr = unsafe { libc::malloc(24) };
+        let header_buffer = unsafe { slice::from_raw_parts_mut(ptr as *mut u8, 24) };
+        let cf = list.serialize(header_buffer, copy_func);
+
+        assert!(cf.num_segments() == 1);
+        let header_entry = cf.get(0).unwrap();
+        assert!(
+            *header_entry == CornPtr::Normal(unsafe { slice::from_raw_parts(ptr as *mut u8, 24) })
+        );
+
+        // check the contents of the int list in serialized format
+        let first_int =
+            LittleEndian::read_u64(unsafe { slice::from_raw_parts(ptr as *const u8, 8) });
+        assert!(first_int == 150000);
+
+        let second_int = LittleEndian::read_u64(unsafe {
+            slice::from_raw_parts((ptr as *const u8).offset(8), 8)
+        });
+        assert!(second_int == 110000);
+        let third_int = LittleEndian::read_u64(unsafe {
+            slice::from_raw_parts((ptr as *const u8).offset(16), 8)
+        });
+        assert!(third_int == 120000);
+
+        // deserialize the int list
+        let mut deserialized_list = List::<u64>::init_ref();
+        deserialized_list.deserialize(unsafe { slice::from_raw_parts(ptr as *const u8, 24) });
+        assert!(deserialized_list.len() == 3);
+        assert!(deserialized_list[0] == 150000);
+        assert!(deserialized_list[1] == 110000);
+        assert!(deserialized_list[2] == 120000);
+
+        let mut deserialized_list_owned = List::<u64>::default();
+        deserialized_list_owned.deserialize(unsafe { slice::from_raw_parts(ptr as *const u8, 24) });
+        assert!(deserialized_list.len() == 3);
+        assert!(deserialized_list[0] == 150000);
+        assert!(deserialized_list[1] == 110000);
+        assert!(deserialized_list[2] == 120000);
+
+        unsafe {
+            libc::free(ptr);
+        }
+    }
+
+    #[test]
+    fn test_bytes_list() {
+        test_init!();
+        let string1 = "HELLO1".to_string(); // first sorted
+        let string2 = "HELLO22".to_string(); // second sorted
+        let string3 = "HELLO333".to_string(); // third sorted
+        let string4 = "HELLO2222".to_string(); // last sorted
+        let mut bytes_list = VariableList::<CFBytes>::init(3);
+
+        bytes_list.append(CFBytes::new(string1.as_str().as_bytes()));
+        assert!(bytes_list.len() == 1);
+        bytes_list.append(CFBytes::new(string2.as_str().as_bytes()));
+        assert!(bytes_list.len() == 2);
+        bytes_list.append(CFBytes::new(string3.as_str().as_bytes()));
+
+        assert!(bytes_list[0] == CFBytes::new(string1.as_str().as_bytes()));
+        assert!(bytes_list[1] == CFBytes::new(string2.as_str().as_bytes()));
+        assert!(bytes_list[2] == CFBytes::new(string3.as_str().as_bytes()));
+        bytes_list.replace(1, CFBytes::new(string4.as_str().as_bytes()));
+
+        // serialize
+        let header_size = 3 * CFBytes::CONSTANT_HEADER_SIZE;
+        let ptr = unsafe { libc::malloc(header_size) };
+        tracing::info!("Ptr being passed into serialize: {:?}", ptr);
+        let header_buffer = unsafe { slice::from_raw_parts_mut(ptr as *mut u8, header_size) };
+        let cf = bytes_list.serialize(header_buffer, copy_func);
+
+        assert!(cf.num_segments() == 4);
+        // check the header
+        let header_ptr = cf.get(0).unwrap();
+        assert!(
+            *header_ptr
+                == CornPtr::Normal(unsafe { slice::from_raw_parts(ptr as *const u8, header_size) })
+        );
+
+        for i in 0..3 {
+            let offset: isize = (CFBytes::CONSTANT_HEADER_SIZE * i) as isize;
+            let buf = unsafe { (ptr as *const u8).offset(offset) };
+            let object_ref = ObjectRef(buf);
+            if i == 0 {
+                // HELLO1
+                assert!(object_ref.get_size() == string1.len());
+                assert!(object_ref.get_offset() == 24 + 8);
+            } else if i == 1 {
+                // HELLO2222
+                assert!(object_ref.get_size() == string4.len());
+                assert!(object_ref.get_offset() == 38 + 8);
+            } else if i == 2 {
+                // HELLO333
+                assert!(object_ref.get_size() == string3.len());
+                assert!(object_ref.get_offset() == 30 + 8);
+            } else {
+                unreachable!();
+            }
+        }
+
+        // check each of the following CornPtrs
+        assert!(*cf.get(1).unwrap() == CornPtr::Registered(string1.as_str().as_bytes()));
+        assert!(*cf.get(2).unwrap() == CornPtr::Registered(string3.as_str().as_bytes()));
+        assert!(*cf.get(3).unwrap() == CornPtr::Registered(string4.as_str().as_bytes()));
+
+        // now DESERIALIZE a string
+        let ptr_to_deserialize = unsafe {
+            libc::malloc(
+                CFBytes::CONSTANT_HEADER_SIZE * 4
+                    + string1.len()
+                    + string2.len()
+                    + string3.len()
+                    + string4.len(),
+            )
+        };
+
+        // fill in the stuff that should be in the serialized version
+        for i in 0..4 {
+            let header_off = unsafe {
+                (ptr_to_deserialize as *mut u8).offset(i * CFBytes::CONSTANT_HEADER_SIZE as isize)
+            };
+            let mut object_ref = ObjectRef(header_off as *const u8);
+            if i == 0 {
+                let offset = 4 * CFBytes::CONSTANT_HEADER_SIZE;
+                object_ref.write_size(string1.len());
+                object_ref.write_offset(offset);
+                let mut data_slice = unsafe {
+                    slice::from_raw_parts_mut(
+                        (ptr_to_deserialize as *mut u8).offset(offset as isize),
+                        string1.len(),
+                    )
+                };
+                data_slice.write(string1.as_str().as_bytes()).unwrap();
+            } else if i == 1 {
+                let offset = 4 * CFBytes::CONSTANT_HEADER_SIZE + string1.len();
+                object_ref.write_size(string2.len());
+                object_ref.write_offset(offset);
+                let mut data_slice = unsafe {
+                    slice::from_raw_parts_mut(
+                        (ptr_to_deserialize as *mut u8).offset(offset as isize),
+                        string2.len(),
+                    )
+                };
+                data_slice.write(string2.as_str().as_bytes()).unwrap();
+            } else if i == 2 {
+                let offset = 4 * CFBytes::CONSTANT_HEADER_SIZE + string1.len() + string2.len();
+                object_ref.write_size(string3.len());
+                object_ref.write_offset(offset);
+                let mut data_slice = unsafe {
+                    slice::from_raw_parts_mut(
+                        (ptr_to_deserialize as *mut u8).offset(offset as isize),
+                        string3.len(),
+                    )
+                };
+                data_slice.write(string3.as_str().as_bytes()).unwrap();
+            } else if i == 3 {
+                let offset = 4 * CFBytes::CONSTANT_HEADER_SIZE
+                    + string1.len()
+                    + string2.len()
+                    + string3.len();
+                object_ref.write_size(string4.len());
+                object_ref.write_offset(offset);
+                let mut data_slice = unsafe {
+                    slice::from_raw_parts_mut(
+                        (ptr_to_deserialize as *mut u8).offset(offset as isize),
+                        string4.len(),
+                    )
+                };
+                data_slice.write(string4.as_str().as_bytes()).unwrap();
+            }
+        }
+
+        let mut deserialized_bytes_list = VariableList::<CFBytes>::default();
+        deserialized_bytes_list.inner_deserialize(ptr_to_deserialize as *const u8, 4, 0);
+
+        assert!(deserialized_bytes_list.len() == 4);
+
+        let first = deserialized_bytes_list[0];
+        assert!(first.len() == string1.len());
+        assert!(first.ptr == string1.as_str().as_bytes());
+
+        let second = deserialized_bytes_list[1];
+        assert!(second.len() == string2.len());
+        assert!(second.ptr == string2.as_str().as_bytes());
+
+        let third = deserialized_bytes_list[2];
+        assert!(third.len() == string3.len());
+        assert!(third.ptr == string3.as_str().as_bytes());
+
+        let fourth = deserialized_bytes_list[3];
+        assert!(fourth.len() == string4.len());
+        assert!(fourth.ptr == string4.as_str().as_bytes());
+
+        unsafe {
+            libc::free(ptr);
+            libc::free(ptr_to_deserialize);
+        }
+    }
+
+    #[test]
+    fn test_string_list() {
+        test_init!();
+        let string1 = "HELLO1".to_string(); // first sorted
+        let string2 = "HELLO22".to_string(); // second sorted
+        let string3 = "HELLO333".to_string(); // third sorted
+        let string4 = "HELLO2222".to_string(); // last sorted
+        let mut string_list = VariableList::<CFString>::init(3);
+
+        string_list.append(CFString::new(string1.as_str()));
+        assert!(string_list.len() == 1);
+        string_list.append(CFString::new(string2.as_str()));
+        assert!(string_list.len() == 2);
+        string_list.append(CFString::new(string3.as_str()));
+
+        assert!(string_list[0] == CFString::new(string1.as_str()));
+        assert!(string_list[1] == CFString::new(string2.as_str()));
+        assert!(string_list[2] == CFString::new(string3.as_str()));
+        string_list.replace(1, CFString::new(string4.as_str()));
+
+        // serialize
+        let header_size = 3 * CFString::CONSTANT_HEADER_SIZE;
+        let ptr = unsafe { libc::malloc(header_size) };
+        tracing::info!("Ptr being passed into serialize: {:?}", ptr);
+        let header_buffer = unsafe { slice::from_raw_parts_mut(ptr as *mut u8, header_size) };
+        let cf = string_list.serialize(header_buffer, copy_func);
+
+        assert!(cf.num_segments() == 4);
+        // check the header
+        let header_ptr = cf.get(0).unwrap();
+        assert!(
+            *header_ptr
+                == CornPtr::Normal(unsafe { slice::from_raw_parts(ptr as *const u8, header_size) })
+        );
+
+        for i in 0..3 {
+            let offset: isize = (CFString::CONSTANT_HEADER_SIZE * i) as isize;
+            let buf = unsafe { (ptr as *const u8).offset(offset) };
+            let object_ref = ObjectRef(buf);
+            if i == 0 {
+                // HELLO1
+                assert!(object_ref.get_size() == string1.len());
+                assert!(object_ref.get_offset() == 24 + 8);
+            } else if i == 1 {
+                // HELLO2222
+                assert!(object_ref.get_size() == string4.len());
+                assert!(object_ref.get_offset() == 38 + 8);
+            } else if i == 2 {
+                // HELLO333
+                assert!(object_ref.get_size() == string3.len());
+                assert!(object_ref.get_offset() == 30 + 8);
+            } else {
+                unreachable!();
+            }
+        }
+
+        // check each of the following CornPtrs
+        assert!(*cf.get(1).unwrap() == CornPtr::Registered(string1.as_str().as_bytes()));
+        assert!(*cf.get(2).unwrap() == CornPtr::Registered(string3.as_str().as_bytes()));
+        assert!(*cf.get(3).unwrap() == CornPtr::Registered(string4.as_str().as_bytes()));
+
+        // now DESERIALIZE a string
+        let ptr_to_deserialize = unsafe {
+            libc::malloc(
+                CFString::CONSTANT_HEADER_SIZE * 4
+                    + string1.len()
+                    + string2.len()
+                    + string3.len()
+                    + string4.len(),
+            )
+        };
+
+        // fill in the stuff that should be in the serialized version
+        for i in 0..4 {
+            let header_off = unsafe {
+                (ptr_to_deserialize as *mut u8).offset(i * CFString::CONSTANT_HEADER_SIZE as isize)
+            };
+            let mut object_ref = ObjectRef(header_off as *const u8);
+            if i == 0 {
+                let offset = 4 * CFString::CONSTANT_HEADER_SIZE;
+                object_ref.write_size(string1.len());
+                object_ref.write_offset(offset);
+                let mut data_slice = unsafe {
+                    slice::from_raw_parts_mut(
+                        (ptr_to_deserialize as *mut u8).offset(offset as isize),
+                        string1.len(),
+                    )
+                };
+                data_slice.write(string1.as_str().as_bytes()).unwrap();
+            } else if i == 1 {
+                let offset = 4 * CFString::CONSTANT_HEADER_SIZE + string1.len();
+                object_ref.write_size(string2.len());
+                object_ref.write_offset(offset);
+                let mut data_slice = unsafe {
+                    slice::from_raw_parts_mut(
+                        (ptr_to_deserialize as *mut u8).offset(offset as isize),
+                        string2.len(),
+                    )
+                };
+                data_slice.write(string2.as_str().as_bytes()).unwrap();
+            } else if i == 2 {
+                let offset = 4 * CFString::CONSTANT_HEADER_SIZE + string1.len() + string2.len();
+                object_ref.write_size(string3.len());
+                object_ref.write_offset(offset);
+                let mut data_slice = unsafe {
+                    slice::from_raw_parts_mut(
+                        (ptr_to_deserialize as *mut u8).offset(offset as isize),
+                        string3.len(),
+                    )
+                };
+                data_slice.write(string3.as_str().as_bytes()).unwrap();
+            } else if i == 3 {
+                let offset = 4 * CFString::CONSTANT_HEADER_SIZE
+                    + string1.len()
+                    + string2.len()
+                    + string3.len();
+                object_ref.write_size(string4.len());
+                object_ref.write_offset(offset);
+                let mut data_slice = unsafe {
+                    slice::from_raw_parts_mut(
+                        (ptr_to_deserialize as *mut u8).offset(offset as isize),
+                        string4.len(),
+                    )
+                };
+                data_slice.write(string4.as_str().as_bytes()).unwrap();
+            }
+        }
+
+        let mut deserialized_string_list = VariableList::<CFString>::default();
+        deserialized_string_list.inner_deserialize(ptr_to_deserialize as *const u8, 4, 0);
+
+        assert!(deserialized_string_list.len() == 4);
+
+        let first = deserialized_string_list[0];
+        assert!(first.len() == string1.len());
+        assert!(first.to_string() == string1);
+
+        let second = deserialized_string_list[1];
+        assert!(second.len() == string2.len());
+        assert!(second.to_string() == string2);
+
+        let third = deserialized_string_list[2];
+        assert!(third.len() == string3.len());
+        assert!(third.to_string() == string3);
+
+        let fourth = deserialized_string_list[3];
+        assert!(fourth.len() == string4.len());
+        assert!(fourth.to_string() == string4);
+
+        unsafe {
+            libc::free(ptr);
+            libc::free(ptr_to_deserialize);
+        }
     }
 }

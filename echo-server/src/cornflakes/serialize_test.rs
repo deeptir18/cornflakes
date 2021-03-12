@@ -251,7 +251,7 @@ impl<'registered> HeaderRepr<'registered> for TestObject<'registered> {
 
         if self.has_int_list_field() {
             let mut int_list_field_ref = ObjectRef(cur_header_off as _);
-            int_list_field_ref.write_size(self.int_list_field_ptr.size());
+            int_list_field_ref.write_size(self.int_list_field_ptr.len());
             int_list_field_ref.write_offset(cur_dynamic_off_size);
             cur_header_off =
                 unsafe { cur_header_off.offset(List::<i32>::CONSTANT_HEADER_SIZE as isize) };
@@ -263,7 +263,7 @@ impl<'registered> HeaderRepr<'registered> for TestObject<'registered> {
 
         if self.has_bytes_list_field() {
             let mut bytes_list_field_ref = ObjectRef(cur_header_off as _);
-            bytes_list_field_ref.write_size(self.bytes_list_field_ptr.size());
+            bytes_list_field_ref.write_size(self.bytes_list_field_ptr.len());
             bytes_list_field_ref.write_offset(cur_dynamic_off_size);
             cur_header_off = unsafe {
                 cur_header_off.offset(VariableList::<CFBytes>::CONSTANT_HEADER_SIZE as isize)
@@ -308,7 +308,7 @@ impl<'registered> HeaderRepr<'registered> for TestObject<'registered> {
 
         if self.has_nested_list_field() {
             let mut nested_list_field_ref = ObjectRef(cur_header_off as _);
-            nested_list_field_ref.write_size(self.nested_list_field_ptr.size());
+            nested_list_field_ref.write_size(self.nested_list_field_ptr.len());
             nested_list_field_ref.write_offset(cur_dynamic_off_size);
             ret.append(&mut self.nested_list_field_ptr.inner_serialize(
                 cur_dynamic_off,
@@ -340,6 +340,7 @@ impl<'registered> HeaderRepr<'registered> for TestObject<'registered> {
             let object_ref = ObjectRef(cur_header_off);
             let cur_dynamic_off = object_ref.get_offset() - relative_offset;
             let cur_dynamic_ptr = unsafe { buf.offset(cur_dynamic_off as isize) };
+            self.int_list_field_ptr = List::<i32>::init_ref();
             self.int_list_field_ptr.inner_deserialize(
                 cur_dynamic_ptr,
                 object_ref.get_size(),
@@ -494,7 +495,7 @@ impl<'registered> HeaderRepr<'registered> for NestedObject1<'registered> {
             ret.append(
                 &mut self
                     .field1_ptr
-                    .inner_serialize(cur_header_off, copy_func, 0),
+                    .inner_serialize(cur_header_off, copy_func, offset),
             );
             cur_header_off =
                 unsafe { cur_header_off.offset(CFBytes::CONSTANT_HEADER_SIZE as isize) };
@@ -593,7 +594,7 @@ impl<'registered> HeaderRepr<'registered> for NestedObject2<'registered> {
             src: *const ::std::os::raw::c_void,
             len: usize,
         ),
-        _offset: usize,
+        offset: usize,
     ) -> Vec<(CornPtr<'registered, 'normal>, *mut u8)> {
         let mut ret: Vec<(CornPtr<'registered, 'normal>, *mut u8)> = Vec::default();
         // 1: copy in bitmap to the head of the object
@@ -605,14 +606,12 @@ impl<'registered> HeaderRepr<'registered> for NestedObject2<'registered> {
             )
         }
         let cur_header_off = unsafe { header_ptr.offset(Self::BITMAP_SIZE as isize) };
-
         // field 1 is a bytes offset
         if self.has_field1() {
-            let mut field1_object_ref = ObjectRef(cur_header_off as _);
-            field1_object_ref.write_size(self.field1_ptr.ptr.len());
-            ret.push((
-                CornPtr::Registered(self.field1_ptr.ptr),
-                field1_object_ref.get_offset_ptr(),
+            ret.append(&mut self.field1_ptr.inner_serialize(
+                cur_header_off,
+                copy_func,
+                offset + Self::BITMAP_SIZE,
             ));
         }
 

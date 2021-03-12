@@ -11,13 +11,13 @@ pub mod mem;
 pub mod timing;
 pub mod utils;
 
-use color_eyre::eyre::{Result, WrapErr};
+use color_eyre::eyre::{bail, Result, WrapErr};
 use mem::MmapMetadata;
 use std::{
     net::Ipv4Addr,
     ops::FnMut,
+    slice::Iter,
     sync::{Arc, Mutex},
-    //rc::Rc,
     time::{Duration, Instant},
 };
 use timing::HistogramWrapper;
@@ -213,6 +213,22 @@ impl<'registered, 'normal> Cornflake<'registered, 'normal> {
             self.num_borrowed += 1;
         }
         self.entries.push(ptr);
+    }
+
+    pub fn iter(&self) -> Iter<CornPtr<'registered, 'normal>> {
+        self.entries.iter()
+    }
+
+    pub fn get(&self, idx: usize) -> Result<&CornPtr<'registered, 'normal>> {
+        if idx >= self.entries.len() {
+            bail!(
+                "Trying to get {} idx from CornPtr, but it only has length {}.",
+                idx,
+                self.entries.len()
+            );
+        }
+
+        Ok(&self.entries[idx])
     }
 }
 

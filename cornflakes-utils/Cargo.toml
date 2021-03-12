@@ -10,4 +10,5 @@ edition = "2018"
 color-eyre = "0.5"
 tracing = "*"
 tracing-subscriber = "*"
+tracing-error = "*"
 

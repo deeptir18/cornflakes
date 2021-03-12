@@ -865,7 +865,7 @@ mod tests {
     use eui48::MacAddress;
     use libc;
     use rand::Rng;
-    use std::{convert::TryInto, mem::MaybeUninit, net::Ipv4Addr, ptr, rc::Rc};
+    use std::{convert::TryInto, mem::MaybeUninit, net::Ipv4Addr, ptr};
     use tracing::info;
     use tracing_error::ErrorLayer;
     use tracing_subscriber;
