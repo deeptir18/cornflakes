@@ -148,7 +148,8 @@ fn main() -> Result<()> {
                 let mut connection = dpdk_datapath()?;
                 let mut echo_client: EchoClient<CornflakesEchoClient, DPDKConnection> =
                     EchoClient::new(opt.server_ip, opt.message, sizes)?;
-                echo_client.init(&mut connection)?;
+                let mut ctx = echo_client.new_context();
+                echo_client.init_state(&mut ctx, &mut connection)?;
                 run_client(&mut echo_client, &mut connection, &opt)?;
             }
             (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopy) => {
@@ -159,7 +160,8 @@ fn main() -> Result<()> {
                 let mut connection = dpdk_datapath()?;
                 let mut echo_client: EchoClient<ProtobufEchoClient, DPDKConnection> =
                     EchoClient::new(opt.server_ip, opt.message, sizes)?;
-                echo_client.init(&mut connection)?;
+                let mut ctx = echo_client.new_context();
+                echo_client.init_state(&mut ctx, &mut connection)?;
                 run_client(&mut echo_client, &mut connection, &opt)?;
             }
             (NetworkDatapath::DPDK, SerializationType::Flatbuffers) => {
@@ -167,7 +169,8 @@ fn main() -> Result<()> {
                 let mut connection = dpdk_datapath()?;
                 let mut echo_client: EchoClient<FlatbuffersEchoClient, DPDKConnection> =
                     EchoClient::new(opt.server_ip, opt.message, sizes)?;
-                echo_client.init(&mut connection)?;
+                let mut ctx = echo_client.new_context();
+                echo_client.init_state(&mut ctx, &mut connection)?;
                 run_client(&mut echo_client, &mut connection, &opt)?;
             }
             (NetworkDatapath::DPDK, SerializationType::Capnproto) => {
@@ -175,7 +178,8 @@ fn main() -> Result<()> {
                 let mut connection = dpdk_datapath()?;
                 let mut echo_client: EchoClient<CapnprotoEchoClient, DPDKConnection> =
                     EchoClient::new(opt.server_ip, opt.message, sizes)?;
-                echo_client.init(&mut connection)?;
+                let mut ctx = echo_client.new_context();
+                echo_client.init_state(&mut ctx, &mut connection)?;
                 run_client(&mut echo_client, &mut connection, &opt)?;
             }
         },
@@ -184,9 +188,13 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_client<S, D>(client: &mut EchoClient<S, D>, connection: &mut D, opt: &Opt) -> Result<()>
+fn run_client<'normal, S, D>(
+    client: &mut EchoClient<'normal, S, D>,
+    connection: &mut D,
+    opt: &Opt,
+) -> Result<()>
 where
-    S: CerealizeClient<D>,
+    S: CerealizeClient<'normal, D>,
     D: Datapath,
 {
     client.init(connection)?;

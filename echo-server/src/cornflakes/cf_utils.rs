@@ -1,17 +1,19 @@
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
 use cornflakes_libos::{CornPtr, Cornflake, PtrAttributes};
-use std::{fmt::Debug, marker::PhantomData, mem::size_of, ops::Index, ptr, slice, str};
+use std::{
+    default::Default, fmt::Debug, marker::PhantomData, mem::size_of, ops::Index, ptr, slice, str,
+};
 
 pub const SIZE_FIELD: usize = 4;
 pub const OFFSET_FIELD: usize = 4;
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub struct CFString<'a> {
     pub ptr: &'a [u8],
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub struct CFBytes<'a> {
     pub ptr: &'a [u8],
 }
@@ -26,6 +28,8 @@ pub trait HeaderRepr<'registered> {
         self.dynamic_header_size() + <Self as HeaderRepr<'registered>>::CONSTANT_HEADER_SIZE
     }
 
+    fn dynamic_header_offset(&self) -> usize;
+
     fn inner_serialize<'normal>(
         &self,
         header_ptr: *mut u8,
@@ -38,6 +42,11 @@ pub trait HeaderRepr<'registered> {
     ) -> Vec<(CornPtr<'registered, 'normal>, *mut u8)>;
 
     fn inner_deserialize(&mut self, buf: *const u8, size: usize, relative_offset: usize);
+
+    /// Initializes a header _buffer large enough to store the entire serialization header.
+    fn init_header_buffer(&self) -> Vec<u8> {
+        vec![0u8; self.dynamic_header_size()]
+    }
 
     fn serialize<'normal>(
         &self,
@@ -54,7 +63,7 @@ pub trait HeaderRepr<'registered> {
         let mut cornptrs = self.inner_serialize(header_ptr, copy_func, 0);
         cf.add_entry(CornPtr::Normal(header_buffer));
         cornptrs.sort_by(|a, b| a.0.buf_size().partial_cmp(&b.0.buf_size()).unwrap());
-        let mut cur_offset = self.total_header_size();
+        let mut cur_offset = self.dynamic_header_size();
         for (cornptr, offset) in cornptrs.into_iter() {
             let mut obj_ref = ObjectRef(offset as *const u8);
             obj_ref.write_offset(cur_offset);
@@ -86,10 +95,22 @@ impl<'registered> CFString<'registered> {
     }
 }
 
+impl<'registered> Default for CFString<'registered> {
+    fn default() -> Self {
+        CFString {
+            ptr: Default::default(),
+        }
+    }
+}
+
 impl<'registered> HeaderRepr<'registered> for CFString<'registered> {
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
     fn dynamic_header_size(&self) -> usize {
+        0
+    }
+
+    fn dynamic_header_offset(&self) -> usize {
         0
     }
 
@@ -127,10 +148,22 @@ impl<'registered> CFBytes<'registered> {
     }
 }
 
+impl<'registered> Default for CFBytes<'registered> {
+    fn default() -> Self {
+        CFBytes {
+            ptr: Default::default(),
+        }
+    }
+}
+
 impl<'registered> HeaderRepr<'registered> for CFBytes<'registered> {
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
     fn dynamic_header_size(&self) -> usize {
+        0
+    }
+
+    fn dynamic_header_offset(&self) -> usize {
         0
     }
 
@@ -239,6 +272,10 @@ where
         }
     }
 
+    fn dynamic_header_offset(&self) -> usize {
+        0
+    }
+
     fn inner_serialize<'normal>(
         &self,
         header_ptr: *mut u8,
@@ -337,6 +374,10 @@ where
 
     fn dynamic_header_size(&self) -> usize {
         self.num_set * size_of::<T>()
+    }
+
+    fn dynamic_header_offset(&self) -> usize {
+        0
     }
 
     fn inner_serialize<'normal>(
@@ -440,6 +481,10 @@ where
         self.num_space * size_of::<T>()
     }
 
+    fn dynamic_header_offset(&self) -> usize {
+        0
+    }
+
     fn inner_serialize<'normal>(
         &self,
         header_ptr: *mut u8,
@@ -504,10 +549,6 @@ where
     pub fn len(&self) -> usize {
         self.num_set
     }
-
-    pub fn dynamic_header_offset(&self) -> usize {
-        self.elts.iter().map(|_x| T::CONSTANT_HEADER_SIZE).sum()
-    }
 }
 impl<'registered, T> Index<usize> for VariableList<'registered, T>
 where
@@ -533,6 +574,10 @@ where
             .sum()
     }
 
+    fn dynamic_header_offset(&self) -> usize {
+        self.elts.iter().map(|_x| T::CONSTANT_HEADER_SIZE).sum()
+    }
+
     fn inner_serialize<'normal>(
         &self,
         header_ptr: *mut u8,
@@ -545,7 +590,8 @@ where
     ) -> Vec<(CornPtr<'registered, 'normal>, *mut u8)> {
         let mut ret: Vec<(CornPtr<'registered, 'normal>, *mut u8)> = Vec::default();
         let mut cur_header_off = header_ptr;
-        let mut cur_dynamic_off = unsafe { header_ptr.offset(self.dynamic_header_size() as isize) };
+        let mut cur_dynamic_off =
+            unsafe { header_ptr.offset(self.dynamic_header_offset() as isize) };
         let mut cur_dynamic_off_usize = offset + self.dynamic_header_offset();
 
         for elt in self.elts.iter() {
@@ -681,7 +727,7 @@ mod tests {
         // length of HELLO
         assert!(header_slice.get_size() == 5);
         // offset it should have
-        assert!(header_slice.get_offset() == 8);
+        assert!(header_slice.get_offset() == 0);
 
         // check 2nd cornflake
         let second_entry = cf.get(1).unwrap();
@@ -751,7 +797,7 @@ mod tests {
         // length of HELLO
         assert!(header_slice.get_size() == 5);
         // offset it should have
-        assert!(header_slice.get_offset() == 8);
+        assert!(header_slice.get_offset() == 0);
 
         // check 2nd cornflake
         let second_entry = cf.get(1).unwrap();
@@ -958,15 +1004,15 @@ mod tests {
             if i == 0 {
                 // HELLO1
                 assert!(object_ref.get_size() == string1.len());
-                assert!(object_ref.get_offset() == 24 + 8);
+                assert!(object_ref.get_offset() == 24);
             } else if i == 1 {
                 // HELLO2222
                 assert!(object_ref.get_size() == string4.len());
-                assert!(object_ref.get_offset() == 38 + 8);
+                assert!(object_ref.get_offset() == 38);
             } else if i == 2 {
                 // HELLO333
                 assert!(object_ref.get_size() == string3.len());
-                assert!(object_ref.get_offset() == 30 + 8);
+                assert!(object_ref.get_offset() == 30);
             } else {
                 unreachable!();
             }
@@ -1113,15 +1159,15 @@ mod tests {
             if i == 0 {
                 // HELLO1
                 assert!(object_ref.get_size() == string1.len());
-                assert!(object_ref.get_offset() == 24 + 8);
+                assert!(object_ref.get_offset() == 24);
             } else if i == 1 {
                 // HELLO2222
                 assert!(object_ref.get_size() == string4.len());
-                assert!(object_ref.get_offset() == 38 + 8);
+                assert!(object_ref.get_offset() == 38);
             } else if i == 2 {
                 // HELLO333
                 assert!(object_ref.get_size() == string3.len());
-                assert!(object_ref.get_offset() == 30 + 8);
+                assert!(object_ref.get_offset() == 30);
             } else {
                 unreachable!();
             }

@@ -44,7 +44,8 @@ pub struct CapnprotoEchoClient<'registered, 'normal> {
     sga: Cornflake<'registered, 'normal>,
 }
 
-impl<'registered, 'normal, D> CerealizeClient<D> for CapnprotoEchoClient<'registered, 'normal>
+impl<'registered, 'normal, D> CerealizeClient<'normal, D>
+    for CapnprotoEchoClient<'registered, 'normal>
 where
     D: Datapath,
 {
@@ -78,6 +79,10 @@ where
         })
     }
 
+    fn init(&mut self, _ctx: &'normal mut Self::Ctx) {
+        ()
+    }
+
     fn message_type(&self) -> SimpleMessageType {
         self.message_type
     }
@@ -86,7 +91,7 @@ where
         self.payload_ptrs.iter().map(|(_ptr, len)| *len).collect()
     }
 
-    fn get_sga(&self, _ctx: &mut Self::Ctx) -> Result<Self::OutgoingMsg> {
+    fn get_sga(&self) -> Result<Self::OutgoingMsg> {
         Ok(self.sga.clone())
     }
 

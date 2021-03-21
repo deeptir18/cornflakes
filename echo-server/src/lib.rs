@@ -52,7 +52,7 @@ where
     fn new_context(&self) -> Self::Ctx;
 }
 
-pub trait CerealizeClient<DatapathImpl>
+pub trait CerealizeClient<'normal, DatapathImpl>
 where
     DatapathImpl: Datapath,
 {
@@ -69,12 +69,14 @@ where
     ) -> Result<Self>
     where
         Self: Sized;
+    /// Initializes the object header.
+    fn init(&mut self, ctx: &'normal mut Self::Ctx);
     /// Returns type of message.
     fn message_type(&self) -> SimpleMessageType;
     /// payload sizes
     fn payload_sizes(&self) -> Vec<usize>;
     /// produce the sga to echo
-    fn get_sga(&self, ctx: &mut Self::Ctx) -> Result<Self::OutgoingMsg>;
+    fn get_sga(&self) -> Result<Self::OutgoingMsg>;
     /// check echoed payload
     fn check_echoed_payload(&self, recved_msg: &DatapathImpl::ReceivedPkt) -> Result<()>;
     /// new context

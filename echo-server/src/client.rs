@@ -11,7 +11,11 @@ use std::{marker::PhantomData, net::Ipv4Addr, ops::FnMut, time::Duration};
 
 pub const NUM_PAGES: usize = 100;
 
-pub struct EchoClient<S, D> {
+pub struct EchoClient<'normal, S, D>
+where
+    S: CerealizeClient<'normal, D>,
+    D: Datapath,
+{
     serializer: S,
     server_ip: Ipv4Addr,
     sent: usize,
@@ -21,19 +25,19 @@ pub struct EchoClient<S, D> {
     rtts: HistogramWrapper,
     metadata: MmapMetadata,
     _mmap_mut: MmapMut,
-    _marker: PhantomData<D>,
+    _marker: PhantomData<&'normal D>,
 }
 
-impl<S, D> EchoClient<S, D>
+impl<'normal, S, D> EchoClient<'normal, S, D>
 where
-    S: CerealizeClient<D>,
+    S: CerealizeClient<'normal, D>,
     D: Datapath,
 {
     pub fn new(
         server_ip: Ipv4Addr,
         message: SimpleMessageType,
         sizes: Vec<usize>,
-    ) -> Result<EchoClient<S, D>> {
+    ) -> Result<EchoClient<'normal, S, D>> {
         let (metadata, mut mmap_mut) = mmap_new(NUM_PAGES)?;
         let serializer = S::new(message, sizes, metadata.clone(), &mut mmap_mut)?;
         Ok(EchoClient {
@@ -50,6 +54,16 @@ where
         })
     }
 
+    pub fn new_context(&self) -> S::Ctx {
+        self.serializer.new_context()
+    }
+
+    pub fn init_state(&mut self, ctx: &'normal mut S::Ctx, connection: &mut D) -> Result<()> {
+        self.init(connection)?;
+        self.serializer.init(ctx);
+        Ok(())
+    }
+
     pub fn dump_stats(&mut self) {
         tracing::info!(
             sent = self.sent,
@@ -62,9 +76,9 @@ where
     }
 }
 
-impl<S, D> ClientSM for EchoClient<S, D>
+impl<'normal, S, D> ClientSM for EchoClient<'normal, S, D>
 where
-    S: CerealizeClient<D>,
+    S: CerealizeClient<'normal, D>,
     D: Datapath,
 {
     type OutgoingMsg = S::OutgoingMsg;
@@ -79,8 +93,7 @@ where
     ) -> Result<()> {
         self.last_sent_id += 1;
         self.sent += 1;
-        let mut ctx = self.serializer.new_context();
-        let mut out_sga = self.serializer.get_sga(&mut ctx)?;
+        let mut out_sga = self.serializer.get_sga()?;
         out_sga.set_id(self.last_sent_id);
         send_fn(out_sga)
     }
@@ -111,8 +124,7 @@ where
     ) -> Result<()> {
         tracing::info!(id, last_sent = self.last_sent_id, "Retry callback");
         self.retries += 1;
-        let mut ctx = self.serializer.new_context();
-        let mut sga = self.serializer.get_sga(&mut ctx)?;
+        let mut sga = self.serializer.get_sga()?;
         sga.set_id(id);
         send_fn(sga)
     }
