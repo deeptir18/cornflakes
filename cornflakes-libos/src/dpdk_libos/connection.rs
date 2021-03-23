@@ -99,6 +99,10 @@ impl ReceivedPacket for DPDKReceivedPkt {
     fn get_addr(&self) -> utils::AddressInfo {
         self.addr_info.clone()
     }
+
+    fn get_pkt_buffer(&self) -> &[u8] {
+        self.mbuf_wrapper.as_ref()
+    }
 }
 
 /// DPDKReceivedPkt implements ScatterGather so it can be returned by the pop function in the

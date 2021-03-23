@@ -26,7 +26,11 @@ where
         self.message_type
     }
 
-    fn process_msg(&self, _recved_msg: &D::ReceivedPkt, _ctx: &mut Self::Ctx) -> Result<Cornflake> {
+    fn process_msg<'registered, 'normal: 'registered>(
+        &self,
+        _recved_msg: &'registered D::ReceivedPkt,
+        _ctx: &'normal mut Self::Ctx,
+    ) -> Result<Cornflake<'registered, 'normal>> {
         let cf = Cornflake::default();
         // TODO: deserialize the given buffer and spit it back out in the cornflake
         Ok(cf)

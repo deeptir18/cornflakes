@@ -85,6 +85,10 @@ impl<'registered> CFString<'registered> {
         }
     }
 
+    pub fn new_from_bytes(ptr: &'registered [u8]) -> Self {
+        CFString { ptr: ptr }
+    }
+
     pub fn len(&self) -> usize {
         self.ptr.len()
     }

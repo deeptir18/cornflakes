@@ -66,6 +66,8 @@ pub trait ScatterGather {
 /// So the receiver can access address and any other relevant information.
 pub trait ReceivedPacket {
     fn get_addr(&self) -> utils::AddressInfo;
+
+    fn get_pkt_buffer(&self) -> &[u8];
 }
 
 /// Whether an underlying buffer is borrowed or

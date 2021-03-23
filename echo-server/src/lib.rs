@@ -43,11 +43,11 @@ where
     /// Message type
     fn message_type(&self) -> SimpleMessageType;
     /// Echo the received message into a corresponding scatter-gather array.
-    fn process_msg(
+    fn process_msg<'registered, 'normal: 'registered>(
         &self,
-        recved_msg: &DatapathImpl::ReceivedPkt,
-        ctx: &mut Self::Ctx,
-    ) -> Result<Cornflake>;
+        recved_msg: &'registered DatapathImpl::ReceivedPkt,
+        ctx: &'normal mut Self::Ctx,
+    ) -> Result<Cornflake<'registered, 'normal>>;
 
     fn new_context(&self) -> Self::Ctx;
 }
@@ -111,6 +111,14 @@ fn align_up(x: usize, align_size: usize) -> usize {
         assert!(divisor * align_size == x);
         return x;
     }
+}
+
+fn init_payloads_as_vec(sizes: &Vec<usize>) -> Vec<Vec<u8>> {
+    let mut ret: Vec<Vec<u8>> = Vec::with_capacity(sizes.len());
+    for size in sizes.iter() {
+        ret.push(vec![1u8; *size]);
+    }
+    ret
 }
 
 fn init_payloads(

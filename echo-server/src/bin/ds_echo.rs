@@ -108,7 +108,7 @@ fn main() -> Result<()> {
         EchoMode::Server => match (opt.datapath, opt.serialization) {
             (NetworkDatapath::DPDK, SerializationType::Cornflakes) => {
                 let mut connection = dpdk_datapath()?;
-                let serializer = CornflakesSerializer::new(opt.message);
+                let serializer = CornflakesSerializer::new(opt.message, opt.size);
                 let mut echo_server = EchoServer::new(serializer);
                 set_ctrlc_handler(&echo_server)?;
                 echo_server.init(&mut connection)?;
