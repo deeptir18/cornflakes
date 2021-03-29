@@ -7,6 +7,10 @@ import os
 import parse
 STRIP_THRESHOLD = 0.03
 
+SEGMENT_SIZES_TO_LOOP = [64, 128].extend([range(256, 8192 + 256, 256)])
+MAX_CLIENT_RATE_PPS = 300000
+CLIENT_RATE_INCREMENT = 100000
+
 
 def parse_client_time_and_pkts(line):
     fmt = parse.compile("Ran for {} seconds, sent {} packets.")
@@ -167,12 +171,11 @@ class ScatterGatherIteration(runner.Iteration):
             ret["cornflakes_dir"] = config_yaml["cornflakes_dir"]
             ret["server_ip"] = config_yaml["hosts"][host]["ip"]
             if self.with_copy:
-                ret["with_copy"] == " --with_copy"
+                ret["with_copy"] = " --with_copy"
             else:
                 ret["with_copy"] = ""
             ret["folder"] = str(folder)
         elif program == "start_client":
-            utils.debug("Host name: ", host)
             # calculate client rate
             host_options = self.get_iteration_clients(
                 programs_metadata[program]["hosts"])
@@ -278,7 +281,7 @@ class ScatterGather(runner.Experiment):
             "offered_load_pps,offered_load_gbps," \
             "achieved_load_pps,achieved_load_gbps," \
             "percent_acheived_rate," \
-            "avg,p99,median"
+            "avg,p99,p999,median"
 
     def run_analysis_individual_trial(self,
                                       higher_level_folder,
@@ -336,6 +339,7 @@ class ScatterGather(runner.Experiment):
             total_achieved_load += host_achieved_load
 
             host_p99 = utils.p99_func(latencies) / 1000.0
+            host_p999 = utils.p999_func(latencies) / 1000.0
             host_median = utils.median_func(latencies) / 1000.0
             host_avg = utils.mean_func(latencies) / 1000.0
             host_pkts_sent = stdout_info["pkts_sent"] / 1000.0
@@ -346,37 +350,39 @@ class ScatterGather(runner.Experiment):
                            "offered load: {:.2f} req/s | {:.2f} Gbps, "
                            "achieved load: {:.2f} req/s | {:.2f} Gbps, "
                            "percentage achieved rate: {:.3f},"
-                           "avg latency: {:.2f} us, p99: {:.2f} us, median: {:.2f} us".format(
+                           "avg latency: {:.2f} us, p99: {:.2f} us, p999: {:.2f}, median: {:.2f} us".format(
                                host, host_offered_rate, host_offered_load,
                                host_achieved_rate, host_achieved_load,
                                float(host_achieved_rate / host_offered_rate),
-                               host_avg, host_p99, host_median))
+                               host_avg, host_p99, host_p999, host_median))
         # print total stats
         sorted_latencies = list(heapq.merge(*client_latency_lists))
         median = utils.median_func(sorted_latencies) / float(1000)
         p99 = utils.p99_func(sorted_latencies) / float(1000)
+        p999 = utils.p999_func(sorted_latencies) / float(1000)
         avg = utils.mean_func(sorted_latencies) / float(1000)
 
         if print_stats:
             total_stats = "offered load: {:.2f} req/s | {:.2f} Gbps, "  \
                 "achieved load: {:.2f} req/s | {:.2f} Gbps, " \
                 "percentage achieved rate: {:.3f}," \
-                "avg latency: {:.2f} us, p99: {:.2f} us, median: {:.2f} us".format(
+                "avg latency: {:.2f} us, p99: {:.2f} us, p999: {:.2f}, median: {:.2f} us".format(
                     total_offered_rate, total_offered_load,
                     total_achieved_rate, total_achieved_load,
                     float(total_achieved_rate / total_offered_rate),
-                    avg, p99, median)
+                    avg, p99, p999, median)
             utils.info("Total Stats: ", total_stats)
-        csv_line = "{},{},{},{},{},{},{},{},{},{}".format(iteration.get_segment_size(),
-                                                          iteration.get_num_mbufs(),
-                                                          iteration.get_with_copy(),
-                                                          total_offered_rate,
-                                                          total_offered_load,
-                                                          total_achieved_rate,
-                                                          total_achieved_load,
-                                                          avg * 1000,
-                                                          p99 * 1000,
-                                                          median * 1000)
+        csv_line = "{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_segment_size(),
+                                                             iteration.get_num_mbufs(),
+                                                             iteration.get_with_copy(),
+                                                             total_offered_rate,
+                                                             total_offered_load,
+                                                             total_achieved_rate,
+                                                             total_achieved_load,
+                                                             avg * 1000,
+                                                             p99 * 1000,
+                                                             p999 * 1000,
+                                                             median * 1000)
         return csv_line
 
 

@@ -42,6 +42,10 @@ def p99_func(arr):
     return arr[int(len(arr) * 0.99)]
 
 
+def p999_func(arr):
+    return arr[int(len(arr) * 0.999)]
+
+
 def parse_latency_log(log, threshold):
     if not (os.path.exists(log)):
         warn("Path {} does not exist".format(log))

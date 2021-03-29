@@ -534,6 +534,7 @@ static int parse_args(int argc, char *argv[]) {
 
         // if not using zero copy mode, init the payload to copy out
         if (!zero_copy_mode) {
+
             payload_to_copy = malloc(10000);
             if (payload_to_copy == NULL) {
                 printf("Failed to initialize memory to malloc for copy-out payload.\n");
@@ -997,7 +998,7 @@ static int do_client(void) {
     }
     end_time = rte_get_timer_cycles();
     float total_time = (float) (end_time - start_time) / rte_get_timer_hz(); 
-    printf("Ran for %f seconds, sent %"PRIu64" packets.\n",
+    printf("\nRan for %f seconds, sent %"PRIu64" packets.\n",
 			total_time, latency_dist.total_count);
     dump_latencies(&latency_dist, total_time, num_mbufs * segment_size, rate_gbps);
     return 0;
