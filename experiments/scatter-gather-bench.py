@@ -5,17 +5,33 @@ import yaml
 from pathlib import Path
 import os
 import parse
+import subprocess as sh
 STRIP_THRESHOLD = 0.03
 
-SEGMENT_SIZES_TO_LOOP = [64, 128].extend([range(256, 8192 + 256, 256)])
-MAX_CLIENT_RATE_PPS = 300000
+SEGMENT_SIZES_TO_LOOP = [64, 128]
+SEGMENT_SIZES_TO_LOOP.extend([i for i in range(256, 8192 + 256, 256)])
+MAX_CLIENT_RATE_PPS = 100000
+MAX_RATE_GBPS = 88  # TODO: should be configured per machine
 CLIENT_RATE_INCREMENT = 100000
+MAX_PKT_SIZE = 8192
+MBUFS_MAX = 32
+
+# EVENTUAL TODO:
+# Make it such that graphing analysis is run locally
+# Experiment logs are collected or transferred back locally.
 
 
 def parse_client_time_and_pkts(line):
     fmt = parse.compile("Ran for {} seconds, sent {} packets.")
     time, pkts_sent = fmt.parse(line)
     return (time, pkts_sent)
+
+
+def parse_client_pkts_received(line):
+    fmt = parse.compile(
+        "Num fully received: {}, packets per bucket: {}, total_count: {}.")
+    received, pkts_per_bucket, total = fmt.parse(line)
+    return received
 
 
 def parse_log_info(log):
@@ -31,12 +47,16 @@ def parse_log_info(log):
                 (time, pkts_sent) = parse_client_time_and_pkts(line)
                 ret["totaltime"] = float(time)
                 ret["pkts_sent"] = int(pkts_sent)
+            elif line.startswith("Num fully received"):
+                pkts_received = parse_client_pkts_received(line)
+                ret["pkts_received"] = int(pkts_received)
+
         return ret
 
 
 class ScatterGatherIteration(runner.Iteration):
     def __init__(self, client_rates, segment_size,
-                 num_mbufs, with_copy, trial=None):
+                 num_mbufs, with_copy, as_one, trial=None):
         """
         Arguments:
         * client_rates: Mapping from {int, int} specifying rates and how many
@@ -51,6 +71,7 @@ class ScatterGatherIteration(runner.Iteration):
         self.num_mbufs = num_mbufs
         self.with_copy = with_copy
         self.trial = trial
+        self.as_one = as_one
 
     def get_segment_size(self):
         return self.segment_size
@@ -60,6 +81,12 @@ class ScatterGatherIteration(runner.Iteration):
 
     def get_with_copy(self):
         return self.with_copy
+
+    def get_as_one(self):
+        return self.as_one
+
+    def get_trial(self):
+        return self.trial
 
     def set_trial(self, trial):
         self.trial = trial
@@ -111,7 +138,10 @@ class ScatterGatherIteration(runner.Iteration):
 
     def get_with_copy_string(self):
         if self.with_copy:
-            return "with_copy"
+            if self.as_one:
+                return "with_copy_one_buffer"
+            else:
+                return "with_copy"
         else:
             return "zero_copy"
 
@@ -138,6 +168,10 @@ class ScatterGatherIteration(runner.Iteration):
                                 self.get_num_mbufs_string(),
                                 self.get_with_copy_string(),
                                 self.get_trial_string())
+
+    def get_size_folder(self, high_level_folder):
+        path = Path(high_level_folder)
+        return path / self.get_segment_size_string()
 
     def get_parent_folder(self, high_level_folder):
         # returned path doesn't include the trial
@@ -176,19 +210,30 @@ class ScatterGatherIteration(runner.Iteration):
                 ret["with_copy"] = ""
             ret["folder"] = str(folder)
         elif program == "start_client":
+            # set with_copy, segment_size, num_mbufs based on if it is with_copy
+            if self.with_copy:
+                ret["with_copy"] = " --with_copy"
+                if self.as_one:
+                    ret["as_one"] = "as_one"
+                    ret["segment_size"] = self.segment_size * self.num_mbufs
+                    ret["num_mbufs"] = 1
+                else:
+                    ret["segment_size"] = self.segment_size
+                    ret["num_mbufs"] = self.num_mbufs
+            else:
+                ret["with_copy"] = ""
+                ret["segment_size"] = self.segment_size
+                ret["num_mbufs"] = self.num_mbufs
             # calculate client rate
             host_options = self.get_iteration_clients(
                 programs_metadata[program]["hosts"])
             rate = self.find_rate(host_options, host)
-            idx = 0
             server_host = programs_metadata["start_server"]["hosts"][0]
             ret["cornflakes_dir"] = config_yaml["cornflakes_dir"]
             ret["server_ip"] = config_yaml["hosts"][server_host]["ip"]
             ret["host_ip"] = config_yaml["hosts"][host]["ip"]
             ret["server_mac"] = config_yaml["hosts"][server_host]["mac"]
             ret["rate"] = rate
-            ret["segment_size"] = self.segment_size
-            ret["num_mbufs"] = self.num_mbufs
             ret["time"] = exp_time
             ret["latency_log"] = "{}.latency.log".format(host)
             ret["host"] = host
@@ -223,28 +268,54 @@ class ScatterGather(runner.Experiment):
             it = ScatterGatherIteration(client_rates,
                                         total_args.segment_size,
                                         total_args.num_mbufs,
-                                        total_args.with_copy)
+                                        total_args.with_copy,
+                                        total_args.as_one)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             it.set_trial(num_trials_finished)
             return [it]
         else:
-            # todo: loop over parameters
-            it = ScatterGatherIteration([(300000, 1)],
-                                        1024, 4, False)
-            num_trials_finished = utils.parse_number_trials_done(
-                it.get_parent_folder(total_args.folder))
-            it.set_trial(num_trials_finished)
-            it2 = ScatterGatherIteration([(300000, 1)],
-                                         1024, 4, False)
-            it2.set_trial(num_trials_finished + 1)
-            return [it, it2]
+            ret = []
+            for trial in range(utils.NUM_TRIALS):
+                for segment_size in SEGMENT_SIZES_TO_LOOP:
+                    max_num_mbufs = MBUFS_MAX
+                    for num_mbufs in range(1, max_num_mbufs + 1):
+                        rate = MAX_CLIENT_RATE_PPS
+                        rate_gbps = utils.get_tput_gpbs(rate, segment_size *
+                                                        num_mbufs)
+                        # ensure that the rate does not actually exceed the
+                        # server capacity
+                        while rate_gbps > MAX_RATE_GBPS:
+                            rate -= 10000
+                            rate_gbps = utils.get_tput_gbps(rate, segment_size *
+                                                            num_mbufs)
+
+                        it = ScatterGatherIteration([(rate,
+                                                     1)], segment_size,
+                                                    num_mbufs, False, False,
+                                                    trial=trial)
+                        it_wc = ScatterGatherIteration([(rate,
+                                                        1)], segment_size,
+                                                       num_mbufs, True, False,
+                                                       trial=trial)
+                        it_as_one = ScatterGatherIteration([(rate,
+                                                            1)], segment_size,
+                                                           num_mbufs, True,
+                                                           True, trial=trial)
+                        ret.append(it)
+                        ret.append(it_wc)
+                        ret.append(it_as_one)
+            return ret
 
     def add_specific_args(self, parser, namespace):
         parser.add_argument("-wc", "--with_copy",
                             dest="with_copy",
                             action='store_true',
                             help="Whether the server uses a copy or not.")
+        parser.add_argument("-o", "--as_one",
+                            dest="as_one",
+                            action='store_true',
+                            help="Whether the server sends the payload as a single buffer.")
         if namespace.exp_type == "individual":
             parser.add_argument("-r", "--rate",
                                 dest="rate",
@@ -277,11 +348,11 @@ class ScatterGather(runner.Experiment):
         return self.config_yaml
 
     def get_logfile_header(self):
-        return "segment_size,num_mbufs,with_copy," \
+        return "segment_size,num_mbufs,with_copy,as_one," \
             "offered_load_pps,offered_load_gbps," \
             "achieved_load_pps,achieved_load_gbps," \
             "percent_acheived_rate," \
-            "avg,p99,p999,median"
+            "avg,median,p99,p999"
 
     def run_analysis_individual_trial(self,
                                       higher_level_folder,
@@ -372,18 +443,37 @@ class ScatterGather(runner.Experiment):
                     float(total_achieved_rate / total_offered_rate),
                     avg, p99, p999, median)
             utils.info("Total Stats: ", total_stats)
-        csv_line = "{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_segment_size(),
-                                                             iteration.get_num_mbufs(),
-                                                             iteration.get_with_copy(),
-                                                             total_offered_rate,
-                                                             total_offered_load,
-                                                             total_achieved_rate,
-                                                             total_achieved_load,
-                                                             avg * 1000,
-                                                             p99 * 1000,
-                                                             p999 * 1000,
-                                                             median * 1000)
+        percent_acheived_rate = float(total_achieved_rate / total_offered_rate)
+        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_segment_size(),
+                                                                   iteration.get_num_mbufs(),
+                                                                   iteration.get_with_copy(),
+                                                                   iteration.get_as_one(),
+                                                                   total_offered_rate,
+                                                                   total_offered_load,
+                                                                   total_achieved_rate,
+                                                                   total_achieved_load,
+                                                                   percent_acheived_rate,
+                                                                   avg * 1000,
+                                                                   median * 1000,
+                                                                   p99 * 1000,
+                                                                   p999 * 1000)
         return csv_line
+
+    def graph_results(self, folder, logfile):
+        cornflakes_repo = self.config_yaml["cornflakes_dir"]
+        plotting_script = Path(cornflakes_repo) / \
+            "experiments" / "plotting_scripts" / "sg_bench.R"
+        plot_path = Path(folder) / "plots"
+        plot_path.mkdir(exist_ok=True)
+        full_log = Path(folder) / logfile
+        for size in SEGMENT_SIZES_TO_LOOP:
+            output_file = plot_path / "segsize_{}.pdf".format(size)
+            args = [str(plotting_script), str(full_log),
+                    str(size), str(output_file)]
+            try:
+                sh.run(args)
+            except:
+                utils.warn("Failed to run plot command: {}".format(args))
 
 
 def main():

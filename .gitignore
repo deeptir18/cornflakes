@@ -3,5 +3,6 @@ Cargo.lock
 **/*.rs.bk
 **/*.swp
 **/results
+
 experiments/main/__pycache__
 scatter-gather-bench/build/

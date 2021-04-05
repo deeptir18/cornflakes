@@ -7,7 +7,8 @@ from colorama import Fore
 from colorama import Style
 from statistics import mean
 
-NUM_TRIALS = 10
+NUM_TRIALS = 5
+NUM_RETRIES = 5
 
 
 def info(*args):
