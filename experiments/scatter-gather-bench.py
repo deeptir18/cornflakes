@@ -284,7 +284,7 @@ class ScatterGather(runner.Experiment):
                         rate_gbps = MAX_RATE_GBPS
                         rate = utils.get_tput_pps(rate_gbps, segment_size *
                                                   num_mbufs)
-                        rate = min(MIN_RATE_PPS, rate)
+                        rate = min(MAX_RATE_PPS, rate)
                         it = ScatterGatherIteration([(rate,
                                                      1)], segment_size,
                                                     num_mbufs, False, False,
