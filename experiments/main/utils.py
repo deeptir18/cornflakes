@@ -64,6 +64,10 @@ def get_tput_gbps(pkts_per_sec, pkt_size):
     return float(pkts_per_sec) * float(pkt_size) * 8.0 / float(1e9)
 
 
+def get_tput_pps(tput_gbps, pkt_size):
+    return tput_gbps * float(1e9) / (float(pkt_size) * 8.0)
+
+
 def parse_command_line_args(log):
     if not (os.path.exists(log)):
         warn("Path {} does not exist".format(log))

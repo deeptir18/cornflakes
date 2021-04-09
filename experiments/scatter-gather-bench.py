@@ -11,8 +11,9 @@ STRIP_THRESHOLD = 0.03
 SEGMENT_SIZES_TO_LOOP = [64, 128]
 SEGMENT_SIZES_TO_LOOP.extend([i for i in range(256, 8192 + 256, 256)])
 MAX_CLIENT_RATE_PPS = 100000
-MAX_RATE_GBPS = 88  # TODO: should be configured per machine
-CLIENT_RATE_INCREMENT = 100000
+MAX_RATE_GBPS = 5  # TODO: should be configured per machine
+MIN_RATE_PPS = 5000
+MAX_RATE_PPS = 100000
 MAX_PKT_SIZE = 8192
 MBUFS_MAX = 32
 
@@ -280,16 +281,10 @@ class ScatterGather(runner.Experiment):
                 for segment_size in SEGMENT_SIZES_TO_LOOP:
                     max_num_mbufs = MBUFS_MAX
                     for num_mbufs in range(1, max_num_mbufs + 1):
-                        rate = MAX_CLIENT_RATE_PPS
-                        rate_gbps = utils.get_tput_gpbs(rate, segment_size *
-                                                        num_mbufs)
-                        # ensure that the rate does not actually exceed the
-                        # server capacity
-                        while rate_gbps > MAX_RATE_GBPS:
-                            rate -= 10000
-                            rate_gbps = utils.get_tput_gbps(rate, segment_size *
-                                                            num_mbufs)
-
+                        rate_gbps = MAX_RATE_GBPS
+                        rate = utils.get_tput_pps(rate_gbps, segment_size *
+                                                  num_mbufs)
+                        rate = min(MIN_RATE_PPS, rate)
                         it = ScatterGatherIteration([(rate,
                                                      1)], segment_size,
                                                     num_mbufs, False, False,
@@ -471,9 +466,20 @@ class ScatterGather(runner.Experiment):
             args = [str(plotting_script), str(full_log),
                     str(size), str(output_file)]
             try:
-                sh.run(args)
+                sh.run(args, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
             except:
                 utils.warn("Failed to run plot command: {}".format(args))
+        # plot heatmap
+        heatmap_script = Path(cornflakes_repo) / "experiments" / \
+            "plotting_scripts" / "sg_bench_map.R"
+        heatmap_file = plot_path / "heatmap.pdf"
+        args = [str(heatmap_script), str(full_log), str(heatmap_file)]
+        try:
+            sh.run(args, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+        except:
+            utils.warn("Failed to run heatmap plot command: {}".format(args))
 
 
 def main():

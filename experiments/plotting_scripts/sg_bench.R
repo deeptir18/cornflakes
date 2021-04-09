@@ -64,7 +64,8 @@ base_plot <- function(data) {
                   legend.spacing.x = unit(0.1, 'cm'),
                   legend.text=element_text(size=15),
                   axis.title=element_text(size=27,face="plain", colour="#000000"),
-                  axis.text=element_text(size=27, colour="#000000"))
+                  axis.text.y=element_text(size=27, colour="#000000"),
+                  axis.text.x=element_text(size=10, colour="#000000", angle=45))
     print(plot)
     return(plot)
 }

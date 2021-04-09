@@ -101,8 +101,9 @@ pub fn do_client(
 
     let start_run = Instant::now();
     let mut rx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
-    let end_cycles = start_time + total_time * dpdk_call!(rte_get_timer_hz());
-    while dpdk_call!(rte_get_timer_cycles()) < end_cycles {
+    while dpdk_call!(rte_get_timer_cycles())
+        < (start_time + total_time * dpdk_call!(rte_get_timer_hz()))
+    {
         // send a packet
         let mut pkt = wrapper::alloc_mbuf(mbuf_pool)?;
 
@@ -336,21 +337,21 @@ pub fn do_server(
     }
 
     loop {
-        //let rx_burst_start = Instant::now();
+        let rx_burst_start = Instant::now();
         let num_received = dpdk_call!(rte_eth_rx_burst(
             port,
             0,
             rx_bufs.as_mut_ptr(),
             RECEIVE_BURST_SIZE as u16
         ));
-        /*if num_received > 0 {
+        if num_received > 0 {
             record(
                 get_timer(RX_BURST_TIMER)?,
                 rx_burst_start.elapsed().as_nanos() as u64,
             )?;
-        }*/
+        }
         let mut num_valid = 0;
-        //let rx_proc_start = Instant::now();
+        let rx_proc_start = Instant::now();
         for i in 0..num_received {
             let n_to_tx = i as usize;
             // first: parse if valid packet, and what the payload size is
@@ -468,9 +469,6 @@ pub fn do_server(
             );
         }
         if num_valid > 0 {
-            wrapper::tx_burst(port, 0, tx_bufs.as_mut_ptr(), num_valid)?;
-        }
-        /*if num_valid > 0 {
             record(
                 get_timer(PROC_TIMER)?,
                 rx_proc_start.elapsed().as_nanos() as u64,
@@ -480,6 +478,6 @@ pub fn do_server(
                 cfg!(feature = "timers"),
                 get_timer(TX_BURST_TIMER)?,
             )?;
-        }*/
+        }
     }
 }

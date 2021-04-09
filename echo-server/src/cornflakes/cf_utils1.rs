@@ -989,7 +989,6 @@ mod tests {
         // serialize
         let header_size = 3 * CFBytes::CONSTANT_HEADER_SIZE;
         let ptr = unsafe { libc::malloc(header_size) };
-        tracing::info!("Ptr being passed into serialize: {:?}", ptr);
         let header_buffer = unsafe { slice::from_raw_parts_mut(ptr as *mut u8, header_size) };
         let cf = bytes_list.serialize(header_buffer, copy_func);
 

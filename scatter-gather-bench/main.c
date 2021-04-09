@@ -947,6 +947,21 @@ uint64_t rte_get_timer_hz_() {
     return rte_get_timer_hz();
 }
 
+int calculate_total_pkts_required(uint32_t seg_size, uint32_t nb_segs) {
+    if (seg_size > MAX_SEGMENT_SIZE) {
+        if (nb_segs != 1) {
+            printf("Cannot handle if segment size > MAX and nb_segs != 1.\n");
+            exit(1);
+        }
+        int total_pkts_required = (int)(ceil((double)seg_size / (double)MAX_SEGMENT_SIZE));
+        return total_pkts_required;
+    } else {
+        uint32_t pkts_per_segment = (uint32_t)MAX_SEGMENT_SIZE / seg_size;
+        int total_pkts_required = (int)(ceil((double)nb_segs / (double)pkts_per_segment));
+        return total_pkts_required;
+    }
+}
+
 static int do_client(void) {
     clock_offset = raw_time();
     uint64_t start_time, end_time;
@@ -966,7 +981,7 @@ static int do_client(void) {
     start_time = rte_get_timer_cycles();
     int outstanding = 0;
     uint64_t id = 0;
-    int total_pkts_required = (int)(ceil(((double)segment_size * (double)num_mbufs)/ (double)MAX_SEGMENT_SIZE));
+    int total_pkts_required = calculate_total_pkts_required(segment_size, num_mbufs);
     while (rte_get_timer_cycles_() < start_time + seconds * rte_get_timer_hz_()) {
         // send a packet
         pkt = rte_pktmbuf_alloc_(tx_mbuf_pool);
@@ -1182,32 +1197,32 @@ static int do_server(void) {
             struct rte_mbuf* secondary = NULL;
             
             if (valid == 0) {
-                //printf("Received a valid packet\n");
+                // printf("Received a valid packet\n");
                 rx_buf = rx_bufs[i];
                 size_t header_size = rx_buf->pkt_len - payload_length;
                 uint32_t segment_length = (uint32_t)(*(uint64_t *)((char *)payload + 16));
                 uint16_t nb_segs = (uint16_t)(*(uint64_t *)((char *)payload + 24));
                 nb_req += 1;
 
-                int total_pkts_required = (int)(ceil(((double)segment_length * (double)nb_segs)/ (double)MAX_SEGMENT_SIZE));
+                int total_pkts_required = calculate_total_pkts_required(segment_length, (uint32_t)nb_segs);
                 uint32_t payload_left = segment_length * nb_segs;
-                //printf("Total packets required for %u segment_size and %u nb_segs is %d; total_payload: %u\n", (unsigned)segment_length, (unsigned)nb_segs, total_pkts_required, (unsigned)payload_left);
+                // printf("Total packets required for %u segment_size and %u nb_segs is %d; total_payload: %u\n", (unsigned)segment_length, (unsigned)nb_segs, total_pkts_required, (unsigned)payload_left);
                 
                 for (int pkt = 0; pkt < total_pkts_required; pkt++) {
                     struct rte_mbuf *prev = NULL;
                     uint32_t actual_segment_size = MIN(payload_left, MIN(segment_length, MAX_SEGMENT_SIZE));
                     int nb_segs_segment = (MIN(payload_left, (uint32_t)MAX_SEGMENT_SIZE)) / actual_segment_size;
                     uint32_t pkt_len = actual_segment_size * (uint32_t)nb_segs_segment;
-                    //printf("->Pkt # %d: length: %u, nb_segs: %d, payload_left: %u, seg size: %u\n", pkt, (unsigned)pkt_len, nb_segs_segment, (unsigned)payload_left, (unsigned)actual_segment_size);
+                    // printf("->Pkt # %d: length: %u, nb_segs: %d, payload_left: %u, seg size: %u\n", pkt, (unsigned)pkt_len, nb_segs_segment, (unsigned)payload_left, (unsigned)actual_segment_size);
 
                     if (zero_copy_mode) {
                         for (int seg = 0; seg < nb_segs_segment; seg++) {
                             tx_bufs[seg][pkt] = rte_pktmbuf_alloc(tx_mbuf_pool);
                             if (tx_bufs[seg][pkt] == NULL) {
-                                printf("Failed to allocate tx buf burst # %i, seg %i\n", i, seg);
+                                // printf("Failed to allocate tx buf burst # %i, seg %i\n", i, seg);
                                 exit(1);
                             }
-                            //printf("\t->Allocated packet segment %d, for pkt %d\n", seg, pkt);
+                            // printf("\t->Allocated packet segment %d, for pkt %d\n", seg, pkt);
                             if (seg == 0) {
                                 // copy in the packet header to the first segment
                                 // for fake GSO segmentation.
@@ -1222,14 +1237,14 @@ static int do_server(void) {
                             if (prev != NULL) {
                                 prev->next = tx_bufs[seg][pkt];
                             }
-                            //printf("\t->Pkt # %d, segment # %d, data_len: %u\n", pkt, seg, (unsigned)actual_segment_size);
+                            // printf("\t->Pkt # %d, segment # %d, data_len: %u\n", pkt, seg, (unsigned)actual_segment_size);
                             tx_bufs[seg][pkt]->data_len = (uint16_t)actual_segment_size;
                             prev = tx_bufs[seg][pkt];
                         }
                     } else {
                         tx_bufs[0][pkt] = rte_pktmbuf_alloc(tx_mbuf_pool);
                         if (tx_bufs[0][pkt] == NULL) {
-                            //printf("Failed to allocate tx buf burst # %i, seg %i\n", i, 0);
+                            printf("Failed to allocate tx buf burst # %i, seg %i\n", i, 0);
                             exit(1);
                         }
                         swap_headers(tx_bufs[0][pkt], rx_buf, (size_t)(pkt_len));

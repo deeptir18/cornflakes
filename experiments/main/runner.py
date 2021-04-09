@@ -220,7 +220,7 @@ class Experiment(metaclass=abc.ABCMeta):
         if total_args.exp_type == "loop":
             if not(total_args.analysis_only) and not(total_args.graph_only):
                 self.run_iterations(total_args, iterations)
-            if not(total_args.no_analysis) and not(namespace.pprint):
+            if not(total_args.no_analysis) and not(namespace.pprint) and not(total_args.graph_only):
                 self.run_analysis_loop(total_args,
                                        iterations,
                                        print_stats=False,

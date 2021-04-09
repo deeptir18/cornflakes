@@ -1,5 +1,7 @@
 pub mod cf_testobject1;
+pub mod cf_testobject2;
 pub mod cf_utils1;
+pub mod cf_utils2;
 use super::{
     get_equal_fields, init_payloads, init_payloads_as_vec, CerealizeClient, CerealizeMessage,
 };
