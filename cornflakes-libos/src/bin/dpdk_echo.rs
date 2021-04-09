@@ -74,7 +74,10 @@ struct Opt {
 fn main() -> Result<()> {
     let opt = Opt::from_args();
     global_debug_init(opt.trace_level)?;
-    dpdk_bindings::load_mlx5_driver();
+    #[cfg(feature = "mlx5")]
+    {
+        dpdk_bindings::load_mlx5_driver();
+    }
 
     let payload = vec![b'a'; opt.size];
 

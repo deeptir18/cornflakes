@@ -98,7 +98,10 @@ fn main() -> Result<()> {
     };
 
     let dpdk_datapath = || -> Result<DPDKConnection> {
-        dpdk_bindings::load_mlx5_driver();
+        #[cfg(feature = "mlx5")]
+        {
+            dpdk_bindings::load_mlx5_driver();
+        }
         let connection = DPDKConnection::new(&opt.config_file, mode)
             .wrap_err("Failed to initialize DPDK server connection.")?;
         Ok(connection)

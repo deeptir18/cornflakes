@@ -46,7 +46,8 @@ fn main() {
 
     for flag in cflags.split(' ') {
         if flag.starts_with("-I") {
-            let header_location = &flag[2..];
+            let mut header_location = &flag[2..];
+            header_location = header_location.trim();
             header_locations.push(header_location);
         }
     }
