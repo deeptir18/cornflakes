@@ -406,13 +406,13 @@ where
 
     // Re-initializing owned list is not 0-copy. 0-copy only works for ref-list.
     fn inner_deserialize(&mut self, buf: *const u8, size: usize, _relative_offset: usize) {
-        self.num_set = size / size_of::<T>();
-        self.num_space = size / size_of::<T>();
-        self.list_ptr = BytesMut::with_capacity(size);
+        self.num_set = size;
+        self.num_space = size;
+        self.list_ptr = BytesMut::with_capacity(size * size_of::<T>());
         // copy the bytes from the buf to the list_ptr
         self.list_ptr
             .chunk_mut()
-            .copy_from_slice(unsafe { slice::from_raw_parts(buf, size) });
+            .copy_from_slice(unsafe { slice::from_raw_parts(buf, size * size_of::<T>()) });
     }
 }
 
@@ -510,7 +510,7 @@ where
     }
 
     fn inner_deserialize(&mut self, buf: *const u8, size: usize, _relative_offset: usize) {
-        self.num_space = size / size_of::<T>();
+        self.num_space = size;
         self.list_ptr = buf as _;
     }
 }
@@ -888,14 +888,14 @@ mod tests {
 
         // deserialize the int list
         let mut deserialized_list = List::<i32>::init_ref();
-        deserialized_list.deserialize(unsafe { slice::from_raw_parts(ptr as *const u8, 12) });
+        deserialized_list.inner_deserialize(ptr as _, 3, 0);
         assert!(deserialized_list.len() == 3);
         assert!(deserialized_list[0] == 15);
         assert!(deserialized_list[1] == 11);
         assert!(deserialized_list[2] == 12);
 
         let mut deserialized_list_owned = List::<i32>::default();
-        deserialized_list_owned.deserialize(unsafe { slice::from_raw_parts(ptr as *const u8, 24) });
+        deserialized_list_owned.inner_deserialize(ptr as _, 3, 0);
         assert!(deserialized_list.len() == 3);
         assert!(deserialized_list[0] == 15);
         assert!(deserialized_list[1] == 11);
@@ -948,14 +948,14 @@ mod tests {
 
         // deserialize the int list
         let mut deserialized_list = List::<u64>::init_ref();
-        deserialized_list.deserialize(unsafe { slice::from_raw_parts(ptr as *const u8, 24) });
+        deserialized_list.inner_deserialize(ptr as _, 3, 0);
         assert!(deserialized_list.len() == 3);
         assert!(deserialized_list[0] == 150000);
         assert!(deserialized_list[1] == 110000);
         assert!(deserialized_list[2] == 120000);
 
         let mut deserialized_list_owned = List::<u64>::default();
-        deserialized_list_owned.deserialize(unsafe { slice::from_raw_parts(ptr as *const u8, 24) });
+        deserialized_list_owned.inner_deserialize(ptr as _, 3, 0);
         assert!(deserialized_list.len() == 3);
         assert!(deserialized_list[0] == 150000);
         assert!(deserialized_list[1] == 110000);
@@ -1143,7 +1143,6 @@ mod tests {
         // serialize
         let header_size = 3 * CFString::CONSTANT_HEADER_SIZE;
         let ptr = unsafe { libc::malloc(header_size) };
-        tracing::info!("Ptr being passed into serialize: {:?}", ptr);
         let header_buffer = unsafe { slice::from_raw_parts_mut(ptr as *mut u8, header_size) };
         let cf = string_list.serialize(header_buffer, copy_func);
 

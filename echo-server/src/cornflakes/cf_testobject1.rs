@@ -342,7 +342,7 @@ impl<'registered> HeaderRepr<'registered> for TestObject<'registered> {
         let mut cur_header_off = unsafe { buf.offset(Self::BITMAP_SIZE as isize) };
         let mut cur_constant_offset = Self::BITMAP_SIZE;
         if bitmap_slice[Self::INT_FIELD_BITMAP_IDX] == 1 {
-            self.bitmap[Self::INT_FIELD_BITMAP_IDX];
+            self.bitmap[Self::INT_FIELD_BITMAP_IDX] = 1;
             self.int_field =
                 LittleEndian::read_i32(unsafe { slice::from_raw_parts(cur_header_off, 4) });
             cur_header_off = unsafe { cur_header_off.offset(Self::INT_FIELD_HEADER_SIZE as isize) };
@@ -375,6 +375,10 @@ impl<'registered> HeaderRepr<'registered> for TestObject<'registered> {
                 object_ref.get_size(),
                 object_ref.get_offset(),
             );
+            cur_header_off = unsafe {
+                cur_header_off.offset(VariableList::<CFBytes>::CONSTANT_HEADER_SIZE as isize)
+            };
+            cur_constant_offset += VariableList::<CFBytes>::CONSTANT_HEADER_SIZE;
         }
 
         if bitmap_slice[Self::STRING_FIELD_BITMAP_IDX] == 1 {
@@ -1255,7 +1259,8 @@ mod tests {
             1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, // 188
             25u8, 0u8, 0u8, 0u8, 241u8, 0u8, 0u8, 0u8, // 196,
         ];
-        buffer.write(&header_buffer).unwrap();
+        let mut buffer_slice = &mut buffer.as_mut_slice()[0..header_buffer.len()];
+        buffer_slice.write(&header_buffer).unwrap();
         let mut cur_offset = 196;
         for payload in sorted_payloads.iter() {
             let mut slice = &mut buffer.as_mut_slice()[cur_offset..(cur_offset + payload.len())];
