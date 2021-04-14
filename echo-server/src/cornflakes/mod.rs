@@ -1,13 +1,11 @@
 pub mod cf_testobject1;
 pub mod cf_testobject2;
-pub mod cf_utils1;
-pub mod cf_utils2;
 use super::{
     get_equal_fields, init_payloads, init_payloads_as_vec, CerealizeClient, CerealizeMessage,
 };
 use cf_testobject1::*;
-use cf_utils1::*;
 use color_eyre::eyre::Result;
+use cornflakes_codegen::utils::fixed_hdr::*;
 use cornflakes_libos::{mem::MmapMetadata, Cornflake, Datapath, ReceivedPacket};
 use cornflakes_utils::SimpleMessageType;
 use memmap::MmapMut;

@@ -12,6 +12,7 @@ structopt="0.2.16"
 structopt-derive="0.2.16"
 cornflakes-libos = { path = "../cornflakes-libos" }
 cornflakes-utils = { path = "../cornflakes-utils" }
+cornflakes-codegen = { path = "../cornflakes-codegen" }
 ctrlc = "3.1.7"
 memmap = "0.7.0"
 rand = "0.8.0"

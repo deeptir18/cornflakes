@@ -1,4 +1,5 @@
 pub mod rust_codegen;
+pub mod utils;
 
 use color_eyre::eyre::{bail, Result, WrapErr};
 use protobuf_parser::FileDescriptor;

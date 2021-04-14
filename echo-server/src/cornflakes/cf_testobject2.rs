@@ -1,5 +1,5 @@
-use super::cf_utils2::*;
 use byteorder::{ByteOrder, LittleEndian};
+use cornflakes_codegen::utils::fixed_hdr::*;
 use cornflakes_libos::CornPtr;
 use libc;
 use std::{iter::Iterator, slice};
