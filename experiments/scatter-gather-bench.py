@@ -466,8 +466,7 @@ class ScatterGather(runner.Experiment):
             args = [str(plotting_script), str(full_log),
                     str(size), str(output_file)]
             try:
-                sh.run(args, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+                sh.run(args)
             except:
                 utils.warn("Failed to run plot command: {}".format(args))
         # plot heatmap
@@ -476,8 +475,7 @@ class ScatterGather(runner.Experiment):
         heatmap_file = plot_path / "heatmap.pdf"
         args = [str(heatmap_script), str(full_log), str(heatmap_file)]
         try:
-            sh.run(args, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL)
+            sh.run(args)
         except:
             utils.warn("Failed to run heatmap plot command: {}".format(args))
 
