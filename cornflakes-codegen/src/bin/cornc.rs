@@ -18,10 +18,11 @@ struct Opt {
     input_file: String,
     #[structopt(
         short = "o",
-        long = "output_file",
-        help = "Output file to write generated code."
+        long = "output_folder",
+        help = "Output file to write generated code.",
+        default_value = "."
     )]
-    output_file: String,
+    output_folder: String,
     #[structopt(
         short = "debug",
         long = "debug_level",
@@ -40,7 +41,7 @@ struct Opt {
         short = "h",
         long = "header_type",
         help = "Generated header type.",
-        default_value = "fixed_size"
+        default_value = "fixed"
     )]
     header_type: HeaderType,
 }
@@ -50,7 +51,7 @@ fn main() -> Result<()> {
     global_debug_init(opt.trace_level)?;
     compile(
         &opt.input_file,
-        &opt.output_file,
+        &opt.output_folder,
         CompileOptions::new(opt.header_type, opt.language),
     )
     .wrap_err("Compile failed.")?;

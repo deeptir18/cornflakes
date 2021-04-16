@@ -1,4 +1,5 @@
 use byteorder::{ByteOrder, LittleEndian};
+use cornflakes_codegen::utils::fixed_hdr::HeaderRepr;
 use cornflakes_codegen::utils::fixed_hdr::*;
 use cornflakes_libos::CornPtr;
 use libc;

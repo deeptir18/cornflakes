@@ -1,13 +1,12 @@
-use super::{CompileOptions, HeaderType};
+use super::{header_utils::ProtoReprInfo, CompileOptions, HeaderType};
 use color_eyre::eyre::{bail, Result, WrapErr};
-use protobuf_parser::FileDescriptor;
-use std::{fs::File, io::Write, process::Command, str};
+use std::{fs::File, io::Write, path::Path, process::Command, str};
 use which::which;
 
 mod constant_codegen;
 mod linear_codegen;
 
-pub fn compile(repr: FileDescriptor, output_file: &str, options: CompileOptions) -> Result<()> {
+pub fn compile(repr: &ProtoReprInfo, output_folder: &str, options: CompileOptions) -> Result<()> {
     let mut compiler = SerializationCompiler::new();
     match options.header_type {
         HeaderType::ConstantDeserialization => {
@@ -19,7 +18,7 @@ pub fn compile(repr: FileDescriptor, output_file: &str, options: CompileOptions)
                 .wrap_err("Linear codegen failed to generate code.")?;
         }
     }
-    compiler.flush(output_file)?;
+    compiler.flush(&repr.get_output_file(output_folder).as_path())?;
     Ok(())
 }
 
@@ -84,6 +83,12 @@ impl ArgInfo {
     }
 }
 
+pub trait ContextPop {
+    /// Pops the next thing from this context and writes it as a line.
+    /// Returns whether the context should be added back to the context list.
+    fn pop(&mut self) -> Result<(String, bool)>;
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum FunctionArg {
     SelfArg,
@@ -106,29 +111,50 @@ pub struct FunctionContext {
     pub name: String,
     pub is_pub: bool,
     pub args: Vec<FunctionArg>,
+    ret_type: Option<String>,
+    started: bool,
 }
 
 impl FunctionContext {
-    pub fn new(name: &str, is_pub: bool, args: Vec<FunctionArg>) -> Self {
+    pub fn new(name: &str, is_pub: bool, args: Vec<FunctionArg>, ret: &str) -> Self {
+        let ret_type: Option<String> = match ret {
+            "" => None,
+            x => Some(x.to_string()),
+        };
         FunctionContext {
             name: name.to_string(),
             is_pub: is_pub,
             args: args,
+            started: false,
+            ret_type: ret_type,
         }
     }
+}
 
-    pub fn push(&self) -> String {
-        let is_pub_str = match self.is_pub {
-            true => "pub ".to_string(),
-            false => "".to_string(),
-        };
-        let args: Vec<String> = self.args.iter().map(|arg| arg.get_string()).collect();
-        let args_string = args.join(", ");
-        format!("{}fn {}({}) {{", is_pub_str, self.name, args_string)
-    }
-
-    pub fn pop(&self) -> String {
-        "}".to_string()
+impl ContextPop for FunctionContext {
+    fn pop(&mut self) -> Result<(String, bool)> {
+        if !self.started {
+            self.started = true;
+            let is_pub_str = match self.is_pub {
+                true => "pub ".to_string(),
+                false => "".to_string(),
+            };
+            let args: Vec<String> = self.args.iter().map(|arg| arg.get_string()).collect();
+            let args_string = args.join(", ");
+            let ret_value = match &self.ret_type {
+                Some(r) => format!(" -> {}", r),
+                None => "".to_string(),
+            };
+            Ok((
+                format!(
+                    "{}fn {}({}) {} {{",
+                    is_pub_str, self.name, args_string, ret_value
+                ),
+                false,
+            ))
+        } else {
+            Ok(("}".to_string(), true))
+        }
     }
 }
 
@@ -137,6 +163,7 @@ pub struct StructContext {
     name: String,
     derives_copy: bool,
     lifetime: String,
+    started: bool,
 }
 
 impl StructContext {
@@ -145,22 +172,55 @@ impl StructContext {
             name: name.to_string(),
             derives_copy: derives_copy,
             lifetime: lifetime.to_string(),
+            started: false,
         }
     }
+}
 
-    pub fn push(&self) -> String {
-        let derives = match self.derives_copy {
-            true => "Debug, Clone, PartialEq, Eq, Copy",
-            false => "Debug, Clone, PartialEq, Eq",
-        };
-        format!(
-            "#[derive({})]\npub struct {}<'{}> {{",
-            derives, self.name, self.lifetime
-        )
+impl ContextPop for StructContext {
+    fn pop(&mut self) -> Result<(String, bool)> {
+        if !self.started {
+            self.started = true;
+            let derives = match self.derives_copy {
+                true => "Debug, Clone, PartialEq, Eq, Copy",
+                false => "Debug, Clone, PartialEq, Eq",
+            };
+            Ok((
+                format!(
+                    "#[derive({})]\npub struct {}<'{}> {{",
+                    derives, self.name, self.lifetime
+                ),
+                false,
+            ))
+        } else {
+            Ok(("}".to_string(), true))
+        }
     }
+}
 
-    pub fn pop(&self) -> String {
-        "}".to_string()
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct StructDefContext {
+    name: String,
+    started: bool,
+}
+
+impl StructDefContext {
+    pub fn new(name: &str) -> Self {
+        StructDefContext {
+            name: name.to_string(),
+            started: false,
+        }
+    }
+}
+
+impl ContextPop for StructDefContext {
+    fn pop(&mut self) -> Result<(String, bool)> {
+        if !self.started {
+            self.started = true;
+            Ok((format!("{} {{", self.name), false))
+        } else {
+            Ok(("}".to_string(), true))
+        }
     }
 }
 
@@ -169,6 +229,7 @@ pub struct ImplContext {
     pub struct_name: String,
     pub trait_name: Option<String>,
     pub struct_lifetime: Option<String>,
+    started: bool,
 }
 
 impl ImplContext {
@@ -181,29 +242,38 @@ impl ImplContext {
             struct_name: name.to_string(),
             trait_name: trait_name,
             struct_lifetime: struct_lifetime,
+            started: false,
         }
     }
+}
 
-    pub fn push(&self) -> String {
-        let lifetime_str = match &self.struct_lifetime {
-            Some(x) => format!("<'{}>", x),
-            None => "".to_string(),
-        };
-        match &self.trait_name {
-            Some(t) => {
-                format!(
-                    "impl{} {} for {}{}",
-                    lifetime_str, t, self.struct_name, lifetime_str
-                )
+impl ContextPop for ImplContext {
+    fn pop(&mut self) -> Result<(String, bool)> {
+        if !self.started {
+            self.started = true;
+            let lifetime_str = match &self.struct_lifetime {
+                Some(x) => format!("<'{}>", x),
+                None => "".to_string(),
+            };
+            match &self.trait_name {
+                Some(t) => Ok((
+                    format!(
+                        "impl{} {} for {}{} {{",
+                        lifetime_str, t, self.struct_name, lifetime_str
+                    ),
+                    false,
+                )),
+                None => Ok((
+                    format!(
+                        "impl{} {}{} {{",
+                        lifetime_str, self.struct_name, lifetime_str
+                    ),
+                    false,
+                )),
             }
-            None => {
-                format!("impl{} {}{}", lifetime_str, self.struct_name, lifetime_str)
-            }
+        } else {
+            Ok(("}".to_string(), true))
         }
-    }
-
-    pub fn pop(&self) -> String {
-        "}".to_string()
     }
 }
 
@@ -247,15 +317,17 @@ impl LoopContext {
             current_idx: 0,
         }
     }
+}
 
-    pub fn pop(&mut self) -> (String, bool) {
+impl ContextPop for LoopContext {
+    fn pop(&mut self) -> Result<(String, bool)> {
         let last_branch = &self.branches[self.current_idx];
         self.current_idx += 1;
         match last_branch {
-            LoopBranch::If(cond) => (format!("if {} {{", cond), true),
-            LoopBranch::ElseIf(cond) => (format!("}} else if {} {{", cond), true),
-            LoopBranch::Else => ("}} else {{".to_string(), true),
-            LoopBranch::Finished => ("}".to_string(), false),
+            LoopBranch::If(cond) => Ok((format!("if {} {{", cond), false)),
+            LoopBranch::ElseIf(cond) => Ok((format!("}} else if {} {{", cond), false)),
+            LoopBranch::Else => Ok(("} else {".to_string(), false)),
+            LoopBranch::Finished => Ok(("}".to_string(), true)),
         }
     }
 }
@@ -264,8 +336,21 @@ impl LoopContext {
 pub enum Context {
     Function(FunctionContext),
     Struct(StructContext),
+    StructDef(StructDefContext),
     Impl(ImplContext),
     Loop(LoopContext),
+}
+
+impl ContextPop for Context {
+    fn pop(&mut self) -> Result<(String, bool)> {
+        match self {
+            Context::Function(ref mut func_context) => func_context.pop(),
+            Context::Struct(ref mut struct_context) => struct_context.pop(),
+            Context::StructDef(ref mut struct_def_context) => struct_def_context.pop(),
+            Context::Impl(ref mut impl_context) => impl_context.pop(),
+            Context::Loop(ref mut loop_context) => loop_context.pop(),
+        }
+    }
 }
 
 pub struct SerializationCompiler {
@@ -281,11 +366,95 @@ impl SerializationCompiler {
         }
     }
 
+    pub fn add_dependency(&mut self, dependency: &str) -> Result<()> {
+        self.current_string
+            .push_str(&format!("use {};", dependency));
+        self.add_newline()?;
+        Ok(())
+    }
+
     pub fn add_line(&mut self, line: &str) -> Result<()> {
-        self.current_string.push_str("\n");
         self.current_string
             .push_str(&("\t".repeat(self.current_indent_level())));
         self.current_string.push_str(line);
+        self.add_newline()?;
+        Ok(())
+    }
+
+    pub fn add_struct_field(&mut self, name: &str, typ: &str) -> Result<()> {
+        let last_ctx = &self.current_context[self.current_context.len() - 1];
+        match last_ctx {
+            Context::Struct(_) => {}
+            _ => {
+                bail!("Previous context must be struct context.");
+            }
+        }
+
+        self.add_line(&format!("{}: {},", name, typ))?;
+        Ok(())
+    }
+
+    pub fn add_struct_def_field(&mut self, name: &str, typ: &str) -> Result<()> {
+        let last_ctx = &self.current_context[self.current_context.len() - 1];
+        match last_ctx {
+            Context::StructDef(_) => {}
+            _ => {
+                bail!("Previous context must be struct context.");
+            }
+        }
+
+        self.add_line(&format!("{}: {},", name, typ))?;
+        Ok(())
+    }
+
+    pub fn add_def_with_let(
+        &mut self,
+        is_mut: bool,
+        typ: Option<String>,
+        left: &str,
+        right: &str,
+    ) -> Result<()> {
+        let mut_str = match is_mut {
+            true => "mut",
+            false => "",
+        };
+        let type_str = match typ {
+            Some(x) => format!(": {}", x),
+            None => "".to_string(),
+        };
+        let line = format!("let {} {}{} = {};", mut_str, left, type_str, right);
+        self.add_line(&line)?;
+        Ok(())
+    }
+
+    pub fn add_statement(&mut self, left: &str, right: &str) -> Result<()> {
+        let line = format!("{} = {};", left, right);
+        self.add_line(&line)?;
+        Ok(())
+    }
+
+    pub fn add_func_call(
+        &mut self,
+        caller: Option<String>,
+        func: &str,
+        args: Vec<String>,
+    ) -> Result<()> {
+        let caller_str = match caller {
+            Some(x) => format!("{}.", x),
+            None => "".to_string(),
+        };
+
+        let line = format!("{}{}({});", caller_str, func, args.join(", "));
+        self.add_line(&line)?;
+        Ok(())
+    }
+
+    pub fn add_return_val(&mut self, statement: &str, with_return: bool) -> Result<()> {
+        let line = match with_return {
+            true => format!("return {};", statement),
+            false => format!("{}", statement),
+        };
+        self.add_line(&line)?;
         Ok(())
     }
 
@@ -293,8 +462,10 @@ impl SerializationCompiler {
         self.current_context.len()
     }
 
-    pub fn add_context(&mut self, ctx: Context) {
+    pub fn add_context(&mut self, ctx: Context) -> Result<()> {
         self.current_context.push(ctx);
+        self.pop_context()?;
+        Ok(())
     }
 
     pub fn pop_context(&mut self) -> Result<()> {
@@ -304,26 +475,18 @@ impl SerializationCompiler {
                 bail!("No context to pop.");
             }
         };
+        let (line, end) = last_ctx.pop()?;
+        self.add_line(&line)?;
 
-        match last_ctx {
-            Context::Function(func_context) => {
-                self.add_line(&func_context.pop())?;
-            }
-            Context::Struct(struct_context) => {
-                self.add_line(&struct_context.pop())?;
-            }
-            Context::Impl(impl_context) => {
-                self.add_line(&impl_context.pop())?;
-            }
-            Context::Loop(ref mut loop_context) => {
-                let (line, cont) = loop_context.pop();
-                self.add_line(&line)?;
-                if cont {
-                    self.current_context
-                        .push(Context::Loop(loop_context.clone()));
-                }
-            }
+        if !end {
+            self.current_context.push(last_ctx);
         }
+        Ok(())
+    }
+
+    pub fn add_const_def(&mut self, var_name: &str, typ: &str, def: &str) -> Result<()> {
+        let line = format!("const {}: {} = {};", var_name, typ, def);
+        self.add_line(&line)?;
         Ok(())
     }
 
@@ -332,9 +495,9 @@ impl SerializationCompiler {
         Ok(())
     }
 
-    pub fn flush(&self, output_file: &str) -> Result<()> {
+    pub fn flush(&self, output_file: &Path) -> Result<()> {
         let mut of = File::create(output_file)
-            .wrap_err(format!("Failed to create output file at {}", output_file))?;
+            .wrap_err(format!("Failed to create output file at {:?}", output_file))?;
         let mut pos: usize = 0;
         while pos < self.current_string.as_str().len() {
             pos += of.write(&self.current_string.as_str().as_bytes()[pos..])?;
@@ -346,10 +509,16 @@ impl SerializationCompiler {
 }
 
 /// Programmatically runs rustfmt on a file.
-pub fn run_rustfmt(output_file: &str) -> Result<()> {
+pub fn run_rustfmt(output_file: &Path) -> Result<()> {
     let rustfmt = which("rustfmt").wrap_err("Failed to find rustfmt.")?;
+    let str_file = match output_file.to_str() {
+        Some(s) => s,
+        None => {
+            bail!("Failed to convert path to str: {:?}", output_file);
+        }
+    };
     Command::new(rustfmt)
-        .arg(output_file)
+        .arg(str_file)
         .output()
         .wrap_err("failed to execute Rustfmt process")?;
     Ok(())

@@ -5,7 +5,7 @@ use super::{
 };
 use cf_testobject1::*;
 use color_eyre::eyre::Result;
-use cornflakes_codegen::utils::fixed_hdr::*;
+use cornflakes_codegen::utils::dynamic_hdr::*;
 use cornflakes_libos::{mem::MmapMetadata, Cornflake, Datapath, ReceivedPacket};
 use cornflakes_utils::SimpleMessageType;
 use memmap::MmapMut;
