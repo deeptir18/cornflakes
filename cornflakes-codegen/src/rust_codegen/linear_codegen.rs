@@ -24,9 +24,9 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
 }
 
 fn add_deserialization_func(
-    _fd: &ProtoReprInfo,
+    fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
-    _msg_info: &MessageInfo,
+    msg_info: &MessageInfo,
 ) -> Result<()> {
     let func_context = FunctionContext::new(
         "inner_deserialize",
@@ -40,7 +40,152 @@ fn add_deserialization_func(
         "",
     );
     compiler.add_context(Context::Function(func_context))?;
+    compiler.add_line("assert!(size >= Self::BITMAP_SIZE);")?;
+    compiler.add_unsafe_def_with_let(
+        false,
+        None,
+        "bitmap_slice",
+        "slice::from_raw_parts(buf, Self::BITMAP_SIZE)",
+    )?;
+    compiler.add_newline()?;
+
+    let cur_header_ptr_mut = msg_info.num_fields() > 1;
+    compiler.add_unsafe_def_with_let(
+        cur_header_ptr_mut,
+        None,
+        "cur_header_ptr",
+        "buf.offset(Self::BITMAP_SIZE as isize)",
+    )?;
+    let (has_cur_header_offset, cur_header_offset_mut) = {
+        let mut num_string_or_bytes_fields = 0;
+        for field in msg_info.get_fields() {
+            let field_info = FieldInfo(field.clone());
+            if field_info.is_bytes_or_string() {
+                num_string_or_bytes_fields += 1;
+            }
+        }
+        (
+            num_string_or_bytes_fields > 0,
+            num_string_or_bytes_fields > 1,
+        )
+    };
+    if has_cur_header_offset {
+        compiler.add_def_with_let(
+            cur_header_offset_mut,
+            None,
+            "cur_header_offset",
+            "Self::BITMAP_SIZE",
+        )?;
+    }
+    compiler.add_newline()?;
+
+    // iterate over fields adn add field deserialization for each field
+    for field in msg_info.get_fields().iter() {
+        let field_info = FieldInfo(field.clone());
+        let loop_context = LoopContext::new(vec![LoopBranch::ifbranch(&format!(
+            "bitmap_slice[{}] == 1",
+            field_info.get_bitmap_idx_str(true)
+        ))]);
+        compiler.add_context(Context::Loop(loop_context))?;
+        add_field_deserialization(fd, compiler, msg_info, &field_info)?;
+        compiler.pop_context()?;
+    }
     compiler.pop_context()?;
+    Ok(())
+}
+
+// deserializes a field and stores the result in SELF
+fn add_field_deserialization(
+    fd: &ProtoReprInfo,
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+    field_info: &FieldInfo,
+) -> Result<()> {
+    compiler.add_statement(
+        &format!("self.bitmap[{}]", field_info.get_bitmap_idx_str(true)),
+        "1",
+    )?;
+    if field_info.is_list() {
+        match &field_info.0.typ {
+            FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint64
+            | FieldType::Uint32
+            | FieldType::Float
+            | FieldType::String
+            | FieldType::Bytes
+            | FieldType::MessageOrEnum(_) => {
+                compiler.add_def_with_let(false, None, "list_ref", "ObjectRef(cur_header_ptr)")?;
+                compiler.add_func_call(
+                    Some(format!("self.{}", field_info.get_name())),
+                    "inner_deserialize",
+                    vec![
+                        "buf.offset((list_ref.get_offset() - relative_offset) as isize)"
+                            .to_string(),
+                        "list_ref.get_size()".to_string(),
+                        "list_ref.get_offset()".to_string(),
+                    ],
+                )?;
+            }
+            _ => {
+                bail!("Field type {:?} not supported.", field_info.0.typ);
+            }
+        }
+    } else {
+        let rust_type = fd.get_rust_type(field_info.clone())?;
+        match &field_info.0.typ {
+            FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint64
+            | FieldType::Uint32
+            | FieldType::Float => {
+                compiler.add_statement(&format!("self.{}", field_info.get_name()), &format!("LittleEndian::read_{}( unsafe {{ slice::from_raw_parts(cur_header_ptr, {}) }} )", rust_type, field_info.get_header_size_str(true)?) )?;
+            }
+            FieldType::String | FieldType::Bytes => {
+                compiler.add_func_call(
+                    Some(format!("self.{}", field_info.get_name())),
+                    "inner_deserialize",
+                    vec![
+                        "cur_header_ptr".to_string(),
+                        format!("{}", field_info.get_header_size_str(true)?),
+                        "relative_offset + cur_header_offset".to_string(),
+                    ],
+                )?;
+            }
+            FieldType::MessageOrEnum(_) => {
+                compiler.add_def_with_let(
+                    false,
+                    None,
+                    "object_ref",
+                    "ObjectRef(cur_header_ptr)",
+                )?;
+                compiler.add_func_call(
+                    Some(format!("self.{}", field_info.get_name())),
+                    "inner_deserialize",
+                    vec![
+                        "buf.offset((object_ref.get_offset() - relative_offset) as isize)"
+                            .to_string(),
+                        "object_ref.get_size()".to_string(),
+                        "object_ref.get_offset()".to_string(),
+                    ],
+                )?;
+            }
+            _ => {
+                bail!("Field type {:?} not supported.", field_info.0.typ);
+            }
+        }
+
+        if msg_info.constant_fields_left(field_info.get_idx() as usize) > 0 {
+            compiler.add_unsafe_statement(
+                "cur_header_ptr",
+                &format!(
+                    "cur_header_ptr.offset({} as isize)",
+                    field_info.get_header_size_str(true)?
+                ),
+            )?;
+            compiler.add_plus_equals("cur_header_ptr", &field_info.get_header_size_str(true)?)?;
+        }
+    }
     Ok(())
 }
 
@@ -184,7 +329,7 @@ fn add_serialization_for_field(
             | FieldType::Float => {
                 let rust_type = &field_info.get_base_type_str()?;
                 let field_size = &field_info.get_header_size_str(true)?;
-                compiler.add_line(&format!("LittleEndian::write_{}( unsafe {{ slice::from_raw_parts_mut(cur_header_ptr, {}) }}, self.{})", rust_type, field_size, &field_info.get_name()))?;
+                compiler.add_line(&format!("LittleEndian::write_{}( unsafe {{ slice::from_raw_parts_mut(cur_header_ptr as _, {}) }}, self.{})", rust_type, field_size, &field_info.get_name()))?;
             }
             FieldType::String | FieldType::Bytes => {
                 compiler.add_func_call(
@@ -240,7 +385,7 @@ fn add_serialization_for_field(
     }
 
     if msg_info.dynamic_fields_left(field_info.get_idx(), true, fd.get_message_map())? > 0 {
-        if field_info.is_nested_msg() || field_info.is_list() {
+        if field_info.is_dynamic(true, fd.get_message_map())? {
             // modify cur_dynamic_ptr and cur_dynamic_offset
             compiler.add_unsafe_statement(
                 "cur_dynamic_ptr",

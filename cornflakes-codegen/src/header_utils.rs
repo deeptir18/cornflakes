@@ -355,6 +355,20 @@ impl FieldInfo {
         ret
     }
 
+    pub fn is_int(&self) -> bool {
+        if self.is_list() {
+            return false;
+        }
+        match &self.0.typ {
+            FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint32
+            | FieldType::Uint64
+            | FieldType::Float => true,
+            _ => false,
+        }
+    }
+
     pub fn get_total_header_size_str(&self, with_self: bool) -> Result<String> {
         if !self.is_list() {
             match &self.0.typ {
@@ -443,6 +457,9 @@ impl FieldInfo {
     }
 
     pub fn is_bytes_or_string(&self) -> bool {
+        if self.is_list() {
+            return false;
+        }
         match self.0.typ {
             FieldType::String | FieldType::Bytes => true,
             _ => false,
@@ -497,7 +514,37 @@ impl FieldInfo {
         }
     }
 
+    pub fn is_dynamic(
+        &self,
+        include_nested: bool,
+        message_map: &HashMap<String, Message>,
+    ) -> Result<bool> {
+        if self.is_list() {
+            return Ok(true);
+        }
+
+        if self.is_nested_msg() {
+            if include_nested {
+                return Ok(true);
+            }
+
+            match message_map.get(&self.get_name()) {
+                Some(m) => {
+                    let message_info = MessageInfo(m.clone());
+                    return message_info.has_dynamic_fields(include_nested, message_map);
+                }
+                None => {
+                    bail!("Field name: {} not found in message map.", self.get_name());
+                }
+            }
+        }
+        Ok(false)
+    }
+
     pub fn is_nested_msg(&self) -> bool {
+        if self.is_list() {
+            return false;
+        }
         match &self.0.typ {
             FieldType::MessageOrEnum(_) => true,
             _ => false,

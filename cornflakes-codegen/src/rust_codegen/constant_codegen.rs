@@ -39,6 +39,11 @@ fn add_deserialization_func(
         "",
     );
     compiler.add_context(Context::Function(func_context))?;
+    // constant time deserialization: just set header pointer
+    compiler.add_statement("self.header_ptr", "ref_buf")?;
+    compiler.add_statement("self.has_header_ptr", "true")?;
+    compiler.add_statement("self.offset", "constant_header_offset")?;
+
     compiler.pop_context()?;
     Ok(())
 }
@@ -140,6 +145,10 @@ fn add_serialization_func(
         )?;
     }
 
+    // TODO: optimization where if nothing is dirty (entire bitmap is filled with 0's), provide
+    // 1 scatter-gather array pointing to the original input buffer
+    // But this might not be a "valid" feature for the echo-server benchmark
+
     for field_idx in 0..msg_info.num_fields() {
         let field_info = msg_info.get_field_from_id(field_idx as i32)?;
         compiler.add_newline()?;
@@ -162,15 +171,51 @@ fn add_serialization_for_field(
     msg_info: &MessageInfo,
     field_info: &FieldInfo,
 ) -> Result<()> {
+    // calculate current head ptr
+    compiler.add_unsafe_def_with_let(
+        false,
+        None,
+        "cur_header_ptr",
+        &format!(
+            "constant_header_ptr.offset({})",
+            field_info.get_header_offset_str(true),
+        ),
+    )?;
+
+    // if not int, also need to calculate cur_header_offset
+    if !field_info.is_int() {
+        compiler.add_def_with_let(
+            false,
+            None,
+            "cur_header_offset",
+            &format!("self.offset + {}", field_info.get_header_offset_str(true)),
+        )?;
+    }
+    compiler.add_newline()?;
+    let loop_context = LoopContext::new(vec![
+        LoopBranch::ifbranch(&format!(
+            "self.bitmap[{}] == 1",
+            field_info.get_bitmap_idx_str(true)
+        )),
+        LoopBranch::elsebranch(),
+    ]);
+    compiler.add_context(Context::Loop(loop_context))?;
+    // if branch
     if field_info.is_list() {
         match &field_info.0.typ {
             FieldType::Int32
             | FieldType::Int64
             | FieldType::Uint32
             | FieldType::Uint64
-            | FieldType::Float => {}
-            FieldType::String | FieldType::Bytes => {}
-            FieldType::MessageOrEnum(msg_name) => {}
+            | FieldType::Float
+            | FieldType::String
+            | FieldType::Bytes
+            | FieldType::MessageOrEnum(_) => {
+                compiler.add_func_call(
+                    Some("ret".to_string()),
+                    "append",
+                    vec![format!("&mut self.{}.inner_serialize(cur_header_ptr, cur_dynamic_ptr, cur_header_offset, cur_dynamic_offset, copy_func)", field_info.get_name())])?;
+            }
             _ => {
                 bail!("Field type not supported: {:?}", &field_info.0.typ);
             }
@@ -181,12 +226,105 @@ fn add_serialization_for_field(
             | FieldType::Int64
             | FieldType::Uint32
             | FieldType::Uint64
-            | FieldType::Float => {}
-            FieldType::String | FieldType::Bytes => {}
-            FieldType::MessageOrEnum(msg_name) => {}
+            | FieldType::Float => {
+                let rust_type = &field_info.get_base_type_str()?;
+                let field_size = &field_info.get_header_size_str(true)?;
+                compiler.add_line(&format!("LittleEndian::write_{}( unsafe {{ slice::from_raw_parts_mut(cur_header_ptr as _, {}) }}, self.{})", rust_type, field_size, &field_info.get_name()))?;
+            }
+            FieldType::String | FieldType::Bytes | FieldType::MessageOrEnum(_) => {
+                compiler.add_func_call(
+                    Some("ret".to_string()),
+                    "append",
+                    vec![format!("&mut self.{}.inner_serialize(cur_header_ptr, cur_dynamic_ptr, cur_header_offset, cur_dynamic_offset, copy_func)", field_info.get_name())])?;
+            }
             _ => {
                 bail!("Field type not supported: {:?}", &field_info.0.typ);
             }
+        }
+    }
+    // else branch: need to manually deserialize the object and re-serialize it into the current
+    // serialization buffer
+    compiler.pop_context()?;
+    if field_info.is_list() {
+        match &field_info.0.typ {
+            FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint32
+            | FieldType::Uint64
+            | FieldType::Float
+            | FieldType::String
+            | FieldType::Bytes
+            | FieldType::MessageOrEnum(_) => {
+                add_field_deserialization(
+                    compiler,
+                    field_info,
+                    Some((true, "list_field".to_string())),
+                )?;
+                compiler.add_func_call(
+                    Some("ret".to_string()),
+                    "append",
+                    vec![format!("&mut list_field.inner_serialize(cur_header_ptr, cur_dynamic_ptr, cur_header_offset, cur_dynamic_offset, copy_func)")
+                    ],
+                )?;
+            }
+            _ => {
+                bail!("Field type not supported: {:?}", &field_info.0.typ);
+            }
+        }
+    } else {
+        match &field_info.0.typ {
+            FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint32
+            | FieldType::Uint64
+            | FieldType::Float => {
+                compiler.add_context(Context::Unsafe(UnsafeContext::new()))?;
+                compiler.add_func_call(
+                    None,
+                    "copy_func",
+                    vec![
+                        "cur_header_ptr as _".to_string(),
+                        format!(
+                            "self.header_ptr.as_ptr().offset(self.offset + {} as isize) as _",
+                            field_info.get_header_offset_str(true)
+                        ),
+                        field_info.get_header_size_str(true)?,
+                    ],
+                )?;
+                compiler.pop_context()?;
+            }
+            FieldType::String | FieldType::Bytes | FieldType::MessageOrEnum(_) => {
+                add_field_deserialization(compiler, field_info, Some((true, "field".to_string())))?;
+                compiler.add_func_call(
+                    Some("ret".to_string()),
+                    "append",
+                    vec![format!("&mut field.inner_serialize(cur_header_ptr, cur_dynamic_ptr, cur_header_offset, cur_dynamic_offset, copy_func)")
+                    ],
+                )?;
+            }
+            _ => {
+                bail!("Field type not supported: {:?}", &field_info.0.typ);
+            }
+        }
+    }
+
+    // end if-loop
+    compiler.pop_context()?;
+
+    // increment dynamic header offset and pointer if necessary
+    if msg_info.dynamic_fields_left(field_info.get_idx(), false, fd.get_message_map())? > 0 {
+        if field_info.is_dynamic(false, fd.get_message_map())? {
+            compiler.add_unsafe_statement(
+                "cur_dynamic_ptr",
+                &format!(
+                    "cur_dynamic_ptr.offset(self.{}.dynamic_header_size() as isize)",
+                    &field_info.get_name()
+                ),
+            )?;
+            compiler.add_plus_equals(
+                "cur_dynamic_offset",
+                &format!("self.{}.dynamic_header_size()", &field_info.get_name()),
+            )?;
         }
     }
     Ok(())
@@ -286,7 +424,7 @@ fn add_has(compiler: &mut SerializationCompiler, field: &FieldInfo) -> Result<()
 fn add_field_deserialization(
     compiler: &mut SerializationCompiler,
     field: &FieldInfo,
-    output: Option<String>,
+    output: Option<(bool, String)>,
 ) -> Result<()> {
     // based on the field type, there's a special way to deserialize
     let field_size_type = field.get_header_size_str(true)?;
@@ -304,8 +442,8 @@ fn add_field_deserialization(
                     field_offset_type
                 );
                 match output {
-                    Some(var_name) => {
-                        compiler.add_def_with_let(false, None, &var_name, &right)?;
+                    Some((mut_var, var_name)) => {
+                        compiler.add_def_with_let(mut_var, None, &var_name, &right)?;
                     }
                     None => {
                         compiler.add_return_val(&right, false)?;
@@ -319,8 +457,8 @@ fn add_field_deserialization(
                     field_offset_type,
                 );
                 match output {
-                    Some(var_name) => {
-                        compiler.add_def_with_let(false, None, &var_name, &right)?;
+                    Some((mut_var, var_name)) => {
+                        compiler.add_def_with_let(mut_var, None, &var_name, &right)?;
                     }
                     None => {
                         compiler.add_return_val(&right, false)?;
@@ -333,8 +471,8 @@ fn add_field_deserialization(
                     msg_name, field_offset_type
                 );
                 match output {
-                    Some(var_name) => {
-                        compiler.add_def_with_let(false, None, &var_name, &right)?;
+                    Some((mut_var, var_name)) => {
+                        compiler.add_def_with_let(mut_var, None, &var_name, &right)?;
                     }
                     None => {
                         compiler.add_return_val(&right, false)?;
@@ -350,8 +488,8 @@ fn add_field_deserialization(
             FieldType::Int32 => {
                 let right  = format!("LittleEndian::read_i32(&self.header_ptr[self.offset + {}..(self.offset + {} + {})])", &field_offset_type, &field_offset_type, &field_size_type);
                 match output {
-                    Some(var_name) => {
-                        compiler.add_def_with_let(false, None, &var_name, &right)?;
+                    Some((mut_var, var_name)) => {
+                        compiler.add_def_with_let(mut_var, None, &var_name, &right)?;
                     }
                     None => {
                         compiler.add_return_val(&right, false)?;
@@ -362,8 +500,8 @@ fn add_field_deserialization(
                 let right = format!("LittleEndian::read_i64(&self.header_ptr[self.offset + {}..(self.offset + {} + {})])", 
                 &field_offset_type, &field_offset_type, &field_size_type);
                 match output {
-                    Some(var_name) => {
-                        compiler.add_def_with_let(false, None, &var_name, &right)?;
+                    Some((mut_var, var_name)) => {
+                        compiler.add_def_with_let(mut_var, None, &var_name, &right)?;
                     }
                     None => {
                         compiler.add_return_val(&right, false)?;
@@ -374,8 +512,8 @@ fn add_field_deserialization(
                 let right = format!("LittleEndian::read_u32(&self.header_ptr[self.offset + {}..(self.offset + {} + {})])", 
                 &field_offset_type, &field_offset_type, &field_size_type);
                 match output {
-                    Some(var_name) => {
-                        compiler.add_def_with_let(false, None, &var_name, &right)?;
+                    Some((mut_var, var_name)) => {
+                        compiler.add_def_with_let(mut_var, None, &var_name, &right)?;
                     }
                     None => {
                         compiler.add_return_val(&right, false)?;
@@ -386,8 +524,8 @@ fn add_field_deserialization(
                 let right = format!("LittleEndian::read_u64(&self.header_ptr[self.offset + {}..(self.offset + {} + {})])", 
                 &field_offset_type, &field_offset_type, &field_size_type);
                 match output {
-                    Some(var_name) => {
-                        compiler.add_def_with_let(false, None, &var_name, &right)?;
+                    Some((mut_var, var_name)) => {
+                        compiler.add_def_with_let(mut_var, None, &var_name, &right)?;
                     }
                     None => {
                         compiler.add_return_val(&right, false)?;
@@ -398,8 +536,8 @@ fn add_field_deserialization(
                 let right = format!("LittleEndian::read_f64(&self.header_ptr[self.offset + {}..(self.offset + {} + {})])", 
                 &field_offset_type, &field_offset_type, &field_size_type);
                 match output {
-                    Some(var_name) => {
-                        compiler.add_def_with_let(false, None, &var_name, &right)?;
+                    Some((mut_var, var_name)) => {
+                        compiler.add_def_with_let(mut_var, None, &var_name, &right)?;
                     }
                     None => {
                         compiler.add_return_val(&right, false)?;
@@ -408,11 +546,11 @@ fn add_field_deserialization(
             }
             FieldType::String => {
                 let right = format!("CFString::default()");
-                let var_name = match output {
-                    Some(ref x) => x,
-                    None => "cf_string",
+                let (mut_var, var_name) = match output {
+                    Some((_, ref x)) => (true, x.clone()),
+                    None => (true, "cf_string".to_string()),
                 };
-                compiler.add_def_with_let(true, None, &var_name, &right)?;
+                compiler.add_def_with_let(mut_var, None, &var_name, &right)?;
                 compiler.add_func_call(
                     Some(var_name.to_string()),
                     "inner_deserialize",
@@ -430,9 +568,9 @@ fn add_field_deserialization(
             }
             FieldType::Bytes => {
                 let right = format!("CFBytes::default()");
-                let var_name = match output {
-                    Some(ref x) => x,
-                    None => "cf_bytes",
+                let (_, var_name) = match output {
+                    Some((_, ref x)) => (true, x.clone()),
+                    None => (true, "cf_string".to_string()),
                 };
                 compiler.add_def_with_let(true, None, &var_name, &right)?;
                 compiler.add_func_call(
@@ -452,11 +590,11 @@ fn add_field_deserialization(
             }
             FieldType::MessageOrEnum(msg_name) => {
                 let right = format!("{}::new()", msg_name);
-                let var_name = match output {
-                    Some(ref x) => x,
-                    None => "object",
+                let (mut_var, var_name) = match output {
+                    Some((_, ref x)) => (true, x.clone()),
+                    None => (true, "cf_string".to_string()),
                 };
-                compiler.add_def_with_let(true, None, &var_name, &right)?;
+                compiler.add_def_with_let(mut_var, None, &var_name, &right)?;
                 compiler.add_func_call(
                     Some(var_name.to_string()),
                     "inner_deserialize",
@@ -572,7 +710,7 @@ fn add_get_mut(
         field.get_header_offset_str(true)
     ))]);
     compiler.add_context(Context::Loop(loop_context))?;
-    add_field_deserialization(compiler, field, Some("field".to_string()))?;
+    add_field_deserialization(compiler, field, Some((false, "field".to_string())))?;
     compiler.add_statement(&format!("self.{}", &field_name), "field")?;
     compiler.add_statement(
         &format!("self.bitmap[{}]", field.get_bitmap_idx_str(true)),
