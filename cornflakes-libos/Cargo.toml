@@ -11,7 +11,7 @@ cc = "1.0.63"
 [dependencies]
 color-eyre = "0.5"
 tracing = "*"
-tracing-subscriber = "*"
+tracing-subscriber = "0.2.17"
 structopt="0.2.16"
 structopt-derive="0.2.16"
 yaml-rust = "0.4.3"

@@ -1,9 +1,10 @@
 use super::{
     super::header_utils::{FieldInfo, MessageInfo, ProtoReprInfo},
-    Context, FunctionArg, FunctionContext, ImplContext, SerializationCompiler, StructContext,
-    StructDefContext,
+    ArgInfo, Context, FunctionArg, FunctionContext, ImplContext, LoopBranch, LoopContext,
+    SerializationCompiler, StructContext, StructDefContext, UnsafeContext,
 };
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{bail, Result};
+use protobuf_parser::FieldType;
 
 pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
     add_dependencies(fd, compiler)?;
@@ -22,20 +23,316 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
     Ok(())
 }
 
+fn add_deserialization_func(
+    _fd: &ProtoReprInfo,
+    compiler: &mut SerializationCompiler,
+    _msg_info: &MessageInfo,
+) -> Result<()> {
+    let func_context = FunctionContext::new(
+        "inner_deserialize",
+        false,
+        vec![
+            FunctionArg::MutSelfArg,
+            FunctionArg::new_arg("buf", ArgInfo::owned("*const u8")),
+            FunctionArg::new_arg("size", ArgInfo::owned("usize")),
+            FunctionArg::new_arg("relative_offset", ArgInfo::owned("usize")),
+        ],
+        "",
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.pop_context()?;
+    Ok(())
+}
+
+fn add_serialization_func(
+    fd: &ProtoReprInfo,
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+) -> Result<()> {
+    let func_context = FunctionContext::new_with_lifetime(
+        "inner_serialize",
+        false,
+        vec![
+        FunctionArg::SelfArg,
+            FunctionArg::new_arg("header_ptr", ArgInfo::owned("*mut u8")),
+            FunctionArg::new_arg("copy_func", ArgInfo::owned("unsafe fn (dst: *mut ::std::os::raw::c_void, src: *const ::std::os::raw::c_void, len: usize,)")),
+            FunctionArg::new_arg("offset", ArgInfo::owned("usize")),
+        ],
+        "Vec<(CornPtr<'registered, 'normal>, *mut u8)>",
+        "normal",
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_def_with_let(
+        true,
+        Some(format!(
+            "Vec<(CornPtr<'{}, 'normal>, *mut u8)>",
+            fd.get_lifetime()
+        )),
+        "ret",
+        "Vec::default()",
+    )?;
+
+    // copy in bitmap to the head of the object
+    compiler.add_context(Context::Unsafe(UnsafeContext::new()))?;
+    compiler.add_func_call(
+        None,
+        "copy_func",
+        vec![
+            "header_ptr as _".to_string(),
+            "self.bitmap.as_ptr() as _".to_string(),
+            "Self::BITMAP_SIZE".to_string(),
+        ],
+    )?;
+    // end of unsafe block
+    compiler.pop_context()?;
+
+    // define variables to use while serializing
+    let header_off_mut = msg_info.constant_fields_left(0) > 1;
+    compiler.add_unsafe_def_with_let(
+        header_off_mut,
+        None,
+        "cur_header_ptr",
+        "header_ptr.offset(Self::BITMAP_SIZE as isize)",
+    )?;
+
+    let has_dynamic_fields = msg_info.has_dynamic_fields(true, fd.get_message_map())?;
+    if has_dynamic_fields {
+        let dynamic_fields_off_mut =
+            msg_info.dynamic_fields_left(-1, true, fd.get_message_map())? > 1;
+        compiler.add_unsafe_def_with_let(
+            dynamic_fields_off_mut,
+            None,
+            "cur_dynamic_ptr",
+            "header_ptr.offset(self.dynamic_header_offset() as isize)",
+        )?;
+        compiler.add_def_with_let(
+            dynamic_fields_off_mut,
+            None,
+            "cur_dynamic_offset",
+            "offset + self.dynamic_header_offset()",
+        )?;
+    }
+
+    for field_idx in 0..msg_info.num_fields() {
+        let field_info = msg_info.get_field_from_id(field_idx as i32)?;
+        compiler.add_newline()?;
+        let loop_context = LoopContext::new(vec![LoopBranch::ifbranch(&format!(
+            "self.has_{}()",
+            &field_info.get_name()
+        ))]);
+        compiler.add_context(Context::Loop(loop_context))?;
+        add_serialization_for_field(fd, compiler, msg_info, &field_info)?;
+
+        compiler.pop_context()?;
+    }
+
+    compiler.pop_context()?;
+    Ok(())
+}
+
+fn add_serialization_for_field(
+    fd: &ProtoReprInfo,
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+    field_info: &FieldInfo,
+) -> Result<()> {
+    if field_info.is_list() {
+        match &field_info.0.typ {
+            FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint32
+            | FieldType::Uint64
+            | FieldType::Float
+            | FieldType::String
+            | FieldType::Bytes
+            | FieldType::MessageOrEnum(_) => {
+                compiler.add_def_with_let(
+                    true,
+                    None,
+                    "list_field_ref",
+                    "ObjectRef(cur_header_ptr as _)",
+                )?;
+                compiler.add_func_call(
+                    Some("list_field_ref".to_string()),
+                    "write_size",
+                    vec![format!("self.{}.len()", &field_info.get_name())],
+                )?;
+                compiler.add_func_call(
+                    Some("list_field_ref".to_string()),
+                    "write_offset",
+                    vec!["cur_dynamic_ptr".to_string()],
+                )?;
+                compiler.add_func_call(
+                    Some("ret".to_string()),
+                    "append",
+                    vec![format!(
+                        "&mut self.{}.inner_serialize(cur_dynamic_ptr, copy_func, cur_dynamic_offset)",
+                        field_info.get_name()
+                    )],
+                )?;
+            }
+            _ => {
+                bail!("Field type not supported: {:?}", &field_info.0.typ);
+            }
+        }
+    } else {
+        match &field_info.0.typ {
+            FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint32
+            | FieldType::Uint64
+            | FieldType::Float => {
+                let rust_type = &field_info.get_base_type_str()?;
+                let field_size = &field_info.get_header_size_str(true)?;
+                compiler.add_line(&format!("LittleEndian::write_{}( unsafe {{ slice::from_raw_parts_mut(cur_header_ptr, {}) }}, self.{})", rust_type, field_size, &field_info.get_name()))?;
+            }
+            FieldType::String | FieldType::Bytes => {
+                compiler.add_func_call(
+                    Some("ret".to_string()),
+                    "append",
+                    vec![format!(
+                        "& mut self.{}.inner_serialize(cur_header_ptr, copy_func, 0)",
+                        &field_info.get_name()
+                    )],
+                )?;
+            }
+            FieldType::MessageOrEnum(_) => {
+                compiler.add_def_with_let(
+                    true,
+                    None,
+                    "nested_field_ref",
+                    "ObjectRef(cur_header_ptr as _)",
+                )?;
+                compiler.add_func_call(
+                    Some("nested_field_ref".to_string()),
+                    "write_size",
+                    vec![format!(
+                        "self.{}.dynamic_header_size()",
+                        &field_info.get_name()
+                    )],
+                )?;
+                compiler.add_func_call(
+                    Some("nested_field_ref".to_string()),
+                    "write_offset",
+                    vec![format!("cur_dynamic_offset")],
+                )?;
+                compiler.add_func_call(
+                    Some("ret".to_string()),
+                    "append",
+                    vec![format!(
+                        "&mut self.{}.inner_serialize(cur_dynamic_ptr, copy_func, cur_dynamic_offset)",
+                        &field_info.get_name()
+                    )],
+                )?;
+            }
+            _ => {
+                bail!("Field type not supported: {:?}", &field_info.0.typ);
+            }
+        }
+    }
+    compiler.add_newline()?;
+    if msg_info.constant_fields_left(field_info.get_idx() as usize) > 0 {
+        let field_size = &field_info.get_header_size_str(true)?;
+        compiler.add_unsafe_statement(
+            "cur_header_ptr",
+            &format!("cur_header_ptr.offset({} as isize)", field_size),
+        )?;
+    }
+
+    if msg_info.dynamic_fields_left(field_info.get_idx(), true, fd.get_message_map())? > 0 {
+        if field_info.is_nested_msg() || field_info.is_list() {
+            // modify cur_dynamic_ptr and cur_dynamic_offset
+            compiler.add_unsafe_statement(
+                "cur_dynamic_ptr",
+                &format!(
+                    "cur_dynamic_ptr.offset(self.{}.dynamic_header_size() as isize)",
+                    &field_info.get_name()
+                ),
+            )?;
+            compiler.add_plus_equals(
+                "cur_dynamic_offset",
+                &format!("self.{}.dynamic_header_size()", &field_info.get_name()),
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 fn add_header_repr(
     fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
+    let lifetime = match msg_info.requires_lifetime(fd.get_message_map())? {
+        true => fd.get_lifetime(),
+        false => "".to_string(),
+    };
+    let impl_context = ImplContext::new(
+        &msg_info.get_name(),
+        Some("HeaderRepr".to_string()),
+        &lifetime,
+    );
+    compiler.add_context(Context::Impl(impl_context))?;
+    // add constant header size
+    compiler.add_const_def("CONSTANT_HEADER_SIZE", "usize", "SIZE_FIELD + OFFSET_FIELD")?;
+    compiler.add_newline()?;
+
+    // add dynamic header size function
+    let header_size_function_context = FunctionContext::new(
+        "dynamic_header_size",
+        false,
+        vec![FunctionArg::SelfArg],
+        "usize",
+    );
+    compiler.add_context(Context::Function(header_size_function_context))?;
+    let mut dynamic_size = "Self::BITMAP_SIZE".to_string();
+    for field in msg_info.get_fields().iter() {
+        let field_info = FieldInfo(field.clone());
+        dynamic_size = format!(
+            "{} + self.bitmap[{}] as usize * {}",
+            dynamic_size,
+            &field_info.get_bitmap_idx_str(true),
+            &field_info.get_total_header_size_str(true)?
+        );
+    }
+    compiler.add_return_val(&dynamic_size, false)?;
+    compiler.pop_context()?;
+    compiler.add_newline()?;
+
+    // add dynamic header offset function
+    let header_offset_function_context = FunctionContext::new(
+        "dynamic_header_offset",
+        false,
+        vec![FunctionArg::SelfArg],
+        "usize",
+    );
+    compiler.add_context(Context::Function(header_offset_function_context))?;
+    let mut dynamic_offset = "Self::BITMAP_SIZE".to_string();
+    for field in msg_info.get_fields().iter() {
+        let field_info = FieldInfo(field.clone());
+        dynamic_offset = format!(
+            "{} + self.bitmap[{}] as usize * {}",
+            dynamic_offset,
+            &field_info.get_bitmap_idx_str(true),
+            &field_info.get_header_size_str(true)?
+        );
+    }
+    compiler.add_return_val(&dynamic_offset, false)?;
+    compiler.pop_context()?;
+    compiler.add_newline()?;
+
+    add_serialization_func(fd, compiler, msg_info)?;
+    compiler.add_newline()?;
+
+    add_deserialization_func(fd, compiler, msg_info)?;
+    compiler.add_newline()?;
+
+    compiler.pop_context()?;
     Ok(())
 }
 
-fn add_has(
-    fd: &ProtoReprInfo,
-    compiler: &mut SerializationCompiler,
-    _msg_info: &MessageInfo,
-    field: &FieldInfo,
-) -> Result<()> {
+fn add_has(compiler: &mut SerializationCompiler, field: &FieldInfo) -> Result<()> {
     let func_context = FunctionContext::new(
         &format!("has_{}", field.get_name()),
         true,
@@ -53,11 +350,10 @@ fn add_has(
 fn add_get(
     fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
     field: &FieldInfo,
 ) -> Result<()> {
     let field_type = fd.get_rust_type(field.clone())?;
-    let return_type = match (field.is_list() || field.is_nested_msg()) {
+    let return_type = match field.is_list() || field.is_nested_msg() {
         true => format!("&{}", field_type),
         false => field_type.to_string(),
     };
@@ -82,52 +378,111 @@ fn add_get(
 fn add_set(
     fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
     field: &FieldInfo,
 ) -> Result<()> {
+    let field_name = field.get_name();
+    let bitmap_idx_str = field.get_bitmap_idx_str(true);
+    let rust_type = fd.get_rust_type(field.clone())?;
+    let func_context = FunctionContext::new(
+        &format!("set_{}", field_name),
+        true,
+        vec![
+            FunctionArg::MutSelfArg,
+            FunctionArg::new_arg("field", ArgInfo::owned(&rust_type)),
+        ],
+        "",
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_statement(&format!("self.bitmap[{}]", bitmap_idx_str), "1")?;
+    compiler.add_statement(&format!("self.{}", &field_name), "field")?;
+    compiler.pop_context()?;
     Ok(())
 }
 
 fn add_get_mut(
     fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
     field: &FieldInfo,
 ) -> Result<()> {
+    let field_name = field.get_name();
+    let rust_type = fd.get_rust_type(field.clone())?;
+    let func_context = FunctionContext::new(
+        &format!("get_mut_{}", &field_name),
+        true,
+        vec![FunctionArg::MutSelfArg],
+        &format!("&mut {}", rust_type),
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_return_val(&format!("&mut self.{}", &field_name), false)?;
+    compiler.pop_context()?;
     Ok(())
 }
 
-fn add_list_init(
-    fd: &ProtoReprInfo,
-    compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
-    field: &FieldInfo,
-) -> Result<()> {
+fn add_list_init(compiler: &mut SerializationCompiler, field: &FieldInfo) -> Result<()> {
+    let func_context = FunctionContext::new(
+        &format!("init_{}", field.get_name()),
+        true,
+        vec![
+            FunctionArg::MutSelfArg,
+            FunctionArg::new_arg("num", ArgInfo::owned("usize")),
+        ],
+        "",
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    match &field.0.typ {
+        FieldType::Int32
+        | FieldType::Int64
+        | FieldType::Uint32
+        | FieldType::Uint64
+        | FieldType::Float => {
+            compiler.add_statement(
+                &format!("self.{}", field.get_name()),
+                &format!("List::init(num)"),
+            )?;
+        }
+        FieldType::String | FieldType::Bytes => {
+            compiler.add_statement(
+                &format!("self.{}", field.get_name()),
+                &format!("VariableList::init(num)"),
+            )?;
+        }
+        FieldType::MessageOrEnum(_) => {
+            compiler.add_statement(
+                &format!("self.{}", field.get_name()),
+                &format!("VariableList::init(num)"),
+            )?;
+        }
+        x => {
+            bail!("Field type not supported: {:?}", x);
+        }
+    }
+    compiler.pop_context()?;
+    compiler.pop_context()?;
     Ok(())
 }
 
 fn add_field_methods(
     fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
     field: &FieldInfo,
 ) -> Result<()> {
     // add has_x, get_x, set_x
-    add_has(fd, compiler, msg_info, field)?;
     compiler.add_newline()?;
-    add_get(fd, compiler, msg_info, field)?;
+    add_has(compiler, field)?;
     compiler.add_newline()?;
-    add_set(fd, compiler, msg_info, field)?;
+    add_get(fd, compiler, field)?;
+    compiler.add_newline()?;
+    add_set(fd, compiler, field)?;
     compiler.add_newline()?;
 
     // if field is a list or a nested struct, add get_mut_x
     if field.is_list() || field.is_nested_msg() {
-        add_get_mut(fd, compiler, msg_info, field)?;
+        add_get_mut(fd, compiler, field)?;
     }
 
     // if field is list, add init_x
     if field.is_list() {
-        add_list_init(fd, compiler, msg_info, field)?;
+        add_list_init(compiler, field)?;
     }
     Ok(())
 }
@@ -160,7 +515,7 @@ fn add_impl(
 
     for field in msg_info.get_fields().iter() {
         let field_info = FieldInfo(field.clone());
-        add_field_methods(fd, compiler, msg_info, &field_info)?;
+        add_field_methods(fd, compiler, &field_info)?;
     }
 
     compiler.pop_context()?;

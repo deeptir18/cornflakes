@@ -104,6 +104,9 @@ impl FunctionArg {
             FunctionArg::Arg(name, info) => format!("{}: {}", name, info.get_type_string()),
         }
     }
+    pub fn new_arg(name: &str, info: ArgInfo) -> Self {
+        FunctionArg::Arg(name.to_string(), info)
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -113,6 +116,7 @@ pub struct FunctionContext {
     pub args: Vec<FunctionArg>,
     ret_type: Option<String>,
     started: bool,
+    func_lifetime: Option<String>,
 }
 
 impl FunctionContext {
@@ -127,6 +131,31 @@ impl FunctionContext {
             args: args,
             started: false,
             ret_type: ret_type,
+            func_lifetime: None,
+        }
+    }
+
+    pub fn new_with_lifetime(
+        name: &str,
+        is_pub: bool,
+        args: Vec<FunctionArg>,
+        ret: &str,
+        func_lifetime: &str,
+    ) -> Self {
+        let ret_type: Option<String> = match ret {
+            "" => None,
+            x => Some(x.to_string()),
+        };
+
+        let lifetime: Option<String> = Some(func_lifetime.to_string());
+
+        FunctionContext {
+            name: name.to_string(),
+            is_pub: is_pub,
+            args: args,
+            started: false,
+            ret_type: ret_type,
+            func_lifetime: lifetime,
         }
     }
 }
@@ -139,6 +168,11 @@ impl ContextPop for FunctionContext {
                 true => "pub ".to_string(),
                 false => "".to_string(),
             };
+            let lifetime_str = match &self.func_lifetime {
+                Some(x) => format!("<'{}>", x),
+                None => "".to_string(),
+            };
+
             let args: Vec<String> = self.args.iter().map(|arg| arg.get_string()).collect();
             let args_string = args.join(", ");
             let ret_value = match &self.ret_type {
@@ -147,8 +181,8 @@ impl ContextPop for FunctionContext {
             };
             Ok((
                 format!(
-                    "{}fn {}({}) {} {{",
-                    is_pub_str, self.name, args_string, ret_value
+                    "{}fn {}{}({}) {} {{",
+                    is_pub_str, self.name, lifetime_str, args_string, ret_value
                 ),
                 false,
             ))
@@ -258,8 +292,8 @@ impl ContextPop for ImplContext {
             match &self.trait_name {
                 Some(t) => Ok((
                     format!(
-                        "impl{} {} for {}{} {{",
-                        lifetime_str, t, self.struct_name, lifetime_str
+                        "impl{} {}{} for {}{} {{",
+                        lifetime_str, t, lifetime_str, self.struct_name, lifetime_str
                     ),
                     false,
                 )),
@@ -333,12 +367,103 @@ impl ContextPop for LoopContext {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub struct UnsafeContext {
+    is_started: bool,
+}
+
+impl UnsafeContext {
+    pub fn new() -> Self {
+        UnsafeContext { is_started: false }
+    }
+}
+
+impl ContextPop for UnsafeContext {
+    fn pop(&mut self) -> Result<(String, bool)> {
+        if !self.is_started {
+            self.is_started = true;
+            Ok(("unsafe {".to_string(), false))
+        } else {
+            Ok(("}".to_string(), true))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct MatchContext {
+    cond: String,
+    variants: Vec<String>,
+    num_variants: usize,
+    variant_idx: usize,
+    var_name: Option<String>,
+}
+
+impl MatchContext {
+    pub fn new(cond: &str, variants: Vec<String>) -> Self {
+        assert!(variants.len() > 0);
+        let num_variants = variants.len();
+        MatchContext {
+            cond: cond.to_string(),
+            variants: variants,
+            num_variants: num_variants,
+            variant_idx: 0,
+            var_name: None,
+        }
+    }
+
+    pub fn new_with_def(cond: &str, variants: Vec<String>, var_name: &str) -> Self {
+        let var_name_str: Option<String> = match var_name {
+            "" => None,
+            x => Some(x.to_string()),
+        };
+        assert!(variants.len() > 0);
+        let num_variants = variants.len();
+        MatchContext {
+            cond: cond.to_string(),
+            variants: variants,
+            num_variants: num_variants,
+            variant_idx: 0,
+            var_name: var_name_str,
+        }
+    }
+}
+
+impl ContextPop for MatchContext {
+    fn pop(&mut self) -> Result<(String, bool)> {
+        let mut ret = "".to_string();
+        if self.variant_idx == self.variants.len() {
+            let ret = match &self.var_name {
+                Some(_) => "}\n};".to_string(),
+                None => "}\n}".to_string(),
+            };
+            return Ok((ret, true));
+        } else if self.variant_idx == 0 {
+            let var_def_string = match &self.var_name {
+                Some(x) => format!("let {} =", x),
+                None => "".to_string(),
+            };
+            ret = format!("{} {} match {} {{\n", ret, var_def_string, &self.cond);
+            let cond = &self.variants[0];
+            ret = format!("{} {} => {{", ret, cond);
+            self.variant_idx += 1;
+            return Ok((ret, false));
+        } else {
+            let cond = &self.variants[self.variant_idx];
+            ret = format!("}} \n {} => {{", cond);
+            self.variant_idx += 1;
+            return Ok((ret, false));
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Context {
     Function(FunctionContext),
     Struct(StructContext),
     StructDef(StructDefContext),
     Impl(ImplContext),
     Loop(LoopContext),
+    Unsafe(UnsafeContext),
+    Match(MatchContext),
 }
 
 impl ContextPop for Context {
@@ -349,6 +474,8 @@ impl ContextPop for Context {
             Context::StructDef(ref mut struct_def_context) => struct_def_context.pop(),
             Context::Impl(ref mut impl_context) => impl_context.pop(),
             Context::Loop(ref mut loop_context) => loop_context.pop(),
+            Context::Unsafe(ref mut unsafe_context) => unsafe_context.pop(),
+            Context::Match(ref mut match_context) => match_context.pop(),
         }
     }
 }
@@ -407,6 +534,29 @@ impl SerializationCompiler {
         Ok(())
     }
 
+    pub fn add_unsafe_def_with_let(
+        &mut self,
+        is_mut: bool,
+        typ: Option<String>,
+        left: &str,
+        right: &str,
+    ) -> Result<()> {
+        let mut_str = match is_mut {
+            true => "mut",
+            false => "",
+        };
+        let type_str = match typ {
+            Some(x) => format!(": {}", x),
+            None => "".to_string(),
+        };
+        let line = format!(
+            "let {} {}{} = unsafe {{ {} }};",
+            mut_str, left, type_str, right
+        );
+        self.add_line(&line)?;
+        Ok(())
+    }
+
     pub fn add_def_with_let(
         &mut self,
         is_mut: bool,
@@ -423,6 +573,18 @@ impl SerializationCompiler {
             None => "".to_string(),
         };
         let line = format!("let {} {}{} = {};", mut_str, left, type_str, right);
+        self.add_line(&line)?;
+        Ok(())
+    }
+
+    pub fn add_unsafe_statement(&mut self, left: &str, right: &str) -> Result<()> {
+        let line = format!("{} = unsafe {{ {} }};", left, right);
+        self.add_line(&line)?;
+        Ok(())
+    }
+
+    pub fn add_plus_equals(&mut self, left: &str, right: &str) -> Result<()> {
+        let line = format!("{} += {}", left, right);
         self.add_line(&line)?;
         Ok(())
     }

@@ -9,6 +9,6 @@ edition = "2018"
 [dependencies]
 color-eyre = "0.5"
 tracing = "*"
-tracing-subscriber = "*"
+tracing-subscriber = "0.2.17"
 tracing-error = "*"
 

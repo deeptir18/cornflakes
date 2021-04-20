@@ -73,7 +73,6 @@ impl ProtoReprInfo {
             FieldType::Int32 | FieldType::Int64 | FieldType::Uint32 | FieldType::Uint64 => {
                 "0".to_string()
             }
-            FieldType::Bool => "false".to_string(),
             FieldType::Float => "0.0".to_string(),
             FieldType::String => "CFString::default()".to_string(),
             FieldType::Bytes => "CFBytes::default()".to_string(),
@@ -93,7 +92,6 @@ impl ProtoReprInfo {
             FieldType::Int64 => "i64".to_string(),
             FieldType::Uint32 => "u32".to_string(),
             FieldType::Uint64 => "u64".to_string(),
-            FieldType::Bool => "bool".to_string(),
             FieldType::Float => "f64".to_string(),
             FieldType::String => format!("CFString<'{}>", self.lifetime_name),
             FieldType::Bytes => format!("CFBytes<'{}>", self.lifetime_name),
@@ -121,7 +119,6 @@ impl ProtoReprInfo {
                 | FieldType::Int64
                 | FieldType::Uint32
                 | FieldType::Uint64
-                | FieldType::Bool
                 | FieldType::Float => {
                     return Ok(format!("List<'{}, {}>", self.lifetime_name, base_type));
                 }
@@ -192,7 +189,7 @@ impl MessageInfo {
             format!("{}", field_idx),
         ));
         match field.0.typ {
-            FieldType::Int32 | FieldType::Uint32 | FieldType::Bool => {
+            FieldType::Int32 | FieldType::Uint32 => {
                 let field_size = 4;
                 ret.push((
                     field.get_header_size_str(false)?,
@@ -240,6 +237,80 @@ impl MessageInfo {
         }
         return Ok(true);
     }
+
+    pub fn num_fields(&self) -> usize {
+        self.0.fields.len()
+    }
+
+    pub fn has_dynamic_fields(
+        &self,
+        include_nested: bool,
+        msg_map: &HashMap<String, Message>,
+    ) -> Result<bool> {
+        for field in self.0.fields.iter() {
+            let field_info = FieldInfo(field.clone());
+            if field_info.is_list() {
+                return Ok(true);
+            }
+            // for case where header format considers nested field as something "dynamic"
+            if include_nested && field_info.is_nested_msg() {
+                return Ok(true);
+            }
+            if !include_nested && field_info.is_nested_msg() {
+                match field_info.0.typ {
+                    FieldType::MessageOrEnum(msg_name) => match msg_map.get(&msg_name) {
+                        Some(m) => {
+                            let msg_info = MessageInfo(m.clone());
+                            if msg_info.has_dynamic_fields(include_nested, &msg_map)? {
+                                return Ok(true);
+                            }
+                        }
+                        None => {
+                            bail!("Message name not found in map: {}", msg_name);
+                        }
+                    },
+                    _ => unreachable!(),
+                }
+            }
+        }
+        return Ok(false);
+    }
+
+    pub fn constant_fields_left(&self, field_idx: usize) -> usize {
+        self.num_fields() - (field_idx + 1)
+    }
+
+    pub fn dynamic_fields_left(
+        &self,
+        field_idx: i32,
+        include_nested: bool,
+        msg_map: &HashMap<String, Message>,
+    ) -> Result<usize> {
+        let mut num_left: usize = 0;
+        for idx in (field_idx + 1)..self.num_fields() as i32 {
+            let field_info = self.get_field_from_id(idx)?;
+            if field_info.is_list() || (include_nested && field_info.is_nested_msg()) {
+                num_left += 1;
+            }
+            if !include_nested && field_info.is_nested_msg() {
+                match field_info.0.typ {
+                    FieldType::MessageOrEnum(msg_name) => match msg_map.get(&msg_name) {
+                        Some(m) => {
+                            let msg_info = MessageInfo(m.clone());
+                            if msg_info.has_dynamic_fields(include_nested, &msg_map)? {
+                                num_left += 1;
+                            }
+                        }
+                        None => {
+                            bail!("Message name not found in map: {}", msg_name);
+                        }
+                    },
+                    _ => unreachable!(),
+                }
+            }
+        }
+        Ok(num_left)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -252,7 +323,6 @@ impl FieldInfo {
             FieldType::Int64 => "i64".to_string(),
             FieldType::Uint32 => "u32".to_string(),
             FieldType::Uint64 => "u64".to_string(),
-            FieldType::Bool => "bool".to_string(),
             FieldType::Float => "f64".to_string(),
             FieldType::String => "CFString".to_string(),
             FieldType::Bytes => "CFBytes".to_string(),
@@ -285,6 +355,29 @@ impl FieldInfo {
         ret
     }
 
+    pub fn get_total_header_size_str(&self, with_self: bool) -> Result<String> {
+        if !self.is_list() {
+            match &self.0.typ {
+                FieldType::Int32
+                | FieldType::Int64
+                | FieldType::Uint32
+                | FieldType::Uint64
+                | FieldType::Float => self.get_header_size_str(with_self),
+                FieldType::Bytes | FieldType::String => {
+                    Ok(format!("self.{}.total_header_size()", self.get_name()))
+                }
+                FieldType::MessageOrEnum(_) => {
+                    Ok(format!("self.{}.total_header_size()", self.get_name()))
+                }
+                _ => {
+                    bail!("FieldType {:?} not supported by compiler", self.0.typ);
+                }
+            }
+        } else {
+            Ok(format!("self.{}.total_header_size()", self.get_name()))
+        }
+    }
+
     pub fn get_header_size_str(&self, with_self: bool) -> Result<String> {
         let self_str = match with_self {
             true => "Self::",
@@ -295,8 +388,7 @@ impl FieldInfo {
             | FieldType::Int64
             | FieldType::Uint32
             | FieldType::Uint64
-            | FieldType::Float
-            | FieldType::Bool => {
+            | FieldType::Float => {
                 if self.is_list() {
                     Ok(format!(
                         "List::<{}>::CONSTANT_HEADER_SIZE",
@@ -366,7 +458,6 @@ impl FieldInfo {
             | FieldType::Int64
             | FieldType::Uint32
             | FieldType::Uint64
-            | FieldType::Bool
             | FieldType::Float
             | FieldType::String
             | FieldType::Bytes => Ok(true),
@@ -408,7 +499,7 @@ impl FieldInfo {
 
     pub fn is_nested_msg(&self) -> bool {
         match &self.0.typ {
-            FieldType::MessageOrEnum(msg_name) => true,
+            FieldType::MessageOrEnum(_) => true,
             _ => false,
         }
     }

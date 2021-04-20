@@ -359,11 +359,9 @@ impl<'registered> HeaderRepr<'registered> for TestObject<'registered> {
     fn dynamic_header_size(&self) -> usize {
         let int_list_field = self.get_int_list_field();
         let bytes_list_field = self.get_bytes_list_field();
-        let nested_field = self.get_nested_field();
         let nested_list_field = self.get_nested_list_field();
         int_list_field.dynamic_header_size()
             + bytes_list_field.dynamic_header_size()
-            + nested_field.dynamic_header_size()
             + nested_list_field.dynamic_header_size()
     }
 
@@ -549,10 +547,6 @@ impl<'registered> HeaderRepr<'registered> for TestObject<'registered> {
                     cur_dynamic_offset,
                     copy_func,
                 ));
-                cur_dynamic_ptr = unsafe {
-                    cur_dynamic_ptr.offset(self.nested_field_ptr.dynamic_header_size() as isize)
-                };
-                cur_dynamic_offset += self.nested_field_ptr.dynamic_header_size();
             } else {
                 let mut nested_field_ptr = NestedObject1::new();
                 nested_field_ptr.inner_deserialize(
@@ -566,10 +560,6 @@ impl<'registered> HeaderRepr<'registered> for TestObject<'registered> {
                     cur_dynamic_offset,
                     copy_func,
                 ));
-                cur_dynamic_ptr = unsafe {
-                    cur_dynamic_ptr.offset(nested_field_ptr.dynamic_header_size() as isize)
-                };
-                cur_dynamic_offset += nested_field_ptr.dynamic_header_size();
             }
         }
 
