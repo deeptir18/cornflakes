@@ -188,26 +188,27 @@ impl MessageInfo {
             "usize".to_string(),
             format!("{}", field_idx),
         ));
-        match field.0.typ {
-            FieldType::Int32 | FieldType::Uint32 => {
-                let field_size = 4;
-                ret.push((
-                    field.get_header_size_str(false)?,
-                    "usize".to_string(),
-                    format!("{}", field_size),
-                ));
+        if !field.is_list() {
+            match field.0.typ {
+                FieldType::Int32 | FieldType::Uint32 => {
+                    let field_size = 4;
+                    ret.push((
+                        field.get_header_size_str(false)?,
+                        "usize".to_string(),
+                        format!("{}", field_size),
+                    ));
+                }
+                FieldType::Int64 | FieldType::Uint64 | FieldType::Float => {
+                    let field_size = 8;
+                    ret.push((
+                        field.get_header_size_str(false)?,
+                        "usize".to_string(),
+                        format!("{}", field_size),
+                    ));
+                }
+                _ => {}
             }
-            FieldType::Int64 | FieldType::Uint64 | FieldType::Float => {
-                let field_size = 8;
-                ret.push((
-                    field.get_header_size_str(false)?,
-                    "usize".to_string(),
-                    format!("{}", field_size),
-                ));
-            }
-            _ => {}
         }
-
         if include_constant_offset {
             let mut offset_string = "Self::BITMAP_SIZE".to_string();
             for i in 0..field_idx {
@@ -276,8 +277,28 @@ impl MessageInfo {
         return Ok(false);
     }
 
-    pub fn constant_fields_left(&self, field_idx: usize) -> usize {
-        self.num_fields() - (field_idx + 1)
+    pub fn constant_fields_left(&self, field_idx: i32) -> usize {
+        self.num_fields() - ((field_idx + 1) as usize)
+    }
+
+    pub fn string_or_bytes_fields_left(&self, field_idx: i32) -> Result<bool> {
+        for idx in (field_idx + 1)..self.num_fields() as i32 {
+            let field_info = self.get_field_from_id(idx)?;
+            if field_info.is_bytes_or_string() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub fn int_fields_left(&self, field_idx: i32) -> Result<bool> {
+        for idx in (field_idx + 1)..self.num_fields() as i32 {
+            let field_info = self.get_field_from_id(idx)?;
+            if field_info.is_int() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub fn dynamic_fields_left(
@@ -369,6 +390,20 @@ impl FieldInfo {
         }
     }
 
+    pub fn is_int_list(&self) -> bool {
+        if !self.is_list() {
+            return false;
+        }
+        match &self.0.typ {
+            FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint32
+            | FieldType::Uint64
+            | FieldType::Float => true,
+            _ => false,
+        }
+    }
+
     pub fn get_total_header_size_str(&self, with_self: bool) -> Result<String> {
         if !self.is_list() {
             match &self.0.typ {
@@ -409,7 +444,11 @@ impl FieldInfo {
                         self.get_base_type_str()?
                     ))
                 } else {
-                    Ok(format!("{}{}_HEADER_SIZE", self_str, self.0.name).to_uppercase())
+                    Ok(format!(
+                        "{}{}",
+                        self_str,
+                        format!("{}_HEADER_SIZE", self.0.name).to_uppercase()
+                    ))
                 }
             }
             FieldType::String => {
@@ -528,13 +567,18 @@ impl FieldInfo {
                 return Ok(true);
             }
 
-            match message_map.get(&self.get_name()) {
-                Some(m) => {
-                    let message_info = MessageInfo(m.clone());
-                    return message_info.has_dynamic_fields(include_nested, message_map);
+            match &self.0.typ {
+                FieldType::MessageOrEnum(msg_name) => {
+                    let msg = match message_map.get(msg_name.as_str()) {
+                        Some(m) => MessageInfo(m.clone()),
+                        None => {
+                            bail!("Msg name: {} not found in message map.", msg_name);
+                        }
+                    };
+                    return msg.has_dynamic_fields(include_nested, message_map);
                 }
-                None => {
-                    bail!("Field name: {} not found in message map.", self.get_name());
+                _ => {
+                    unreachable!();
                 }
             }
         }

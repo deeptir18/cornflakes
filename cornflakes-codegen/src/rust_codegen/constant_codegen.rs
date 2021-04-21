@@ -127,23 +127,19 @@ fn add_serialization_func(
     compiler.pop_context()?;
 
     // define variables to use while serializing
-    let has_dynamic_fields = msg_info.has_dynamic_fields(false, fd.get_message_map())?;
-    if has_dynamic_fields {
-        let dynamic_fields_off_mut =
-            msg_info.dynamic_fields_left(-1, false, fd.get_message_map())? > 1;
-        compiler.add_def_with_let(
-            dynamic_fields_off_mut,
-            None,
-            "cur_dynamic_ptr",
-            "dynamic_header_ptr",
-        )?;
-        compiler.add_def_with_let(
-            dynamic_fields_off_mut,
-            None,
-            "cur_dynamic_offset",
-            "dynamic_header_offset",
-        )?;
-    }
+    let dynamic_fields_off_mut = msg_info.dynamic_fields_left(-1, false, fd.get_message_map())? > 1;
+    compiler.add_def_with_let(
+        dynamic_fields_off_mut,
+        None,
+        "cur_dynamic_ptr",
+        "dynamic_header_ptr",
+    )?;
+    compiler.add_def_with_let(
+        dynamic_fields_off_mut,
+        None,
+        "cur_dynamic_offset",
+        "dynamic_header_offset",
+    )?;
 
     // TODO: optimization where if nothing is dirty (entire bitmap is filled with 0's), provide
     // 1 scatter-gather array pointing to the original input buffer
@@ -156,10 +152,12 @@ fn add_serialization_func(
             "self.has_{}()",
             &field_info.get_name()
         ))]);
-        add_serialization_for_field(fd, compiler, msg_info, &field_info)?;
         compiler.add_context(Context::Loop(loop_context))?;
+        add_serialization_for_field(fd, compiler, msg_info, &field_info)?;
         compiler.pop_context()?;
     }
+    compiler.add_newline()?;
+    compiler.add_return_val("ret", false)?;
 
     compiler.pop_context()?;
     Ok(())
@@ -177,7 +175,7 @@ fn add_serialization_for_field(
         None,
         "cur_header_ptr",
         &format!(
-            "constant_header_ptr.offset({})",
+            "constant_header_ptr.offset({} as isize)",
             field_info.get_header_offset_str(true),
         ),
     )?;
@@ -188,7 +186,10 @@ fn add_serialization_for_field(
             false,
             None,
             "cur_header_offset",
-            &format!("self.offset + {}", field_info.get_header_offset_str(true)),
+            &format!(
+                "constant_header_offset + {}",
+                field_info.get_header_offset_str(true)
+            ),
         )?;
     }
     compiler.add_newline()?;
@@ -229,7 +230,7 @@ fn add_serialization_for_field(
             | FieldType::Float => {
                 let rust_type = &field_info.get_base_type_str()?;
                 let field_size = &field_info.get_header_size_str(true)?;
-                compiler.add_line(&format!("LittleEndian::write_{}( unsafe {{ slice::from_raw_parts_mut(cur_header_ptr as _, {}) }}, self.{})", rust_type, field_size, &field_info.get_name()))?;
+                compiler.add_line(&format!("LittleEndian::write_{}( unsafe {{ slice::from_raw_parts_mut(cur_header_ptr as _, {}) }}, self.{});", rust_type, field_size, &field_info.get_name()))?;
             }
             FieldType::String | FieldType::Bytes | FieldType::MessageOrEnum(_) => {
                 compiler.add_func_call(
@@ -258,7 +259,7 @@ fn add_serialization_for_field(
                 add_field_deserialization(
                     compiler,
                     field_info,
-                    Some((true, "list_field".to_string())),
+                    Some((false, "list_field".to_string())),
                 )?;
                 compiler.add_func_call(
                     Some("ret".to_string()),
@@ -285,7 +286,7 @@ fn add_serialization_for_field(
                     vec![
                         "cur_header_ptr as _".to_string(),
                         format!(
-                            "self.header_ptr.as_ptr().offset(self.offset + {} as isize) as _",
+                            "self.header_ptr.as_ptr().offset((self.offset + {}) as isize) as _",
                             field_info.get_header_offset_str(true)
                         ),
                         field_info.get_header_size_str(true)?,
@@ -343,6 +344,7 @@ fn add_header_repr(
         &msg_info.get_name(),
         Some("HeaderRepr".to_string()),
         &lifetime,
+        &lifetime,
     );
     compiler.add_context(Context::Impl(impl_context))?;
     // add constant header size
@@ -368,7 +370,7 @@ fn add_header_repr(
         let field_info = FieldInfo(field.clone());
         if field_info.is_list() || field_info.is_nested_msg() {
             dynamic_size = format!(
-                "{} + self.get_{}.dynamic_header_size()",
+                "{} + self.get_{}().dynamic_header_size()",
                 dynamic_size,
                 &field_info.get_name()
             );
@@ -405,7 +407,7 @@ fn add_has(compiler: &mut SerializationCompiler, field: &FieldInfo) -> Result<()
         &format!("has_{}", field.get_name()),
         true,
         vec![FunctionArg::SelfArg],
-        "",
+        "bool",
     );
     compiler.add_context(Context::Function(func_context))?;
     let bitmap_field_str = field.get_bitmap_idx_str(true);
@@ -437,7 +439,7 @@ fn add_field_deserialization(
             | FieldType::Uint64
             | FieldType::Float => {
                 let right = format!(
-                    "List::<{}>from_buffer(self.header_ptr, self.offset + {})",
+                    "List::<{}>::from_buffer(self.header_ptr, self.offset + {})",
                     field.get_base_type_str()?,
                     field_offset_type
                 );
@@ -706,8 +708,8 @@ fn add_get_mut(
     compiler.add_context(Context::Function(func_context))?;
     let loop_context = LoopContext::new(vec![LoopBranch::ifbranch(&format!(
         "self.has_header_ptr && self.header_ptr[self.offset + {}] == 1 && self.bitmap[{}] != 1",
-        field.get_header_offset_str(true),
-        field.get_header_offset_str(true)
+        field.get_bitmap_idx_str(true),
+        field.get_bitmap_idx_str(true),
     ))]);
     compiler.add_context(Context::Loop(loop_context))?;
     add_field_deserialization(compiler, field, Some((false, "field".to_string())))?;
@@ -734,7 +736,7 @@ fn add_list_init(compiler: &mut SerializationCompiler, field: &FieldInfo) -> Res
     );
     compiler.add_context(Context::Function(func_context))?;
     compiler.add_statement(
-        &format!("self.bitmap[{}])", field.get_bitmap_idx_str(true)),
+        &format!("self.bitmap[{}]", field.get_bitmap_idx_str(true)),
         "1",
     )?;
     match &field.0.typ {
@@ -803,7 +805,7 @@ fn add_impl(
         true => fd.get_lifetime(),
         false => "".to_string(),
     };
-    let impl_context = ImplContext::new(&msg_info.get_name(), None, &struct_lifetime);
+    let impl_context = ImplContext::new(&msg_info.get_name(), None, &struct_lifetime, "");
     compiler.add_context(Context::Impl(impl_context))?;
     // add constants at the top of the impl
     compiler.add_const_def(
@@ -818,6 +820,32 @@ fn add_impl(
             compiler.add_const_def(var, typ, def)?;
         }
     }
+
+    compiler.add_newline()?;
+    let new_func_context = FunctionContext::new("new", true, vec![], "Self");
+    compiler.add_context(Context::Function(new_func_context))?;
+    let struct_def_context = StructDefContext::new(&msg_info.get_name());
+    compiler.add_context(Context::StructDef(struct_def_context))?;
+    compiler.add_struct_def_field("has_header_ptr", "false")?;
+    compiler.add_struct_def_field("offset", "0")?;
+    compiler.add_struct_def_field("header_ptr", "&[]")?;
+    compiler.add_struct_def_field("bitmap", "[0u8; Self::BITMAP_SIZE]")?;
+    for field in msg_info.get_fields().iter() {
+        let field_info = FieldInfo(field.clone());
+        if field_info.is_list() {
+            if field_info.is_int_list() {
+                compiler.add_struct_def_field(&field_info.get_name(), "List::default()")?;
+            } else {
+                compiler.add_struct_def_field(&field_info.get_name(), "VariableList::default()")?;
+            }
+        } else {
+            compiler
+                .add_struct_def_field(&field_info.get_name(), &fd.get_default_type(field_info)?)?;
+        }
+    }
+    compiler.pop_context()?; // end of struct definition
+
+    compiler.pop_context()?;
 
     for field in msg_info.get_fields().iter() {
         let field_info = FieldInfo(field.clone());
@@ -840,6 +868,7 @@ fn add_default_impl(
         &msg_info.get_name(),
         Some("Default".to_string()),
         &struct_lifetime,
+        "",
     );
     compiler.add_context(Context::Impl(impl_context))?;
 
@@ -854,7 +883,16 @@ fn add_default_impl(
     compiler.add_struct_def_field("bitmap", "[0u8; Self::BITMAP_SIZE]")?;
     for field in msg_info.get_fields().iter() {
         let field_info = FieldInfo(field.clone());
-        compiler.add_struct_def_field(&field_info.get_name(), &fd.get_default_type(field_info)?)?;
+        if field_info.is_list() {
+            if field_info.is_int_list() {
+                compiler.add_struct_def_field(&field_info.get_name(), "List::default()")?;
+            } else {
+                compiler.add_struct_def_field(&field_info.get_name(), "VariableList::default()")?;
+            }
+        } else {
+            compiler
+                .add_struct_def_field(&field_info.get_name(), &fd.get_default_type(field_info)?)?;
+        }
     }
     compiler.pop_context()?; // end of struct definition
     compiler.pop_context()?; // end of function
@@ -877,7 +915,7 @@ fn add_struct_definition(
     // add struct header
     compiler.add_context(Context::Struct(struct_ctx))?;
     compiler.add_struct_field("has_header_ptr", "bool")?;
-    compiler.add_struct_field("header_offset", "usize")?;
+    compiler.add_struct_field("offset", "usize")?;
     compiler.add_struct_field("header_ptr", &format!("&'{} [u8]", fd.get_lifetime()))?;
     compiler.add_struct_field("bitmap", &format!("[u8; {}]", bitmap_size))?;
     for field in msg_info.get_fields().iter() {
@@ -892,7 +930,6 @@ fn add_dependencies(repr: &ProtoReprInfo, compiler: &mut SerializationCompiler) 
     compiler.add_dependency("cornflakes_codegen::utils::fixed_hdr::*")?;
     compiler.add_dependency("cornflakes_codegen::utils::fixed_hdr::HeaderRepr")?;
     compiler.add_dependency("cornflakes_libos::CornPtr")?;
-    compiler.add_dependency("libc")?;
     compiler.add_dependency("std::slice")?;
     if repr.has_int_field() {
         compiler.add_dependency("byteorder::{ByteOrder, LittleEndian}")?;

@@ -263,12 +263,22 @@ pub struct ImplContext {
     pub struct_name: String,
     pub trait_name: Option<String>,
     pub struct_lifetime: Option<String>,
+    trait_lifetime: Option<String>,
     started: bool,
 }
 
 impl ImplContext {
-    pub fn new(name: &str, trait_name: Option<String>, lifetime: &str) -> Self {
+    pub fn new(
+        name: &str,
+        trait_name: Option<String>,
+        lifetime: &str,
+        trait_lifetime: &str,
+    ) -> Self {
         let struct_lifetime: Option<String> = match lifetime {
+            "" => None,
+            x => Some(x.to_string()),
+        };
+        let tl: Option<String> = match trait_lifetime {
             "" => None,
             x => Some(x.to_string()),
         };
@@ -276,6 +286,7 @@ impl ImplContext {
             struct_name: name.to_string(),
             trait_name: trait_name,
             struct_lifetime: struct_lifetime,
+            trait_lifetime: tl,
             started: false,
         }
     }
@@ -289,11 +300,15 @@ impl ContextPop for ImplContext {
                 Some(x) => format!("<'{}>", x),
                 None => "".to_string(),
             };
+            let trait_lifetime_str = match &self.trait_lifetime {
+                Some(x) => format!("<'{}>", x),
+                None => "".to_string(),
+            };
             match &self.trait_name {
                 Some(t) => Ok((
                     format!(
                         "impl{} {}{} for {}{} {{",
-                        lifetime_str, t, lifetime_str, self.struct_name, lifetime_str
+                        lifetime_str, t, trait_lifetime_str, self.struct_name, lifetime_str
                     ),
                     false,
                 )),
@@ -584,7 +599,7 @@ impl SerializationCompiler {
     }
 
     pub fn add_plus_equals(&mut self, left: &str, right: &str) -> Result<()> {
-        let line = format!("{} += {}", left, right);
+        let line = format!("{} += {};", left, right);
         self.add_line(&line)?;
         Ok(())
     }
