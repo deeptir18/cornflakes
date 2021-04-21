@@ -176,21 +176,20 @@ fn add_field_deserialization(
                 bail!("Field type {:?} not supported.", field_info.0.typ);
             }
         }
-
-        if msg_info.constant_fields_left(field_info.get_idx()) > 0 {
-            compiler.add_unsafe_statement(
-                "cur_header_ptr",
-                &format!(
-                    "cur_header_ptr.offset({} as isize)",
-                    field_info.get_header_size_str(true)?
-                ),
-            )?;
-            if msg_info.string_or_bytes_fields_left(field_info.get_idx())?
-                || msg_info.int_fields_left(field_info.get_idx())?
-            {
-                compiler
-                    .add_plus_equals("cur_header_offset", &field_info.get_header_size_str(true)?)?;
-            }
+    }
+    if msg_info.constant_fields_left(field_info.get_idx()) > 0 {
+        compiler.add_unsafe_statement(
+            "cur_header_ptr",
+            &format!(
+                "cur_header_ptr.offset({} as isize)",
+                field_info.get_header_size_str(true)?
+            ),
+        )?;
+        if msg_info.string_or_bytes_fields_left(field_info.get_idx())?
+            || msg_info.int_fields_left(field_info.get_idx())?
+        {
+            compiler
+                .add_plus_equals("cur_header_offset", &field_info.get_header_size_str(true)?)?;
         }
     }
     Ok(())
