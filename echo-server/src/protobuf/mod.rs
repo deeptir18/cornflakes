@@ -1,3 +1,6 @@
+pub mod echo_messages {
+    include!(concat!(env!("OUT_DIR"), "/echo_proto.rs"));
+}
 use super::{init_payloads, CerealizeClient, CerealizeMessage};
 use color_eyre::eyre::Result;
 use cornflakes_libos::{mem::MmapMetadata, CornPtr, Cornflake, Datapath};

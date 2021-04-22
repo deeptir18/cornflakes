@@ -4,6 +4,18 @@ pub mod cornflakes;
 pub mod flatbuffers;
 pub mod protobuf;
 pub mod server;
+
+// TODO: though capnpc 0.14^ supports generating nested namespace files
+// there seems to be a bug in the code generation, so must include it at crate root
+mod echo_capnp {
+    #![allow(non_upper_case_globals)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_snake_case)]
+    #![allow(dead_code)]
+    #![allow(improper_ctypes)]
+    include!(concat!(env!("OUT_DIR"), "/echo_capnp.rs"));
+}
+
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{mem::MmapMetadata, Cornflake, Datapath, ScatterGather};
 use cornflakes_utils::SimpleMessageType;

@@ -1,5 +1,8 @@
 pub mod cf_testobject1;
 pub mod cf_testobject2;
+pub mod echo_messages {
+    include!(concat!(env!("OUT_DIR"), "/echo_cf.rs"));
+}
 use super::{
     get_equal_fields, init_payloads, init_payloads_as_vec, CerealizeClient, CerealizeMessage,
 };

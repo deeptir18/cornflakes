@@ -1,4 +1,4 @@
-use super::{init_payloads, CerealizeClient, CerealizeMessage};
+use super::{echo_capnp, init_payloads, CerealizeClient, CerealizeMessage};
 use color_eyre::eyre::Result;
 use cornflakes_libos::{mem::MmapMetadata, CornPtr, Cornflake, Datapath};
 use cornflakes_utils::SimpleMessageType;

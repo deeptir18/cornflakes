@@ -1,0 +1,35 @@
+syntax = "proto3";
+package echo_cf;
+
+message SingleBufferCF {
+    bytes message = 1;
+}
+
+message ListCF {
+    repeated bytes message = 1;
+}
+
+message Tree1LCF {
+    SingleBufferCF left = 1;
+    SingleBufferCF right = 2;
+}
+
+message Tree2LCF {
+    Tree1LCF left = 1;
+    Tree1LCF right = 2;
+}
+
+message Tree3LCF {
+    Tree2LCF left = 1;
+    Tree2LCF right = 2;
+}
+
+message Tree4LCF {
+    Tree3LCF left = 1;
+    Tree3LCF right = 2;
+}
+
+message Tree5LCF {
+    Tree4LCF left = 1;
+    Tree4LCF right = 2;
+}

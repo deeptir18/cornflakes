@@ -1,3 +1,12 @@
+pub mod echo_messages {
+    #![allow(non_upper_case_globals)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_snake_case)]
+    #![allow(dead_code)]
+    #![allow(improper_ctypes)]
+    #![allow(unused_imports)]
+    include!(concat!(env!("OUT_DIR"), "/echo_fb_generated.rs"));
+}
 use super::{init_payloads, CerealizeClient, CerealizeMessage};
 use color_eyre::eyre::Result;
 use cornflakes_libos::{mem::MmapMetadata, CornPtr, Cornflake, Datapath};
