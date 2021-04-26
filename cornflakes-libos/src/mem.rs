@@ -70,7 +70,7 @@ impl MmapMetadata {
     }
 
     #[cfg(test)]
-    pub fn test_mmap(ptr: *const u8, length: usize, paddrs: Vec<usize>, lkey: i32) -> MmapMetadata {
+    pub fn test_mmap(ptr: *const u8, length: usize, paddrs: Vec<usize>, lkey: u32) -> MmapMetadata {
         MmapMetadata {
             ptr: ptr,
             length: length,

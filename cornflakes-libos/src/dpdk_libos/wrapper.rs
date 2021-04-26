@@ -1053,9 +1053,14 @@ mod tests {
     use tracing_subscriber;
     use tracing_subscriber::{layer::SubscriberExt, prelude::*};
 
+    /// TestMbuf has to have data layout as if private data were right after mbuf data structure.
+    /// TODO: how do we ensure it's tightly packet?
     pub struct TestMbuf {
         mbuf: rte_mbuf,
-        has_external: bool,
+        pub lkey: u32,
+        pub lkey_present: u16,
+        pub refers_to_another: u16,
+        pub has_external: bool,
     }
 
     fn random_mac() -> MacAddress {
@@ -1080,6 +1085,9 @@ mod tests {
                 let mbuf = mbuf.assume_init();
                 TestMbuf {
                     mbuf: mbuf,
+                    lkey: 0,
+                    lkey_present: 0,
+                    refers_to_another: 0,
                     has_external: false,
                 }
             }
@@ -1098,6 +1106,9 @@ mod tests {
                 let mbuf = mbuf.assume_init();
                 TestMbuf {
                     mbuf: mbuf,
+                    lkey: 0,
+                    lkey_present: 0,
+                    refers_to_another: 0,
                     has_external: true,
                 }
             }
@@ -1113,6 +1124,11 @@ mod tests {
             unsafe {
                 if !(self.mbuf.buf_addr.is_null()) {
                     if !(self.has_external) {
+                        tracing::debug!(
+                            external = self.has_external,
+                            "Trying to drop mbuf addr: {:?}",
+                            self.mbuf.buf_addr
+                        );
                         libc::free(self.mbuf.buf_addr);
                     }
                 }
@@ -1388,6 +1404,11 @@ mod tests {
         let mut test_mbuf = TestMbuf::new_external();
         let mut cornflake = Cornflake::default();
         cornflake.set_id(1);
+        tracing::debug!(
+            ext_has_external = test_mbuf.has_external,
+            header_has_external = header_mbuf.has_external,
+            "has external",
+        );
 
         let bytes_vec = get_random_bytes(256);
         let payload1 = bytes_vec.as_slice();
@@ -1396,7 +1417,7 @@ mod tests {
             (&payload1).as_ptr(),
             payload1.len(),
             vec![(&payload1).as_ptr() as usize],
-            -1,
+            0,
         )];
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
@@ -1434,6 +1455,11 @@ mod tests {
         debug!("Second payload addr: {:?}", &second_payload);
         let second_payload_sized: &[u8; 56] = &second_payload[0..56].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload1[200..256]));
+        tracing::debug!(
+            ext_has_external = test_mbuf.has_external,
+            header_has_external = header_mbuf.has_external,
+            "has external",
+        );
     }
 
     #[test]
@@ -1491,6 +1517,7 @@ mod tests {
         debug!("Second payload addr: {:?}", &second_payload);
         let second_payload_sized: &[u8; 56] = &second_payload[0..56].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload1[200..256]));
+        tracing::debug!("Done running test");
     }
 
     #[test]

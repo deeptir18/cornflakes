@@ -181,7 +181,7 @@ struct rte_mbuf* rte_pktmbuf_alloc_(struct rte_mempool *mp) {
 }
 
 uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **tx_pkts, uint16_t nb_pkts) {
-    /*struct rte_mbuf *first_mbuf = tx_pkts[0];
+    struct rte_mbuf *first_mbuf = tx_pkts[0];
     printf("[rte_eth_tx_burst_] mbuf num segs: %u\n", first_mbuf->nb_segs);
     printf("[rte_eth_tx_burst_] mbuf data_len: %u, pkt_len: %u\n", first_mbuf->data_len, first_mbuf->pkt_len);
     printf("[rte_eth_tx_burst_] mbuf next is null: %d\n", (first_mbuf->next == NULL));
@@ -199,7 +199,7 @@ uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf 
             " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
             eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
             eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
-            eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);*/
+            eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
     return rte_eth_tx_burst(port_id, queue_id, tx_pkts, nb_pkts);
 }
 
