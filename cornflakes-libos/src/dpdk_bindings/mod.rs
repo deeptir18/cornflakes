@@ -8,6 +8,16 @@ include!(concat!(env!("OUT_DIR"), "/dpdk_bindings.rs"));
 
 #[link(name = "inlined")]
 extern "C" {
+    fn mmap_huge_(
+        num_pages: usize,
+        addr: *mut *mut ::std::os::raw::c_void,
+    ) -> ::std::os::raw::c_int;
+    fn register_custom_extbuf_ops_() -> ::std::os::raw::c_int;
+    fn set_custom_extbuf_ops_(mempool: *mut rte_mempool) -> ::std::os::raw::c_int;
+    fn rte_mempool_count_(mempool: *mut rte_mempool) -> ::std::os::raw::c_int;
+    fn rte_pktmbuf_refcnt_update_(packet: *mut rte_mbuf, val: i16);
+    fn rte_pktmbuf_refcnt_set_(packet: *mut rte_mbuf, val: u16);
+    fn rte_pktmbuf_refcnt_get_(packet: *mut rte_mbuf) -> u16;
     fn rte_pktmbuf_free_(packet: *mut rte_mbuf);
     fn rte_pktmbuf_alloc_(mp: *mut rte_mempool) -> *mut rte_mbuf;
     fn rte_eth_tx_burst_(
@@ -46,12 +56,26 @@ extern "C" {
         iova: u64,
         len: size_t,
     ) -> ::std::os::raw::c_int;
+
     fn custom_init_(
         mp: *mut rte_mempool,
         opaque_arg: *mut ::std::os::raw::c_void,
         m: *mut ::std::os::raw::c_void,
         i: u32,
     );
+
+    fn custom_init_priv_(
+        mp: *mut rte_mempool,
+        opaque_arg: *mut ::std::os::raw::c_void,
+        m: *mut ::std::os::raw::c_void,
+        i: u32,
+    );
+
+    fn set_lkey_(packet: *mut rte_mbuf, lkey: u32);
+
+    fn set_lkey_not_present_(packet: *mut rte_mbuf);
+
+    fn set_refers_to_another_(packet: *mut rte_mbuf, val: u16);
 
     fn make_ip_(a: u8, b: u8, c: u8, d: u8) -> u32;
 
@@ -106,12 +130,28 @@ extern "C" {
         dst_offset: usize,
         len: usize,
     );
+
+    fn mem_lookup_page_phys_addrs_(
+        addr: *mut ::std::os::raw::c_void,
+        len: usize,
+        pgsize: usize,
+        paddrs: *mut usize,
+    ) -> ::std::os::raw::c_int;
 }
 
 #[cfg(feature = "mlx5")]
 #[link(name = "rte_net_mlx5")]
 extern "C" {
     fn rte_pmd_mlx5_get_dyn_flag_names();
+
+    fn rte_pmd_mlx5_manual_reg_mr(
+        port_id: u8,
+        addr: *mut ::std::os::raw::c_void,
+        length: usize,
+        lkey_out: *mut u32,
+    ) -> *mut ::std::os::raw::c_void;
+
+    fn rte_pmd_mlx5_manual_dereg_mr(ibv_mr: *mut ::std::os::raw::c_void);
 }
 
 #[cfg(feature = "mlx5")]
@@ -122,6 +162,44 @@ pub fn load_mlx5_driver() {
             rte_pmd_mlx5_get_dyn_flag_names();
         }
     }
+}
+
+#[inline]
+pub unsafe fn mmap_huge(
+    num_pages: usize,
+    addr: *mut *mut ::std::os::raw::c_void,
+) -> ::std::os::raw::c_int {
+    mmap_huge_(num_pages, addr)
+}
+
+#[inline]
+pub unsafe fn register_custom_extbuf_ops() -> ::std::os::raw::c_int {
+    register_custom_extbuf_ops_()
+}
+
+#[inline]
+pub unsafe fn set_custom_extbuf_ops(mempool: *mut rte_mempool) -> ::std::os::raw::c_int {
+    set_custom_extbuf_ops_(mempool)
+}
+
+#[inline]
+pub unsafe fn rte_mempool_count(mempool: *mut rte_mempool) -> ::std::os::raw::c_int {
+    rte_mempool_count_(mempool)
+}
+
+#[inline]
+pub unsafe fn rte_pktmbuf_refcnt_update(packet: *mut rte_mbuf, val: i16) {
+    rte_pktmbuf_refcnt_update_(packet, val);
+}
+
+#[inline]
+pub unsafe fn rte_pktmbuf_refcnt_set(packet: *mut rte_mbuf, val: u16) {
+    rte_pktmbuf_refcnt_set_(packet, val);
+}
+
+#[inline]
+pub unsafe fn rte_pktmbuf_refcnt_read(packet: *mut rte_mbuf) -> u16 {
+    rte_pktmbuf_refcnt_get_(packet)
 }
 
 #[inline]
@@ -217,6 +295,31 @@ pub unsafe fn custom_init() -> unsafe extern "C" fn(
     i: u32,
 ) {
     custom_init_
+}
+
+#[inline]
+pub unsafe fn custom_init_priv() -> unsafe extern "C" fn(
+    mp: *mut rte_mempool,
+    opaque_arg: *mut ::std::os::raw::c_void,
+    m: *mut ::std::os::raw::c_void,
+    i: u32,
+) {
+    custom_init_priv_
+}
+
+#[inline]
+pub unsafe fn set_lkey(packet: *mut rte_mbuf, key: u32) {
+    set_lkey_(packet, key);
+}
+
+#[inline]
+pub unsafe fn set_lkey_not_present(packet: *mut rte_mbuf) {
+    set_lkey_not_present_(packet);
+}
+
+#[inline]
+pub unsafe fn set_refers_to_another(packet: *mut rte_mbuf, val: u16) {
+    set_refers_to_another_(packet, val);
 }
 
 #[inline]
@@ -316,4 +419,31 @@ pub unsafe fn copy_payload(
     len: usize,
 ) {
     copy_payload_(src_mbuf, src_offset, dst_mbuf, dst_offset, len);
+}
+
+#[inline]
+pub unsafe fn mem_lookup_page_phys_addrs(
+    addr: *mut ::std::os::raw::c_void,
+    len: usize,
+    pgsize: usize,
+    paddrs: *mut usize,
+) -> i32 {
+    mem_lookup_page_phys_addrs_(addr, len, pgsize, paddrs) as i32
+}
+
+#[cfg(feature = "mlx5")]
+#[inline(never)]
+pub unsafe fn mlx5_manual_reg_mr_callback(
+    port_id: u8,
+    addr: *mut ::std::os::raw::c_void,
+    length: usize,
+    lkey_out: *mut u32,
+) -> *mut ::std::os::raw::c_void {
+    rte_pmd_mlx5_manual_reg_mr(port_id, addr, length as usize, lkey_out)
+}
+
+#[cfg(feature = "mlx5")]
+#[inline(never)]
+pub unsafe fn mlx5_manual_dereg_mr_callback(ibv_mr: *mut ::std::os::raw::c_void) {
+    rte_pmd_mlx5_manual_dereg_mr(ibv_mr)
 }

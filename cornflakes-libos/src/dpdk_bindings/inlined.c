@@ -13,12 +13,164 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <mem.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <rte_mempool.h>
+#include <custom_mempool.h>
+
+typedef unsigned long physaddr_t;
+typedef unsigned long virtaddr_t;
 
 #define IP_DEFTTL  64   /* from RFC 1340. */
 #define IP_VERSION 0x40
 #define IP_HDRLEN  0x05 /* default IP header length == five 32-bits words. */
 #define IP_VHL_DEF (IP_VERSION | IP_HDRLEN)
 #define RX_PACKET_LEN 9216
+#define MBUF_HEADER_SIZE 64
+#define MBUF_PRIV_SIZE 8
+#define PGSIZE_2MB (1 <<  21)
+
+void free_referred_mbuf(void *buf) {
+    struct rte_mbuf *mbuf = (struct rte_mbuf *)(buf);
+    struct tx_pktmbuf_priv *priv_data = (struct tx_pktmbuf_priv *)(((char *)buf) + sizeof(struct rte_mbuf));
+    if (priv_data->refers_to_another == 1) {
+        printf("[free_refered_mbuf_] refers to another = 1\n");
+        // get the mbuf this refers to
+        // decrease the ref count of that mbuf
+        struct rte_mbuf *ref_mbuf = (struct rte_mbuf *)((char *)(mbuf->buf_addr) - (RTE_PKTMBUF_HEADROOM + MBUF_HEADER_SIZE));
+        rte_mbuf_refcnt_update(ref_mbuf, -1);
+        if (rte_mbuf_refcnt_read(ref_mbuf) == 0) {
+            rte_pktmbuf_free(ref_mbuf);
+        }
+    }
+}
+
+/* Largely taken from shenango: https://github.com/shenango/shenango/blob/master/iokernel/mempool_completion.c */
+int custom_extbuf_enqueue(struct rte_mempool *mp, void * const *obj_table, unsigned n) {
+    unsigned long i;
+	struct completion_stack *s = mp->pool_data;
+    //printf("[custom_extbuf_enqueue] Enqueueing %u packets; mp has %u; mp name: %s\n", (unsigned)n, (unsigned) s->len, mp->name);
+
+	if (unlikely(s->len + n > s->size))
+		return -ENOBUFS;
+
+	for (i = 0; i < n; i++)
+        free_referred_mbuf(obj_table[i]);
+	for (i = 0; i < n; i++)
+		s->objs[s->len + i] = obj_table[i];
+
+    s->len += n;
+    return 0;
+}
+
+/* Largely taken from shenango: https://github.com/shenango/shenango/blob/master/iokernel/mempool_completion.c */
+int custom_extbuf_dequeue(struct rte_mempool *mp, void **obj_table, unsigned n) {
+    unsigned long i, j;
+	struct completion_stack *s = mp->pool_data;
+	if (unlikely(n > s->len)) {
+        //printf("[custom_extbuf_dequeue] Returning ENOBUFS\n");
+		return -ENOBUFS;
+    }
+
+	s->len -= n;
+	for (i = 0, j = s->len; i < n; i++, j++)
+		obj_table[i] = s->objs[j];
+
+    return 0;
+}
+
+/* Taken from shenango: https://github.com/shenango/shenango/blob/master/iokernel/mempool_completion.c */
+unsigned custom_extbuf_get_count(const struct rte_mempool *mp) {
+    struct completion_stack *s = mp->pool_data;
+	return s->len;
+}
+
+/* Taken from shenango: https://github.com/shenango/shenango/blob/master/iokernel/mempool_completion.c */
+int custom_extbuf_alloc(struct rte_mempool *mp) {
+    struct completion_stack *s;
+	unsigned n = mp->size;
+	int size = sizeof(*s) + (n + 16) * sizeof(void *);
+	s = rte_zmalloc_socket(mp->name, size, RTE_CACHE_LINE_SIZE, mp->socket_id);
+	if (!s) {
+        printf("[custom_extbuf_alloc] Could not allocate stack for extbuf mempool\n");
+		return -ENOMEM;
+	}
+
+	s->len = 0;
+	s->size = n;
+	mp->pool_data = s;
+	return 0;
+}
+
+/* Largely taken from shenango: https://github.com/shenango/shenango/blob/master/iokernel/mempool_completion.c */
+void custom_extbuf_free(struct rte_mempool *mp) {
+    rte_free(mp->pool_data);
+}
+static struct rte_mempool_ops custom_ops = {
+        .name = "external",
+        .alloc = custom_extbuf_alloc,
+        .free = custom_extbuf_free,
+        .enqueue = custom_extbuf_enqueue,
+        .dequeue = custom_extbuf_dequeue,
+        .get_count = custom_extbuf_get_count,
+};
+
+int mmap_huge_(size_t num_pages, void **ext_mem_addr) {
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE | MAP_HUGETLB;
+    size_t pgsize = PGSIZE_2MB;
+    void * addr = mmap(NULL, pgsize * num_pages, PROT_READ | PROT_WRITE, flags, -1, 0);
+    if (addr == MAP_FAILED) {
+        printf("[mmap_huge_] Failed to mmap memory\n");
+        return 1;
+    }
+    *ext_mem_addr = addr;
+    return 0;
+}
+
+struct tx_pktmbuf_priv *tx_pktmbuf_get_priv(struct rte_mbuf *buf) {
+    	struct tx_pktmbuf_priv *priv = (struct tx_pktmbuf_priv *)(((char *)buf)
+			+ sizeof(struct rte_mbuf));
+        //printf("[tx_pktmbuf_get_priv] addr of mbuf: %p, addr: of priv: %p\n", buf, priv);
+        // printf("[tx_pktmbuf_get_priv] priv lkey: %u, priv lkey present: %u, priv lkey refers to another: %u, size of struct: %u\n", (unsigned)priv->lkey, (unsigned)priv->lkey_present, (unsigned)priv->refers_to_another, (unsigned)sizeof(struct tx_pktmbuf_priv));
+        return priv;
+}
+
+// registers a custom mempool for the external mbuf pool
+// the custom free function must check whether the mbuf points to another mbuf
+// And decrement the ref counter of that mbuf
+int register_custom_extbuf_ops_() {
+    int ret = rte_mempool_register_ops(&custom_ops);
+    if (ret < 0) {
+        return 1;
+    }
+    return 0;
+}
+
+int set_custom_extbuf_ops_(struct rte_mempool *mempool) {
+    return rte_mempool_set_ops_byname(mempool, "external",  NULL);
+}
+
+int rte_mempool_count_(struct rte_mempool *mp) {
+	struct rte_mempool_ops *ops;
+
+	ops = rte_mempool_get_ops(mp->ops_index);
+	return ops->get_count(mp);
+}
+
+void rte_pktmbuf_refcnt_update_(struct rte_mbuf *packet, int16_t val) {
+    rte_mbuf_refcnt_update(packet, val);
+}
+
+void rte_pktmbuf_refcnt_set_(struct rte_mbuf *packet, uint16_t val) {
+    rte_mbuf_refcnt_set(packet, val);
+}
+
+uint16_t rte_pktmbuf_refcnt_get_(struct rte_mbuf *packet) {
+    return rte_mbuf_refcnt_read(packet);
+}
 
 void rte_pktmbuf_free_(struct rte_mbuf *packet) {
     rte_pktmbuf_free(packet);
@@ -94,6 +246,31 @@ void custom_init_(struct rte_mempool *mp, void *opaque_arg, void *m, unsigned i)
     // p += 46;
     char *s = (char *)(p);
     memset(s, 'a', 1024);
+}
+
+void custom_init_priv_(struct rte_mempool *mp, void *opaque_arg, void *m, unsigned m_idx) {
+    struct rte_mbuf *buf = m;
+    struct tx_pktmbuf_priv *data = tx_pktmbuf_get_priv(buf);
+    memset(data, 0, sizeof(*data));
+}
+
+void set_lkey_(struct rte_mbuf *packet, uint32_t key) {
+    struct tx_pktmbuf_priv *data = tx_pktmbuf_get_priv(packet);
+    data->lkey = key;
+    data->lkey_present = 1;
+}
+
+void set_lkey_not_present_(struct rte_mbuf *packet) {
+    struct tx_pktmbuf_priv *data = tx_pktmbuf_get_priv(packet);
+    data->lkey = 0;
+    data->lkey_present = 0;
+
+}
+
+void set_refers_to_another_(struct rte_mbuf *packet, uint16_t val) {
+    struct tx_pktmbuf_priv *data = tx_pktmbuf_get_priv(packet);
+    data->refers_to_another = val;
+
 }
 
 uint32_t make_ip_(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
@@ -357,4 +534,52 @@ void copy_payload_(struct rte_mbuf *src_mbuf,
     rte_memcpy(tx_slice, rx_slice, len);
 }
 
+// Taken from shenango
+// Maps virtual addresses to physical addresses
+// Relies on the fact that huge pages are by default pinned
+int mem_lookup_page_phys_addrs_(void *addr,
+                               size_t len,
+                               size_t pgsize,
+                               physaddr_t *paddrs) {
+    uintptr_t pos;
+	uint64_t tmp;
+	int fd, i = 0, ret = 0;
+
+	/*
+	 * 4 KB pages could be swapped out by the kernel, so it is not
+	 * safe to get a machine address. If we later decide to support
+	 * 4KB pages, then we need to mlock() the page first.
+	 */
+	if (pgsize == PGSIZE_4KB)
+		return -EINVAL;
+
+	fd = open("/proc/self/pagemap", O_RDONLY);
+	if (fd < 0)
+		return -EIO;
+
+	for (pos = (uintptr_t)addr; pos < (uintptr_t)addr + len;
+	     pos += pgsize) {
+		if (lseek(fd, pos / PGSIZE_4KB * sizeof(uint64_t), SEEK_SET) ==
+		    (off_t)-1) {
+			ret = -EIO;
+			goto out;
+		}
+
+		if (read(fd, &tmp, sizeof(uint64_t)) <= 0) {
+			ret = -EIO;
+			goto out;
+		}
+
+		if (!(tmp & PAGEMAP_FLAG_PRESENT)) {
+			ret = -ENODEV;
+			goto out;
+		}
+
+		paddrs[i++] = (tmp & PAGEMAP_PGN_MASK) * PGSIZE_4KB;
+	}
+
+out:
+	close(fd);
+	return ret;
+}
 

@@ -46,11 +46,14 @@ fn main() {
 
     for flag in cflags.split(' ') {
         if flag.starts_with("-I") {
-            let mut header_location = &flag[2..];
-            header_location = header_location.trim();
+            let header_location = &flag[2..];
             header_locations.push(header_location);
         }
     }
+
+    // extra header for memory constants in bindings folder
+    let dpdk_bindings_folder = Path::new(&cargo_dir).join("src").join("dpdk_bindings");
+    header_locations.push(dpdk_bindings_folder.to_str().unwrap());
 
     let ldflags_bytes = Command::new("pkg-config")
         .env("PKG_CONFIG_PATH", &pkg_config_path)

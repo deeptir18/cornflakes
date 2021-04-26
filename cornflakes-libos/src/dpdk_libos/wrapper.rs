@@ -1,7 +1,9 @@
+#![allow(unused_assignments)]
+
 use super::{
     super::{
-        dpdk_call, dpdk_check_not_failed, dpdk_ok, dpdk_ok_with_errno, mbuf_slice, mem, utils,
-        CornType, MsgID, PtrAttributes, ScatterGather,
+        dpdk_call, dpdk_check_not_failed, dpdk_ok, mbuf_slice, mem, utils, CornType, MsgID,
+        PtrAttributes, ScatterGather,
     },
     dpdk_bindings::*,
     dpdk_check, dpdk_error, dpdk_utils,
@@ -10,7 +12,7 @@ use color_eyre::eyre::{bail, Result, WrapErr};
 use hashbrown::HashMap;
 use std::{
     ffi::CString,
-    mem::{size_of, MaybeUninit},
+    mem::{size_of, zeroed, MaybeUninit},
     ptr, slice,
     time::Duration,
 };
@@ -25,6 +27,9 @@ const TX_RING_SIZE: u16 = 2048;
 // TODO: figure out how to turn jumbo frames on and of
 pub const RX_PACKET_LEN: u32 = 9216;
 pub const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
+pub const RTE_PKTMBUF_TAILROOM: u32 = 120;
+pub const MBUF_POOL_HDR_SIZE: usize = 64;
+pub const MBUF_PRIV_SIZE: usize = 8;
 
 /// RX and TX Prefetch, Host, and Write-back threshold values should be
 /// carefully set for optimal performance. Consult the network
@@ -89,7 +94,8 @@ impl Pkt {
         header_mempool: *mut rte_mempool,
         extbuf_mempool: *mut rte_mempool,
         header_info: &utils::HeaderInfo,
-        shared_info: &mut HashMap<mem::MmapMetadata, MaybeUninit<rte_mbuf_ext_shared_info>>,
+        default_memzone: (usize, usize),
+        external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
         assert!(self.num_entries == sga.num_borrowed_segments() + 1);
 
@@ -114,17 +120,10 @@ impl Pkt {
         }
 
         // 3: copy the payloads from the sga into the mbufs
-        self.copy_sga_payloads(sga, shared_info)
+        self.copy_sga_payloads(sga, default_memzone, external_regions)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
 
-        // TODO: delete this
-        // now take the first mbuf and add the header inside it
-        /*let _ = fill_in_header(
-            self.mbufs[0],
-            header_info,
-            sga.data_len() - utils::TOTAL_HEADER_SIZE,
-            sga.get_id(),
-        )?;*/
+        tracing::debug!(header_mempool_avail =? dpdk_call!(rte_mempool_count(header_mempool)), extbuf_mempool_avail =? dpdk_call!(rte_mempool_count(extbuf_mempool)), "Number available in header_mempool, in extbuf_mempool");
 
         Ok(())
     }
@@ -146,7 +145,8 @@ impl Pkt {
         sga: &impl ScatterGather,
         mbufs: Vec<*mut rte_mbuf>,
         header_info: &utils::HeaderInfo,
-        shared_info: &mut HashMap<mem::MmapMetadata, MaybeUninit<rte_mbuf_ext_shared_info>>,
+        default_memzone: (usize, usize),
+        external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
         assert!(self.num_entries == sga.num_borrowed_segments() + 1);
         assert!(self.num_entries == mbufs.len());
@@ -160,6 +160,7 @@ impl Pkt {
 
         for i in 1..sga.num_borrowed_segments() + 1 {
             let mbuf = mbufs[i];
+            debug!("Adding a mbuf: {:?}", i);
             self.add_mbuf(mbuf, None).wrap_err(format!(
                 "Unable to add externally allocated mbuf for segment {}.",
                 i
@@ -167,7 +168,7 @@ impl Pkt {
         }
 
         // 3: copy the payloads from the sga into the mbufs
-        self.copy_sga_payloads(sga, shared_info)
+        self.copy_sga_payloads(sga, default_memzone, external_regions)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
 
         Ok(())
@@ -189,6 +190,7 @@ impl Pkt {
         unsafe {
             (*mbuf).data_len = 0;
             (*mbuf).pkt_len = 0;
+            debug!("Setting next as null");
             (*mbuf).next = ptr::null_mut();
             (*mbuf).nb_segs = 1;
         }
@@ -217,6 +219,7 @@ impl Pkt {
         }
 
         self.mbufs.push(mbuf);
+        debug!("Mbuf array len is {}", self.mbufs.len());
         Ok(())
     }
 
@@ -229,31 +232,24 @@ impl Pkt {
     fn copy_sga_payloads(
         &mut self,
         sga: &impl ScatterGather,
-        shared_info: &mut HashMap<mem::MmapMetadata, MaybeUninit<rte_mbuf_ext_shared_info>>,
+        default_memzone: (usize, usize),
+        external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
         let mut current_attached_idx = 0;
-        sga.iter_apply(|cornptr| {
+        for i in 0..sga.num_segments() {
+            let cornptr = sga.index(i);
             // any attached mbufs will start at index 1 (1 after header)
             match cornptr.buf_type() {
                 CornType::Registered => {
                     // TODO: uncomment this
                     current_attached_idx += 1;
-
-                    let mut shared_info_uninit: MaybeUninit<rte_mbuf_ext_shared_info> = MaybeUninit::zeroed();
-                    unsafe {
-                        (*shared_info_uninit.as_mut_ptr()).refcnt = 1;
-                        (*shared_info_uninit.as_mut_ptr()).fcb_opaque = ptr::null_mut();
-                        (*shared_info_uninit.as_mut_ptr()).free_cb = Some(general_free_cb_);
-                    }
-                    let mut shared_info_ptr = shared_info_uninit.as_mut_ptr();
-                    for (metadata, info) in shared_info.iter_mut() {
-                        if metadata.in_range(cornptr.as_ref().as_ptr()) {
-                            shared_info_ptr = info.as_mut_ptr();
-                        }
-                    }
-
-                    self.set_external_payload(current_attached_idx, cornptr.as_ref(), shared_info_ptr)
-                        .wrap_err("Failed to set external payload into pkt list.")?;
+                    self.set_external_payload(
+                        current_attached_idx,
+                        cornptr.as_ref(),
+                        default_memzone,
+                        external_regions,
+                    )
+                    .wrap_err("Failed to set external payload into pkt list.")?;
                 }
                 CornType::Normal => {
                     if current_attached_idx > 0 {
@@ -261,13 +257,10 @@ impl Pkt {
                     }
                     // copy this payload into the head buffer
                     self.copy_payload(current_attached_idx, cornptr.as_ref())
-                        .wrap_err(
-                            "Failed to copy sga owned entry {} into pkt list."
-                        )?;
+                        .wrap_err("Failed to copy sga owned entry {} into pkt list.")?;
                 }
             }
-            Ok(())
-        })?;
+        }
         Ok(())
     }
 
@@ -301,29 +294,95 @@ impl Pkt {
         &mut self,
         idx: usize,
         buf: &[u8],
-        shinfo: *mut rte_mbuf_ext_shared_info,
+        default_memzone: (usize, usize),
+        external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
         debug!("The mbuf idx we're changing: {}", idx);
+        // check whether the payload is within the default memzone,
+        // or in an external region
+        if (buf.as_ptr() as usize) > default_memzone.0
+            && (buf.as_ptr() as usize) < default_memzone.0 + default_memzone.1
+        {
+            debug!("Within memzone check");
+            // recover the original mbuf this data points to
+            let ptr_int = buf.as_ptr() as usize;
+            let ptr_offset = ptr_int - default_memzone.0;
+            let offset_within_alloc = ptr_offset
+                % (MBUF_POOL_HDR_SIZE
+                    + RTE_PKTMBUF_HEADROOM as usize
+                    + MBUF_PRIV_SIZE
+                    + RTE_ETHER_MAX_JUMBO_FRAME_LEN as usize
+                    + RTE_PKTMBUF_TAILROOM as usize);
+
+            if offset_within_alloc
+                < (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE)
+            {
+                bail!(
+                    "Data pointer within allocation header: {:?} in {:?}",
+                    offset_within_alloc,
+                    (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE)
+                );
+            }
+
+            if offset_within_alloc
+                > (MBUF_POOL_HDR_SIZE
+                    + RTE_PKTMBUF_HEADROOM as usize
+                    + MBUF_PRIV_SIZE
+                    + RTE_ETHER_MAX_JUMBO_FRAME_LEN as usize)
+            {
+                bail!(
+                    "Data pointer within allocation tailroom: {:?} in {:?}",
+                    offset_within_alloc,
+                    (MBUF_POOL_HDR_SIZE
+                        + RTE_PKTMBUF_HEADROOM as usize
+                        + MBUF_PRIV_SIZE
+                        + RTE_ETHER_MAX_JUMBO_FRAME_LEN as usize)
+                );
+            }
+            let data_off =
+                (offset_within_alloc - (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize)) as u16;
+            debug!(
+                "Original ptr: {}, offset within alloc: {}, resulting data off: {}",
+                ptr_int, offset_within_alloc, data_off,
+            );
+
+            let original_mbuf_ptr = (ptr_int - offset_within_alloc) as *mut rte_mbuf;
+            // increase ref count of this mbuf
+            dpdk_call!(rte_pktmbuf_refcnt_update(original_mbuf_ptr, 1));
+            unsafe {
+                (*self.mbufs[idx]).buf_iova = (*original_mbuf_ptr).buf_iova;
+                (*self.mbufs[idx]).buf_addr = buf.as_ptr().offset(-1 * data_off as isize) as _;
+                (*self.mbufs[idx]).buf_len = buf.len() as _;
+                (*self.mbufs[idx]).data_off = data_off
+            }
+            // set lkey of packet to be -1
+            dpdk_call!(set_lkey_not_present(self.mbufs[idx]));
+            dpdk_call!(set_refers_to_another(self.mbufs[1], 1));
+        // copy over the physical address
+        } else {
+            for region in external_regions.iter() {
+                if region.addr_within_range(buf.as_ptr()) {
+                    debug!("Found region that matches");
+                    dpdk_call!(rte_pktmbuf_refcnt_set(self.mbufs[idx], 1));
+                    dpdk_call!(set_lkey(self.mbufs[idx], region.get_lkey()));
+                    dpdk_call!(set_refers_to_another(self.mbufs[1], 0));
+                    unsafe {
+                        (*self.mbufs[idx]).buf_iova = region.get_physaddr(buf.as_ptr())? as _;
+                        (*self.mbufs[idx]).buf_addr = buf.as_ptr() as _;
+                        (*self.mbufs[idx]).buf_len = buf.len() as _;
+                        (*self.mbufs[idx]).data_off = 0;
+                        debug!(iova =? (*self.mbufs[idx]).buf_iova, addr =? (*self.mbufs[idx]).buf_addr, len =? (*self.mbufs[idx]).buf_len, "Set packet fields.");
+                    }
+                }
+            }
+        }
+        // update general packet metadata
         unsafe {
-            // Because we need to pass in void * to this function,
-            // we need to cast our borrowed pointer to a mut ptr
-            // for the FFI boundary
-            let mut_ptr = buf.as_ptr() as _;
-            rte_pktmbuf_attach_extbuf(self.mbufs[idx], mut_ptr, 0, buf.len() as u16, shinfo);
-            // set the data length of this mbuf
-            // update pkt len of entire packet
-            (*self.mbufs[idx]).data_len += buf.len() as u16;
+            (*self.mbufs[idx]).data_len = buf.len() as u16;
             (*self.mbufs[0]).pkt_len += buf.len() as u32;
-            // update the number of segments
-            // TODO: change this back by uncommenting
             (*self.mbufs[0]).nb_segs += 1;
         }
         self.data_offsets[idx] = buf.len();
-        // TODO: how do we know what the shinfo for this particular memory region is?
-        // possibly the datapath should keep track of memory regions that have been externally
-        // registered
-        // and for each of these memory regions, keep track of a shinfo
-        // but the shinfo anyway for now doesn't really matter
         Ok(())
     }
 
@@ -492,10 +551,11 @@ fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
     unsafe {
         (*mbp_priv_uninit.as_mut_ptr()).mbuf_data_room_size = 0;
         // TODO: should the priv size be more?
-        (*mbp_priv_uninit.as_mut_ptr()).mbuf_priv_size = 0;
+        (*mbp_priv_uninit.as_mut_ptr()).mbuf_priv_size = MBUF_PRIV_SIZE as _;
     }
 
-    let elt_size: u32 = size_of::<rte_mbuf>() as u32 + size_of::<rte_pktmbuf_pool_private>() as u32;
+    // actual data size is empty (just mbuf and priv data)
+    let elt_size: u32 = size_of::<rte_mbuf>() as u32 + MBUF_PRIV_SIZE as u32;
 
     tracing::debug!(elt_size, "Trying to init extbuf mempool with elt_size");
     let mbuf_pool = dpdk_call!(rte_mempool_create_empty(
@@ -503,25 +563,18 @@ fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
         (NUM_MBUFS * nb_ports) as u32,
         elt_size,
         MBUF_CACHE_SIZE.into(),
-        size_of::<rte_pktmbuf_pool_private>() as u32,
+        MBUF_PRIV_SIZE as u32,
         rte_socket_id() as i32,
-        0
+        0,
     ));
     if mbuf_pool.is_null() {
         bail!("Mempool created with rte_mempool_create_empty is null.");
     }
 
-    // TODO: remove this
-    // init the mbuf pool to have the payload (with space for the header)
-
-    // set ops name
-    // on error free the mempool
-    // this is only necessary for a custom mempool
-    // (e.g., doesn't free buffer)
-    /* dpdk_ok!(
-        rte_mempool_set_ops_byname(mbuf_pool, name.as_ptr(), ptr::null_mut()),
-        rte_mempool_free(mbuf_pool)
-    );*/
+    // register new ops table
+    // TODO: pass in a string to represent the name of the ops being registered
+    dpdk_ok!(register_custom_extbuf_ops());
+    dpdk_ok!(set_custom_extbuf_ops(mbuf_pool));
 
     // initialize any private data (right now there is none)
     dpdk_call!(rte_pktmbuf_pool_init(
@@ -533,7 +586,7 @@ fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
     // on error free the mempool
     if dpdk_call!(rte_mempool_populate_default(mbuf_pool)) != (NUM_MBUFS * nb_ports) as i32 {
         dpdk_call!(rte_mempool_free(mbuf_pool));
-        bail!("Not able to initialize extbuf mempool.");
+        bail!("Not able to initialize extbuf mempool: Failed on rte_mempool_populate_default.");
     }
 
     // initialize each mbuf
@@ -543,6 +596,40 @@ fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
         ptr::null_mut()
     ));
     assert!(num == (NUM_MBUFS * nb_ports) as u32);
+
+    // initialize private data
+    if dpdk_call!(rte_mempool_obj_iter(
+        mbuf_pool,
+        Some(custom_init_priv()),
+        ptr::null_mut()
+    )) != (NUM_MBUFS * nb_ports) as u32
+    {
+        dpdk_call!(rte_mempool_free(mbuf_pool));
+        bail!("Not able to initialize private data in extbuf pool: failed on custom_init_priv.");
+    }
+
+    // Check assumptions about mbuf memory layout
+    let mut sz: rte_mempool_objsz = unsafe { zeroed() };
+    let elt_size = size_of::<rte_mbuf>() as usize + MBUF_PRIV_SIZE as usize;
+    let flags = 0;
+    dpdk_call!(rte_mempool_calc_obj_size(
+        elt_size as u32,
+        flags,
+        &mut sz as *mut _
+    ));
+    assert_eq!(sz.header_size, 64); // size of actual mbuf struct
+    assert_eq!(
+        sz.elt_size as usize,
+        MBUF_PRIV_SIZE as usize + RTE_PKTMBUF_HEADROOM as usize
+    ); // private data size and data buffer size (with headroom)
+    tracing::debug!(
+        total_size = sz.total_size,
+        elt_size = sz.elt_size,
+        header = sz.header_size,
+        trailer = sz.trailer_size,
+        "size of mbuf in mempool"
+    );
+    assert_eq!(sz.trailer_size, RTE_PKTMBUF_TAILROOM);
 
     Ok(mbuf_pool)
 }
@@ -574,11 +661,22 @@ fn dpdk_init_helper() -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
         name.as_ptr(),
         (NUM_MBUFS * nb_ports) as u32,
         MBUF_CACHE_SIZE as u32,
-        0,
+        MBUF_PRIV_SIZE as u16,
         MBUF_BUF_SIZE as u16,
         rte_socket_id() as i32,
     ));
     assert!(!mbuf_pool.is_null());
+
+    // initialize private data of mempool: set all lkeys to -1
+    if dpdk_call!(rte_mempool_obj_iter(
+        mbuf_pool,
+        Some(custom_init_priv()),
+        ptr::null_mut()
+    )) != (NUM_MBUFS * nb_ports) as u32
+    {
+        dpdk_call!(rte_mempool_free(mbuf_pool));
+        bail!("Not able to initialize private data in extbuf pool.");
+    }
 
     let owner = RTE_ETH_DEV_NO_OWNER as u64;
     let mut p = dpdk_call!(rte_eth_find_next_owned_by(0, owner)) as u16;
@@ -595,6 +693,66 @@ fn dpdk_init_helper() -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
         .wrap_err("Unable to init mempool for attaching external buffers")?;
 
     Ok((mbuf_pool, extbuf_mempool, nb_ports))
+}
+
+pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, usize)> {
+    let mut ret: Vec<(usize, usize)> = vec![];
+    extern "C" fn mz_cb(
+        _mp: *mut rte_mempool,
+        opaque: *mut ::std::os::raw::c_void,
+        memhdr: *mut rte_mempool_memhdr,
+        _mem_idx: ::std::os::raw::c_uint,
+    ) {
+        let mr = unsafe { &mut *(opaque as *mut Vec<(usize, usize)>) };
+        let (addr, len) = unsafe { ((*memhdr).addr, (*memhdr).len) };
+        mr.push((addr as usize, len as usize));
+    }
+
+    dpdk_call!(rte_mempool_mem_iter(
+        mbuf_pool,
+        Some(mz_cb),
+        &mut ret as *mut _ as *mut ::std::os::raw::c_void
+    ));
+    ret.sort();
+    if ret.is_empty() {
+        bail!("Allocated mbuf pool has no memory regions");
+    }
+
+    let (base_addr, base_len) = ret[0];
+    let mut cur_addr = base_addr + base_len;
+
+    for &(addr, len) in &ret[1..] {
+        if addr != cur_addr {
+            bail!("Non-contiguous memory regions {} vs. {}", cur_addr, addr);
+        }
+        cur_addr += len;
+    }
+    let total_len = cur_addr - base_addr;
+
+    // check assumptions about memory layout for the mbufs (needed later for pointer arithmetic)
+    let mut sz: rte_mempool_objsz = unsafe { zeroed() };
+    let elt_size =
+        size_of::<rte_mbuf>() as usize + MBUF_PRIV_SIZE + RTE_ETHER_MAX_JUMBO_FRAME_LEN as usize;
+    let flags = 0;
+    dpdk_call!(rte_mempool_calc_obj_size(
+        elt_size as u32,
+        flags,
+        &mut sz as *mut _
+    ));
+    assert_eq!(sz.header_size, 64); // size of actual mbuf struct
+    assert_eq!(
+        sz.elt_size as usize,
+        MBUF_PRIV_SIZE + MBUF_BUF_SIZE as usize
+    ); // private data size and data buffer size (with headroom)
+    tracing::debug!(
+        total_size = sz.total_size,
+        elt_size = sz.elt_size,
+        header = sz.header_size,
+        trailer = sz.trailer_size,
+        "size of mbuf in mempool"
+    );
+    assert_eq!(sz.trailer_size, RTE_PKTMBUF_TAILROOM);
+    Ok((base_addr, total_len))
 }
 
 /// Initializes DPDK EAL and ports, and memory pools given a yaml-config file.
@@ -806,12 +964,25 @@ fn check_valid_packet(
 /// * pkt - *mut rte_mbuf to free.
 #[inline]
 pub fn free_mbuf(pkt: *mut rte_mbuf) {
-    dpdk_call!(rte_pktmbuf_free(pkt));
+    let refcnt = dpdk_call!(rte_pktmbuf_refcnt_read(pkt));
+    tracing::debug!("Refcnt: {}", refcnt);
+    if refcnt == 1 || refcnt == 0 {
+        tracing::debug!("Free packet");
+        dpdk_call!(rte_pktmbuf_free(pkt));
+    } else {
+        tracing::debug!(refcnt =? refcnt, "Decrementing refcnt");
+        dpdk_call!(rte_pktmbuf_refcnt_set(pkt, refcnt - 1));
+        tracing::debug!(refcnt =? dpdk_call!(rte_pktmbuf_refcnt_read(pkt)), "New refcnt");
+    }
 }
 
 #[inline]
-pub fn dpdk_register_extmem(metadata: &mem::MmapMetadata) -> Result<()> {
-    dpdk_check_not_failed!(rte_extmem_register(
+pub fn dpdk_register_extmem(
+    metadata: &mem::MmapMetadata,
+    paddrs: *mut usize,
+    lkey: *mut u32,
+) -> Result<*mut std::os::raw::c_void> {
+    /*dpdk_check_not_failed!(rte_extmem_register(
         metadata.ptr as _,
         metadata.length as u64,
         ptr::null_mut(),
@@ -830,37 +1001,48 @@ pub fn dpdk_register_extmem(metadata: &mem::MmapMetadata) -> Result<()> {
             metadata.length as u64
         ));
         p = dpdk_call!(rte_eth_find_next_owned_by(p + 1, owner)) as u16;
+    }*/
+    // use optimization of manually registering external memory (to avoid the btree lookup on send)
+    // need to map physical addresses for each virtual region
+    dpdk_ok!(mem_lookup_page_phys_addrs(
+        metadata.ptr as _,
+        metadata.length,
+        metadata.get_pagesize(),
+        paddrs
+    ));
+
+    // if using mellanox, need to retrieve the lkey for this pinned memory
+    let mut ibv_mr: *mut ::std::os::raw::c_void = ptr::null_mut();
+    #[cfg(feature = "mlx5")]
+    {
+        // TODO: currently, only calling for port 0
+        ibv_mr = dpdk_call!(mlx5_manual_reg_mr_callback(
+            0,
+            metadata.ptr as _,
+            metadata.length,
+            lkey
+        ));
+        if ibv_mr.is_null() {
+            bail!("Manual memory registration failed.");
+        }
     }
-    tracing::debug!(metadata =? metadata, "Successfully called register extmem.");
-    Ok(())
+
+    Ok(ibv_mr)
 }
 
 #[inline]
 pub fn dpdk_unregister_extmem(metadata: &mem::MmapMetadata) -> Result<()> {
-    let owner = RTE_ETH_DEV_NO_OWNER as u64;
-    let mut p = dpdk_call!(rte_eth_find_next_owned_by(0, owner)) as u16;
-    while p < RTE_MAX_ETHPORTS as u16 {
-        dpdk_ok_with_errno!(rte_dev_dma_unmap_wrapper(
-            p,
-            metadata.ptr as _,
-            0,
-            metadata.length as u64
-        ));
-        p = dpdk_call!(rte_eth_find_next_owned_by(p + 1, owner)) as u16;
+    #[cfg(feature = "mlx5")]
+    {
+        dpdk_call!(mlx5_manual_dereg_mr_callback(metadata.get_ibv_mr()));
     }
-
-    dpdk_check_not_failed!(rte_extmem_unregister(
-        metadata.ptr as _,
-        metadata.length as u64
-    ));
-
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CornPtr, Cornflake, ScatterGather};
+    use crate::{mem::MmapMetadata, CornPtr, Cornflake, ScatterGather};
     use color_eyre;
     use eui48::MacAddress;
     use libc;
@@ -894,6 +1076,7 @@ mod tests {
                 (*mbuf.as_mut_ptr()).next = ptr::null_mut();
                 (*mbuf.as_mut_ptr()).data_off = 0;
                 (*mbuf.as_mut_ptr()).nb_segs = 1;
+                (*mbuf.as_mut_ptr()).priv_size = 8;
                 let mbuf = mbuf.assume_init();
                 TestMbuf {
                     mbuf: mbuf,
@@ -911,6 +1094,7 @@ mod tests {
                 (*mbuf.as_mut_ptr()).next = ptr::null_mut();
                 (*mbuf.as_mut_ptr()).data_off = 0;
                 (*mbuf.as_mut_ptr()).nb_segs = 1;
+                (*mbuf.as_mut_ptr()).priv_size = 8;
                 let mbuf = mbuf.assume_init();
                 TestMbuf {
                     mbuf: mbuf,
@@ -936,6 +1120,12 @@ mod tests {
         }
     }
 
+    fn get_random_bytes(size: usize) -> Vec<u8> {
+        let random_bytes: Vec<u8> = (0..size).map(|_| rand::random::<u8>()).collect();
+        println!("{:?}", random_bytes);
+        random_bytes
+    }
+
     #[test]
     fn valid_headers() {
         test_init!();
@@ -952,7 +1142,8 @@ mod tests {
             &cornflake,
             vec![test_mbuf.get_pointer()],
             &hdr_info,
-            &mut HashMap::default(),
+            (0, 0),
+            &Vec::default(),
         )
         .unwrap();
 
@@ -1021,7 +1212,8 @@ mod tests {
             &cornflake,
             vec![test_mbuf.get_pointer()],
             &hdr_info,
-            &mut HashMap::default(),
+            (0, 0),
+            &Vec::default(),
         )
         .unwrap();
 
@@ -1088,7 +1280,8 @@ mod tests {
             &cornflake,
             vec![test_mbuf.get_pointer()],
             &hdr_info,
-            &mut HashMap::default(),
+            (0, 0),
+            &Vec::default(),
         )
         .unwrap();
 
@@ -1125,7 +1318,8 @@ mod tests {
             &cornflake,
             vec![test_mbuf.get_pointer()],
             &hdr_info,
-            &mut HashMap::default(),
+            (0, 0),
+            &Vec::default(),
         )
         .unwrap();
 
@@ -1162,7 +1356,8 @@ mod tests {
             &cornflake,
             vec![test_mbuf.get_pointer()],
             &hdr_info,
-            &mut HashMap::default(),
+            (0, 0),
+            &Vec::default(),
         )
         .unwrap();
 
@@ -1185,17 +1380,24 @@ mod tests {
     }
 
     #[test]
-    fn encode_sga_single_external() {
+    fn encode_single_external_with_mmap() {
+        // encode an sga that refers to a single external memory
+        // construct fake mmap metadata
         test_init!();
-        // encode an sga that refers to multiple external memories
         let mut header_mbuf = TestMbuf::new();
         let mut test_mbuf = TestMbuf::new_external();
         let mut cornflake = Cornflake::default();
         cornflake.set_id(1);
 
-        let payload1 = rand::thread_rng().gen::<[u8; 32]>();
-        cornflake.add_entry(CornPtr::Registered(payload1.as_ref()));
-
+        let bytes_vec = get_random_bytes(256);
+        let payload1 = bytes_vec.as_slice();
+        cornflake.add_entry(CornPtr::Registered(&payload1[200..256].as_ref()));
+        let mmap_vec = vec![MmapMetadata::test_mmap(
+            (&payload1).as_ptr(),
+            payload1.len(),
+            vec![(&payload1).as_ptr() as usize],
+            -1,
+        )];
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
         let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
@@ -1206,7 +1408,8 @@ mod tests {
             &cornflake,
             vec![header_mbuf.get_pointer(), test_mbuf.get_pointer()],
             &hdr_info,
-            &mut HashMap::default(),
+            (0, 0),
+            &mmap_vec,
         )
         .unwrap();
         info!("Constructed packet successfully");
@@ -1215,8 +1418,66 @@ mod tests {
 
         unsafe {
             assert!((*(pkt.get_mbuf(0))).data_len as usize == utils::TOTAL_HEADER_SIZE);
-            assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 32);
-            assert!((*(pkt.get_mbuf(1))).data_len as usize == 32);
+            assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 56);
+            assert!((*(pkt.get_mbuf(1))).data_len as usize == 56);
+            assert!((*(pkt.get_mbuf(0))).nb_segs as usize == 2);
+            assert!((*(pkt.get_mbuf(1))).data_off as usize == 0);
+            assert!((*(pkt.get_mbuf(0))).next == pkt.get_mbuf(1));
+            assert!(((*(pkt.get_mbuf(1))).next).is_null());
+        }
+
+        let (msg_id, addr_info) = check_valid_packet(pkt.get_mbuf(0), &dst_info).unwrap();
+        assert!(msg_id == 1);
+        assert!(addr_info == src_info);
+
+        let second_payload = mbuf_slice!(pkt.get_mbuf(1), 0, 56);
+        debug!("Second payload addr: {:?}", &second_payload);
+        let second_payload_sized: &[u8; 56] = &second_payload[0..56].try_into().unwrap();
+        assert!(second_payload_sized.eq(&payload1[200..256]));
+    }
+
+    #[test]
+    fn encode_sga_single_external_with_native_mbuf() {
+        // encode an sga that refers to a single external memory
+        // use the default memzone argument (pointing to another "fake" mbuf)
+        test_init!();
+        let mut header_mbuf = TestMbuf::new();
+        let mut test_mbuf = TestMbuf::new_external();
+        let mut cornflake = Cornflake::default();
+        cornflake.set_id(1);
+
+        let bytes_vec = get_random_bytes(256);
+        let payload1 = bytes_vec.as_slice();
+        debug!("Original payload addr: {:?}", &payload1);
+        cornflake.add_entry(CornPtr::Registered(&payload1[200..256]));
+        let default_memsegments = (
+            (&payload1).as_ptr() as usize,
+            (&payload1).as_ptr() as usize + 256,
+        );
+
+        debug!("Memsegments we are passing in {:?}", default_memsegments);
+        let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
+        let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
+        let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
+
+        let mut pkt = Pkt::init(cornflake.num_borrowed_segments() + 1);
+        info!("Initialized packet with {} entries", pkt.num_entries());
+        pkt.construct_from_test_sga(
+            &cornflake,
+            vec![header_mbuf.get_pointer(), test_mbuf.get_pointer()],
+            &hdr_info,
+            default_memsegments,
+            &Vec::default(),
+        )
+        .unwrap();
+        info!("Constructed packet successfully");
+
+        assert!(pkt.num_entries() == 2);
+
+        unsafe {
+            assert!((*(pkt.get_mbuf(0))).data_len as usize == utils::TOTAL_HEADER_SIZE);
+            assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 56);
+            assert!((*(pkt.get_mbuf(1))).data_len as usize == 56);
             assert!((*(pkt.get_mbuf(0))).nb_segs as usize == 2);
             assert!((*(pkt.get_mbuf(0))).next == pkt.get_mbuf(1));
             assert!(((*(pkt.get_mbuf(1))).next).is_null());
@@ -1226,9 +1487,10 @@ mod tests {
         assert!(msg_id == 1);
         assert!(addr_info == src_info);
 
-        let second_payload = mbuf_slice!(pkt.get_mbuf(1), 0, 32);
-        let second_payload_sized: &[u8; 32] = &second_payload[0..32].try_into().unwrap();
-        assert!(second_payload_sized.eq(&payload1));
+        let second_payload = mbuf_slice!(pkt.get_mbuf(1), 0, 56);
+        debug!("Second payload addr: {:?}", &second_payload);
+        let second_payload_sized: &[u8; 56] = &second_payload[0..56].try_into().unwrap();
+        assert!(second_payload_sized.eq(&payload1[200..256]));
     }
 
     #[test]
@@ -1240,10 +1502,14 @@ mod tests {
         let mut cornflake = Cornflake::default();
         cornflake.set_id(1);
 
-        let payload1 = rand::thread_rng().gen::<[u8; 32]>();
-        let payload2 = rand::thread_rng().gen::<[u8; 32]>();
-        cornflake.add_entry(CornPtr::Registered(payload1.as_ref()));
-        cornflake.add_entry(CornPtr::Registered(payload2.as_ref()));
+        let bytes_vec = get_random_bytes(400);
+        let payload1 = bytes_vec.as_slice();
+        cornflake.add_entry(CornPtr::Registered(&payload1[200..300]));
+        cornflake.add_entry(CornPtr::Registered(&payload1[300..400]));
+        let default_memsegments = (
+            (&payload1).as_ptr() as usize,
+            (&payload1).as_ptr() as usize + 400,
+        );
 
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
@@ -1258,7 +1524,8 @@ mod tests {
                 test_mbuf2.get_pointer(),
             ],
             &hdr_info,
-            &mut HashMap::default(),
+            default_memsegments,
+            &Vec::default(),
         )
         .unwrap();
 
@@ -1266,10 +1533,12 @@ mod tests {
 
         unsafe {
             assert!((*(pkt.get_mbuf(0))).data_len as usize == utils::TOTAL_HEADER_SIZE);
-            assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 32 + 32);
+            assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 100 + 100);
             assert!((*(pkt.get_mbuf(0))).nb_segs as usize == 3);
-            assert!((*(pkt.get_mbuf(1))).data_len as usize == 32);
-            assert!((*(pkt.get_mbuf(2))).data_len as usize == 32);
+            assert!((*(pkt.get_mbuf(1))).data_len as usize == 100);
+            assert!((*(pkt.get_mbuf(1))).data_off as usize == 8);
+            assert!((*(pkt.get_mbuf(2))).data_len as usize == 100);
+            assert!((*(pkt.get_mbuf(2))).data_off as usize == 108);
             assert!((*(pkt.get_mbuf(1))).pkt_len as usize == 0);
             assert!((*(pkt.get_mbuf(2))).pkt_len as usize == 0);
             assert!((*(pkt.get_mbuf(0))).next == pkt.get_mbuf(1));
@@ -1281,13 +1550,13 @@ mod tests {
         assert!(msg_id == 1);
         assert!(addr_info == src_info);
 
-        let first_payload = mbuf_slice!(pkt.get_mbuf(1), 0, 32);
-        let first_payload_sized: &[u8; 32] = &first_payload[0..32].try_into().unwrap();
-        assert!(first_payload_sized.eq(&payload1));
+        let first_payload = mbuf_slice!(pkt.get_mbuf(1), 0, 100);
+        let first_payload_sized: &[u8; 100] = &first_payload[0..100].try_into().unwrap();
+        assert!(first_payload_sized.eq(&payload1[200..300]));
 
-        let second_payload = mbuf_slice!(pkt.get_mbuf(2), 0, 32);
-        let second_payload_sized: &[u8; 32] = &second_payload[0..32].try_into().unwrap();
-        assert!(second_payload_sized.eq(&payload2));
+        let second_payload = mbuf_slice!(pkt.get_mbuf(2), 0, 100);
+        let second_payload_sized: &[u8; 100] = &second_payload[0..100].try_into().unwrap();
+        assert!(second_payload_sized.eq(&payload1[300..400]));
     }
 
     #[test]
@@ -1299,9 +1568,14 @@ mod tests {
         cornflake.set_id(3);
 
         let payload1 = rand::thread_rng().gen::<[u8; 32]>();
-        let payload2 = rand::thread_rng().gen::<[u8; 32]>();
+        let bytes_vec = get_random_bytes(232);
+        let payload2 = bytes_vec.as_slice();
         cornflake.add_entry(CornPtr::Normal(payload1.as_ref()));
-        cornflake.add_entry(CornPtr::Registered(payload2.as_ref()));
+        cornflake.add_entry(CornPtr::Registered(&payload2[200..232]));
+        let default_memsegments = (
+            (&payload2).as_ptr() as usize,
+            (&payload2).as_ptr() as usize + 256,
+        );
 
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
@@ -1312,7 +1586,8 @@ mod tests {
             &cornflake,
             vec![header_mbuf.get_pointer(), test_mbuf1.get_pointer()],
             &hdr_info,
-            &mut HashMap::default(),
+            default_memsegments,
+            &Vec::default(),
         )
         .unwrap();
 
@@ -1323,6 +1598,7 @@ mod tests {
             assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 32 + 32);
             assert!((*(pkt.get_mbuf(0))).nb_segs as usize == 2);
             assert!((*(pkt.get_mbuf(1))).data_len as usize == 32);
+            assert!((*(pkt.get_mbuf(1))).data_off as usize == 8);
             assert!((*(pkt.get_mbuf(1))).pkt_len as usize == 0);
             assert!((*(pkt.get_mbuf(0))).next == pkt.get_mbuf(1));
             assert!(((*(pkt.get_mbuf(1))).next).is_null());
@@ -1338,7 +1614,7 @@ mod tests {
 
         let second_payload = mbuf_slice!(pkt.get_mbuf(1), 0, 32);
         let second_payload_sized: &[u8; 32] = &second_payload[0..32].try_into().unwrap();
-        assert!(second_payload_sized.eq(&payload2));
+        assert!(second_payload_sized.eq(&payload2[200..232]));
     }
 
     #[test]
@@ -1363,7 +1639,8 @@ mod tests {
             &cornflake,
             vec![header_mbuf.get_pointer(), test_mbuf1.get_pointer()],
             &hdr_info,
-            &mut HashMap::default(),
+            (0, 0),
+            &Vec::default(),
         ) {
             Ok(_) => {
                 panic!("Should have failed to construct SGA because owned region comes after borrowed region.");

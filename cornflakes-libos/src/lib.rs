@@ -55,6 +55,9 @@ pub trait ScatterGather {
     /// Returns an iterator over the scattered memory regions this packet represents.
     fn collection(&self) -> Self::Collection;
 
+    /// Returns item at index
+    fn index(&self, idx: usize) -> &Self::Ptr;
+
     /// Applies the provided closure on all of the pointer types.
     fn iter_apply(&self, consume_element: impl FnMut(&Self::Ptr) -> Result<()>) -> Result<()>;
 
@@ -180,6 +183,11 @@ impl<'registered, 'normal> ScatterGather for Cornflake<'registered, 'normal> {
     /// Exposes an iterator over the entries in the scatter-gather array.
     fn collection(&self) -> Self::Collection {
         self.entries.clone()
+    }
+
+    /// Returns CornPtr at Index
+    fn index(&self, idx: usize) -> &Self::Ptr {
+        &self.entries[idx]
     }
 
     /// Apply an iterator to entries of the scatter-gather array, without consuming the
@@ -359,7 +367,7 @@ pub trait ClientSM {
         let cycle_wait = (((intersend_rate * freq) as f64) / 1e9) as u64;
         let server_ip = self.server_ip();
         let time_start = Instant::now();
-        let mut last_called_pop = Instant::now();
+        //let mut last_called_pop = Instant::now();
 
         let start = datapath.current_cycles();
         while datapath.current_cycles() < (total_time * freq + start) {
@@ -369,8 +377,8 @@ pub trait ClientSM {
             let last_sent = datapath.current_cycles();
 
             while datapath.current_cycles() <= last_sent + cycle_wait {
-                tracing::debug!(last_called = ?last_called_pop.elapsed(), "Calling pop on client");
-                last_called_pop = Instant::now();
+                //tracing::debug!(last_called = ?last_called_pop.elapsed(), "Calling pop on client");
+                //last_called_pop = Instant::now();
                 let recved_pkts = datapath.pop()?;
                 for (pkt, rtt) in recved_pkts.into_iter() {
                     let msg_id = pkt.get_id();

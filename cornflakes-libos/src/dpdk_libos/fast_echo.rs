@@ -128,18 +128,20 @@ pub fn do_client(
         // Write in timestamp as u64 payload
         let send_time = clock_offset.elapsed().as_nanos() as u64;
         let mut mbuf_buffer = mbuf_slice!(pkt, header_size, 8);
-        tracing::debug!(len = mbuf_buffer.len(), "mbf buffer length");
         LittleEndian::write_u64(&mut mbuf_buffer, send_time);
 
         wrapper::tx_burst(port, 0, &mut pkt as _, 1)
             .wrap_err(format!("Failed to send packet, sent = {}", sent))?;
-        tracing::debug!("Burst a packet\n");
+        tracing::debug!(available =? dpdk_call!(rte_mempool_count(mbuf_pool)), "Burst a packet\n");
         sent += 1;
         outstanding += 1;
+        let num_available = dpdk_call!(rte_mempool_count(mbuf_pool));
+
         tracing::debug!(
             cycle_wait = cycle_wait,
             hz = dpdk_call!(rte_get_timer_hz()),
             send_time = send_time,
+            num_in_mempool =? num_available,
             "Calling txburst"
         );
         let last_sent = dpdk_call!(rte_get_timer_cycles());
@@ -168,10 +170,12 @@ pub fn do_client(
                     let mbuf_buffer = mbuf_slice!(rx_buf, header_size, 8);
                     let start = LittleEndian::read_u64(&mbuf_buffer);
                     histogram.record(now - start)?;
-                    wrapper::free_mbuf(rx_buf);
+                    tracing::debug!(time = (now - start), "Received a packet valid");
+                    dpdk_call!(rte_pktmbuf_free(rx_buf));
                     outstanding -= 1;
                 } else {
-                    wrapper::free_mbuf(rx_buf);
+                    tracing::debug!("Received not valid packt");
+                    dpdk_call!(rte_pktmbuf_free(rx_buf));
                 }
             }
         }
@@ -272,7 +276,7 @@ pub fn do_server(
             name.as_ptr(),
             (wrapper::NUM_MBUFS * 1) as u32,
             wrapper::MBUF_CACHE_SIZE as u32,
-            0,
+            8,
             wrapper::MBUF_BUF_SIZE as u16,
             rte_socket_id() as i32
         ));
@@ -280,6 +284,12 @@ pub fn do_server(
         let nb_iter = dpdk_call!(rte_mempool_obj_iter(
             header_mbuf_pool,
             Some(custom_init()),
+            ptr::null_mut()
+        ));
+        assert!(nb_iter == (wrapper::NUM_MBUFS * nb_ports) as u32);
+        let nb_iter = dpdk_call!(rte_mempool_obj_iter(
+            header_mbuf_pool,
+            Some(custom_init_priv()),
             ptr::null_mut()
         ));
         assert!(nb_iter == (wrapper::NUM_MBUFS * nb_ports) as u32);
@@ -295,10 +305,17 @@ pub fn do_server(
         (*shared_info_uninit.as_mut_ptr()).free_cb = Some(general_free_cb_);
     }
     //let shinfo = shared_info_uninit.as_mut_ptr();
-    let (mut metadata, mut mmap) = mem::mmap_new(100)?;
-    wrapper::dpdk_register_extmem(&metadata)?;
+    let mut metadata = mem::mmap_manual(100)?;
+    let mut paddrs = vec![0usize; 100];
+    let mut lkey: u32 = 0;
+    let ibv_mr = wrapper::dpdk_register_extmem(&metadata, paddrs.as_mut_ptr(), &mut lkey as _)?;
+    tracing::debug!("Lkey is: {}", lkey);
+    metadata.set_lkey(lkey);
+    tracing::debug!("Set lkey as {}", metadata.get_lkey());
+    metadata.set_ibv_mr(ibv_mr);
+    metadata.set_paddrs(paddrs);
     let payload = vec![b'a'; 10000];
-    (&mut mmap[..]).write_all(payload.as_ref())?;
+    (&mut metadata.get_full_buf()?[0..payload.len()]).write_all(payload.as_ref())?;
     let mut length: u16 = metadata.length as u16;
     let shinfo = dpdk_call!(shinfo_init(metadata.ptr as _, &mut length as _,));
     metadata.length = length as usize;
@@ -335,7 +352,7 @@ pub fn do_server(
             bail!("Error in loop_in_c.");
         }
     }
-
+    let mut total_count = 0;
     loop {
         let rx_burst_start = Instant::now();
         let num_received = dpdk_call!(rte_eth_rx_burst(
@@ -361,6 +378,8 @@ pub fn do_server(
                 wrapper::free_mbuf(rx_bufs[n_to_tx]);
                 continue;
             }
+            total_count += 1;
+            tracing::debug!("Received valid packet # {} so far", total_count);
             num_valid += 1;
             let rx_buf = rx_bufs[n_to_tx];
             let header_size = unsafe { (*rx_buf).pkt_len - payload_length as u32 };
@@ -386,8 +405,10 @@ pub fn do_server(
                         }
                     } else {
                         // allocate a single mbuf
-                        tx_bufs[n_to_tx] = wrapper::alloc_mbuf(mbuf_pool)?;
+                        tx_bufs[n_to_tx] = wrapper::alloc_mbuf(mbuf_pool)
+                            .wrap_err("Failed to allocate single mbuf")?;
                         tx_buf = tx_bufs[n_to_tx];
+                        tracing::debug!("Allocated mbuf");
                         if !zero_copy {
                             let payload_slice =
                                 mbuf_slice!(tx_buf, header_size + 8, payload_length - 8);
@@ -402,27 +423,41 @@ pub fn do_server(
                 MemoryMode::EXTERNAL => {
                     if num_mbufs == 2 {
                         // allocate header from normal pool
-                        tx_bufs[n_to_tx] = wrapper::alloc_mbuf(mbuf_pool)?;
-                        secondary_tx_bufs[n_to_tx] = wrapper::alloc_mbuf(extbuf_mempool)?;
+                        tx_bufs[n_to_tx] = wrapper::alloc_mbuf(mbuf_pool)
+                            .wrap_err("Failed to allocate from mbuf pool.")?;
+                        secondary_tx_bufs[n_to_tx] = wrapper::alloc_mbuf(extbuf_mempool)
+                            .wrap_err("Failed to allocate from extbuf pool")?;
                         tx_buf = tx_bufs[n_to_tx];
+                        tracing::debug!(
+                            "Allocated mbuf secondary: {:?}",
+                            secondary_tx_bufs[n_to_tx]
+                        );
                         secondary_tx = secondary_tx_bufs[n_to_tx];
-                        dpdk_call!(rte_pktmbuf_attach_extbuf(
-                            secondary_tx,
-                            metadata.ptr as _,
-                            0,
-                            payload_length as u16,
-                            shinfo
-                        ));
+                        tracing::debug!("Allocated mbuf secondary: {:?}", secondary_tx);
+                        assert!(!secondary_tx.is_null());
+                        dpdk_call!(rte_pktmbuf_refcnt_set(secondary_tx, 1));
+                        unsafe {
+                            (*secondary_tx).buf_iova = metadata.get_physaddr(metadata.ptr)? as _;
+                            tracing::debug!(physaddr =? (*secondary_tx).buf_iova, "Set phys addr");
+                            (*secondary_tx).buf_addr = metadata.ptr as _;
+                            (*secondary_tx).buf_len = payload_length as u16;
+                            (*secondary_tx).data_off = 0;
+                        }
+                        tracing::debug!(lkey = metadata.get_lkey(), secondary_tx = ?secondary_tx, "Setting lkey");
+                        dpdk_call!(set_lkey(secondary_tx, metadata.get_lkey()));
                     } else {
-                        tx_bufs[n_to_tx] = wrapper::alloc_mbuf(extbuf_mempool)?;
+                        tx_bufs[n_to_tx] = wrapper::alloc_mbuf(extbuf_mempool)
+                            .wrap_err("Failed to allocate from extbuf pool")?;
                         tx_buf = tx_bufs[n_to_tx];
-                        dpdk_call!(rte_pktmbuf_attach_extbuf(
-                            tx_buf,
-                            metadata.ptr as _,
-                            0,
-                            payload_length as u16 + header_size as u16,
-                            shinfo,
-                        ));
+                        unsafe {
+                            (*tx_buf).buf_iova = metadata.get_physaddr(metadata.ptr)? as _;
+                            (*tx_buf).buf_addr = metadata.ptr as _;
+                            (*tx_buf).buf_len = payload_length as u16 + header_size as u16;
+                            (*tx_buf).data_off = 0;
+                        }
+                        tracing::debug!(lkey = metadata.get_lkey(), "Setting lkey");
+                        dpdk_call!(set_lkey(tx_buf, metadata.get_lkey()));
+                        dpdk_call!(rte_pktmbuf_refcnt_set(tx_buf, 1));
                     }
                 }
             }

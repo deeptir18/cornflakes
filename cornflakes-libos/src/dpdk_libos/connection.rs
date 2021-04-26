@@ -12,9 +12,8 @@ use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
     mem::zeroed,
-    mem::MaybeUninit,
     net::Ipv4Addr,
-    ptr, slice,
+    slice,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -91,6 +90,7 @@ impl DPDKReceivedPkt {
 impl Drop for DPDKReceivedPkt {
     fn drop(&mut self) {
         tracing::debug!("Dropping the mbuf!");
+
         wrapper::free_mbuf(self.mbuf_wrapper.mbuf);
     }
 }
@@ -129,6 +129,10 @@ impl ScatterGather for DPDKReceivedPkt {
 
     fn data_len(&self) -> usize {
         self.mbuf_wrapper.buf_size()
+    }
+
+    fn index(&self, _idx: usize) -> &Self::Ptr {
+        &self.mbuf_wrapper
     }
 
     fn collection(&self) -> Self::Collection {
@@ -176,16 +180,20 @@ pub struct DPDKConnection {
     outgoing_window: HashMap<MsgID, Instant>,
     /// Default mempool for allocating mbufs to copy into.
     default_mempool: *mut rte_mempool,
+    /// Memory region this default mempool spans
+    default_memzone: (usize, usize),
     /// Empty mempool for allocating external buffers.
     extbuf_mempool: *mut rte_mempool,
     /// Header information
     addr_info: utils::AddressInfo,
+    /// Registered memory regions for externally allocated memory
+    external_memory_regions: Vec<mem::MmapMetadata>,
     /// shinfo: TODO: it is unclear how to ``properly'' use the shinfo.
     /// There might be one shinfo per external memory region.
     /// Here, so far, we're assuming one memory region.
     /// Theoretically should be like HashMap<metadata, shinfo>
     /// And whenever we have a reference -- check which shinfo is the relevant one.
-    shared_info: HashMap<mem::MmapMetadata, MaybeUninit<rte_mbuf_ext_shared_info>>,
+    //shared_info: HashMap<mem::MmapMetadata, MaybeUninit<rte_mbuf_ext_shared_info>>,
     /// Debugging timers.
     timers: HashMap<String, Arc<Mutex<HistogramWrapper>>>,
 }
@@ -258,6 +266,8 @@ impl DPDKConnection {
             );
         }
 
+        let default_memzone = wrapper::get_mempool_memzone_area(mempool)?;
+
         Ok(DPDKConnection {
             mode: mode,
             dpdk_port: nb_ports - 1,
@@ -265,9 +275,11 @@ impl DPDKConnection {
             //mac_to_ip: mac_to_ip,
             outgoing_window: outgoing_window,
             default_mempool: mempool,
+            default_memzone: default_memzone,
+            external_memory_regions: Vec::default(),
             extbuf_mempool: ext_mempool,
             addr_info: addr_info,
-            shared_info: HashMap::new(),
+            //shared_info: HashMap::new(),
             timers: timers,
         })
     }
@@ -380,13 +392,15 @@ impl Datapath for DPDKConnection {
                     self.default_mempool,
                     self.extbuf_mempool,
                     &self.get_outgoing_header(addr)?,
-                    &mut self.shared_info,
+                    self.default_memzone,
+                    &self.external_memory_regions,
                 )
                 .wrap_err("Unable to construct pkt from sga.")
             },
             cfg!(feature = "timers"),
             pkt_construct_timer,
         )?;
+        tracing::debug!("Constructed packet.");
 
         // if client, add start time for packet
         match self.mode {
@@ -437,6 +451,7 @@ impl Datapath for DPDKConnection {
         }
 
         if received.len() > 0 {
+            tracing::debug!("Received some packs");
             let pop_processing_timer = self.get_timer(
                 POP_PROCESSING_TIMER,
                 cfg!(feature = "timers") && self.mode == DPDKMode::Server,
@@ -512,31 +527,39 @@ impl Datapath for DPDKConnection {
 
     /// Registers this external piece of memory with DPDK,
     /// so regions of this memory can be used while sending external mbufs.
-    fn register_external_region(&mut self, metadata: mem::MmapMetadata) -> Result<()> {
-        wrapper::dpdk_register_extmem(&metadata)?;
-        let mut shared_info: MaybeUninit<rte_mbuf_ext_shared_info> = MaybeUninit::zeroed();
-        unsafe {
-            (*shared_info.as_mut_ptr()).refcnt = 1;
-            (*shared_info.as_mut_ptr()).fcb_opaque = ptr::null_mut();
-            (*shared_info.as_mut_ptr()).free_cb = Some(general_free_cb_);
-        }
+    fn register_external_region(&mut self, mut metadata: mem::MmapMetadata) -> Result<()> {
+        let num_pages = metadata.length / metadata.get_pagesize();
+        let mut paddrs = vec![0usize; num_pages];
+        let mut lkey_out: u32 = 0;
+        let ibv_mr = wrapper::dpdk_register_extmem(
+            &metadata,
+            paddrs.as_mut_ptr(),
+            &mut lkey_out as *mut u32,
+        )?;
+        metadata.set_paddrs(paddrs);
+        metadata.set_lkey(lkey_out);
+        metadata.set_ibv_mr(ibv_mr);
 
-        self.shared_info.insert(metadata, shared_info);
-
+        self.external_memory_regions.push(metadata);
         Ok(())
     }
 
     fn unregister_external_region(&mut self, metadata: mem::MmapMetadata) -> Result<()> {
-        wrapper::dpdk_unregister_extmem(&metadata)?;
-        match self.shared_info.remove(&metadata) {
-            Some(_) => Ok(()),
-            None => {
-                bail!(
-                "DPDK datapath doesn't have reference to particular external memory region: {:?}",
-                metadata
-            );
+        let mut idx_to_remove = 0;
+        let mut found = false;
+        for (idx, meta) in self.external_memory_regions.iter().enumerate() {
+            if meta.ptr == metadata.ptr && meta.length == metadata.length {
+                idx_to_remove = idx;
+                found = true;
+                break;
             }
         }
+        if !found {
+            bail!("Could not find external memory region to remove.");
+        }
+        let metadata = self.external_memory_regions.remove(idx_to_remove);
+        wrapper::dpdk_unregister_extmem(&metadata)?;
+        Ok(())
     }
 
     fn get_timers(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {
@@ -549,7 +572,7 @@ impl Datapath for DPDKConnection {
 impl Drop for DPDKConnection {
     fn drop(&mut self) {
         tracing::debug!("DPDK connection is being dropped");
-        for (metadata, _) in self.shared_info.iter() {
+        for metadata in self.external_memory_regions.iter() {
             match wrapper::dpdk_unregister_extmem(metadata) {
                 Ok(_) => {}
                 Err(e) => {

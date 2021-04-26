@@ -8,7 +8,6 @@ use super::connection::DPDKConnection;
 use color_eyre::eyre::{bail, Result};
 use hashbrown::HashMap;
 use hdrhistogram::Histogram;
-use memmap::MmapMut;
 use std::{
     io::Write,
     net::Ipv4Addr,
@@ -34,7 +33,7 @@ pub struct EchoClient<'a, 'b> {
     sga: Cornflake<'a, 'b>,
     server_ip: Ipv4Addr,
     rtts: Histogram<u64>,
-    external_memory: Option<(mem::MmapMetadata, MmapMut)>,
+    external_memory: Option<mem::MmapMetadata>,
 }
 
 impl<'a, 'b> EchoClient<'a, 'b> {
@@ -46,15 +45,16 @@ impl<'a, 'b> EchoClient<'a, 'b> {
     ) -> Result<EchoClient<'a, 'b>> {
         let (sga, external_memory) = match zero_copy {
             true => {
-                let (metadata, mut mmap) = mem::mmap_new(100)?;
+                let mut metadata = mem::mmap_manual(10)?;
                 assert!(size <= metadata.length);
                 let payload = vec![b'a'; size];
-                (&mut mmap[..]).write_all(payload.as_ref())?;
+                let buf = metadata.get_full_buf()?;
+                (&mut buf[0..payload.len()]).write_all(payload.as_ref())?;
                 let cornptr =
                     unsafe { CornPtr::Registered(slice::from_raw_parts(metadata.ptr, size)) };
                 let mut cornflake = Cornflake::default();
                 cornflake.add_entry(cornptr);
-                (cornflake, Some((metadata, mmap)))
+                (cornflake, Some(metadata))
             }
             false => {
                 let cornptr = CornPtr::Normal(payload.as_ref());
@@ -93,7 +93,7 @@ impl<'a, 'b> ClientSM for EchoClient<'a, 'b> {
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
         match self.external_memory {
-            Some((ref metadata, _)) => {
+            Some(ref metadata) => {
                 connection.register_external_region(metadata.clone())?;
             }
             None => {}
@@ -166,7 +166,7 @@ impl<'a, 'b> RTTHistogram for EchoClient<'a, 'b> {
 
 pub struct EchoServer<'a, 'b> {
     sga: Cornflake<'a, 'b>,
-    external_memory: Option<(mem::MmapMetadata, MmapMut)>,
+    external_memory: Option<mem::MmapMetadata>,
     histograms: HashMap<String, Arc<Mutex<HistogramWrapper>>>,
 }
 
@@ -174,17 +174,18 @@ impl<'a, 'b> EchoServer<'a, 'b> {
     pub fn new(size: usize, zero_copy: bool, payload: &'b [u8]) -> Result<EchoServer<'a, 'b>> {
         let (sga, external_memory) = match zero_copy {
             true => {
-                let (metadata, mut mmap) = mem::mmap_new(100)?;
+                let mut metadata = mem::mmap_manual(10)?;
                 assert!(size <= metadata.length);
                 let payload = vec![b'a'; size];
-                (&mut mmap[..]).write_all(payload.as_ref())?;
+                let buf = metadata.get_full_buf()?;
+                (&mut buf[0..payload.len()]).write_all(payload.as_ref())?;
                 // this application is just testing if external memory works at all
                 // so we are just initializing the external memory unsafely
                 let cornptr =
                     unsafe { CornPtr::Registered(slice::from_raw_parts(metadata.ptr, size)) };
                 let mut cornflake = Cornflake::default();
                 cornflake.add_entry(cornptr);
-                (cornflake, Some((metadata, mmap)))
+                (cornflake, Some(metadata))
             }
             false => {
                 let cornptr = CornPtr::Normal(payload.as_ref());
@@ -226,7 +227,7 @@ impl<'a, 'b> ServerSM for EchoServer<'a, 'b> {
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
         match self.external_memory {
-            Some((ref metadata, _)) => {
+            Some(ref metadata) => {
                 connection.register_external_region(metadata.clone())?;
             }
             None => {}
