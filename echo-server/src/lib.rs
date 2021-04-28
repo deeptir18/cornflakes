@@ -51,7 +51,7 @@ where
     /// Serialization library might require long-lived context to serialize an object, so it
     /// doesn't go out of scope.
     /// TODO: does Ctx need to implement any trait?
-    type Ctx;
+    type Ctx: Clone;
     /// Message type
     fn message_type(&self) -> SimpleMessageType;
     /// Echo the received message into a corresponding scatter-gather array.

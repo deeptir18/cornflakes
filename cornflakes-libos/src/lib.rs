@@ -68,9 +68,11 @@ pub trait ScatterGather {
 /// Trait defining functionality any _received_ packets should have.
 /// So the receiver can access address and any other relevant information.
 pub trait ReceivedPacket {
-    fn get_addr(&self) -> utils::AddressInfo;
+    fn get_addr(&self) -> &utils::AddressInfo;
 
     fn get_pkt_buffer(&self) -> &[u8];
+
+    fn get_corn_ptr(&self) -> CornPtr;
 }
 
 /// Whether an underlying buffer is borrowed or
@@ -96,6 +98,12 @@ pub enum CornPtr<'registered, 'normal> {
     Registered(&'registered [u8]),
     /// "Normal" Reference to un-registered memory.
     Normal(&'normal [u8]),
+}
+
+impl<'registered, 'normal> Default for CornPtr<'registered, 'normal> {
+    fn default() -> Self {
+        CornPtr::Normal(&[])
+    }
 }
 
 impl<'registered, 'normal> AsRef<[u8]> for CornPtr<'registered, 'normal> {
@@ -136,6 +144,8 @@ pub struct Cornflake<'registered, 'normal> {
     num_borrowed: usize,
     /// Data size
     data_size: usize,
+    /// Number of total filled entries
+    num_filled: usize,
 }
 
 impl<'registered, 'normal> Default for Cornflake<'registered, 'normal> {
@@ -145,6 +155,7 @@ impl<'registered, 'normal> Default for Cornflake<'registered, 'normal> {
             entries: Vec::new(),
             num_borrowed: 0,
             data_size: 0,
+            num_filled: 0,
         }
     }
 }
@@ -167,7 +178,7 @@ impl<'registered, 'normal> ScatterGather for Cornflake<'registered, 'normal> {
 
     /// Returns number of entries in this cornflake.
     fn num_segments(&self) -> usize {
-        self.entries.len()
+        self.num_filled
     }
 
     /// Returns the number of borrowed memory regions in this cornflake.
@@ -193,8 +204,9 @@ impl<'registered, 'normal> ScatterGather for Cornflake<'registered, 'normal> {
     /// Apply an iterator to entries of the scatter-gather array, without consuming the
     /// scatter-gather array.
     fn iter_apply(&self, mut consume_element: impl FnMut(&Self::Ptr) -> Result<()>) -> Result<()> {
-        for (i, entry) in self.entries.iter().enumerate() {
-            consume_element(&entry).wrap_err(format!(
+        for i in 0..self.num_filled {
+            let entry = &self.entries[i];
+            consume_element(entry).wrap_err(format!(
                 "Unable to run function on pointer {} in cornflake",
                 i
             ))?;
@@ -204,7 +216,8 @@ impl<'registered, 'normal> ScatterGather for Cornflake<'registered, 'normal> {
 
     fn contiguous_repr(&self) -> Vec<u8> {
         let mut ret: Vec<u8> = Vec::new();
-        for entry in self.entries.iter() {
+        for i in 0..self.num_filled {
+            let entry = &self.entries[i];
             ret.extend_from_slice(entry.as_ref());
         }
         ret
@@ -212,17 +225,34 @@ impl<'registered, 'normal> ScatterGather for Cornflake<'registered, 'normal> {
 }
 
 impl<'registered, 'normal> Cornflake<'registered, 'normal> {
+    /// Returns a cornflake with this many entries.
+    pub fn with_capacity(capacity: usize) -> Cornflake<'registered, 'normal> {
+        Cornflake {
+            id: 0,
+            entries: vec![CornPtr::default(); capacity],
+            num_borrowed: 0,
+            data_size: 0,
+            num_filled: 0,
+        }
+    }
+
     /// Adds a scatter-gather entry to this cornflake.
     /// Passes ownership of the CornPtr.
     /// Arguments:
     /// * ptr - CornPtr<'a> representing owned or borrowed memory.
     /// * length - usize representing length of memory region.
     pub fn add_entry(&mut self, ptr: CornPtr<'registered, 'normal>) {
+        tracing::debug!("Adding {:?} to data_size", ptr.buf_size());
         self.data_size += ptr.buf_size();
         if ptr.buf_type() == CornType::Registered {
             self.num_borrowed += 1;
         }
-        self.entries.push(ptr);
+        if self.num_filled == self.entries.len() {
+            self.entries.push(ptr);
+        } else {
+            self.entries[self.num_filled] = ptr;
+        }
+        self.num_filled += 1;
     }
 
     pub fn iter(&self) -> Iter<CornPtr<'registered, 'normal>> {
@@ -251,7 +281,7 @@ pub trait Datapath {
     type ReceivedPkt: ScatterGather + ReceivedPacket;
 
     /// Send a scatter-gather array to the specified address.
-    fn push_sga(&mut self, sga: impl ScatterGather, addr: Ipv4Addr) -> Result<()>;
+    fn push_sgas(&mut self, sga: &Vec<(impl ScatterGather, Ipv4Addr)>) -> Result<()>;
 
     /// Receive the next packet (from any) underlying `connection`, if any.
     /// Application is responsible for freeing any memory referred to by Cornflake.
@@ -332,14 +362,14 @@ pub trait ClientSM {
         let server_ip = self.server_ip();
 
         while recved < num_pkts {
-            self.send_next_msg(|sga| datapath.push_sga(sga, server_ip))?;
+            self.send_next_msg(|sga| datapath.push_sgas(&vec![(sga, server_ip)]))?;
             let recved_pkts = loop {
                 let pkts = datapath.pop()?;
                 if pkts.len() > 0 {
                     break pkts;
                 }
                 for id in datapath.timed_out(time_out)?.iter() {
-                    self.msg_timeout_cb(*id, |sga| datapath.push_sga(sga, server_ip))?;
+                    self.msg_timeout_cb(*id, |sga| datapath.push_sgas(&vec![(sga, server_ip)]))?;
                 }
             };
 
@@ -373,7 +403,7 @@ pub trait ClientSM {
         while datapath.current_cycles() < (total_time * freq + start) {
             // Send the next message
             tracing::debug!(time = ?time_start.elapsed(), "About to send next packet");
-            self.send_next_msg(|sga| datapath.push_sga(sga, server_ip))?;
+            self.send_next_msg(|sga| datapath.push_sgas(&vec![(sga, server_ip)]))?;
             let last_sent = datapath.current_cycles();
 
             while datapath.current_cycles() <= last_sent + cycle_wait {
@@ -389,7 +419,7 @@ pub trait ClientSM {
                 }
 
                 for id in datapath.timed_out(time_out)?.iter() {
-                    self.msg_timeout_cb(*id, |sga| datapath.push_sga(sga, server_ip))?;
+                    self.msg_timeout_cb(*id, |sga| datapath.push_sgas(&vec![(sga, server_ip)]))?;
                 }
             }
         }
@@ -409,10 +439,13 @@ pub trait ServerSM {
     /// * sga - Something that implements ScatterGather + ReceivedPkt; used to query the received
     /// message id, received payload, and received message header information.
     /// * send_fn - A send callback to send a response to this request back.
-    fn process_request(
+    fn process_requests(
         &mut self,
-        sga: &<<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
-        send_fn: impl FnMut(Cornflake, Ipv4Addr) -> Result<()>,
+        sga: &Vec<(
+            <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
+            Duration,
+        )>,
+        send_fn: impl FnMut(&Vec<(Cornflake, Ipv4Addr)>) -> Result<()>,
     ) -> Result<()>;
 
     /// Runs the state machine, which responds to requests in a single-threaded fashion.
@@ -425,11 +458,11 @@ pub trait ServerSM {
     fn run_state_machine(&mut self, datapath: &mut Self::Datapath) -> Result<()> {
         loop {
             let pkts = datapath.pop()?;
-            for (pkt, _) in pkts.iter() {
-                self.process_request(pkt, |sga, ip_addr| {
+            if pkts.len() > 0 {
+                self.process_requests(&pkts, |sgas| {
                     datapath
-                        .push_sga(sga, ip_addr)
-                        .wrap_err("Failed to send pkt response.")
+                        .push_sgas(sgas)
+                        .wrap_err("Failed to send packet response.")
                 })?;
             }
         }

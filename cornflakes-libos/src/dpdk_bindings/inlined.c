@@ -37,13 +37,17 @@ void free_referred_mbuf(void *buf) {
     struct rte_mbuf *mbuf = (struct rte_mbuf *)(buf);
     struct tx_pktmbuf_priv *priv_data = (struct tx_pktmbuf_priv *)(((char *)buf) + sizeof(struct rte_mbuf));
     if (priv_data->refers_to_another == 1) {
-        printf("[free_refered_mbuf_] refers to another = 1\n");
+        //printf("[free_refered_mbuf_] refers to another = 1\n");
         // get the mbuf this refers to
         // decrease the ref count of that mbuf
-        struct rte_mbuf *ref_mbuf = (struct rte_mbuf *)((char *)(mbuf->buf_addr) - (RTE_PKTMBUF_HEADROOM + MBUF_HEADER_SIZE));
-        rte_mbuf_refcnt_update(ref_mbuf, -1);
-        if (rte_mbuf_refcnt_read(ref_mbuf) == 0) {
+        struct rte_mbuf *ref_mbuf = (struct rte_mbuf *)((char *)(mbuf->buf_addr) - (RTE_PKTMBUF_HEADROOM + MBUF_HEADER_SIZE + sizeof(struct tx_pktmbuf_priv) - mbuf->data_off));
+        //printf("Pointer of referred mbuf: %p\n", ref_mbuf);
+        uint16_t ref_cnt = rte_mbuf_refcnt_read(ref_mbuf);
+        if (ref_cnt == 0 || ref_cnt == 1) {
+            //printf("Refcnt of referred mbuf: %u\n", (unsigned)ref_cnt);
             rte_pktmbuf_free(ref_mbuf);
+        } else {
+            rte_mbuf_refcnt_set(ref_mbuf, ref_cnt - 1);
         }
     }
 }
@@ -181,25 +185,35 @@ struct rte_mbuf* rte_pktmbuf_alloc_(struct rte_mempool *mp) {
 }
 
 uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **tx_pkts, uint16_t nb_pkts) {
-    struct rte_mbuf *first_mbuf = tx_pkts[0];
-    printf("[rte_eth_tx_burst_] mbuf num segs: %u\n", first_mbuf->nb_segs);
-    printf("[rte_eth_tx_burst_] mbuf data_len: %u, pkt_len: %u\n", first_mbuf->data_len, first_mbuf->pkt_len);
-    printf("[rte_eth_tx_burst_] mbuf next is null: %d\n", (first_mbuf->next == NULL));
-    uint8_t *p = rte_pktmbuf_mtod(first_mbuf, uint8_t *);
-    struct rte_ether_hdr * const eth_hdr = (struct rte_ether_hdr *)(p);
-    if (eth_hdr->ether_type != ntohs(RTE_ETHER_TYPE_IPV4)) {
+    /*for (uint16_t i = 0; i < nb_pkts; i++) {
+        struct rte_mbuf *first_mbuf = tx_pkts[i];
+        printf("First packet addr: %p\n", first_mbuf);
+        printf("[rte_eth_tx_burst_] first mbuf num segs: %u\n", first_mbuf->nb_segs);
+        printf("[rte_eth_tx_burst_] first mbuf data_len: %u, pkt_len: %u\n", first_mbuf->data_len, first_mbuf->pkt_len);
+        printf("[rte_eth_tx_burst_] first mbuf next is null: %d\n", (first_mbuf->next == NULL));
+        struct rte_mbuf *cur_pkt = first_mbuf;
+        for (uint16_t j = 1; j < first_mbuf->nb_segs; j++) {
+            cur_pkt = cur_pkt->next;
+            printf("[rte_eth_tx_burst_] mbuf # %u, addr: %p\n", (unsigned)j, cur_pkt);
+            printf("[rte_eth_tx_burst_]  mbuf # %u data_len: %u, pkt_len: %u\n", (unsigned)j, cur_pkt->data_len, cur_pkt->pkt_len);
+            printf("[rte_eth_tx_burst_] mbuf # %u next is null: %d\n", (unsigned)j, (cur_pkt->next == NULL));
+        }
+        uint8_t *p = rte_pktmbuf_mtod(first_mbuf, uint8_t *);
+        struct rte_ether_hdr * const eth_hdr = (struct rte_ether_hdr *)(p);
+        if (eth_hdr->ether_type != ntohs(RTE_ETHER_TYPE_IPV4)) {
         printf("[rte_eth_tx_burst_] Ether type is not RTE_ETHER_TYPE_IPV4\n");
-    }
-    printf("[rte_eth_tx_burst_] Src MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+        }
+        printf("[rte_eth_tx_burst_] Src MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
             " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
             eth_hdr->s_addr.addr_bytes[0], eth_hdr->s_addr.addr_bytes[1],
             eth_hdr->s_addr.addr_bytes[2], eth_hdr->s_addr.addr_bytes[3],
             eth_hdr->s_addr.addr_bytes[4], eth_hdr->s_addr.addr_bytes[5]);
-    printf("[rte_eth_tx_burst_] Dst MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+        printf("[rte_eth_tx_burst_] Dst MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
             " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
             eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
             eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
             eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
+    }*/
     return rte_eth_tx_burst(port_id, queue_id, tx_pkts, nb_pkts);
 }
 

@@ -7,6 +7,7 @@ use std::{
     marker::PhantomData,
     net::Ipv4Addr,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 pub struct EchoServer<S, D> {
@@ -40,15 +41,22 @@ where
         Ok(())
     }
 
-    fn process_request(
+    fn process_requests(
         &mut self,
-        sga: &<<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
-        mut send_fn: impl FnMut(Cornflake, Ipv4Addr) -> Result<()>,
+        sgas: &Vec<(
+            <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
+            Duration,
+        )>,
+        mut send_fn: impl FnMut(&Vec<(Cornflake, Ipv4Addr)>) -> Result<()>,
     ) -> Result<()> {
-        let mut ctx = self.serializer.new_context();
-        let mut out_sga = self.serializer.process_msg(sga, &mut ctx)?;
-        out_sga.set_id(sga.get_id());
-        send_fn(out_sga, sga.get_addr().ipv4_addr)
+        let mut out_sgas: Vec<(Cornflake, Ipv4Addr)> = Vec::with_capacity(sgas.len());
+        let mut contexts = vec![self.serializer.new_context(); sgas.len()];
+        for (in_sga, ctx) in sgas.iter().zip(contexts.iter_mut()) {
+            let mut out_sga = self.serializer.process_msg(&in_sga.0, ctx)?;
+            out_sga.set_id(in_sga.0.get_id());
+            out_sgas.push((out_sga, in_sga.0.get_addr().ipv4_addr));
+        }
+        send_fn(&out_sgas)
     }
 
     fn get_histograms(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {

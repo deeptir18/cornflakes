@@ -37,6 +37,7 @@ summarized <- ddply(d, c("system_name", "segment_size", "num_mbufs", "with_copy"
                     summarise,
                     mavg = mean(avg),
                     mmedian = mean(median),
+                    mediansd = sd(median),
                     mp99 = mean(p99),
                     p99sd = sd(p99),
                     mp999 = mean(p999),
@@ -48,14 +49,14 @@ summarized <- ddply(d, c("system_name", "segment_size", "num_mbufs", "with_copy"
 base_plot <- function(data) {
     plot <- ggplot(data,
                    aes(x = factor(num_mbufs),
-                       y = mp99,
+                       y = mmedian,
                        fill = system_name)) +
             expand_limits(y = 0) +
             geom_bar(position="dodge", stat="identity", width = 0.9) +
-            geom_errorbar(aes(ymin=mp99-p99sd, ymax=mp99+p99sd),position="dodge", stat="identity") +
+            geom_errorbar(aes(ymin=mmedian-mediansd, ymax=mmedian+mediansd),position="dodge", stat="identity") +
             scale_fill_viridis_d() +
             scale_color_viridis_d() +
-            labs(x = "Number of Segments", y = "p99 Latency (µs)") +
+            labs(x = "Number of Segments", y = "Median Latency (ns)") +
                         theme_light() +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),

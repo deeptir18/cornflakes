@@ -3,24 +3,23 @@ use super::{
         dpdk_bindings::*,
         dpdk_call, mbuf_slice, mem,
         timing::{record, timefunc, HistogramWrapper},
-        utils, CornType, Datapath, MsgID, PtrAttributes, ReceivedPacket, ScatterGather,
+        utils, CornPtr, CornType, Datapath, MsgID, PtrAttributes, ReceivedPacket, ScatterGather,
     },
     dpdk_utils, wrapper,
 };
+use bytes::BytesMut;
 use color_eyre::eyre::{bail, Result, WrapErr};
 use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
-    mem::zeroed,
     net::Ipv4Addr,
-    slice,
+    ptr, slice,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tracing::warn;
 
 const MAX_ENTRIES: usize = 60;
-const RECEIVE_BURST_SIZE: u16 = 32;
 const PROCESSING_TIMER: &str = "E2E_PROCESSING_TIME";
 const RX_BURST_TIMER: &str = "RX_BURST_TIMER";
 const TX_BURST_TIMER: &str = "TX_BURST_TIMER";
@@ -29,30 +28,42 @@ const POP_PROCESSING_TIMER: &str = "POP_PROCESSING_TIMER";
 const PUSH_PROCESSING_TIMER: &str = "PUSH_PROCESSING_TIMER";
 
 /// Wrapper around rte_mbuf.
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct MbufWrapper {
     /// Mbuf this wraps around.
-    pub mbuf: *mut rte_mbuf,
-    /// Any networking header size.
-    /// For example, could be udp + ethernet + ip header.
+    pub mbuf: Option<*mut rte_mbuf>,
+    /// When not zero-copy: hold data in bytes
+    pub copied_data: BytesMut,
+    /// Networking header: for example, could be udp + ethernet + ip header.
     pub header_size: usize,
 }
 
 impl AsRef<[u8]> for MbufWrapper {
     fn as_ref(&self) -> &[u8] {
+        match self.mbuf {
+            Some(mbuf) => {
+                let payload_len = unsafe { (*mbuf).pkt_len as usize - self.header_size as usize };
+                mbuf_slice!(mbuf, self.header_size, payload_len)
+            }
+            None => self.copied_data.as_ref(),
+        }
         // length of the payload ends up being pkt_len - header_size
-        let payload_len = unsafe { (*self.mbuf).pkt_len as usize - self.header_size as usize };
-        mbuf_slice!(self.mbuf, self.header_size, payload_len)
     }
 }
 
 impl PtrAttributes for MbufWrapper {
     fn buf_type(&self) -> CornType {
-        CornType::Registered
+        match self.mbuf {
+            Some(_) => CornType::Registered,
+            None => CornType::Normal,
+        }
     }
 
     fn buf_size(&self) -> usize {
-        unsafe { (*self.mbuf).pkt_len as usize - self.header_size }
+        match self.mbuf {
+            Some(mbuf) => unsafe { (*mbuf).pkt_len as usize - self.header_size },
+            None => self.copied_data.len(),
+        }
     }
 }
 
@@ -73,12 +84,41 @@ impl DPDKReceivedPkt {
         mbuf: *mut rte_mbuf,
         header_size: usize,
         addr_info: utils::AddressInfo,
+        zero_copy: bool,
     ) -> DPDKReceivedPkt {
+        tracing::debug!(
+            "Address of received buffer: {:?}; after header: {:?}",
+            mbuf,
+            mbuf_slice!(mbuf, header_size, 1024).as_mut_ptr() as *mut u8
+        );
+        let (mbuf, bytes): (Option<*mut rte_mbuf>, BytesMut) = match zero_copy {
+            true => (Some(mbuf), BytesMut::new()),
+            false => {
+                let payload_len = unsafe { (*mbuf).pkt_len as usize - header_size };
+                tracing::debug!("Payload len: {:?}", payload_len);
+                let mut bytes_mut = BytesMut::with_capacity(payload_len);
+                let mbuf_slice = mbuf_slice!(mbuf, header_size, payload_len);
+                dpdk_call!(rte_memcpy_wrapper(
+                    bytes_mut.as_mut_ptr() as _,
+                    mbuf_slice.as_ptr() as _,
+                    payload_len
+                ));
+
+                unsafe {
+                    bytes_mut.set_len(payload_len);
+                }
+
+                tracing::debug!("Bytes mut len: {}", bytes_mut.len());
+                wrapper::free_mbuf_bare(mbuf);
+                (None, bytes_mut)
+            }
+        };
         DPDKReceivedPkt {
             id: id,
             mbuf_wrapper: MbufWrapper {
                 mbuf: mbuf,
                 header_size: header_size,
+                copied_data: bytes,
             },
             addr_info: addr_info,
         }
@@ -89,19 +129,29 @@ impl DPDKReceivedPkt {
 /// once all references to this struct are out of scope.
 impl Drop for DPDKReceivedPkt {
     fn drop(&mut self) {
-        tracing::debug!("Dropping the mbuf!");
-
-        wrapper::free_mbuf(self.mbuf_wrapper.mbuf);
+        match self.mbuf_wrapper.mbuf {
+            Some(mbuf) => {
+                wrapper::free_mbuf(mbuf);
+            }
+            None => {}
+        }
     }
 }
 
 impl ReceivedPacket for DPDKReceivedPkt {
-    fn get_addr(&self) -> utils::AddressInfo {
-        self.addr_info.clone()
+    fn get_addr(&self) -> &utils::AddressInfo {
+        &self.addr_info
     }
 
     fn get_pkt_buffer(&self) -> &[u8] {
         self.mbuf_wrapper.as_ref()
+    }
+
+    fn get_corn_ptr(&self) -> CornPtr {
+        match self.mbuf_wrapper.buf_type() {
+            CornType::Normal => CornPtr::Normal(self.mbuf_wrapper.as_ref()),
+            CornType::Registered => CornPtr::Registered(self.mbuf_wrapper.as_ref()),
+        }
     }
 }
 
@@ -136,7 +186,7 @@ impl ScatterGather for DPDKReceivedPkt {
     }
 
     fn collection(&self) -> Self::Collection {
-        Some(self.mbuf_wrapper)
+        Some(self.mbuf_wrapper.clone())
     }
 
     fn iter_apply(&self, mut consume_element: impl FnMut(&Self::Ptr) -> Result<()>) -> Result<()> {
@@ -168,6 +218,8 @@ impl std::str::FromStr for DPDKMode {
 }
 
 pub struct DPDKConnection {
+    /// Whether the receive is zero-copy
+    zero_copy_recv: bool,
     /// Server or client mode.
     mode: DPDKMode,
     /// dpdk_port
@@ -196,6 +248,10 @@ pub struct DPDKConnection {
     //shared_info: HashMap<mem::MmapMetadata, MaybeUninit<rte_mbuf_ext_shared_info>>,
     /// Debugging timers.
     timers: HashMap<String, Arc<Mutex<HistogramWrapper>>>,
+    /// Mbufs used tx_burst.
+    send_mbufs: [[*mut rte_mbuf; wrapper::RECEIVE_BURST_SIZE as usize]; wrapper::MAX_SCATTERS],
+    /// Mbufs used for rx_burst.
+    recv_mbufs: [*mut rte_mbuf; wrapper::RECEIVE_BURST_SIZE as usize],
 }
 
 impl DPDKConnection {
@@ -210,7 +266,7 @@ impl DPDKConnection {
     /// (1) A list of mac address and IP addresses in the network.
     /// (2) DPDK rte_eal_init information.
     /// (3) UDP port information for UDP packet headers.
-    pub fn new(config_file: &str, mode: DPDKMode) -> Result<DPDKConnection> {
+    pub fn new(config_file: &str, mode: DPDKMode, zero_copy: bool) -> Result<DPDKConnection> {
         let (ip_to_mac, mac_to_ip, udp_port) = dpdk_utils::parse_yaml_map(config_file).wrap_err(
             "Failed to get ip to mac address mapping, or udp port information from yaml config.",
         )?;
@@ -269,6 +325,7 @@ impl DPDKConnection {
         let default_memzone = wrapper::get_mempool_memzone_area(mempool)?;
 
         Ok(DPDKConnection {
+            zero_copy_recv: zero_copy,
             mode: mode,
             dpdk_port: nb_ports - 1,
             ip_to_mac: ip_to_mac,
@@ -281,6 +338,9 @@ impl DPDKConnection {
             addr_info: addr_info,
             //shared_info: HashMap::new(),
             timers: timers,
+            send_mbufs: [[ptr::null_mut(); wrapper::RECEIVE_BURST_SIZE as usize];
+                wrapper::MAX_SCATTERS],
+            recv_mbufs: [ptr::null_mut(); wrapper::RECEIVE_BURST_SIZE as usize],
         })
     }
 
@@ -366,36 +426,50 @@ impl Datapath for DPDKConnection {
     /// * sga - reference to a cornflake which contains the scatter-gather array to send
     /// out.
     /// * addr - Ipv4Addr to send the given scatter-gather array to.
-    fn push_sga(&mut self, sga: impl ScatterGather, addr: Ipv4Addr) -> Result<()> {
-        // check the SGA meets this datapath's allowed sending criteria
+    fn push_sgas(&mut self, sgas: &Vec<(impl ScatterGather, Ipv4Addr)>) -> Result<()> {
         let push_processing_start = Instant::now();
         let push_processing_timer =
             self.get_timer(PUSH_PROCESSING_TIMER, cfg!(feature = "timers"))?;
-        if sga.num_borrowed_segments() + 1 > self.max_scatter_entries()
-            || sga.data_len() > self.max_packet_len()
-        {
-            bail!("Sga either has too many scatter-gather entries ( > {} ) or the packet data is too large ( < {} bytes ).", self.max_scatter_entries(), self.max_packet_len());
-        }
-
-        // initialize a linked list of mbufs to represent the sga
-        let mut pkt = wrapper::Pkt::init(sga.num_borrowed_segments() + 1);
         record(
             push_processing_timer,
             push_processing_start.elapsed().as_nanos() as u64,
         )?;
+        let mut pkts: Vec<wrapper::Pkt> = sgas
+            .iter()
+            .map(|(sga, _)| wrapper::Pkt::init(sga.num_borrowed_segments() + 1))
+            .collect();
 
+        let headers_result: Result<Vec<utils::HeaderInfo>> = sgas
+            .iter()
+            .map(|(_, addr)| self.get_outgoing_header(*addr))
+            .collect();
+        let headers = headers_result?;
+        tracing::debug!("Headers: {:?}", headers);
         let pkt_construct_timer = self.get_timer(PKT_CONSTRUCT_TIMER, cfg!(feature = "timers"))?;
         timefunc(
             &mut || {
-                pkt.construct_from_sga(
-                    &sga,
-                    self.default_mempool,
-                    self.extbuf_mempool,
-                    &self.get_outgoing_header(addr)?,
-                    self.default_memzone,
-                    &self.external_memory_regions,
-                )
-                .wrap_err("Unable to construct pkt from sga.")
+                for (i, (((ref sga, _), ref header), ref mut pkt)) in sgas
+                    .iter()
+                    .zip(headers.iter())
+                    .zip(pkts.iter_mut())
+                    .enumerate()
+                {
+                    pkt.construct_from_sga(
+                        &mut self.send_mbufs,
+                        i,
+                        sga,
+                        self.default_mempool,
+                        self.extbuf_mempool,
+                        header,
+                        self.default_memzone,
+                        &self.external_memory_regions,
+                    )
+                    .wrap_err(format!(
+                        "Unable to construct pkt from sga, sga idx: {}",
+                        sga.get_id()
+                    ))?;
+                }
+                Ok(())
             },
             cfg!(feature = "timers"),
             pkt_construct_timer,
@@ -403,22 +477,28 @@ impl Datapath for DPDKConnection {
         tracing::debug!("Constructed packet.");
 
         // if client, add start time for packet
+        // if server, end packet processing counter
         match self.mode {
-            DPDKMode::Server => {}
+            DPDKMode::Server => {
+                if cfg!(feature = "timers") {
+                    for (sga, addr) in sgas.iter() {
+                        self.end_entry(PROCESSING_TIMER, sga.get_id(), addr.clone())?;
+                    }
+                }
+            }
             DPDKMode::Client => {
-                let _ = self.outgoing_window.insert(sga.get_id(), Instant::now());
+                for (sga, _) in sgas.iter() {
+                    let _ = self.outgoing_window.insert(sga.get_id(), Instant::now());
+                }
             }
         }
 
-        if cfg!(feature = "timers") && self.mode == DPDKMode::Server {
-            self.end_entry(PROCESSING_TIMER, sga.get_id(), addr.clone())?;
-        }
-
         // send out the scatter-gather array
+        let mbuf_ptr = &mut self.send_mbufs[0][0] as _;
         timefunc(
             &mut || {
-                wrapper::tx_burst(self.dpdk_port, 0, pkt.mbuf_list_ptr(), 1)
-                    .wrap_err(format!("Failed to send SGA with id {}.", sga.get_id()))
+                wrapper::tx_burst(self.dpdk_port, 0, mbuf_ptr, sgas.len() as u16)
+                    .wrap_err(format!("Failed to send SGAs."))
             },
             cfg!(feature = "timers"),
             self.get_timer(TX_BURST_TIMER, cfg!(feature = "timers"))?,
@@ -432,12 +512,11 @@ impl Datapath for DPDKConnection {
     /// For client mode, provides duration since sending sga with this id.
     /// FOr server mode, returns 0 duration.
     fn pop(&mut self) -> Result<Vec<(Self::ReceivedPkt, Duration)>> {
-        let mut mbuf_array: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
         let received = wrapper::rx_burst(
             self.dpdk_port,
             0,
-            mbuf_array.as_mut_ptr(),
-            RECEIVE_BURST_SIZE,
+            self.recv_mbufs.as_mut_ptr(),
+            wrapper::RECEIVE_BURST_SIZE,
             &self.addr_info,
         )
         .wrap_err("Error on calling rte_eth_rx_burst.")?;
@@ -458,16 +537,10 @@ impl Datapath for DPDKConnection {
             )?;
             let start = Instant::now();
             for (idx, (msg_id, addr_info)) in received.into_iter() {
-                let mbuf = mbuf_array[idx];
+                let mbuf = self.recv_mbufs[idx];
                 if mbuf.is_null() {
                     bail!("Mbuf for index {} in returned array is null.", idx);
                 }
-                let received_pkt = DPDKReceivedPkt::new(
-                    msg_id,
-                    mbuf_array[idx],
-                    utils::TOTAL_HEADER_SIZE,
-                    addr_info,
-                );
                 let duration = match self.mode {
                     DPDKMode::Client => match self.outgoing_window.remove(&msg_id) {
                         Some(start) => start.elapsed(),
@@ -478,6 +551,13 @@ impl Datapath for DPDKConnection {
                     },
                     DPDKMode::Server => Duration::new(0, 0),
                 };
+                let received_pkt = DPDKReceivedPkt::new(
+                    msg_id,
+                    self.recv_mbufs[idx],
+                    utils::TOTAL_HEADER_SIZE,
+                    addr_info,
+                    self.zero_copy_recv,
+                );
 
                 ret.push((received_pkt, duration));
             }

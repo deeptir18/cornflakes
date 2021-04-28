@@ -78,11 +78,15 @@ fn main() -> Result<()> {
 
     let payload = vec![b'a'; opt.size];
 
-    let mut connection = DPDKConnection::new(&opt.config_file, opt.mode)
-        .wrap_err("Failed to initialize DPDK server connection.")?;
+    let mut connection = match opt.mode {
+        DPDKMode::Server => DPDKConnection::new(&opt.config_file, opt.mode, opt.zero_copy)
+            .wrap_err("Failed to initialize DPDK server connection.")?,
+        DPDKMode::Client => DPDKConnection::new(&opt.config_file, opt.mode, true)
+            .wrap_err("Failed to initialize DPDK server connection.")?,
+    };
     match opt.mode {
         DPDKMode::Server => {
-            let mut server = EchoServer::new(opt.size, opt.zero_copy, &payload.as_ref())?;
+            let mut server = EchoServer::new()?;
             let histograms = connection.get_timers();
             let echo_histograms = server.get_histograms();
             {

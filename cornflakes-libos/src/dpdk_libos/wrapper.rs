@@ -23,13 +23,23 @@ pub const NUM_MBUFS: u16 = 8191;
 pub const MBUF_CACHE_SIZE: u16 = 250;
 const RX_RING_SIZE: u16 = 2048;
 const TX_RING_SIZE: u16 = 2048;
+pub const MAX_SCATTERS: usize = 32;
+pub const RECEIVE_BURST_SIZE: u16 = 32;
 
 // TODO: figure out how to turn jumbo frames on and of
 pub const RX_PACKET_LEN: u32 = 9216;
-pub const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
-pub const RTE_PKTMBUF_TAILROOM: u32 = 120;
+// pub const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
+pub const MBUF_BUF_SIZE: u32 = RX_PACKET_LEN + RTE_PKTMBUF_HEADROOM;
+
+pub const RTE_PKTMBUF_TAILROOM: u32 = 120; // with priv size of 8, this is padding
 pub const MBUF_POOL_HDR_SIZE: usize = 64;
 pub const MBUF_PRIV_SIZE: usize = 8;
+pub const MBUF_MEMPOOL_PADDING: usize = 128;
+pub const TOTAL_MEMPOOL_MBUF_SIZE: usize = MBUF_POOL_HDR_SIZE
+    + MBUF_BUF_SIZE as usize
+    + MBUF_PRIV_SIZE
+    + RTE_PKTMBUF_TAILROOM as usize
+    + MBUF_MEMPOOL_PADDING;
 
 /// RX and TX Prefetch, Host, and Write-back threshold values should be
 /// carefully set for optimal performance. Consult the network
@@ -50,13 +60,12 @@ const TX_WTHRESH: u8 = 0;
 /// for constructing mbufs to send with rte_eth_tx_burst.
 pub struct Pkt {
     /// Vector of mbuf pointers.
-    mbufs: Vec<*mut rte_mbuf>,
-    /// Vector of data lengths for each mbuf in the `mbufs` field.
-    data_offsets: Vec<usize>,
+    //mbufs: Vec<*mut rte_mbuf>,
     /// Number of scatter-gather segments.
     /// Should be the same as `self.mbufs.len()` or `self.data_offsets.len()`, after filling in the
     /// packet.
-    num_entries: usize,
+    /// Num filed so far.
+    num_filled: usize,
 }
 
 impl Pkt {
@@ -66,11 +75,10 @@ impl Pkt {
     /// Arguments:
     /// * size - usize which represents the number of scatter-gather segments that will be in this
     /// packet.
-    pub fn init(size: usize) -> Pkt {
+    pub fn init(_size: usize) -> Pkt {
         Pkt {
-            mbufs: Vec::with_capacity(size),
-            data_offsets: Vec::with_capacity(size),
-            num_entries: size,
+            //mbufs: Vec::with_capacity(size),
+            num_filled: 0,
         }
     }
 
@@ -90,6 +98,8 @@ impl Pkt {
     /// memory that maps the index in the sga to the necessary shared info.
     pub fn construct_from_sga(
         &mut self,
+        mbufs: &mut [[*mut rte_mbuf; RECEIVE_BURST_SIZE as usize]; MAX_SCATTERS],
+        pkt_id: usize,
         sga: &impl ScatterGather,
         header_mempool: *mut rte_mempool,
         extbuf_mempool: *mut rte_mempool,
@@ -97,13 +107,13 @@ impl Pkt {
         default_memzone: (usize, usize),
         external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
-        assert!(self.num_entries == sga.num_borrowed_segments() + 1);
-
         // TODO: change this back
         // 1: allocate and add header mbuf
         let header_mbuf =
             alloc_mbuf(header_mempool).wrap_err("Unable to allocate mbuf from mempool.")?;
         self.add_mbuf(
+            mbufs,
+            pkt_id,
             header_mbuf,
             Some((header_info, sga.data_len(), sga.get_id())),
         )
@@ -113,14 +123,14 @@ impl Pkt {
         for i in 1..sga.num_borrowed_segments() + 1 {
             let mbuf = alloc_mbuf(extbuf_mempool)
                 .wrap_err("Unable to allocate externally allocated mbuf.")?;
-            self.add_mbuf(mbuf, None).wrap_err(format!(
+            self.add_mbuf(mbufs, pkt_id, mbuf, None).wrap_err(format!(
                 "Unable to add externally allocated mbuf for segment {}.",
                 i
             ))?;
         }
 
         // 3: copy the payloads from the sga into the mbufs
-        self.copy_sga_payloads(sga, default_memzone, external_regions)
+        self.copy_sga_payloads(mbufs, pkt_id, sga, default_memzone, external_regions)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
 
         tracing::debug!(header_mempool_avail =? dpdk_call!(rte_mempool_count(header_mempool)), extbuf_mempool_avail =? dpdk_call!(rte_mempool_count(extbuf_mempool)), "Number available in header_mempool, in extbuf_mempool");
@@ -143,32 +153,32 @@ impl Pkt {
     pub fn construct_from_test_sga(
         &mut self,
         sga: &impl ScatterGather,
-        mbufs: Vec<*mut rte_mbuf>,
+        mbufs: &mut [[*mut rte_mbuf; RECEIVE_BURST_SIZE as usize]; MAX_SCATTERS],
+        pkt_id: usize,
         header_info: &utils::HeaderInfo,
         default_memzone: (usize, usize),
         external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
-        assert!(self.num_entries == sga.num_borrowed_segments() + 1);
-        assert!(self.num_entries == mbufs.len());
-
-        let header_mbuf = mbufs[0];
+        let header_mbuf = mbufs[0][pkt_id];
         self.add_mbuf(
+            mbufs,
+            pkt_id,
             header_mbuf,
             Some((header_info, sga.data_len(), sga.get_id())),
         )
         .wrap_err("Unable to initialize and add header mbuf.")?;
 
         for i in 1..sga.num_borrowed_segments() + 1 {
-            let mbuf = mbufs[i];
+            let mbuf = mbufs[i][pkt_id];
             debug!("Adding a mbuf: {:?}", i);
-            self.add_mbuf(mbuf, None).wrap_err(format!(
+            self.add_mbuf(mbufs, pkt_id, mbuf, None).wrap_err(format!(
                 "Unable to add externally allocated mbuf for segment {}.",
                 i
             ))?;
         }
 
         // 3: copy the payloads from the sga into the mbufs
-        self.copy_sga_payloads(sga, default_memzone, external_regions)
+        self.copy_sga_payloads(mbufs, pkt_id, sga, default_memzone, external_regions)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
 
         Ok(())
@@ -183,6 +193,8 @@ impl Pkt {
     /// packet.
     fn add_mbuf(
         &mut self,
+        mbufs: &mut [[*mut rte_mbuf; RECEIVE_BURST_SIZE as usize]; MAX_SCATTERS],
+        pkt_id: usize,
         mbuf: *mut rte_mbuf,
         header_info: Option<(&utils::HeaderInfo, usize, MsgID)>,
     ) -> Result<()> {
@@ -203,23 +215,20 @@ impl Pkt {
                     (*mbuf).data_len += data_offset as u16;
                     (*mbuf).pkt_len += data_offset as u32;
                 }
-                self.data_offsets.push(data_offset);
             }
-            None => {
-                self.data_offsets.push(0);
-            }
+            None => {}
         }
 
-        if self.mbufs.len() >= 1 {
-            let current_len = self.mbufs.len();
-            let last_mbuf = self.mbufs[current_len - 1];
+        if self.num_filled >= 1 {
+            let last_mbuf = mbufs[self.num_filled - 1][pkt_id];
             unsafe {
                 (*last_mbuf).next = mbuf;
             }
         }
 
-        self.mbufs.push(mbuf);
-        debug!("Mbuf array len is {}", self.mbufs.len());
+        mbufs[self.num_filled][pkt_id] = mbuf;
+        debug!("Mbuf array len is {}", self.num_filled);
+        self.num_filled += 1;
         Ok(())
     }
 
@@ -231,6 +240,8 @@ impl Pkt {
     /// * shared_info - Shared info map for registered memory regions.
     fn copy_sga_payloads(
         &mut self,
+        mbufs: &mut [[*mut rte_mbuf; RECEIVE_BURST_SIZE as usize]; MAX_SCATTERS],
+        pkt_id: usize,
         sga: &impl ScatterGather,
         default_memzone: (usize, usize),
         external_regions: &Vec<mem::MmapMetadata>,
@@ -244,6 +255,8 @@ impl Pkt {
                     // TODO: uncomment this
                     current_attached_idx += 1;
                     self.set_external_payload(
+                        mbufs,
+                        pkt_id,
                         current_attached_idx,
                         cornptr.as_ref(),
                         default_memzone,
@@ -256,7 +269,7 @@ impl Pkt {
                         bail!("Sga cannot have owned buffers after borrowed buffers; all owned buffers must be at the front.");
                     }
                     // copy this payload into the head buffer
-                    self.copy_payload(current_attached_idx, cornptr.as_ref())
+                    self.copy_payload(mbufs, pkt_id, current_attached_idx, cornptr.as_ref())
                         .wrap_err("Failed to copy sga owned entry {} into pkt list.")?;
                 }
             }
@@ -265,12 +278,19 @@ impl Pkt {
     }
 
     /// Copies the payload into the mbuf at index idx.
-    fn copy_payload(&mut self, idx: usize, buf: &[u8]) -> Result<()> {
+    fn copy_payload(
+        &mut self,
+        mbufs: &mut [[*mut rte_mbuf; RECEIVE_BURST_SIZE as usize]; MAX_SCATTERS],
+        pkt_id: usize,
+        idx: usize,
+        buf: &[u8],
+    ) -> Result<()> {
         assert!(idx == 0);
-        if (buf.len() + self.data_offsets[idx]) > RX_PACKET_LEN as usize {
-            bail!("Cannot set payload of size {}, as data offset is {}: mbuf would be too large, and limit is {}.", buf.len(), self.data_offsets[idx], RX_PACKET_LEN as usize);
+        let data_offset = unsafe { (*mbufs[idx][pkt_id]).data_len as usize };
+        if (buf.len() + data_offset) > RX_PACKET_LEN as usize {
+            bail!("Cannot set payload of size {}, as data offset is {}: mbuf would be too large, and limit is {}.", buf.len(), data_offset, RX_PACKET_LEN as usize);
         }
-        let mbuf_buffer = mbuf_slice!(self.mbufs[idx], self.data_offsets[idx], buf.len());
+        let mbuf_buffer = mbuf_slice!(mbufs[idx][pkt_id], data_offset, buf.len());
         // run rte_memcpy, as an alternate to rust's copy
         dpdk_call!(rte_memcpy_wrapper(
             mbuf_buffer.as_mut_ptr() as _,
@@ -278,20 +298,21 @@ impl Pkt {
             buf.len()
         ));
         // mbuf_buffer.copy_from_slice(buf);
+        tracing::debug!("[memcpy] Adding {:?} to buf", buf.len());
         unsafe {
             // update the data_len of this mbuf.
-            (*self.mbufs[idx]).data_len += buf.len() as u16;
+            (*mbufs[idx][pkt_id]).data_len += buf.len() as u16;
             // update the pkt len of the entire mbuf.
-            (*self.mbufs[0]).pkt_len += buf.len() as u32;
+            (*mbufs[0][pkt_id]).pkt_len += buf.len() as u32;
         }
-        // make sure to update data offset, for future payloads
-        self.data_offsets[idx] += buf.len();
         Ok(())
     }
 
     /// Set external payload in packet list.
     fn set_external_payload(
         &mut self,
+        mbufs: &mut [[*mut rte_mbuf; RECEIVE_BURST_SIZE as usize]; MAX_SCATTERS],
+        pkt_id: usize,
         idx: usize,
         buf: &[u8],
         default_memzone: (usize, usize),
@@ -303,17 +324,14 @@ impl Pkt {
         if (buf.as_ptr() as usize) > default_memzone.0
             && (buf.as_ptr() as usize) < default_memzone.0 + default_memzone.1
         {
+            tracing::debug!("Default memzone: {:?}", default_memzone);
             debug!("Within memzone check");
             // recover the original mbuf this data points to
             let ptr_int = buf.as_ptr() as usize;
             let ptr_offset = ptr_int - default_memzone.0;
-            let offset_within_alloc = ptr_offset
-                % (MBUF_POOL_HDR_SIZE
-                    + RTE_PKTMBUF_HEADROOM as usize
-                    + MBUF_PRIV_SIZE
-                    + RTE_ETHER_MAX_JUMBO_FRAME_LEN as usize
-                    + RTE_PKTMBUF_TAILROOM as usize);
+            let offset_within_alloc = ptr_offset % TOTAL_MEMPOOL_MBUF_SIZE;
 
+            tracing::debug!("Pointer offset: {:?}", ptr_offset);
             if offset_within_alloc
                 < (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE)
             {
@@ -324,81 +342,66 @@ impl Pkt {
                 );
             }
 
-            if offset_within_alloc
-                > (MBUF_POOL_HDR_SIZE
-                    + RTE_PKTMBUF_HEADROOM as usize
-                    + MBUF_PRIV_SIZE
-                    + RTE_ETHER_MAX_JUMBO_FRAME_LEN as usize)
+            if offset_within_alloc > (MBUF_POOL_HDR_SIZE + MBUF_BUF_SIZE as usize + MBUF_PRIV_SIZE)
             {
                 bail!(
                     "Data pointer within allocation tailroom: {:?} in {:?}",
                     offset_within_alloc,
-                    (MBUF_POOL_HDR_SIZE
-                        + RTE_PKTMBUF_HEADROOM as usize
-                        + MBUF_PRIV_SIZE
-                        + RTE_ETHER_MAX_JUMBO_FRAME_LEN as usize)
+                    MBUF_POOL_HDR_SIZE + MBUF_BUF_SIZE as usize + MBUF_PRIV_SIZE
                 );
             }
-            let data_off =
-                (offset_within_alloc - (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize)) as u16;
+            let data_off = (offset_within_alloc
+                - (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE))
+                as u16;
             debug!(
                 "Original ptr: {}, offset within alloc: {}, resulting data off: {}",
                 ptr_int, offset_within_alloc, data_off,
             );
 
             let original_mbuf_ptr = (ptr_int - offset_within_alloc) as *mut rte_mbuf;
+            tracing::debug!("Pointer to original mbuf ptr: {:?}", original_mbuf_ptr);
             // increase ref count of this mbuf
             dpdk_call!(rte_pktmbuf_refcnt_update(original_mbuf_ptr, 1));
             unsafe {
-                (*self.mbufs[idx]).buf_iova = (*original_mbuf_ptr).buf_iova;
-                (*self.mbufs[idx]).buf_addr = buf.as_ptr().offset(-1 * data_off as isize) as _;
-                (*self.mbufs[idx]).buf_len = buf.len() as _;
-                (*self.mbufs[idx]).data_off = data_off
+                (*mbufs[idx][pkt_id]).buf_iova = (*original_mbuf_ptr).buf_iova;
+                (*mbufs[idx][pkt_id]).buf_addr = buf.as_ptr().offset(-1 * data_off as isize) as _;
+                (*mbufs[idx][pkt_id]).buf_len = buf.len() as _;
+                (*mbufs[idx][pkt_id]).data_off = data_off
             }
             // set lkey of packet to be -1
-            dpdk_call!(set_lkey_not_present(self.mbufs[idx]));
-            dpdk_call!(set_refers_to_another(self.mbufs[1], 1));
+            dpdk_call!(set_lkey_not_present(mbufs[idx][pkt_id]));
+            dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 1));
         // copy over the physical address
         } else {
             for region in external_regions.iter() {
                 if region.addr_within_range(buf.as_ptr()) {
                     debug!("Found region that matches");
-                    dpdk_call!(rte_pktmbuf_refcnt_set(self.mbufs[idx], 1));
-                    dpdk_call!(set_lkey(self.mbufs[idx], region.get_lkey()));
-                    dpdk_call!(set_refers_to_another(self.mbufs[1], 0));
+                    dpdk_call!(rte_pktmbuf_refcnt_set(mbufs[idx][pkt_id], 1));
+                    dpdk_call!(set_lkey(mbufs[idx][pkt_id], region.get_lkey()));
+                    dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 0));
                     unsafe {
-                        (*self.mbufs[idx]).buf_iova = region.get_physaddr(buf.as_ptr())? as _;
-                        (*self.mbufs[idx]).buf_addr = buf.as_ptr() as _;
-                        (*self.mbufs[idx]).buf_len = buf.len() as _;
-                        (*self.mbufs[idx]).data_off = 0;
-                        debug!(iova =? (*self.mbufs[idx]).buf_iova, addr =? (*self.mbufs[idx]).buf_addr, len =? (*self.mbufs[idx]).buf_len, "Set packet fields.");
+                        (*mbufs[idx][pkt_id]).buf_iova = region.get_physaddr(buf.as_ptr())? as _;
+                        (*mbufs[idx][pkt_id]).buf_addr = buf.as_ptr() as _;
+                        (*mbufs[idx][pkt_id]).buf_len = buf.len() as _;
+                        (*mbufs[idx][pkt_id]).data_off = 0;
+                        debug!(iova =? (*mbufs[idx][pkt_id]).buf_iova, addr =? (*mbufs[idx][pkt_id]).buf_addr, len =? (*mbufs[idx][pkt_id]).buf_len, "Set packet fields.");
                     }
                 }
             }
         }
         // update general packet metadata
+        tracing::debug!("Adding {:?} to buf", buf.len());
         unsafe {
-            (*self.mbufs[idx]).data_len = buf.len() as u16;
-            (*self.mbufs[0]).pkt_len += buf.len() as u32;
-            (*self.mbufs[0]).nb_segs += 1;
+            (*mbufs[idx][pkt_id]).data_len = buf.len() as u16;
+            (*mbufs[0][pkt_id]).pkt_len += buf.len() as u32;
+            (*mbufs[0][pkt_id]).nb_segs += 1;
         }
-        self.data_offsets[idx] = buf.len();
         Ok(())
-    }
-
-    /// Returns handle to pointer to the mbuf array.
-    pub fn mbuf_list_ptr(&mut self) -> *mut *mut rte_mbuf {
-        self.mbufs.as_mut_ptr()
-    }
-
-    #[cfg(test)]
-    pub fn get_mbuf(&self, i: usize) -> *mut rte_mbuf {
-        self.mbufs[i]
     }
 
     #[cfg(test)]
     pub fn num_entries(&self) -> usize {
-        self.num_entries
+        self.num_filled
     }
 }
 
@@ -562,7 +565,8 @@ fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
         name.as_ptr(),
         (NUM_MBUFS * nb_ports) as u32,
         elt_size,
-        MBUF_CACHE_SIZE.into(),
+        // MBUF_CACHE_SIZE.into(),
+        0,
         MBUF_PRIV_SIZE as u32,
         rte_socket_id() as i32,
         0,
@@ -607,29 +611,6 @@ fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
         dpdk_call!(rte_mempool_free(mbuf_pool));
         bail!("Not able to initialize private data in extbuf pool: failed on custom_init_priv.");
     }
-
-    // Check assumptions about mbuf memory layout
-    let mut sz: rte_mempool_objsz = unsafe { zeroed() };
-    let elt_size = size_of::<rte_mbuf>() as usize + MBUF_PRIV_SIZE as usize;
-    let flags = 0;
-    dpdk_call!(rte_mempool_calc_obj_size(
-        elt_size as u32,
-        flags,
-        &mut sz as *mut _
-    ));
-    assert_eq!(sz.header_size, 64); // size of actual mbuf struct
-    assert_eq!(
-        sz.elt_size as usize,
-        MBUF_PRIV_SIZE as usize + RTE_PKTMBUF_HEADROOM as usize
-    ); // private data size and data buffer size (with headroom)
-    tracing::debug!(
-        total_size = sz.total_size,
-        elt_size = sz.elt_size,
-        header = sz.header_size,
-        trailer = sz.trailer_size,
-        "size of mbuf in mempool"
-    );
-    assert_eq!(sz.trailer_size, RTE_PKTMBUF_TAILROOM);
 
     Ok(mbuf_pool)
 }
@@ -707,12 +688,45 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
         let (addr, len) = unsafe { ((*memhdr).addr, (*memhdr).len) };
         mr.push((addr as usize, len as usize));
     }
+    /*let mut op: Vec<usize> = vec![];
+
+    // struct rte_mempool *mp, void *opaque_arg, void *m, unsigned i
+    unsafe extern "C" fn check_each_mbuf(
+        mp: *mut rte_mempool,
+        mut opaque: *mut ::std::os::raw::c_void,
+        m: *mut ::std::os::raw::c_void,
+        idx: u32,
+    ) {
+        let mbuf = m as *mut rte_mbuf;
+        let mr = unsafe { &mut *(opaque as *mut Vec<usize>) };
+        let op = match idx > 0 {
+            true => {
+                let len = mr.len();
+                mr[len - 1]
+            }
+            false => 0,
+        };
+        tracing::debug!(
+            "idx: {}, mbuf addr: {:?}, opaque (last): {:?}, dif: {:?}",
+            idx,
+            mbuf as usize,
+            op,
+            (mbuf as usize - op)
+        );
+        mr.push(mbuf as usize);
+    }
+    dpdk_call!(rte_mempool_obj_iter(
+        mbuf_pool,
+        Some(check_each_mbuf),
+        &mut op as *mut _ as *mut ::std::os::raw::c_void
+    ));*/
 
     dpdk_call!(rte_mempool_mem_iter(
         mbuf_pool,
         Some(mz_cb),
         &mut ret as *mut _ as *mut ::std::os::raw::c_void
     ));
+
     ret.sort();
     if ret.is_empty() {
         bail!("Allocated mbuf pool has no memory regions");
@@ -732,18 +746,13 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
     // check assumptions about memory layout for the mbufs (needed later for pointer arithmetic)
     let mut sz: rte_mempool_objsz = unsafe { zeroed() };
     let elt_size =
-        size_of::<rte_mbuf>() as usize + MBUF_PRIV_SIZE + RTE_ETHER_MAX_JUMBO_FRAME_LEN as usize;
+        size_of::<rte_mbuf>() as usize + RX_PACKET_LEN as usize + MBUF_PRIV_SIZE as usize;
     let flags = 0;
     dpdk_call!(rte_mempool_calc_obj_size(
         elt_size as u32,
         flags,
         &mut sz as *mut _
     ));
-    assert_eq!(sz.header_size, 64); // size of actual mbuf struct
-    assert_eq!(
-        sz.elt_size as usize,
-        MBUF_PRIV_SIZE + MBUF_BUF_SIZE as usize
-    ); // private data size and data buffer size (with headroom)
     tracing::debug!(
         total_size = sz.total_size,
         elt_size = sz.elt_size,
@@ -751,7 +760,15 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
         trailer = sz.trailer_size,
         "size of mbuf in mempool"
     );
-    assert_eq!(sz.trailer_size, RTE_PKTMBUF_TAILROOM);
+    assert_eq!(sz.header_size, 64); // size of actual mbuf struct
+    assert_eq!(
+        sz.elt_size as usize,
+        RX_PACKET_LEN as usize + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE as usize,
+    ); // private data size and data buffer size (with headroom)
+       /*assert_eq!(
+           sz.trailer_size,
+           RTE_PKTMBUF_TAILROOM + MBUF_PRIV_SIZE as u32
+       );*/
     Ok((base_addr, total_len))
 }
 
@@ -977,6 +994,11 @@ pub fn free_mbuf(pkt: *mut rte_mbuf) {
 }
 
 #[inline]
+pub fn free_mbuf_bare(pkt: *mut rte_mbuf) {
+    dpdk_call!(rte_pktmbuf_free(pkt));
+}
+
+#[inline]
 pub fn dpdk_register_extmem(
     metadata: &mem::MmapMetadata,
     paddrs: *mut usize,
@@ -1146,6 +1168,8 @@ mod tests {
     fn valid_headers() {
         test_init!();
         let mut test_mbuf = TestMbuf::new();
+        let mut mbufs: [*mut rte_mbuf; 32] = [ptr::null_mut(); 32];
+        mbufs[0] = test_mbuf.get_pointer();
         let mut pkt = Pkt::init(1);
         let mut cornflake = Cornflake::default();
         cornflake.set_id(1);
@@ -1154,16 +1178,10 @@ mod tests {
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
         let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
 
-        pkt.construct_from_test_sga(
-            &cornflake,
-            vec![test_mbuf.get_pointer()],
-            &hdr_info,
-            (0, 0),
-            &Vec::default(),
-        )
-        .unwrap();
+        pkt.construct_from_test_sga(&cornflake, &mut mbufs, &hdr_info, (0, 0), &Vec::default())
+            .unwrap();
 
-        let mbuf = pkt.get_mbuf(0);
+        let mbuf = mbufs[0];
         unsafe {
             if ((*mbuf).data_len != utils::TOTAL_HEADER_SIZE as u16)
                 || ((*mbuf).pkt_len != utils::TOTAL_HEADER_SIZE as u32)
@@ -1216,6 +1234,8 @@ mod tests {
     fn invalid_headers() {
         test_init!();
         let mut test_mbuf = TestMbuf::new();
+        let mut mbufs: [*mut rte_mbuf; 32] = [ptr::null_mut(); 32];
+        mbufs[0] = test_mbuf.get_pointer();
         let mut pkt = Pkt::init(1);
         let mut cornflake = Cornflake::default();
         cornflake.set_id(1);
@@ -1224,17 +1244,11 @@ mod tests {
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
         let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
 
-        pkt.construct_from_test_sga(
-            &cornflake,
-            vec![test_mbuf.get_pointer()],
-            &hdr_info,
-            (0, 0),
-            &Vec::default(),
-        )
-        .unwrap();
+        pkt.construct_from_test_sga(&cornflake, &mut mbufs, &hdr_info, (0, 0), &Vec::default())
+            .unwrap();
 
         // now test that the packet does NOT have a valid destination ether addr
-        let eth_hdr_slice = mbuf_slice!(pkt.get_mbuf(0), 0, utils::ETHERNET2_HEADER2_SIZE);
+        let eth_hdr_slice = mbuf_slice!(mbufs[0], 0, utils::ETHERNET2_HEADER2_SIZE);
         match utils::check_eth_hdr(eth_hdr_slice, &random_mac()) {
             Ok(_) => {
                 panic!("Dst mac address should have been invalid.");
@@ -1243,7 +1257,7 @@ mod tests {
         }
 
         let ipv4_hdr_slice = mbuf_slice!(
-            pkt.get_mbuf(0),
+            mbufs[0],
             utils::ETHERNET2_HEADER2_SIZE,
             utils::IPV4_HEADER2_SIZE
         );
@@ -1256,7 +1270,7 @@ mod tests {
         }
 
         let udp_hdr_slice = mbuf_slice!(
-            pkt.get_mbuf(0),
+            mbufs[0],
             utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
             utils::UDP_HEADER2_SIZE
         );
@@ -1270,7 +1284,7 @@ mod tests {
 
         let fake_addr_info =
             utils::AddressInfo::new(dst_info.udp_port + 1, random_ip(), random_mac());
-        match check_valid_packet(pkt.get_mbuf(0), &fake_addr_info) {
+        match check_valid_packet(mbufs[0], &fake_addr_info) {
             Some(_) => {
                 panic!("Packet isn't valid, check_valid_packet should fail.");
             }
@@ -1283,6 +1297,8 @@ mod tests {
         test_init!();
         let mut test_mbuf = TestMbuf::new();
         let mut pkt = Pkt::init(1);
+        let mut mbufs: [*mut rte_mbuf; 32] = [ptr::null_mut(); 32];
+        mbufs[0] = test_mbuf.get_pointer();
         let mut cornflake = Cornflake::default();
         cornflake.set_id(1);
         let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
@@ -1292,25 +1308,19 @@ mod tests {
         let payload2 = payload1.clone();
         cornflake.add_entry(CornPtr::Normal(payload1.as_ref()));
         cornflake.add_entry(CornPtr::Normal(payload2.as_ref()));
-        pkt.construct_from_test_sga(
-            &cornflake,
-            vec![test_mbuf.get_pointer()],
-            &hdr_info,
-            (0, 0),
-            &Vec::default(),
-        )
-        .unwrap();
+        pkt.construct_from_test_sga(&cornflake, &mut mbufs, &hdr_info, (0, 0), &Vec::default())
+            .unwrap();
 
         unsafe {
-            assert!((*(pkt.get_mbuf(0))).data_len as usize == utils::TOTAL_HEADER_SIZE + 64);
-            assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 64);
+            assert!((*(mbufs[0])).data_len as usize == utils::TOTAL_HEADER_SIZE + 64);
+            assert!((*(mbufs[0])).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 64);
         }
 
-        let first_payload = mbuf_slice!(pkt.get_mbuf(0), utils::TOTAL_HEADER_SIZE, 32);
+        let first_payload = mbuf_slice!(mbufs[0], utils::TOTAL_HEADER_SIZE, 32);
         let first_payload_sized: &[u8; 32] = &first_payload[0..32].try_into().unwrap();
         assert!(first_payload_sized.eq(&payload1));
 
-        let second_payload = mbuf_slice!(pkt.get_mbuf(0), utils::TOTAL_HEADER_SIZE + 32, 32);
+        let second_payload = mbuf_slice!(mbufs[0], utils::TOTAL_HEADER_SIZE + 32, 32);
         let second_payload_sized: &[u8; 32] = &second_payload[0..32].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload2));
     }
@@ -1320,6 +1330,8 @@ mod tests {
         test_init!();
         let mut test_mbuf = TestMbuf::new();
         let mut pkt = Pkt::init(1);
+        let mut mbufs: [*mut rte_mbuf; 32] = [ptr::null_mut(); 32];
+        mbufs[0] = test_mbuf.get_pointer();
         let mut cornflake = Cornflake::default();
         cornflake.set_id(1);
 
@@ -1330,23 +1342,17 @@ mod tests {
         let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
         let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
 
-        pkt.construct_from_test_sga(
-            &cornflake,
-            vec![test_mbuf.get_pointer()],
-            &hdr_info,
-            (0, 0),
-            &Vec::default(),
-        )
-        .unwrap();
+        pkt.construct_from_test_sga(&cornflake, &mut mbufs, &hdr_info, (0, 0), &Vec::default())
+            .unwrap();
 
         unsafe {
-            assert!((*(pkt.get_mbuf(0))).data_len as usize == utils::TOTAL_HEADER_SIZE + 32);
-            assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 32);
-            assert!(((*(pkt.get_mbuf(0))).next).is_null());
-            assert!((*(pkt.get_mbuf(0))).nb_segs as usize == 1);
+            assert!((*(mbufs[0])).data_len as usize == utils::TOTAL_HEADER_SIZE + 32);
+            assert!((*(mbufs[0])).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 32);
+            assert!(((*(mbufs[0])).next).is_null());
+            assert!((*(mbufs[0])).nb_segs as usize == 1);
         }
 
-        let first_payload = mbuf_slice!(pkt.get_mbuf(0), utils::TOTAL_HEADER_SIZE, 32);
+        let first_payload = mbuf_slice!(mbufs[0], utils::TOTAL_HEADER_SIZE, 32);
         let first_payload_sized: &[u8; 32] = &first_payload[0..32].try_into().unwrap();
         assert!(first_payload_sized.eq(&payload));
     }
@@ -1368,29 +1374,25 @@ mod tests {
         let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
 
         let mut pkt = Pkt::init(cornflake.num_borrowed_segments() + 1);
-        pkt.construct_from_test_sga(
-            &cornflake,
-            vec![test_mbuf.get_pointer()],
-            &hdr_info,
-            (0, 0),
-            &Vec::default(),
-        )
-        .unwrap();
+        let mut mbufs: [*mut rte_mbuf; 32] = [ptr::null_mut(); 32];
+        mbufs[0] = test_mbuf.get_pointer();
+        pkt.construct_from_test_sga(&cornflake, &mut mbufs, &hdr_info, (0, 0), &Vec::default())
+            .unwrap();
 
         assert!(pkt.num_entries() == 1);
 
         unsafe {
-            assert!((*(pkt.get_mbuf(0))).data_len as usize == utils::TOTAL_HEADER_SIZE + 32 + 32);
-            assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 32 + 32);
-            assert!((*(pkt.get_mbuf(0))).nb_segs as usize == 1);
-            assert!(((*(pkt.get_mbuf(0))).next).is_null());
+            assert!((*(mbufs[0])).data_len as usize == utils::TOTAL_HEADER_SIZE + 32 + 32);
+            assert!((*(mbufs[0])).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 32 + 32);
+            assert!((*(mbufs[0])).nb_segs as usize == 1);
+            assert!(((*(mbufs[0])).next).is_null());
         }
 
-        let first_payload = mbuf_slice!(pkt.get_mbuf(0), utils::TOTAL_HEADER_SIZE, 32);
+        let first_payload = mbuf_slice!(mbufs[0], utils::TOTAL_HEADER_SIZE, 32);
         let first_payload_sized: &[u8; 32] = &first_payload[0..32].try_into().unwrap();
         assert!(first_payload_sized.eq(&payload1));
 
-        let second_payload = mbuf_slice!(pkt.get_mbuf(0), utils::TOTAL_HEADER_SIZE + 32, 32);
+        let second_payload = mbuf_slice!(mbufs[0], utils::TOTAL_HEADER_SIZE + 32, 32);
         let second_payload_sized: &[u8; 32] = &second_payload[0..32].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload2));
     }
@@ -1424,34 +1426,31 @@ mod tests {
         let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
 
         let mut pkt = Pkt::init(cornflake.num_borrowed_segments() + 1);
+        let mut mbufs: [*mut rte_mbuf; 32] = [ptr::null_mut(); 32];
+        mbufs[1] = test_mbuf.get_pointer();
+        mbufs[0] = header_mbuf.get_pointer();
         info!("Initialized packet with {} entries", pkt.num_entries());
-        pkt.construct_from_test_sga(
-            &cornflake,
-            vec![header_mbuf.get_pointer(), test_mbuf.get_pointer()],
-            &hdr_info,
-            (0, 0),
-            &mmap_vec,
-        )
-        .unwrap();
+        pkt.construct_from_test_sga(&cornflake, &mut mbufs, &hdr_info, (0, 0), &mmap_vec)
+            .unwrap();
         info!("Constructed packet successfully");
 
         assert!(pkt.num_entries() == 2);
 
         unsafe {
-            assert!((*(pkt.get_mbuf(0))).data_len as usize == utils::TOTAL_HEADER_SIZE);
-            assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 56);
-            assert!((*(pkt.get_mbuf(1))).data_len as usize == 56);
-            assert!((*(pkt.get_mbuf(0))).nb_segs as usize == 2);
-            assert!((*(pkt.get_mbuf(1))).data_off as usize == 0);
-            assert!((*(pkt.get_mbuf(0))).next == pkt.get_mbuf(1));
-            assert!(((*(pkt.get_mbuf(1))).next).is_null());
+            assert!((*(mbufs[0])).data_len as usize == utils::TOTAL_HEADER_SIZE);
+            assert!((*(mbufs[0])).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 56);
+            assert!((*(mbufs[1])).data_len as usize == 56);
+            assert!((*(mbufs[0])).nb_segs as usize == 2);
+            assert!((*(mbufs[1])).data_off as usize == 0);
+            assert!((*(mbufs[0])).next == mbufs[1]);
+            assert!(((*(mbufs[1])).next).is_null());
         }
 
-        let (msg_id, addr_info) = check_valid_packet(pkt.get_mbuf(0), &dst_info).unwrap();
+        let (msg_id, addr_info) = check_valid_packet(mbufs[0], &dst_info).unwrap();
         assert!(msg_id == 1);
         assert!(addr_info == src_info);
 
-        let second_payload = mbuf_slice!(pkt.get_mbuf(1), 0, 56);
+        let second_payload = mbuf_slice!(mbufs[1], 0, 56);
         debug!("Second payload addr: {:?}", &second_payload);
         let second_payload_sized: &[u8; 56] = &second_payload[0..56].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload1[200..256]));
@@ -1487,10 +1486,13 @@ mod tests {
         let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
 
         let mut pkt = Pkt::init(cornflake.num_borrowed_segments() + 1);
+        let mut mbufs: [*mut rte_mbuf; 32] = [ptr::null_mut(); 32];
+        mbufs[1] = test_mbuf.get_pointer();
+        mbufs[0] = header_mbuf.get_pointer();
         info!("Initialized packet with {} entries", pkt.num_entries());
         pkt.construct_from_test_sga(
             &cornflake,
-            vec![header_mbuf.get_pointer(), test_mbuf.get_pointer()],
+            &mut mbufs,
             &hdr_info,
             default_memsegments,
             &Vec::default(),
@@ -1501,19 +1503,19 @@ mod tests {
         assert!(pkt.num_entries() == 2);
 
         unsafe {
-            assert!((*(pkt.get_mbuf(0))).data_len as usize == utils::TOTAL_HEADER_SIZE);
-            assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 56);
-            assert!((*(pkt.get_mbuf(1))).data_len as usize == 56);
-            assert!((*(pkt.get_mbuf(0))).nb_segs as usize == 2);
-            assert!((*(pkt.get_mbuf(0))).next == pkt.get_mbuf(1));
-            assert!(((*(pkt.get_mbuf(1))).next).is_null());
+            assert!((*(mbufs[0])).data_len as usize == utils::TOTAL_HEADER_SIZE);
+            assert!((*(mbufs[0])).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 56);
+            assert!((*(mbufs[1])).data_len as usize == 56);
+            assert!((*(mbufs[0])).nb_segs as usize == 2);
+            assert!((*(mbufs[0])).next == mbufs[1]);
+            assert!(((*(mbufs[1])).next).is_null());
         }
 
-        let (msg_id, addr_info) = check_valid_packet(pkt.get_mbuf(0), &dst_info).unwrap();
+        let (msg_id, addr_info) = check_valid_packet(mbufs[0], &dst_info).unwrap();
         assert!(msg_id == 1);
         assert!(addr_info == src_info);
 
-        let second_payload = mbuf_slice!(pkt.get_mbuf(1), 0, 56);
+        let second_payload = mbuf_slice!(mbufs[1], 0, 56);
         debug!("Second payload addr: {:?}", &second_payload);
         let second_payload_sized: &[u8; 56] = &second_payload[0..56].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload1[200..256]));
@@ -1543,13 +1545,13 @@ mod tests {
         let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
 
         let mut pkt = Pkt::init(cornflake.num_borrowed_segments() + 1);
+        let mut mbufs: [*mut rte_mbuf; 32] = [ptr::null_mut(); 32];
+        mbufs[1] = test_mbuf1.get_pointer();
+        mbufs[0] = header_mbuf.get_pointer();
+        mbufs[2] = test_mbuf2.get_pointer();
         pkt.construct_from_test_sga(
             &cornflake,
-            vec![
-                header_mbuf.get_pointer(),
-                test_mbuf1.get_pointer(),
-                test_mbuf2.get_pointer(),
-            ],
+            &mut mbufs,
             &hdr_info,
             default_memsegments,
             &Vec::default(),
@@ -1559,29 +1561,29 @@ mod tests {
         assert!(pkt.num_entries() == 3);
 
         unsafe {
-            assert!((*(pkt.get_mbuf(0))).data_len as usize == utils::TOTAL_HEADER_SIZE);
-            assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 100 + 100);
-            assert!((*(pkt.get_mbuf(0))).nb_segs as usize == 3);
-            assert!((*(pkt.get_mbuf(1))).data_len as usize == 100);
-            assert!((*(pkt.get_mbuf(1))).data_off as usize == 8);
-            assert!((*(pkt.get_mbuf(2))).data_len as usize == 100);
-            assert!((*(pkt.get_mbuf(2))).data_off as usize == 108);
-            assert!((*(pkt.get_mbuf(1))).pkt_len as usize == 0);
-            assert!((*(pkt.get_mbuf(2))).pkt_len as usize == 0);
-            assert!((*(pkt.get_mbuf(0))).next == pkt.get_mbuf(1));
-            assert!((*(pkt.get_mbuf(1))).next == pkt.get_mbuf(2));
-            assert!(((*(pkt.get_mbuf(2))).next).is_null());
+            assert!((*(mbufs[0])).data_len as usize == utils::TOTAL_HEADER_SIZE);
+            assert!((*(mbufs[0])).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 100 + 100);
+            assert!((*(mbufs[0])).nb_segs as usize == 3);
+            assert!((*(mbufs[1])).data_len as usize == 100);
+            assert!((*(mbufs[1])).data_off as usize == 8);
+            assert!((*(mbufs[2])).data_len as usize == 100);
+            assert!((*(mbufs[2])).data_off as usize == 108);
+            assert!((*(mbufs[1])).pkt_len as usize == 0);
+            assert!((*(mbufs[2])).pkt_len as usize == 0);
+            assert!((*(mbufs[0])).next == mbufs[1]);
+            assert!((*(mbufs[1])).next == mbufs[2]);
+            assert!(((*(mbufs[2])).next).is_null());
         }
 
-        let (msg_id, addr_info) = check_valid_packet(pkt.get_mbuf(0), &dst_info).unwrap();
+        let (msg_id, addr_info) = check_valid_packet(mbufs[0], &dst_info).unwrap();
         assert!(msg_id == 1);
         assert!(addr_info == src_info);
 
-        let first_payload = mbuf_slice!(pkt.get_mbuf(1), 0, 100);
+        let first_payload = mbuf_slice!(mbufs[1], 0, 100);
         let first_payload_sized: &[u8; 100] = &first_payload[0..100].try_into().unwrap();
         assert!(first_payload_sized.eq(&payload1[200..300]));
 
-        let second_payload = mbuf_slice!(pkt.get_mbuf(2), 0, 100);
+        let second_payload = mbuf_slice!(mbufs[2], 0, 100);
         let second_payload_sized: &[u8; 100] = &second_payload[0..100].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload1[300..400]));
     }
@@ -1609,9 +1611,12 @@ mod tests {
         let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
 
         let mut pkt = Pkt::init(cornflake.num_borrowed_segments() + 1);
+        let mut mbufs: [*mut rte_mbuf; 32] = [ptr::null_mut(); 32];
+        mbufs[1] = test_mbuf1.get_pointer();
+        mbufs[0] = header_mbuf.get_pointer();
         pkt.construct_from_test_sga(
             &cornflake,
-            vec![header_mbuf.get_pointer(), test_mbuf1.get_pointer()],
+            &mut mbufs,
             &hdr_info,
             default_memsegments,
             &Vec::default(),
@@ -1621,25 +1626,25 @@ mod tests {
         assert!(pkt.num_entries() == 2);
 
         unsafe {
-            assert!((*(pkt.get_mbuf(0))).data_len as usize == utils::TOTAL_HEADER_SIZE + 32);
-            assert!((*(pkt.get_mbuf(0))).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 32 + 32);
-            assert!((*(pkt.get_mbuf(0))).nb_segs as usize == 2);
-            assert!((*(pkt.get_mbuf(1))).data_len as usize == 32);
-            assert!((*(pkt.get_mbuf(1))).data_off as usize == 8);
-            assert!((*(pkt.get_mbuf(1))).pkt_len as usize == 0);
-            assert!((*(pkt.get_mbuf(0))).next == pkt.get_mbuf(1));
-            assert!(((*(pkt.get_mbuf(1))).next).is_null());
+            assert!((*(mbufs[0])).data_len as usize == utils::TOTAL_HEADER_SIZE + 32);
+            assert!((*(mbufs[0])).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 32 + 32);
+            assert!((*(mbufs[0])).nb_segs as usize == 2);
+            assert!((*(mbufs[1])).data_len as usize == 32);
+            assert!((*(mbufs[1])).data_off as usize == 8);
+            assert!((*(mbufs[1])).pkt_len as usize == 0);
+            assert!((*(mbufs[0])).next == mbufs[1]);
+            assert!(((*(mbufs[1])).next).is_null());
         }
 
-        let (msg_id, addr_info) = check_valid_packet(pkt.get_mbuf(0), &dst_info).unwrap();
+        let (msg_id, addr_info) = check_valid_packet(mbufs[0], &dst_info).unwrap();
         assert!(msg_id == 3);
         assert!(addr_info == src_info);
 
-        let first_payload = mbuf_slice!(pkt.get_mbuf(0), utils::TOTAL_HEADER_SIZE, 32);
+        let first_payload = mbuf_slice!(mbufs[0], utils::TOTAL_HEADER_SIZE, 32);
         let first_payload_sized: &[u8; 32] = &first_payload[0..32].try_into().unwrap();
         assert!(first_payload_sized.eq(&payload1));
 
-        let second_payload = mbuf_slice!(pkt.get_mbuf(1), 0, 32);
+        let second_payload = mbuf_slice!(mbufs[1], 0, 32);
         let second_payload_sized: &[u8; 32] = &second_payload[0..32].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload2[200..232]));
     }
@@ -1662,9 +1667,12 @@ mod tests {
         let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
 
         let mut pkt = Pkt::init(cornflake.num_borrowed_segments() + 1);
+        let mut mbufs: [*mut rte_mbuf; 32] = [ptr::null_mut(); 32];
+        mbufs[1] = test_mbuf1.get_pointer();
+        mbufs[0] = header_mbuf.get_pointer();
         match pkt.construct_from_test_sga(
             &cornflake,
-            vec![header_mbuf.get_pointer(), test_mbuf1.get_pointer()],
+            &mut mbufs,
             &hdr_info,
             (0, 0),
             &Vec::default(),

@@ -97,12 +97,9 @@ fn main() -> Result<()> {
         EchoMode::Client => DPDKMode::Client,
     };
 
-    let dpdk_datapath = || -> Result<DPDKConnection> {
-        #[cfg(feature = "mlx5")]
-        {
-            dpdk_bindings::load_mlx5_driver();
-        }
-        let connection = DPDKConnection::new(&opt.config_file, mode)
+    let dpdk_datapath = |zero_copy: bool| -> Result<DPDKConnection> {
+        dpdk_bindings::load_mlx5_driver();
+        let connection = DPDKConnection::new(&opt.config_file, mode, zero_copy)
             .wrap_err("Failed to initialize DPDK server connection.")?;
         Ok(connection)
     };
@@ -110,7 +107,7 @@ fn main() -> Result<()> {
     match opt.mode {
         EchoMode::Server => match (opt.datapath, opt.serialization) {
             (NetworkDatapath::DPDK, SerializationType::Cornflakes) => {
-                let mut connection = dpdk_datapath()?;
+                let mut connection = dpdk_datapath(true)?;
                 let serializer = CornflakesSerializer::new(opt.message, opt.size);
                 let mut echo_server = EchoServer::new(serializer);
                 set_ctrlc_handler(&echo_server)?;
@@ -121,7 +118,7 @@ fn main() -> Result<()> {
                 unimplemented!();
             }
             (NetworkDatapath::DPDK, SerializationType::Protobuf) => {
-                let mut connection = dpdk_datapath()?;
+                let mut connection = dpdk_datapath(false)?;
                 let serializer = ProtobufSerializer::new(opt.message);
                 let mut echo_server = EchoServer::new(serializer);
                 set_ctrlc_handler(&echo_server)?;
@@ -129,7 +126,7 @@ fn main() -> Result<()> {
                 echo_server.run_state_machine(&mut connection)?;
             }
             (NetworkDatapath::DPDK, SerializationType::Flatbuffers) => {
-                let mut connection = dpdk_datapath()?;
+                let mut connection = dpdk_datapath(false)?;
                 let serializer = FlatbuffersSerializer::new(opt.message);
                 let mut echo_server = EchoServer::new(serializer);
                 set_ctrlc_handler(&echo_server)?;
@@ -137,7 +134,7 @@ fn main() -> Result<()> {
                 echo_server.run_state_machine(&mut connection)?;
             }
             (NetworkDatapath::DPDK, SerializationType::Capnproto) => {
-                let mut connection = dpdk_datapath()?;
+                let mut connection = dpdk_datapath(false)?;
                 let serializer = CapnprotoSerializer::new(opt.message);
                 let mut echo_server = EchoServer::new(serializer);
                 set_ctrlc_handler(&echo_server)?;
@@ -148,7 +145,7 @@ fn main() -> Result<()> {
         EchoMode::Client => match (opt.datapath, opt.serialization) {
             (NetworkDatapath::DPDK, SerializationType::Cornflakes) => {
                 let sizes = get_equal_fields(opt.message, opt.size);
-                let mut connection = dpdk_datapath()?;
+                let mut connection = dpdk_datapath(false)?;
                 let mut echo_client: EchoClient<CornflakesEchoClient, DPDKConnection> =
                     EchoClient::new(opt.server_ip, opt.message, sizes)?;
                 let mut ctx = echo_client.new_context();
@@ -160,7 +157,7 @@ fn main() -> Result<()> {
             }
             (NetworkDatapath::DPDK, SerializationType::Protobuf) => {
                 let sizes = get_equal_fields(opt.message, opt.size);
-                let mut connection = dpdk_datapath()?;
+                let mut connection = dpdk_datapath(false)?;
                 let mut echo_client: EchoClient<ProtobufEchoClient, DPDKConnection> =
                     EchoClient::new(opt.server_ip, opt.message, sizes)?;
                 let mut ctx = echo_client.new_context();
@@ -169,7 +166,7 @@ fn main() -> Result<()> {
             }
             (NetworkDatapath::DPDK, SerializationType::Flatbuffers) => {
                 let sizes = get_equal_fields(opt.message, opt.size);
-                let mut connection = dpdk_datapath()?;
+                let mut connection = dpdk_datapath(false)?;
                 let mut echo_client: EchoClient<FlatbuffersEchoClient, DPDKConnection> =
                     EchoClient::new(opt.server_ip, opt.message, sizes)?;
                 let mut ctx = echo_client.new_context();
@@ -178,7 +175,7 @@ fn main() -> Result<()> {
             }
             (NetworkDatapath::DPDK, SerializationType::Capnproto) => {
                 let sizes = get_equal_fields(opt.message, opt.size);
-                let mut connection = dpdk_datapath()?;
+                let mut connection = dpdk_datapath(false)?;
                 let mut echo_client: EchoClient<CapnprotoEchoClient, DPDKConnection> =
                     EchoClient::new(opt.server_ip, opt.message, sizes)?;
                 let mut ctx = echo_client.new_context();

@@ -2,7 +2,8 @@
 use super::super::{
     mem,
     timing::{record, HistogramWrapper, RTTHistogram},
-    ClientSM, CornPtr, Cornflake, Datapath, MsgID, ReceivedPacket, ScatterGather, ServerSM,
+    ClientSM, CornPtr, Cornflake, Datapath, MsgID, PtrAttributes, ReceivedPacket, ScatterGather,
+    ServerSM,
 };
 use super::connection::DPDKConnection;
 use color_eyre::eyre::{bail, Result};
@@ -50,6 +51,7 @@ impl<'a, 'b> EchoClient<'a, 'b> {
                 let payload = vec![b'a'; size];
                 let buf = metadata.get_full_buf()?;
                 (&mut buf[0..payload.len()]).write_all(payload.as_ref())?;
+                tracing::debug!(size = size, buf_len = buf.len(), "client buf len");
                 let cornptr =
                     unsafe { CornPtr::Registered(slice::from_raw_parts(metadata.ptr, size)) };
                 let mut cornflake = Cornflake::default();
@@ -164,36 +166,12 @@ impl<'a, 'b> RTTHistogram for EchoClient<'a, 'b> {
     }
 }
 
-pub struct EchoServer<'a, 'b> {
-    sga: Cornflake<'a, 'b>,
-    external_memory: Option<mem::MmapMetadata>,
+pub struct EchoServer {
     histograms: HashMap<String, Arc<Mutex<HistogramWrapper>>>,
 }
 
-impl<'a, 'b> EchoServer<'a, 'b> {
-    pub fn new(size: usize, zero_copy: bool, payload: &'b [u8]) -> Result<EchoServer<'a, 'b>> {
-        let (sga, external_memory) = match zero_copy {
-            true => {
-                let mut metadata = mem::mmap_manual(10)?;
-                assert!(size <= metadata.length);
-                let payload = vec![b'a'; size];
-                let buf = metadata.get_full_buf()?;
-                (&mut buf[0..payload.len()]).write_all(payload.as_ref())?;
-                // this application is just testing if external memory works at all
-                // so we are just initializing the external memory unsafely
-                let cornptr =
-                    unsafe { CornPtr::Registered(slice::from_raw_parts(metadata.ptr, size)) };
-                let mut cornflake = Cornflake::default();
-                cornflake.add_entry(cornptr);
-                (cornflake, Some(metadata))
-            }
-            false => {
-                let cornptr = CornPtr::Normal(payload.as_ref());
-                let mut cornflake = Cornflake::default();
-                cornflake.add_entry(cornptr);
-                (cornflake, None)
-            }
-        };
+impl EchoServer {
+    pub fn new() -> Result<EchoServer> {
         let mut histograms: HashMap<String, Arc<Mutex<HistogramWrapper>>> = HashMap::default();
         if cfg!(feature = "timers") {
             histograms.insert(
@@ -204,8 +182,6 @@ impl<'a, 'b> EchoServer<'a, 'b> {
             );
         }
         Ok(EchoServer {
-            sga: sga,
-            external_memory: external_memory,
             histograms: histograms,
         })
     }
@@ -221,34 +197,44 @@ impl<'a, 'b> EchoServer<'a, 'b> {
     }
 }
 
-impl<'a, 'b> ServerSM for EchoServer<'a, 'b> {
+impl ServerSM for EchoServer {
     type Datapath = DPDKConnection;
     //type OutgoingMsg = Cornflake<'a>;
 
-    fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
-        match self.external_memory {
-            Some(ref metadata) => {
-                connection.register_external_region(metadata.clone())?;
-            }
-            None => {}
-        }
+    fn init(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
         Ok(())
     }
 
-    fn process_request(
+    fn process_requests(
         &mut self,
-        sga: &<<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
-        mut send_fn: impl FnMut(Cornflake, Ipv4Addr) -> Result<()>,
+        sgas: &Vec<(
+            <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
+            Duration,
+        )>,
+        mut send_fn: impl FnMut(&Vec<(Cornflake, Ipv4Addr)>) -> Result<()>,
     ) -> Result<()> {
         let proc_timer = self.get_timer(SERVER_PROCESSING_LATENCY, cfg!(feature = "timers"))?;
         let start = Instant::now();
-        let addr = sga.get_addr();
-        let mut out_sga = self.sga.clone();
-        out_sga.set_id(sga.get_id());
+        let mut out_sgas: Vec<(Cornflake, Ipv4Addr)> = Vec::with_capacity(sgas.len());
+        for in_sga in sgas.iter() {
+            let mut cornflake = Cornflake::with_capacity(1);
+            cornflake.add_entry(in_sga.0.get_corn_ptr());
+            tracing::debug!(
+                input_cornptr_length = in_sga.0.get_corn_ptr().buf_size(),
+                "length of input cornptr packet"
+            );
+            cornflake.set_id(in_sga.0.get_id());
+            tracing::debug!(
+                "Setting cornptr to {:?}; usize: {:?}",
+                in_sga.0.index(0).as_ref().as_ptr(),
+                in_sga.0.index(0).as_ref().as_ptr() as usize
+            );
+            out_sgas.push((cornflake, in_sga.0.get_addr().ipv4_addr));
+        }
         if cfg!(feature = "timers") {
             record(proc_timer, start.elapsed().as_nanos() as u64)?;
         }
-        send_fn(out_sga, addr.ipv4_addr)
+        send_fn(&out_sgas)
     }
 
     fn get_histograms(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {
