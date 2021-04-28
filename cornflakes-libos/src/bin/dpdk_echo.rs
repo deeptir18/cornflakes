@@ -8,7 +8,11 @@ use cornflakes_libos::{
     ClientSM, Datapath, ServerSM,
 };
 use cornflakes_utils::{global_debug_init, TraceLevel};
-use std::{net::Ipv4Addr, process::exit, time::Duration};
+use std::{
+    net::Ipv4Addr,
+    process::exit,
+    time::{Duration, Instant},
+};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -113,6 +117,7 @@ fn main() -> Result<()> {
             let mut client =
                 EchoClient::new(opt.size, opt.server_ip, opt.zero_copy, &payload.as_ref())?;
             client.init(&mut connection)?;
+            let start_run = Instant::now();
             if opt.closed_loop {
                 client.run_closed_loop(
                     &mut connection,
@@ -127,9 +132,18 @@ fn main() -> Result<()> {
                     Duration::new(0, 1000000),
                 )?;
             }
+            let exp_time = start_run.elapsed().as_nanos() as f64 / 1000000000.0;
+            let achieved_load_pps = (client.get_num_sent() as f64) / exp_time as f64;
+            let achieved_load_gbps =
+                (opt.size as f64 * achieved_load_pps as f64) / (125000000 as f64);
             client.dump_stats();
-            let load = ((opt.size as f64) * (opt.rate) as f64) / (125000000 as f64);
-            tracing::info!(load_gbps = ?load, "Sent at rate:");
+            let load_gbps = ((opt.size as f64) * (opt.rate) as f64) / (125000000 as f64);
+            tracing::info!(
+                "Offered load: {:?} Gbps; Achieved load: {:?} Gbps; Percent achieved: {:?}",
+                load_gbps,
+                achieved_load_gbps,
+                (achieved_load_gbps / load_gbps)
+            );
             for timer_m in connection.get_timers().iter() {
                 let timer = timer_m.lock().unwrap();
                 timer.dump_stats();

@@ -281,7 +281,7 @@ pub trait Datapath {
     type ReceivedPkt: ScatterGather + ReceivedPacket;
 
     /// Send a scatter-gather array to the specified address.
-    fn push_sgas(&mut self, sga: &Vec<(impl ScatterGather, Ipv4Addr)>) -> Result<()>;
+    fn push_sgas(&mut self, sga: &Vec<(impl ScatterGather, utils::AddressInfo)>) -> Result<()>;
 
     /// Receive the next packet (from any) underlying `connection`, if any.
     /// Application is responsible for freeing any memory referred to by Cornflake.
@@ -318,6 +318,9 @@ pub trait Datapath {
 
     /// For debugging purposes, get timers to print at end of execution.
     fn get_timers(&self) -> Vec<Arc<Mutex<HistogramWrapper>>>;
+
+    /// Get destination address information from Ipv4 Address
+    fn get_outgoing_addr_from_ip(&self, dst_addr: Ipv4Addr) -> Result<utils::AddressInfo>;
 }
 
 /// For applications that want to follow a simple open-loop request processing model at the client,
@@ -360,16 +363,19 @@ pub trait ClientSM {
     ) -> Result<()> {
         let mut recved = 0;
         let server_ip = self.server_ip();
+        let addr_info = datapath.get_outgoing_addr_from_ip(server_ip)?;
 
         while recved < num_pkts {
-            self.send_next_msg(|sga| datapath.push_sgas(&vec![(sga, server_ip)]))?;
+            self.send_next_msg(|sga| datapath.push_sgas(&vec![(sga, addr_info.clone())]))?;
             let recved_pkts = loop {
                 let pkts = datapath.pop()?;
                 if pkts.len() > 0 {
                     break pkts;
                 }
                 for id in datapath.timed_out(time_out)?.iter() {
-                    self.msg_timeout_cb(*id, |sga| datapath.push_sgas(&vec![(sga, server_ip)]))?;
+                    self.msg_timeout_cb(*id, |sga| {
+                        datapath.push_sgas(&vec![(sga, addr_info.clone())])
+                    })?;
                 }
             };
 
@@ -396,6 +402,7 @@ pub trait ClientSM {
         let freq = datapath.timer_hz();
         let cycle_wait = (((intersend_rate * freq) as f64) / 1e9) as u64;
         let server_ip = self.server_ip();
+        let addr_info = datapath.get_outgoing_addr_from_ip(server_ip)?;
         let time_start = Instant::now();
         //let mut last_called_pop = Instant::now();
 
@@ -403,7 +410,7 @@ pub trait ClientSM {
         while datapath.current_cycles() < (total_time * freq + start) {
             // Send the next message
             tracing::debug!(time = ?time_start.elapsed(), "About to send next packet");
-            self.send_next_msg(|sga| datapath.push_sgas(&vec![(sga, server_ip)]))?;
+            self.send_next_msg(|sga| datapath.push_sgas(&vec![(sga, addr_info.clone())]))?;
             let last_sent = datapath.current_cycles();
 
             while datapath.current_cycles() <= last_sent + cycle_wait {
@@ -419,7 +426,9 @@ pub trait ClientSM {
                 }
 
                 for id in datapath.timed_out(time_out)?.iter() {
-                    self.msg_timeout_cb(*id, |sga| datapath.push_sgas(&vec![(sga, server_ip)]))?;
+                    self.msg_timeout_cb(*id, |sga| {
+                        datapath.push_sgas(&vec![(sga, addr_info.clone())])
+                    })?;
                 }
             }
         }
@@ -445,7 +454,7 @@ pub trait ServerSM {
             <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
             Duration,
         )>,
-        send_fn: impl FnMut(&Vec<(Cornflake, Ipv4Addr)>) -> Result<()>,
+        send_fn: impl FnMut(&Vec<(Cornflake, utils::AddressInfo)>) -> Result<()>,
     ) -> Result<()>;
 
     /// Runs the state machine, which responds to requests in a single-threaded fashion.

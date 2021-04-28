@@ -400,17 +400,9 @@ impl DPDKConnection {
         Ok(())
     }*/
 
-    /// Returns a HeaderInfo struct with udp, ethernet and ipv4 header information.
-    ///
-    /// Arguments:
-    /// * dst_addr - Ipv4Addr that is the destination.
-    fn get_outgoing_header(&self, dst_addr: Ipv4Addr) -> Result<utils::HeaderInfo> {
-        match self.ip_to_mac.get(&dst_addr) {
-            Some(mac) => Ok(self.addr_info.get_outgoing(dst_addr, mac.clone())),
-            None => {
-                bail!("Don't know ethernet address for Ip address: {:?}", dst_addr);
-            }
-        }
+    fn get_outgoing_header(&self, dst_addr: &utils::AddressInfo) -> utils::HeaderInfo {
+        self.addr_info
+            .get_outgoing(dst_addr.ipv4_addr, dst_addr.ether_addr)
     }
 }
 
@@ -426,7 +418,7 @@ impl Datapath for DPDKConnection {
     /// * sga - reference to a cornflake which contains the scatter-gather array to send
     /// out.
     /// * addr - Ipv4Addr to send the given scatter-gather array to.
-    fn push_sgas(&mut self, sgas: &Vec<(impl ScatterGather, Ipv4Addr)>) -> Result<()> {
+    fn push_sgas(&mut self, sgas: &Vec<(impl ScatterGather, utils::AddressInfo)>) -> Result<()> {
         let push_processing_start = Instant::now();
         let push_processing_timer =
             self.get_timer(PUSH_PROCESSING_TIMER, cfg!(feature = "timers"))?;
@@ -439,11 +431,10 @@ impl Datapath for DPDKConnection {
             .map(|(sga, _)| wrapper::Pkt::init(sga.num_borrowed_segments() + 1))
             .collect();
 
-        let headers_result: Result<Vec<utils::HeaderInfo>> = sgas
+        let headers: Vec<utils::HeaderInfo> = sgas
             .iter()
-            .map(|(_, addr)| self.get_outgoing_header(*addr))
+            .map(|(_, addr)| self.get_outgoing_header(addr))
             .collect();
-        let headers = headers_result?;
         tracing::debug!("Headers: {:?}", headers);
         let pkt_construct_timer = self.get_timer(PKT_CONSTRUCT_TIMER, cfg!(feature = "timers"))?;
         timefunc(
@@ -482,7 +473,7 @@ impl Datapath for DPDKConnection {
             DPDKMode::Server => {
                 if cfg!(feature = "timers") {
                     for (sga, addr) in sgas.iter() {
-                        self.end_entry(PROCESSING_TIMER, sga.get_id(), addr.clone())?;
+                        self.end_entry(PROCESSING_TIMER, sga.get_id(), addr.ipv4_addr)?;
                     }
                 }
             }
@@ -541,6 +532,14 @@ impl Datapath for DPDKConnection {
                 if mbuf.is_null() {
                     bail!("Mbuf for index {} in returned array is null.", idx);
                 }
+                let received_pkt = DPDKReceivedPkt::new(
+                    msg_id,
+                    self.recv_mbufs[idx],
+                    utils::TOTAL_HEADER_SIZE,
+                    addr_info,
+                    self.zero_copy_recv,
+                );
+
                 let duration = match self.mode {
                     DPDKMode::Client => match self.outgoing_window.remove(&msg_id) {
                         Some(start) => start.elapsed(),
@@ -551,14 +550,6 @@ impl Datapath for DPDKConnection {
                     },
                     DPDKMode::Server => Duration::new(0, 0),
                 };
-                let received_pkt = DPDKReceivedPkt::new(
-                    msg_id,
-                    self.recv_mbufs[idx],
-                    utils::TOTAL_HEADER_SIZE,
-                    addr_info,
-                    self.zero_copy_recv,
-                );
-
                 ret.push((received_pkt, duration));
             }
             record(pop_processing_timer, start.elapsed().as_nanos() as u64)?;
@@ -644,6 +635,26 @@ impl Datapath for DPDKConnection {
 
     fn get_timers(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {
         self.timers.iter().map(|(_, hist)| hist.clone()).collect()
+    }
+
+    /// Returns a HeaderInfo struct with udp, ethernet and ipv4 header information.
+    ///
+    /// Arguments:
+    /// * dst_addr - Ipv4Addr that is the destination.
+    ///
+    /// Returns:
+    ///  * AddressInfo - struct with destination mac, ip address and udp port
+    fn get_outgoing_addr_from_ip(&self, dst_addr: Ipv4Addr) -> Result<utils::AddressInfo> {
+        match self.ip_to_mac.get(&dst_addr) {
+            Some(mac) => Ok(utils::AddressInfo::new(
+                self.addr_info.udp_port,
+                dst_addr,
+                *mac,
+            )),
+            None => {
+                bail!("Don't know ethernet address for Ip address: {:?}", dst_addr);
+            }
+        }
     }
 }
 

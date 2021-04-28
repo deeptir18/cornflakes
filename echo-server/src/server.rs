@@ -1,7 +1,8 @@
 use super::CerealizeMessage;
 use color_eyre::eyre::Result;
 use cornflakes_libos::{
-    timing::HistogramWrapper, Cornflake, Datapath, ReceivedPacket, ScatterGather, ServerSM,
+    timing::HistogramWrapper, utils::AddressInfo, Cornflake, Datapath, ReceivedPacket,
+    ScatterGather, ServerSM,
 };
 use std::{
     marker::PhantomData,
@@ -47,14 +48,14 @@ where
             <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
             Duration,
         )>,
-        mut send_fn: impl FnMut(&Vec<(Cornflake, Ipv4Addr)>) -> Result<()>,
+        mut send_fn: impl FnMut(&Vec<(Cornflake, AddressInfo)>) -> Result<()>,
     ) -> Result<()> {
-        let mut out_sgas: Vec<(Cornflake, Ipv4Addr)> = Vec::with_capacity(sgas.len());
+        let mut out_sgas: Vec<(Cornflake, AddressInfo)> = Vec::with_capacity(sgas.len());
         let mut contexts = vec![self.serializer.new_context(); sgas.len()];
         for (in_sga, ctx) in sgas.iter().zip(contexts.iter_mut()) {
             let mut out_sga = self.serializer.process_msg(&in_sga.0, ctx)?;
             out_sga.set_id(in_sga.0.get_id());
-            out_sgas.push((out_sga, in_sga.0.get_addr().ipv4_addr));
+            out_sgas.push((out_sga, in_sga.0.get_addr().clone()));
         }
         send_fn(&out_sgas)
     }

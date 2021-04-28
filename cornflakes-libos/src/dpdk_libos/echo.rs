@@ -2,6 +2,7 @@
 use super::super::{
     mem,
     timing::{record, HistogramWrapper, RTTHistogram},
+    utils::AddressInfo,
     ClientSM, CornPtr, Cornflake, Datapath, MsgID, PtrAttributes, ReceivedPacket, ScatterGather,
     ServerSM,
 };
@@ -86,6 +87,10 @@ impl<'a, 'b> EchoClient<'a, 'b> {
             "High level sending stats",
         );
         self.dump("End-to-end DPDK echo client RTTs:");
+    }
+
+    pub fn get_num_sent(&self) -> usize {
+        self.sent
     }
 }
 
@@ -211,11 +216,11 @@ impl ServerSM for EchoServer {
             <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
             Duration,
         )>,
-        mut send_fn: impl FnMut(&Vec<(Cornflake, Ipv4Addr)>) -> Result<()>,
+        mut send_fn: impl FnMut(&Vec<(Cornflake, AddressInfo)>) -> Result<()>,
     ) -> Result<()> {
         let proc_timer = self.get_timer(SERVER_PROCESSING_LATENCY, cfg!(feature = "timers"))?;
         let start = Instant::now();
-        let mut out_sgas: Vec<(Cornflake, Ipv4Addr)> = Vec::with_capacity(sgas.len());
+        let mut out_sgas: Vec<(Cornflake, AddressInfo)> = Vec::with_capacity(sgas.len());
         for in_sga in sgas.iter() {
             let mut cornflake = Cornflake::with_capacity(1);
             cornflake.add_entry(in_sga.0.get_corn_ptr());
@@ -229,7 +234,7 @@ impl ServerSM for EchoServer {
                 in_sga.0.index(0).as_ref().as_ptr(),
                 in_sga.0.index(0).as_ref().as_ptr() as usize
             );
-            out_sgas.push((cornflake, in_sga.0.get_addr().ipv4_addr));
+            out_sgas.push((cornflake, in_sga.0.get_addr().clone()));
         }
         if cfg!(feature = "timers") {
             record(proc_timer, start.elapsed().as_nanos() as u64)?;
