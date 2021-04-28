@@ -6,7 +6,6 @@ use cornflakes_libos::{
 };
 use std::{
     marker::PhantomData,
-    net::Ipv4Addr,
     sync::{Arc, Mutex},
     time::Duration,
 };

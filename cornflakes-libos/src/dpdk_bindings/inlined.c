@@ -33,7 +33,7 @@ typedef unsigned long virtaddr_t;
 #define MBUF_PRIV_SIZE 8
 #define PGSIZE_2MB (1 <<  21)
 
-void free_referred_mbuf(void *buf) {
+inline void free_referred_mbuf(void *buf) {
     struct rte_mbuf *mbuf = (struct rte_mbuf *)(buf);
     struct tx_pktmbuf_priv *priv_data = (struct tx_pktmbuf_priv *)(((char *)buf) + sizeof(struct rte_mbuf));
     if (priv_data->refers_to_another == 1) {
@@ -52,6 +52,13 @@ void free_referred_mbuf(void *buf) {
     }
 }
 
+int custom_extbuf_obj_free(void * const *obj_table, unsigned n) {
+    unsigned long i;
+	for (i = 0; i < n; i++)
+        free_referred_mbuf(obj_table[i]);
+    return 0;
+}
+
 /* Largely taken from shenango: https://github.com/shenango/shenango/blob/master/iokernel/mempool_completion.c */
 int custom_extbuf_enqueue(struct rte_mempool *mp, void * const *obj_table, unsigned n) {
     unsigned long i;
@@ -61,8 +68,6 @@ int custom_extbuf_enqueue(struct rte_mempool *mp, void * const *obj_table, unsig
 	if (unlikely(s->len + n > s->size))
 		return -ENOBUFS;
 
-	for (i = 0; i < n; i++)
-        free_referred_mbuf(obj_table[i]);
 	for (i = 0; i < n; i++)
 		s->objs[s->len + i] = obj_table[i];
 
@@ -120,6 +125,7 @@ static struct rte_mempool_ops custom_ops = {
         .enqueue = custom_extbuf_enqueue,
         .dequeue = custom_extbuf_dequeue,
         .get_count = custom_extbuf_get_count,
+        .obj_free = custom_extbuf_obj_free,
 };
 
 int mmap_huge_(size_t num_pages, void **ext_mem_addr) {
