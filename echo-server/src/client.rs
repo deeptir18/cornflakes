@@ -1,15 +1,14 @@
 use super::CerealizeClient;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
-    mem::{mmap_new, MmapMetadata},
+    mem::MmapMetadata,
     timing::{HistogramWrapper, RTTHistogram},
     ClientSM, Datapath, MsgID, ScatterGather,
 };
 use cornflakes_utils::SimpleMessageType;
-use memmap::MmapMut;
 use std::{marker::PhantomData, net::Ipv4Addr, ops::FnMut, time::Duration};
 
-pub const NUM_PAGES: usize = 100;
+pub const NUM_PAGES: usize = 30;
 
 pub struct EchoClient<'normal, S, D>
 where
@@ -24,7 +23,6 @@ where
     last_sent_id: u32,
     rtts: HistogramWrapper,
     metadata: MmapMetadata,
-    _mmap_mut: MmapMut,
     _marker: PhantomData<&'normal D>,
 }
 
@@ -38,8 +36,8 @@ where
         message: SimpleMessageType,
         sizes: Vec<usize>,
     ) -> Result<EchoClient<'normal, S, D>> {
-        let (metadata, mut mmap_mut) = mmap_new(NUM_PAGES)?;
-        let serializer = S::new(message, sizes, metadata.clone(), &mut mmap_mut)?;
+        let metadata = MmapMetadata::new(NUM_PAGES)?;
+        let serializer = S::new(message, sizes, metadata.clone())?;
         Ok(EchoClient {
             serializer: serializer,
             server_ip: server_ip,
@@ -49,7 +47,6 @@ where
             last_sent_id: 0,
             rtts: HistogramWrapper::new("Echo-Client-RTTs")?,
             metadata: metadata,
-            _mmap_mut: mmap_mut,
             _marker: PhantomData,
         })
     }
@@ -73,6 +70,10 @@ where
             "High level sending stats",
         );
         self.rtts.dump("End-to-end DPDK echo client RTTs:");
+    }
+
+    pub fn get_num_recved(&self) -> usize {
+        self.recved
     }
 }
 
@@ -113,7 +114,17 @@ where
     }
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
-        connection.register_external_region(self.metadata.clone())?;
+        connection
+            .register_external_region(&mut self.metadata)
+            .wrap_err("Failed to register external region.")?;
+        Ok(())
+    }
+
+    fn cleanup(&mut self, connection: &mut Self::Datapath) -> Result<()> {
+        connection
+            .unregister_external_region(&self.metadata)
+            .wrap_err("Failed to unregister external region.")?;
+        self.metadata.free_mmap();
         Ok(())
     }
 

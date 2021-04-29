@@ -308,13 +308,13 @@ pub trait Datapath {
     ///
     /// Arguments:
     /// * mmap metadata (contains the beginning, end, alignment of region)
-    fn register_external_region(&mut self, metadata: MmapMetadata) -> Result<()>;
+    fn register_external_region(&mut self, metadata: &mut MmapMetadata) -> Result<()>;
 
     /// Unregister external pages.
     ///
     /// Arguments:
     /// * mmap metadata (contains beginning, end, alignment of region)
-    fn unregister_external_region(&mut self, metadata: MmapMetadata) -> Result<()>;
+    fn unregister_external_region(&mut self, metadata: &MmapMetadata) -> Result<()>;
 
     /// For debugging purposes, get timers to print at end of execution.
     fn get_timers(&self) -> Vec<Arc<Mutex<HistogramWrapper>>>;
@@ -354,6 +354,8 @@ pub trait ClientSM {
     /// Initializes any internal state with any datapath specific configuration,
     /// e.g., registering external memory.
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()>;
+
+    fn cleanup(&mut self, connection: &mut Self::Datapath) -> Result<()>;
 
     fn run_closed_loop(
         &mut self,
@@ -480,6 +482,8 @@ pub trait ServerSM {
     /// Initializes any internal state with any datapath specific configuration,
     /// e.g., registering external memory.
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()>;
+
+    fn cleanup(&mut self, connection: &mut Self::Datapath) -> Result<()>;
 
     fn get_histograms(&self) -> Vec<Arc<Mutex<HistogramWrapper>>>;
 }

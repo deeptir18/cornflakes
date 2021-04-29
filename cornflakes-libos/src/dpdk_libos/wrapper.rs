@@ -1000,9 +1000,13 @@ pub fn free_mbuf_bare(pkt: *mut rte_mbuf) {
 #[inline]
 pub fn dpdk_register_extmem(
     metadata: &mem::MmapMetadata,
-    paddrs: *mut usize,
     lkey: *mut u32,
 ) -> Result<*mut std::os::raw::c_void> {
+    tracing::debug!(
+        "Trying to register: {:?} with lkey: {:?}",
+        metadata.ptr,
+        lkey
+    );
     /*dpdk_check_not_failed!(rte_extmem_register(
         metadata.ptr as _,
         metadata.length as u64,
@@ -1025,12 +1029,6 @@ pub fn dpdk_register_extmem(
     }*/
     // use optimization of manually registering external memory (to avoid the btree lookup on send)
     // need to map physical addresses for each virtual region
-    dpdk_ok!(mem_lookup_page_phys_addrs(
-        metadata.ptr as _,
-        metadata.length,
-        metadata.get_pagesize(),
-        paddrs
-    ));
 
     // if using mellanox, need to retrieve the lkey for this pinned memory
     let mut ibv_mr: *mut ::std::os::raw::c_void = ptr::null_mut();

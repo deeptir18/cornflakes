@@ -11,7 +11,10 @@ extern "C" {
     fn mmap_huge_(
         num_pages: usize,
         addr: *mut *mut ::std::os::raw::c_void,
+        paddrs: *mut usize,
     ) -> ::std::os::raw::c_int;
+
+    fn munmap_huge_(addr: *mut ::std::os::raw::c_void, pgsize: usize, num_pages: usize);
     fn register_custom_extbuf_ops_() -> ::std::os::raw::c_int;
     fn set_custom_extbuf_ops_(mempool: *mut rte_mempool) -> ::std::os::raw::c_int;
     fn rte_mempool_count_(mempool: *mut rte_mempool) -> ::std::os::raw::c_int;
@@ -165,11 +168,17 @@ pub fn load_mlx5_driver() {
 }
 
 #[inline]
+pub unsafe fn munmap_huge(addr: *mut ::std::os::raw::c_void, pgsize: usize, num_pages: usize) {
+    munmap_huge_(addr, pgsize, num_pages);
+}
+
+#[inline]
 pub unsafe fn mmap_huge(
     num_pages: usize,
     addr: *mut *mut ::std::os::raw::c_void,
+    paddrs: *mut usize,
 ) -> ::std::os::raw::c_int {
-    mmap_huge_(num_pages, addr)
+    mmap_huge_(num_pages, addr, paddrs)
 }
 
 #[inline]
@@ -421,16 +430,6 @@ pub unsafe fn copy_payload(
     copy_payload_(src_mbuf, src_offset, dst_mbuf, dst_offset, len);
 }
 
-#[inline]
-pub unsafe fn mem_lookup_page_phys_addrs(
-    addr: *mut ::std::os::raw::c_void,
-    len: usize,
-    pgsize: usize,
-    paddrs: *mut usize,
-) -> i32 {
-    mem_lookup_page_phys_addrs_(addr, len, pgsize, paddrs) as i32
-}
-
 #[cfg(feature = "mlx5")]
 #[inline(never)]
 pub unsafe fn mlx5_manual_reg_mr_callback(
@@ -439,7 +438,13 @@ pub unsafe fn mlx5_manual_reg_mr_callback(
     length: usize,
     lkey_out: *mut u32,
 ) -> *mut ::std::os::raw::c_void {
-    rte_pmd_mlx5_manual_reg_mr(port_id, addr, length as usize, lkey_out)
+    tracing::debug!(
+        "Calling reg mr on {:?}, length {}, lkey: {:?}",
+        addr,
+        length,
+        lkey_out
+    );
+    rte_pmd_mlx5_manual_reg_mr(port_id, addr, length, lkey_out)
 }
 
 #[cfg(feature = "mlx5")]

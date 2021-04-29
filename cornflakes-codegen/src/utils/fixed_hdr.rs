@@ -167,6 +167,14 @@ impl<'registered> CFBytes<'registered> {
     pub fn len(&self) -> usize {
         self.ptr.len()
     }
+
+    // Note: this function copies the inner pointer and should only used to check payloads for
+    // correctness.
+    pub fn to_bytes_vec(&self) -> Vec<u8> {
+        let mut vec: Vec<u8> = Vec::with_capacity(self.ptr.len());
+        vec.extend_from_slice(self.ptr);
+        vec
+    }
 }
 
 impl<'registered> Default for CFBytes<'registered> {

@@ -1,9 +1,8 @@
 //! This module contains ways to interface with custom memory allocation/registration.
 //! How we will exactly achieve that, I am not sure yet.
 //! It seems like standard library containers don't allow custom allocators yet.
-use super::dpdk_bindings::mmap_huge;
-use color_eyre::eyre::{bail, Result, WrapErr};
-use memmap::MmapMut;
+use super::dpdk_bindings::{mmap_huge, munmap_huge};
+use color_eyre::eyre::{bail, Result};
 use std::{ptr, slice};
 pub const PAGESIZE: usize = 4096;
 const PGSHIFT_4KB: usize = 12;
@@ -58,15 +57,22 @@ pub struct MmapMetadata {
 }
 
 impl MmapMetadata {
-    pub fn from_mmap(mmap: &mut MmapMut) -> MmapMetadata {
-        MmapMetadata {
-            ptr: mmap.as_ptr(),
-            length: mmap.len(),
+    pub fn new(num_pages: usize) -> Result<MmapMetadata> {
+        let mut addr: *mut ::std::os::raw::c_void = ptr::null_mut();
+        let mut paddrs = vec![0usize; num_pages];
+        let ret = unsafe { mmap_huge(num_pages, &mut addr as _, paddrs.as_mut_ptr()) };
+        if ret != 0 {
+            bail!("Mmap huge failed.");
+        }
+
+        Ok(MmapMetadata {
+            ptr: addr as *const u8,
+            length: PGSIZE_2MB * num_pages,
             pagesize: PageSize::PG2MB,
-            paddrs: vec![],
+            paddrs: paddrs,
             lkey: 0,
             ibv_mr: ptr::null_mut(),
-        }
+        })
     }
 
     #[cfg(test)]
@@ -87,6 +93,10 @@ impl MmapMetadata {
             PageSize::PG2MB => PGSIZE_2MB,
             PageSize::PG1GB => PGSIZE_1GB,
         }
+    }
+
+    pub fn num_pages(&self) -> usize {
+        self.length / self.get_pagesize()
     }
 
     pub fn get_lkey(&self) -> u32 {
@@ -145,28 +155,10 @@ impl MmapMetadata {
     pub fn get_full_buf(&mut self) -> Result<&mut [u8]> {
         Ok(unsafe { slice::from_raw_parts_mut(self.ptr as _, self.length) })
     }
-}
 
-pub fn mmap_new(num_pages: usize) -> Result<(MmapMetadata, MmapMut)> {
-    let mut mmap = MmapMut::map_anon(num_pages * PAGESIZE).wrap_err(format!(
-        "Not able to anonymously allocate {} pages.",
-        num_pages
-    ))?;
-    Ok((MmapMetadata::from_mmap(&mut mmap), mmap))
-}
-
-pub fn mmap_manual(num_pages: usize) -> Result<MmapMetadata> {
-    let mut addr: *mut ::std::os::raw::c_void = ptr::null_mut();
-    let ret = unsafe { mmap_huge(num_pages, &mut addr as _) };
-    if ret != 0 {
-        bail!("Failed to mmap huge.");
+    pub fn free_mmap(&mut self) {
+        unsafe {
+            munmap_huge(self.ptr as _, self.get_pagesize(), self.num_pages());
+        }
     }
-    Ok(MmapMetadata {
-        ptr: addr as *const u8,
-        length: PGSIZE_2MB * num_pages,
-        pagesize: PageSize::PG2MB,
-        paddrs: Vec::default(),
-        lkey: 0,
-        ibv_mr: ptr::null_mut(),
-    })
 }

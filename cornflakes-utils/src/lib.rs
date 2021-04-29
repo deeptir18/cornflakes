@@ -31,13 +31,22 @@ impl std::str::FromStr for NetworkDatapath {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum TreeDepth {
+    One,
+    Two,
+    Three,
+    Four,
+    Five,
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum SimpleMessageType {
     /// Message with a single field
     Single,
     /// List with a variable number of elements
     List(usize),
     /// Tree with a variable depth.
-    Tree(usize),
+    Tree(TreeDepth),
 }
 
 impl std::str::FromStr for SimpleMessageType {
@@ -52,7 +61,17 @@ impl std::str::FromStr for SimpleMessageType {
                 } else if x.starts_with("Tree-") || x.starts_with("TREE-") || x.starts_with("tree-")
                 {
                     let tree_size: usize = x[5..].to_string().parse()?;
-                    SimpleMessageType::Tree(tree_size)
+                    let depth = match tree_size {
+                        1 => TreeDepth::One,
+                        2 => TreeDepth::Two,
+                        3 => TreeDepth::Three,
+                        4 => TreeDepth::Four,
+                        5 => TreeDepth::Five,
+                        x => {
+                            bail!("Provided tree depth not supported: {:?}", x);
+                        }
+                    };
+                    SimpleMessageType::Tree(depth)
                 } else {
                     bail!("{}: unknown message type", x)
                 }

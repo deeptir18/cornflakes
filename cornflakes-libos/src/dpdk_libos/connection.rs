@@ -598,24 +598,16 @@ impl Datapath for DPDKConnection {
 
     /// Registers this external piece of memory with DPDK,
     /// so regions of this memory can be used while sending external mbufs.
-    fn register_external_region(&mut self, mut metadata: mem::MmapMetadata) -> Result<()> {
-        let num_pages = metadata.length / metadata.get_pagesize();
-        let mut paddrs = vec![0usize; num_pages];
+    fn register_external_region(&mut self, metadata: &mut mem::MmapMetadata) -> Result<()> {
         let mut lkey_out: u32 = 0;
-        let ibv_mr = wrapper::dpdk_register_extmem(
-            &metadata,
-            paddrs.as_mut_ptr(),
-            &mut lkey_out as *mut u32,
-        )?;
-        metadata.set_paddrs(paddrs);
+        let ibv_mr = wrapper::dpdk_register_extmem(&metadata, &mut lkey_out as *mut u32)?;
         metadata.set_lkey(lkey_out);
         metadata.set_ibv_mr(ibv_mr);
-
-        self.external_memory_regions.push(metadata);
+        self.external_memory_regions.push(metadata.clone());
         Ok(())
     }
 
-    fn unregister_external_region(&mut self, metadata: mem::MmapMetadata) -> Result<()> {
+    fn unregister_external_region(&mut self, metadata: &mem::MmapMetadata) -> Result<()> {
         let mut idx_to_remove = 0;
         let mut found = false;
         for (idx, meta) in self.external_memory_regions.iter().enumerate() {

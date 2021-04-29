@@ -47,7 +47,7 @@ impl<'a, 'b> EchoClient<'a, 'b> {
     ) -> Result<EchoClient<'a, 'b>> {
         let (sga, external_memory) = match zero_copy {
             true => {
-                let mut metadata = mem::mmap_manual(10)?;
+                let mut metadata = mem::MmapMetadata::new(10)?;
                 assert!(size <= metadata.length);
                 let payload = vec![b'a'; size];
                 let buf = metadata.get_full_buf()?;
@@ -89,8 +89,8 @@ impl<'a, 'b> EchoClient<'a, 'b> {
         self.dump("End-to-end DPDK echo client RTTs:");
     }
 
-    pub fn get_num_sent(&self) -> usize {
-        self.sent
+    pub fn get_num_recved(&self) -> usize {
+        self.recved
     }
 }
 
@@ -100,8 +100,19 @@ impl<'a, 'b> ClientSM for EchoClient<'a, 'b> {
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
         match self.external_memory {
-            Some(ref metadata) => {
-                connection.register_external_region(metadata.clone())?;
+            Some(ref mut metadata) => {
+                connection.register_external_region(metadata)?;
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    fn cleanup(&mut self, connection: &mut Self::Datapath) -> Result<()> {
+        match self.external_memory {
+            Some(ref mut metadata) => {
+                connection.unregister_external_region(metadata)?;
+                metadata.free_mmap();
             }
             None => {}
         }
@@ -207,6 +218,10 @@ impl ServerSM for EchoServer {
     //type OutgoingMsg = Cornflake<'a>;
 
     fn init(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
+        Ok(())
+    }
+
+    fn cleanup(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
         Ok(())
     }
 

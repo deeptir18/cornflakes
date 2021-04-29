@@ -19,7 +19,6 @@ mod echo_capnp {
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{mem::MmapMetadata, Cornflake, Datapath, ScatterGather};
 use cornflakes_utils::SimpleMessageType;
-use memmap::MmapMut;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::{io::Write, iter, iter::repeat, slice};
@@ -77,7 +76,6 @@ where
         message_type: SimpleMessageType,
         field_sizes: Vec<usize>,
         mmap_metadata: MmapMetadata,
-        mmap_mut: &mut MmapMut,
     ) -> Result<Self>
     where
         Self: Sized;
@@ -133,10 +131,21 @@ fn init_payloads_as_vec(sizes: &Vec<usize>) -> Vec<Vec<u8>> {
     ret
 }
 
+fn get_payloads_as_vec(payloads: &Vec<(*const u8, usize)>) -> Vec<Vec<u8>> {
+    let ret: Vec<Vec<u8>> = payloads
+        .iter()
+        .map(|(ptr, size)| {
+            let mut vec: Vec<u8> = Vec::with_capacity(*size);
+            vec.extend_from_slice(unsafe { slice::from_raw_parts(*ptr, *size) });
+            vec
+        })
+        .collect();
+    ret
+}
+
 fn init_payloads(
     sizes: &Vec<usize>,
     mmap_metadata: &MmapMetadata,
-    _mmap_mut: &mut MmapMut,
 ) -> Result<Vec<(*const u8, usize)>> {
     let actual_alloc_boundaries: Vec<usize> =
         sizes.iter().map(|x| align_up(*x, ALIGN_SIZE)).collect();

@@ -11,7 +11,6 @@ use super::{init_payloads, CerealizeClient, CerealizeMessage};
 use color_eyre::eyre::Result;
 use cornflakes_libos::{mem::MmapMetadata, CornPtr, Cornflake, Datapath};
 use cornflakes_utils::SimpleMessageType;
-use memmap::MmapMut;
 use std::slice;
 
 pub struct FlatbuffersSerializer {
@@ -69,9 +68,8 @@ where
         message_type: SimpleMessageType,
         field_sizes: Vec<usize>,
         mmap_metadata: MmapMetadata,
-        mmap_mut: &mut MmapMut,
     ) -> Result<Self> {
-        let payload_ptrs = init_payloads(&field_sizes, &mmap_metadata, mmap_mut)?;
+        let payload_ptrs = init_payloads(&field_sizes, &mmap_metadata)?;
         let payloads: Vec<&'registered [u8]> = payload_ptrs
             .clone()
             .iter()

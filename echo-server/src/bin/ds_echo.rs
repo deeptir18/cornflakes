@@ -17,7 +17,11 @@ use echo_server::{
     server::EchoServer,
     CerealizeClient, CerealizeMessage, EchoMode,
 };
-use std::{net::Ipv4Addr, process::exit, time::Duration};
+use std::{
+    net::Ipv4Addr,
+    process::exit,
+    time::{Duration, Instant},
+};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -31,22 +35,21 @@ struct Opt {
     )]
     trace_level: TraceLevel,
     #[structopt(
-        short = "f",
+        short = "cf",
         long = "config_file",
         help = "Folder containing shared config information."
     )]
     config_file: String,
-    #[structopt(short = "m", long = "mode", help = "Echo server or client mode.")]
+    #[structopt(long = "mode", help = "Echo server or client mode.")]
     mode: EchoMode,
     #[structopt(
-        short = "d",
+        short = "nd",
         long = "datapath",
         help = "Datapath to run",
         default_value = "dpdk"
     )]
     datapath: NetworkDatapath,
     #[structopt(
-        short = "s",
         long = "size",
         help = "Size of message to be sent.",
         default_value = "1000"
@@ -198,6 +201,7 @@ where
     D: Datapath,
 {
     client.init(connection)?;
+    let start_run = Instant::now();
     client.run_open_loop(
         connection,
         (1e9 / opt.rate as f64) as u64,
@@ -205,8 +209,19 @@ where
         Duration::new(0, 100000),
     )?;
     client.dump_stats();
-    let load = ((opt.size as f64) * (opt.rate) as f64) / (125000000 as f64);
-    tracing::info!(load_gbps = ?load, "Sent at rate:");
+    let exp_time = start_run.elapsed().as_nanos() as f64 / 1000000000.0;
+    let achieved_load_pps = (client.get_num_recved() as f64) / exp_time as f64;
+    let achieved_load_gbps = (opt.size as f64 * achieved_load_pps as f64) / (125000000 as f64);
+    client.dump_stats();
+    let load_gbps = ((opt.size as f64) * (opt.rate) as f64) / (125000000 as f64);
+    tracing::info!(
+        load_gbps =? load_gbps,
+        achieved_load_gbps =? achieved_load_gbps,
+        opt.rate =? opt.rate,
+        achieved_load_pps =? achieved_load_pps,
+        percent_achieved =? (achieved_load_gbps / load_gbps),
+        "Load statistics:"
+    );
     for timer_m in connection.get_timers().iter() {
         let timer = timer_m.lock().unwrap();
         timer.dump_stats();

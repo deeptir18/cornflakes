@@ -305,15 +305,13 @@ pub fn do_server(
         (*shared_info_uninit.as_mut_ptr()).free_cb = Some(general_free_cb_);
     }
     //let shinfo = shared_info_uninit.as_mut_ptr();
-    let mut metadata = mem::mmap_manual(100)?;
-    let mut paddrs = vec![0usize; 100];
+    let mut metadata = mem::MmapMetadata::new(50)?;
     let mut lkey: u32 = 0;
-    let ibv_mr = wrapper::dpdk_register_extmem(&metadata, paddrs.as_mut_ptr(), &mut lkey as _)?;
+    let ibv_mr = wrapper::dpdk_register_extmem(&metadata, &mut lkey as _)?;
     tracing::debug!("Lkey is: {}", lkey);
     metadata.set_lkey(lkey);
     tracing::debug!("Set lkey as {}", metadata.get_lkey());
     metadata.set_ibv_mr(ibv_mr);
-    metadata.set_paddrs(paddrs);
     let payload = vec![b'a'; 10000];
     (&mut metadata.get_full_buf()?[0..payload.len()]).write_all(payload.as_ref())?;
     let mut length: u16 = metadata.length as u16;

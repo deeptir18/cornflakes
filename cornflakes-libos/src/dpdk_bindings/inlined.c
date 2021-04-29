@@ -128,12 +128,80 @@ static struct rte_mempool_ops custom_ops = {
         .obj_free = custom_extbuf_obj_free,
 };
 
-int mmap_huge_(size_t num_pages, void **ext_mem_addr) {
+void munmap_huge_(void *addr, size_t pgsize, size_t num_pages) {
+    munmap(addr, pgsize * num_pages);
+}
+
+// Taken from shenango
+// Maps virtual addresses to physical addresses
+// Relies on the fact that huge pages are by default pinned
+int mem_lookup_page_phys_addrs_(void *addr,
+                               size_t len,
+                               size_t pgsize,
+                               physaddr_t *paddrs) {
+    printf("[mem_lookup_page_phys_addrs_] Len: %u, paddrs: %p, pgsize: %u; addr %p\n", (unsigned)len, paddrs, (unsigned)pgsize, addr);
+    uintptr_t pos;
+	uint64_t tmp;
+	int fd, i = 0, ret = 0;
+
+	/*
+	 * 4 KB pages could be swapped out by the kernel, so it is not
+	 * safe to get a machine address. If we later decide to support
+	 * 4KB pages, then we need to mlock() the page first.
+	 */
+	if (pgsize == PGSIZE_4KB)
+		return -EINVAL;
+
+	fd = open("/proc/self/pagemap", O_RDONLY);
+	if (fd < 0)
+		return -EIO;
+
+	for (pos = (uintptr_t)addr; pos < (uintptr_t)addr + len;
+	     pos += pgsize) {
+		if (lseek(fd, pos / PGSIZE_4KB * sizeof(uint64_t), SEEK_SET) ==
+		    (off_t)-1) {
+            printf("[mem_lookup_page_phys_addrs_] failing in lseek.\n");
+			ret = -EIO;
+			goto out;
+		}
+
+		if (read(fd, &tmp, sizeof(uint64_t)) <= 0) {
+			ret = -EIO;
+            printf("[mem_lookup_page_phys_addrs_] failing in read.\n");
+			goto out;
+		}
+
+
+		if (!(tmp & PAGEMAP_FLAG_PRESENT)) {
+			ret = -ENODEV;
+            printf("[mem_lookup_page_phys_addrs_] failing in pagemap flag present.\n");
+			goto out;
+		}
+
+		paddrs[i++] = (tmp & PAGEMAP_PGN_MASK) * PGSIZE_4KB;
+	}
+
+out:
+	close(fd);
+	return ret;
+}
+
+
+int mmap_huge_(size_t num_pages, void **ext_mem_addr, physaddr_t *paddrs) {
     int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE | MAP_HUGETLB;
     size_t pgsize = PGSIZE_2MB;
     void * addr = mmap(NULL, pgsize * num_pages, PROT_READ | PROT_WRITE, flags, -1, 0);
     if (addr == MAP_FAILED) {
         printf("[mmap_huge_] Failed to mmap memory\n");
+        return 1;
+    }
+    // need to write to the pages to ensure they're actually mapped.
+    memset((char *)addr, 'D', pgsize * num_pages);
+    printf("[mmap_huge_]: pagesize: %u, num_pages: %u, length: %u, addr: %p\n", (unsigned)PGSIZE_2MB, (unsigned)num_pages, (unsigned)(num_pages * PGSIZE_2MB), (void *)addr);
+
+    int ret = mem_lookup_page_phys_addrs_(addr, pgsize * num_pages, pgsize, paddrs);
+    if (ret != 0) {
+        printf("[mmap_huge_]: mem_lookup_page_phys_addrs_ call failed: addr %p, len %u, pgsize %u, paddrs: %p\n", (void *)addr, (unsigned)(pgsize * num_pages), (unsigned)pgsize, (void *)paddrs);
         return 1;
     }
     *ext_mem_addr = addr;
@@ -554,52 +622,4 @@ void copy_payload_(struct rte_mbuf *src_mbuf,
     rte_memcpy(tx_slice, rx_slice, len);
 }
 
-// Taken from shenango
-// Maps virtual addresses to physical addresses
-// Relies on the fact that huge pages are by default pinned
-int mem_lookup_page_phys_addrs_(void *addr,
-                               size_t len,
-                               size_t pgsize,
-                               physaddr_t *paddrs) {
-    uintptr_t pos;
-	uint64_t tmp;
-	int fd, i = 0, ret = 0;
-
-	/*
-	 * 4 KB pages could be swapped out by the kernel, so it is not
-	 * safe to get a machine address. If we later decide to support
-	 * 4KB pages, then we need to mlock() the page first.
-	 */
-	if (pgsize == PGSIZE_4KB)
-		return -EINVAL;
-
-	fd = open("/proc/self/pagemap", O_RDONLY);
-	if (fd < 0)
-		return -EIO;
-
-	for (pos = (uintptr_t)addr; pos < (uintptr_t)addr + len;
-	     pos += pgsize) {
-		if (lseek(fd, pos / PGSIZE_4KB * sizeof(uint64_t), SEEK_SET) ==
-		    (off_t)-1) {
-			ret = -EIO;
-			goto out;
-		}
-
-		if (read(fd, &tmp, sizeof(uint64_t)) <= 0) {
-			ret = -EIO;
-			goto out;
-		}
-
-		if (!(tmp & PAGEMAP_FLAG_PRESENT)) {
-			ret = -ENODEV;
-			goto out;
-		}
-
-		paddrs[i++] = (tmp & PAGEMAP_PGN_MASK) * PGSIZE_4KB;
-	}
-
-out:
-	close(fd);
-	return ret;
-}
 

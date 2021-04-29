@@ -41,6 +41,10 @@ where
         Ok(())
     }
 
+    fn cleanup(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
+        Ok(())
+    }
+
     fn process_requests(
         &mut self,
         sgas: &Vec<(

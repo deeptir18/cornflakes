@@ -6,7 +6,7 @@ message SingleBufferCF {
 }
 
 message ListCF {
-    repeated bytes message = 1;
+    repeated bytes messages = 1;
 }
 
 message Tree1LCF {
