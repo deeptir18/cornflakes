@@ -1,6 +1,7 @@
 pub mod capnproto;
 pub mod client;
-pub mod cornflakes;
+pub mod cornflakes_dynamic;
+pub mod cornflakes_fixed;
 pub mod flatbuffers;
 pub mod protobuf;
 pub mod server;
@@ -104,7 +105,7 @@ pub fn get_equal_fields(message_type: SimpleMessageType, size: usize) -> Vec<usi
             elts
         }
         SimpleMessageType::Tree(depth) => {
-            let num_elts = 2_usize.pow(depth as u32);
+            let num_elts = 2_usize.pow(depth as u32 + 1);
             let divided_size: usize = size / num_elts;
             let elts: Vec<usize> = repeat(divided_size).take(num_elts).collect();
             elts

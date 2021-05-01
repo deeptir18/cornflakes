@@ -10,7 +10,8 @@ use cornflakes_utils::{
 use echo_server::{
     capnproto::{CapnprotoEchoClient, CapnprotoSerializer},
     client::EchoClient,
-    cornflakes::{CornflakesEchoClient, CornflakesSerializer},
+    cornflakes_dynamic::{CornflakesDynamicEchoClient, CornflakesDynamicSerializer},
+    cornflakes_fixed::{CornflakesFixedEchoClient, CornflakesFixedSerializer},
     flatbuffers::{FlatbuffersEchoClient, FlatbuffersSerializer},
     get_equal_fields,
     protobuf::{ProtobufEchoClient, ProtobufSerializer},
@@ -87,7 +88,7 @@ struct Opt {
         short = "ser",
         long = "serialization",
         help = "Serialization library to use",
-        default_value = "cornflakes"
+        default_value = "cornflakes-dynamic"
     )]
     serialization: SerializationType,
 }
@@ -109,9 +110,17 @@ fn main() -> Result<()> {
 
     match opt.mode {
         EchoMode::Server => match (opt.datapath, opt.serialization) {
-            (NetworkDatapath::DPDK, SerializationType::Cornflakes) => {
+            (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
                 let mut connection = dpdk_datapath(true)?;
-                let serializer = CornflakesSerializer::new(opt.message, opt.size);
+                let serializer = CornflakesDynamicSerializer::new(opt.message, opt.size);
+                let mut echo_server = EchoServer::new(serializer);
+                set_ctrlc_handler(&echo_server)?;
+                echo_server.init(&mut connection)?;
+                echo_server.run_state_machine(&mut connection)?;
+            }
+            (NetworkDatapath::DPDK, SerializationType::CornflakesFixed) => {
+                let mut connection = dpdk_datapath(true)?;
+                let serializer = CornflakesFixedSerializer::new(opt.message, opt.size);
                 let mut echo_server = EchoServer::new(serializer);
                 set_ctrlc_handler(&echo_server)?;
                 echo_server.init(&mut connection)?;
@@ -146,10 +155,19 @@ fn main() -> Result<()> {
             }
         },
         EchoMode::Client => match (opt.datapath, opt.serialization) {
-            (NetworkDatapath::DPDK, SerializationType::Cornflakes) => {
+            (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
                 let sizes = get_equal_fields(opt.message, opt.size);
                 let mut connection = dpdk_datapath(false)?;
-                let mut echo_client: EchoClient<CornflakesEchoClient, DPDKConnection> =
+                let mut echo_client: EchoClient<CornflakesDynamicEchoClient, DPDKConnection> =
+                    EchoClient::new(opt.server_ip, opt.message, sizes)?;
+                let mut ctx = echo_client.new_context();
+                echo_client.init_state(&mut ctx, &mut connection)?;
+                run_client(&mut echo_client, &mut connection, &opt)?;
+            }
+            (NetworkDatapath::DPDK, SerializationType::CornflakesFixed) => {
+                let sizes = get_equal_fields(opt.message, opt.size);
+                let mut connection = dpdk_datapath(false)?;
+                let mut echo_client: EchoClient<CornflakesFixedEchoClient, DPDKConnection> =
                     EchoClient::new(opt.server_ip, opt.message, sizes)?;
                 let mut ctx = echo_client.new_context();
                 echo_client.init_state(&mut ctx, &mut connection)?;

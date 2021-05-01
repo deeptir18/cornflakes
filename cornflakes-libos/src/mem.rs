@@ -31,6 +31,11 @@ fn pgoff2mb(addr: *const u8) -> usize {
     (addr as usize) & PGMASK_2MB
 }
 
+pub fn closest_2mb_page(addr: *const u8) -> usize {
+    let off = pgoff2mb(addr);
+    addr as usize - off
+}
+
 fn pgn1gb(off: usize) -> usize {
     off >> PGSHIFT_1GB
 }

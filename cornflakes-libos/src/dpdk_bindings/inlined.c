@@ -40,11 +40,10 @@ inline void free_referred_mbuf(void *buf) {
         //printf("[free_refered_mbuf_] refers to another = 1\n");
         // get the mbuf this refers to
         // decrease the ref count of that mbuf
-        struct rte_mbuf *ref_mbuf = (struct rte_mbuf *)((char *)(mbuf->buf_addr) - (RTE_PKTMBUF_HEADROOM + MBUF_HEADER_SIZE + sizeof(struct tx_pktmbuf_priv) - mbuf->data_off));
-        //printf("Pointer of referred mbuf: %p\n", ref_mbuf);
+        struct rte_mbuf *ref_mbuf = (struct rte_mbuf *)((char *)(mbuf->buf_addr) - (RTE_PKTMBUF_HEADROOM + MBUF_HEADER_SIZE + sizeof(struct tx_pktmbuf_priv)));
         uint16_t ref_cnt = rte_mbuf_refcnt_read(ref_mbuf);
+        //printf("[free_refered_mbuf_] Original extbuf buffer: %p; Pointer of referred mbuf: %p; refcnt of reffered buf: %u\n", buf, ref_mbuf, (unsigned)ref_cnt);
         if (ref_cnt == 0 || ref_cnt == 1) {
-            //printf("Refcnt of referred mbuf: %u\n", (unsigned)ref_cnt);
             rte_pktmbuf_free(ref_mbuf);
         } else {
             rte_mbuf_refcnt_set(ref_mbuf, ref_cnt - 1);
@@ -239,10 +238,13 @@ int rte_mempool_count_(struct rte_mempool *mp) {
 }
 
 void rte_pktmbuf_refcnt_update_(struct rte_mbuf *packet, int16_t val) {
+    //printf("[rte_mbuf_refcnt_update_] Increasing refcnt of mbuf %p by val %d; currently %d\n", packet, val, rte_mbuf_refcnt_read(packet));
     rte_mbuf_refcnt_update(packet, val);
+    //printf("[rte_mbuf_refcnt_update_] Refcnt is now %d\n", rte_mbuf_refcnt_read(packet));
 }
 
 void rte_pktmbuf_refcnt_set_(struct rte_mbuf *packet, uint16_t val) {
+    //printf("[rte_pktmbuf_refcnt_set_] Setting refcnt of mbuf %p to val %u\n", packet, (unsigned)val);
     rte_mbuf_refcnt_set(packet, val);
 }
 

@@ -77,7 +77,7 @@ pub trait ReceivedPacket {
 
 /// Whether an underlying buffer is borrowed or
 /// actually owned (most likely on the heap).
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CornType {
     Registered,
     Normal,

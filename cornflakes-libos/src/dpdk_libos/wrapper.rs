@@ -23,13 +23,13 @@ pub const NUM_MBUFS: u16 = 8191;
 pub const MBUF_CACHE_SIZE: u16 = 250;
 const RX_RING_SIZE: u16 = 2048;
 const TX_RING_SIZE: u16 = 2048;
-pub const MAX_SCATTERS: usize = 32;
+pub const MAX_SCATTERS: usize = 33;
 pub const RECEIVE_BURST_SIZE: u16 = 32;
 
 // TODO: figure out how to turn jumbo frames on and of
 pub const RX_PACKET_LEN: u32 = 9216;
-// pub const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
-pub const MBUF_BUF_SIZE: u32 = RX_PACKET_LEN + RTE_PKTMBUF_HEADROOM;
+pub const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
+// pub const MBUF_BUF_SIZE: u32 = RX_PACKET_LEN + RTE_PKTMBUF_HEADROOM;
 
 pub const RTE_PKTMBUF_TAILROOM: u32 = 120; // with priv size of 8, this is padding
 pub const MBUF_POOL_HDR_SIZE: usize = 64;
@@ -40,7 +40,8 @@ pub const TOTAL_MEMPOOL_MBUF_SIZE: usize = MBUF_POOL_HDR_SIZE
     + MBUF_PRIV_SIZE
     + RTE_PKTMBUF_TAILROOM as usize
     + MBUF_MEMPOOL_PADDING;
-
+pub const MEMHDR_OFFSET: usize = 24; // offset to first mbuf from the beginning of the mempool
+pub const MEMHDR_ALIGNED_OFFSET: usize = 64; // offset to first mbuf on a new page
 /// RX and TX Prefetch, Host, and Write-back threshold values should be
 /// carefully set for optimal performance. Consult the network
 /// controller's datasheet and supporting DPDK documentation for guidance
@@ -202,7 +203,6 @@ impl Pkt {
         unsafe {
             (*mbuf).data_len = 0;
             (*mbuf).pkt_len = 0;
-            debug!("Setting next as null");
             (*mbuf).next = ptr::null_mut();
             (*mbuf).nb_segs = 1;
         }
@@ -326,9 +326,18 @@ impl Pkt {
         {
             tracing::debug!("Default memzone: {:?}", default_memzone);
             debug!("Within memzone check");
-            // recover the original mbuf this data points to
+
+            // Note: this is how I *think* the mempool layout works
+            // Could be different for a different page size, as well as a different mbuf size
+            // Base mbuf either starts 64 bytes after the nearest page, or 24 bytes after the
+            // beginning of the mempool
+            let pg2mb = mem::closest_2mb_page(buf.as_ptr());
+            let base_mbuf = match pg2mb <= default_memzone.0 {
+                true => default_memzone.0 + MEMHDR_OFFSET,
+                false => pg2mb + MEMHDR_ALIGNED_OFFSET,
+            };
             let ptr_int = buf.as_ptr() as usize;
-            let ptr_offset = ptr_int - default_memzone.0;
+            let ptr_offset = (ptr_int) - base_mbuf;
             let offset_within_alloc = ptr_offset % TOTAL_MEMPOOL_MBUF_SIZE;
 
             tracing::debug!("Pointer offset: {:?}", ptr_offset);
@@ -359,7 +368,11 @@ impl Pkt {
             );
 
             let original_mbuf_ptr = (ptr_int - offset_within_alloc) as *mut rte_mbuf;
-            tracing::debug!("Pointer to original mbuf ptr: {:?}", original_mbuf_ptr);
+            tracing::debug!(
+                "Pointer to current extbuf: {:?}, Pointer to original mbuf ptr: {:?}",
+                mbufs[idx][pkt_id],
+                original_mbuf_ptr
+            );
             // increase ref count of this mbuf
             dpdk_call!(rte_pktmbuf_refcnt_update(original_mbuf_ptr, 1));
             unsafe {
@@ -681,15 +694,35 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
         _mp: *mut rte_mempool,
         opaque: *mut ::std::os::raw::c_void,
         memhdr: *mut rte_mempool_memhdr,
-        _mem_idx: ::std::os::raw::c_uint,
+        _idx: ::std::os::raw::c_uint,
     ) {
         let mr = unsafe { &mut *(opaque as *mut Vec<(usize, usize)>) };
         let (addr, len) = unsafe { ((*memhdr).addr, (*memhdr).len) };
+        /*let op = match idx > 0 {
+            true => {
+                let len = mr.len();
+                mr[len - 1]
+            }
+            false => (0, 0),
+        };
+        let dif = match idx > 0 {
+            true => (addr as usize - op.0 as usize),
+            false => 0,
+        };
+        if idx < 40 {
+            tracing::debug!(
+                current =? (addr,len),
+                idx = idx,
+                last = ? op,
+                diff = dif,
+                "In mempool hdr iteration",
+            );
+        }*/
+
         mr.push((addr as usize, len as usize));
     }
     /*let mut op: Vec<usize> = vec![];
 
-    // struct rte_mempool *mp, void *opaque_arg, void *m, unsigned i
     unsafe extern "C" fn check_each_mbuf(
         mp: *mut rte_mempool,
         mut opaque: *mut ::std::os::raw::c_void,
@@ -705,13 +738,26 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
             }
             false => 0,
         };
-        tracing::debug!(
-            "idx: {}, mbuf addr: {:?}, opaque (last): {:?}, dif: {:?}",
-            idx,
-            mbuf as usize,
-            op,
-            (mbuf as usize - op)
-        );
+        if idx != 0 && (mbuf as usize - op) != 9664 {
+            tracing::debug!(
+                "NOT THE SAME DIF: idx: {}, mbuf addr: {:?} ({:?}), opaque (last): {:?}, dif: {:?}",
+                idx,
+                mbuf as usize,
+                mbuf,
+                op,
+                (mbuf as usize - op)
+            );
+        }
+        if idx < 10 || idx > 8180 || idx == 379 {
+            tracing::debug!(
+                "idx: {}, mbuf addr: {:?} ({:?}), opaque (last): {:?}, dif: {:?}",
+                idx,
+                mbuf as usize,
+                mbuf,
+                op,
+                (mbuf as usize - op)
+            );
+        }
         mr.push(mbuf as usize);
     }
     dpdk_call!(rte_mempool_obj_iter(
@@ -733,6 +779,21 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
 
     let (base_addr, base_len) = ret[0];
     let mut cur_addr = base_addr + base_len;
+    tracing::debug!(
+        "Base addr: {:?}, len: {}",
+        base_addr as *mut rte_mbuf,
+        ret[0].1
+    );
+    tracing::debug!(
+        "Second addr: {:?}, len: {}",
+        ret[1].0 as *mut rte_mbuf,
+        ret[1].1
+    );
+    tracing::debug!(
+        "Final addr: {:?}, len: {}",
+        ret[ret.len() - 1].0 as *mut rte_mbuf,
+        ret[ret.len() - 1].1
+    );
 
     for &(addr, len) in &ret[1..] {
         if addr != cur_addr {
@@ -744,8 +805,9 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
 
     // check assumptions about memory layout for the mbufs (needed later for pointer arithmetic)
     let mut sz: rte_mempool_objsz = unsafe { zeroed() };
-    let elt_size =
-        size_of::<rte_mbuf>() as usize + RX_PACKET_LEN as usize + MBUF_PRIV_SIZE as usize;
+    let elt_size = size_of::<rte_mbuf>() as usize
+        + RTE_ETHER_MAX_JUMBO_FRAME_LEN as usize
+        + MBUF_PRIV_SIZE as usize;
     let flags = 0;
     dpdk_call!(rte_mempool_calc_obj_size(
         elt_size as u32,
@@ -762,7 +824,9 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
     assert_eq!(sz.header_size, 64); // size of actual mbuf struct
     assert_eq!(
         sz.elt_size as usize,
-        RX_PACKET_LEN as usize + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE as usize,
+        RTE_ETHER_MAX_JUMBO_FRAME_LEN as usize
+            + RTE_PKTMBUF_HEADROOM as usize
+            + MBUF_PRIV_SIZE as usize,
     ); // private data size and data buffer size (with headroom)
        /*assert_eq!(
            sz.trailer_size,

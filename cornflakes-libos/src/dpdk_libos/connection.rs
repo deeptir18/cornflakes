@@ -87,9 +87,10 @@ impl DPDKReceivedPkt {
         zero_copy: bool,
     ) -> DPDKReceivedPkt {
         tracing::debug!(
-            "Address of received buffer: {:?}; after header: {:?}",
+            "Address of received buffer: {:?}; after header: {:?}; data offset of received mbuf: {:?}",
             mbuf,
-            mbuf_slice!(mbuf, header_size, 1024).as_mut_ptr() as *mut u8
+            mbuf_slice!(mbuf, header_size, 1024).as_mut_ptr() as *mut u8,
+            unsafe { (*mbuf).data_off },
         );
         let (mbuf, bytes): (Option<*mut rte_mbuf>, BytesMut) = match zero_copy {
             true => (Some(mbuf), BytesMut::new()),

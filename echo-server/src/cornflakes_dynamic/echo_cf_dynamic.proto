@@ -1,5 +1,5 @@
 syntax = "proto3";
-package echo_cf;
+package echo_cf_dynamic;
 
 message SingleBufferCF {
     bytes message = 1;

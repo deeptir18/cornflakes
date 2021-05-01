@@ -549,6 +549,7 @@ where
 
     pub fn append(&mut self, val: T) {
         assert!(self.num_set < self.num_space);
+        tracing::debug!("Appending to the list");
         self.elts.push(val);
         self.num_set += 1;
     }
@@ -606,6 +607,7 @@ where
             unsafe { header_ptr.offset(self.dynamic_header_offset() as isize) };
         let mut cur_dynamic_off_usize = offset + self.dynamic_header_offset();
 
+        tracing::debug!(num_elts = self.elts.len(), "Info about list items");
         for elt in self.elts.iter() {
             if elt.dynamic_header_size() == 0 {
                 ret.append(&mut elt.inner_serialize(cur_header_off, copy_func, 0));

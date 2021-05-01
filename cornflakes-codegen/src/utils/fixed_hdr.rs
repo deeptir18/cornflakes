@@ -900,12 +900,7 @@ where
             &self.elts[idx]
         }
     }
-}
 
-impl<'registered, T> RefVariableList<'registered, T>
-where
-    T: HeaderRepr<'registered> + Debug + Default + PartialEq + Eq + Clone,
-{
     pub fn len(&self) -> usize {
         self.get_list_ref().get_size()
     }

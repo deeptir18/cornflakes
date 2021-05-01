@@ -5,7 +5,7 @@
 DPDK=$1 # has to be a full path
 pushd $DPDK
 INSTALL_DIR="$DPDK/install"
-meson --prefix=$INSTALL_DIR build
+meson --prefix=$INSTALL_DIR build 
 pushd build
 ninja
 ninja install

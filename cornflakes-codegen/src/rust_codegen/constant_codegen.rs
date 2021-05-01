@@ -930,8 +930,8 @@ fn add_dependencies(repr: &ProtoReprInfo, compiler: &mut SerializationCompiler) 
     compiler.add_dependency("cornflakes_codegen::utils::fixed_hdr::*")?;
     compiler.add_dependency("cornflakes_codegen::utils::fixed_hdr::HeaderRepr")?;
     compiler.add_dependency("cornflakes_libos::CornPtr")?;
-    compiler.add_dependency("std::slice")?;
     if repr.has_int_field() {
+        compiler.add_dependency("std::slice")?;
         compiler.add_dependency("byteorder::{ByteOrder, LittleEndian}")?;
     }
     Ok(())

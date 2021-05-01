@@ -1,22 +1,20 @@
-pub mod cf_testobject1;
-pub mod cf_testobject2;
 pub mod echo_messages {
-    include!(concat!(env!("OUT_DIR"), "/echo_cf.rs"));
+    include!(concat!(env!("OUT_DIR"), "/echo_cf_fixed.rs"));
 }
 use super::{
     get_equal_fields, get_payloads_as_vec, init_payloads, init_payloads_as_vec, CerealizeClient,
     CerealizeMessage,
 };
 use color_eyre::eyre::Result;
-use cornflakes_codegen::utils::dynamic_hdr::*;
+use cornflakes_codegen::utils::fixed_hdr::*;
 use cornflakes_libos::{
     dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, mem::MmapMetadata, Cornflake, Datapath,
-    ReceivedPacket,
+    PtrAttributes, ReceivedPacket, ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use std::slice;
 
-pub struct CornflakesSerializer {
+pub struct CornflakesFixedSerializer {
     message_type: SimpleMessageType,
     context_size: usize,
 }
@@ -25,8 +23,8 @@ fn check_tree5l<'a>(
     payloads: &Vec<Vec<u8>>,
     object: &echo_messages::Tree5LCF<'a>,
 ) {
-    check_tree4l(&indexes[0..16], payloads, object.get_left());
-    check_tree4l(&indexes[16..32], payloads, object.get_left());
+    check_tree4l(&indexes[0..16], payloads, &object.get_left());
+    check_tree4l(&indexes[16..32], payloads, &object.get_right());
 }
 
 fn check_tree4l<'a>(
@@ -34,8 +32,8 @@ fn check_tree4l<'a>(
     payloads: &Vec<Vec<u8>>,
     object: &echo_messages::Tree4LCF<'a>,
 ) {
-    check_tree3l(&indexes[0..8], payloads, object.get_left());
-    check_tree3l(&indexes[8..16], payloads, object.get_left());
+    check_tree3l(&indexes[0..8], payloads, &object.get_left());
+    check_tree3l(&indexes[8..16], payloads, &object.get_right());
 }
 
 fn check_tree3l<'a>(
@@ -43,8 +41,8 @@ fn check_tree3l<'a>(
     payloads: &Vec<Vec<u8>>,
     object: &echo_messages::Tree3LCF<'a>,
 ) {
-    check_tree2l(&indexes[0..4], payloads, object.get_left());
-    check_tree2l(&indexes[4..8], payloads, object.get_left());
+    check_tree2l(&indexes[0..4], payloads, &object.get_left());
+    check_tree2l(&indexes[4..8], payloads, &object.get_right());
 }
 
 fn check_tree2l<'a>(
@@ -52,8 +50,8 @@ fn check_tree2l<'a>(
     payloads: &Vec<Vec<u8>>,
     object: &echo_messages::Tree2LCF<'a>,
 ) {
-    check_tree1l(&indexes[0..2], payloads, object.get_left());
-    check_tree1l(&indexes[2..4], payloads, object.get_left());
+    check_tree1l(&indexes[0..2], payloads, &object.get_left());
+    check_tree1l(&indexes[2..4], payloads, &object.get_right());
 }
 
 fn check_tree1l<'a>(
@@ -61,8 +59,8 @@ fn check_tree1l<'a>(
     payloads: &Vec<Vec<u8>>,
     object: &echo_messages::Tree1LCF<'a>,
 ) {
-    check_single_buffer(indexes[0], payloads, object.get_left());
-    check_single_buffer(indexes[1], payloads, object.get_right());
+    check_single_buffer(indexes[0], payloads, &object.get_left());
+    check_single_buffer(indexes[1], payloads, &object.get_right());
 }
 
 fn check_single_buffer<'a>(
@@ -70,6 +68,7 @@ fn check_single_buffer<'a>(
     payloads: &Vec<Vec<u8>>,
     object: &echo_messages::SingleBufferCF<'a>,
 ) {
+    assert!(object.get_message().len() == payloads[idx].len());
     assert!(object.get_message().to_bytes_vec() == payloads[idx].clone())
 }
 
@@ -134,36 +133,36 @@ fn get_single_buffer_message<'a>(
 
 fn deserialize_tree5l<'a>(input: &echo_messages::Tree5LCF<'a>) -> echo_messages::Tree5LCF<'a> {
     let mut output = echo_messages::Tree5LCF::new();
-    output.set_left(deserialize_tree4l(input.get_left()));
-    output.set_right(deserialize_tree4l(input.get_right()));
+    output.set_left(deserialize_tree4l(&input.get_left()));
+    output.set_right(deserialize_tree4l(&input.get_right()));
     output
 }
 
 fn deserialize_tree4l<'a>(input: &echo_messages::Tree4LCF<'a>) -> echo_messages::Tree4LCF<'a> {
     let mut output = echo_messages::Tree4LCF::new();
-    output.set_left(deserialize_tree3l(input.get_left()));
-    output.set_right(deserialize_tree3l(input.get_right()));
+    output.set_left(deserialize_tree3l(&input.get_left()));
+    output.set_right(deserialize_tree3l(&input.get_right()));
     output
 }
 
 fn deserialize_tree3l<'a>(input: &echo_messages::Tree3LCF<'a>) -> echo_messages::Tree3LCF<'a> {
     let mut output = echo_messages::Tree3LCF::new();
-    output.set_left(deserialize_tree2l(input.get_left()));
-    output.set_right(deserialize_tree2l(input.get_right()));
+    output.set_left(deserialize_tree2l(&input.get_left()));
+    output.set_right(deserialize_tree2l(&input.get_right()));
     output
 }
 
 fn deserialize_tree2l<'a>(input: &echo_messages::Tree2LCF<'a>) -> echo_messages::Tree2LCF<'a> {
     let mut output = echo_messages::Tree2LCF::new();
-    output.set_left(deserialize_tree1l(input.get_left()));
-    output.set_right(deserialize_tree1l(input.get_right()));
+    output.set_left(deserialize_tree1l(&input.get_left()));
+    output.set_right(deserialize_tree1l(&input.get_right()));
     output
 }
 
 fn deserialize_tree1l<'a>(input: &echo_messages::Tree1LCF<'a>) -> echo_messages::Tree1LCF<'a> {
     let mut output = echo_messages::Tree1LCF::new();
-    output.set_left(deserialize_single_buffer(input.get_left()));
-    output.set_right(deserialize_single_buffer(input.get_right()));
+    output.set_left(deserialize_single_buffer(&input.get_left()));
+    output.set_right(deserialize_single_buffer(&input.get_right()));
     output
 }
 
@@ -184,6 +183,10 @@ fn context_size(message_type: SimpleMessageType, size: usize) -> usize {
             assert!(payloads.len() == 1);
             let mut single_buffer_cf = echo_messages::SingleBufferCF::new();
             single_buffer_cf.set_message(CFBytes::new(&payloads[0]));
+            tracing::debug!(
+                "Context size: {}",
+                single_buffer_cf.init_header_buffer().len()
+            );
             single_buffer_cf.init_header_buffer().len()
         }
         SimpleMessageType::List(list_size) => {
@@ -194,51 +197,57 @@ fn context_size(message_type: SimpleMessageType, size: usize) -> usize {
             for payload in payloads.iter() {
                 list_ptr.append(CFBytes::new(&payload));
             }
+            tracing::debug!("Context size: {}", list_cf.init_header_buffer().len());
             list_cf.init_header_buffer().len()
         }
         SimpleMessageType::Tree(depth) => match depth {
             TreeDepth::One => {
                 assert!(payloads.len() == 2);
                 let tree_cf = get_tree1l_message(&[0, 1], &payloads);
+                tracing::debug!("Context size: {}", tree_cf.init_header_buffer().len());
                 tree_cf.init_header_buffer().len()
             }
             TreeDepth::Two => {
                 assert!(payloads.len() == 4);
                 let tree_cf = get_tree2l_message(&[0, 1, 2, 3], &payloads);
+                tracing::debug!("Context size: {}", tree_cf.init_header_buffer().len());
                 tree_cf.init_header_buffer().len()
             }
             TreeDepth::Three => {
                 assert!(payloads.len() == 8);
                 let indexes: Vec<usize> = (0usize..8usize).collect();
                 let tree_cf = get_tree3l_message(indexes.as_slice(), &payloads);
+                tracing::debug!("Context size: {}", tree_cf.init_header_buffer().len());
                 tree_cf.init_header_buffer().len()
             }
             TreeDepth::Four => {
                 assert!(payloads.len() == 16);
                 let indexes: Vec<usize> = (0usize..16usize).collect();
                 let tree_cf = get_tree4l_message(indexes.as_slice(), &payloads);
+                tracing::debug!("Context size: {}", tree_cf.init_header_buffer().len());
                 tree_cf.init_header_buffer().len()
             }
             TreeDepth::Five => {
                 assert!(payloads.len() == 32);
                 let indexes: Vec<usize> = (0usize..32usize).collect();
                 let tree_cf = get_tree5l_message(indexes.as_slice(), &payloads);
+                tracing::debug!("Context size: {}", tree_cf.init_header_buffer().len());
                 tree_cf.init_header_buffer().len()
             }
         },
     }
 }
 
-impl CornflakesSerializer {
-    pub fn new(message_type: SimpleMessageType, size: usize) -> CornflakesSerializer {
-        CornflakesSerializer {
+impl CornflakesFixedSerializer {
+    pub fn new(message_type: SimpleMessageType, size: usize) -> CornflakesFixedSerializer {
+        CornflakesFixedSerializer {
             message_type: message_type,
             context_size: context_size(message_type, size),
         }
     }
 }
 
-impl<D> CerealizeMessage<D> for CornflakesSerializer
+impl<D> CerealizeMessage<D> for CornflakesFixedSerializer
 where
     D: Datapath,
 {
@@ -266,13 +275,13 @@ where
             SimpleMessageType::List(_list_elts) => {
                 let mut object_deser = echo_messages::ListCF::new();
                 object_deser.deserialize(recved_msg.get_pkt_buffer());
-                let list_field_deser = object_deser.get_messages();
-
+                let mut list_field_deser = object_deser.get_messages();
+                tracing::debug!("list field deser length: {}", list_field_deser.len());
                 let mut object_ser = echo_messages::ListCF::new();
                 object_ser.init_messages(list_field_deser.len());
                 let list_field_ser = object_ser.get_mut_messages();
                 for i in 0..list_field_deser.len() {
-                    list_field_ser.append(list_field_deser[i]);
+                    list_field_ser.append(list_field_deser.get(i).clone());
                 }
 
                 Ok(object_ser.serialize(ctx, rte_memcpy))
@@ -312,14 +321,14 @@ where
     }
 }
 
-pub struct CornflakesEchoClient<'registered, 'normal> {
+pub struct CornflakesFixedEchoClient<'registered, 'normal> {
     message_type: SimpleMessageType,
     payload_ptrs: Vec<(*const u8, usize)>,
     sga: Cornflake<'registered, 'normal>,
 }
 
 impl<'registered, 'normal, D> CerealizeClient<'normal, D>
-    for CornflakesEchoClient<'registered, 'normal>
+    for CornflakesFixedEchoClient<'registered, 'normal>
 where
     D: Datapath,
 {
@@ -333,7 +342,7 @@ where
     ) -> Result<Self> {
         let payload_ptrs = init_payloads(&field_sizes, &mmap_metadata)?;
         let sga = Cornflake::default();
-        Ok(CornflakesEchoClient {
+        Ok(CornflakesFixedEchoClient {
             message_type: message_type,
             payload_ptrs: payload_ptrs,
             sga: sga,
@@ -365,6 +374,10 @@ where
                     list_ptr.append(CFBytes::new(payload));
                 }
                 self.sga = list_cf.serialize(ctx.as_mut_slice(), rte_memcpy);
+                for i in 0..self.sga.num_segments() {
+                    let entry = self.sga.index(i);
+                    tracing::debug!(entry_type =? entry.buf_type(), entry_len = entry.buf_size(), i = i, "Metadata about each cornptr in the sga");
+                }
             }
             SimpleMessageType::Tree(depth) => match depth {
                 TreeDepth::One => {
@@ -418,6 +431,7 @@ where
                 let mut object_deser = echo_messages::SingleBufferCF::new();
                 object_deser.deserialize(recved_msg.get_pkt_buffer());
                 let bytes_vec = object_deser.get_message().to_bytes_vec();
+                assert!(bytes_vec.len() == our_payloads[0].len());
                 assert!(bytes_vec == our_payloads[0]);
             }
             SimpleMessageType::List(list_size) => {
@@ -426,7 +440,7 @@ where
                 object_deser.deserialize(recved_msg.get_pkt_buffer());
                 assert!(object_deser.get_messages().len() == our_payloads.len());
                 for (i, payload) in our_payloads.iter().enumerate() {
-                    let bytes_vec = object_deser.get_messages()[i].to_bytes_vec();
+                    let bytes_vec = object_deser.get_messages().get(i).to_bytes_vec();
                     assert!(bytes_vec == payload.clone());
                 }
             }

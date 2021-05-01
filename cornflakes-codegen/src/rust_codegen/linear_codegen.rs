@@ -616,6 +616,10 @@ fn add_list_init(compiler: &mut SerializationCompiler, field: &FieldInfo) -> Res
             bail!("Field type not supported: {:?}", x);
         }
     }
+    compiler.add_statement(
+        &format!("self.bitmap[{}]", field.get_bitmap_idx_str(true)),
+        "1",
+    )?;
     compiler.pop_context()?;
     Ok(())
 }

@@ -53,10 +53,9 @@ fn main() {
             input_fb_file
         ));
 
-    // compile cornflakes
-    // TODO: make version (linear or constant codegen) parametrizable
-    let input_cf_path = echo_src_path.clone().join("cornflakes");
-    let input_cf_file = input_cf_path.clone().join("echo_cf.proto");
+    // compile cornflakes dynamic
+    let input_cf_path = echo_src_path.clone().join("cornflakes_dynamic");
+    let input_cf_file = input_cf_path.clone().join("echo_cf_dynamic.proto");
     match compile(
         input_cf_file.as_path().to_str().unwrap(),
         &out_dir,
@@ -68,5 +67,17 @@ fn main() {
         }
     }
 
-    // TODO: compile cornflakes 1-copy baseline as well
+    // compile cornflakes fixed
+    let input_cf_path = echo_src_path.clone().join("cornflakes_fixed");
+    let input_cf_file = input_cf_path.clone().join("echo_cf_fixed.proto");
+    match compile(
+        input_cf_file.as_path().to_str().unwrap(),
+        &out_dir,
+        CompileOptions::new(HeaderType::ConstantDeserialization, Language::Rust),
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("Cornflakes codegen failed: {:?}", e);
+        }
+    }
 }
