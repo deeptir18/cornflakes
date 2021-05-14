@@ -118,7 +118,7 @@ fn get_tree4l_level_args_from_payloads_vec<'a>(
     builder: &mut FlatBufferBuilder<'a>,
     payloads: &Vec<&'a [u8]>,
 ) -> Vec<echo_fb::Tree4LFBArgs<'a>> {
-    let vec_size = u32::pow(2, depth as u32 - 3) as usize;
+    let vec_size = u32::pow(2, depth as u32 - 4) as usize;
     let level3 = get_tree3l_level_args_from_payloads_vec(depth, builder, payloads);
     let level3_args: Vec<WIPOffset<echo_fb::Tree3LFB>> = level3
         .iter()
@@ -140,8 +140,8 @@ fn check_tree3l<'a>(indices: &[usize], payloads: &Vec<Vec<u8>>, object: &echo_fb
 }
 
 fn build_tree3l<'a>(builder: &mut FlatBufferBuilder<'a>, payloads: &Vec<&'a [u8]>) {
-    let level3_args = get_tree2l_level_args_from_payloads_vec(3, builder, payloads);
-    let tree3lfb = echo_fb::Tree2LFB::create(builder, &level3_args[0]);
+    let level3_args = get_tree3l_level_args_from_payloads_vec(3, builder, payloads);
+    let tree3lfb = echo_fb::Tree3LFB::create(builder, &level3_args[0]);
     builder.finish(tree3lfb, None);
 }
 
@@ -643,7 +643,7 @@ where
             }
             SimpleMessageType::Tree(depth) => match depth {
                 TreeDepth::One => {
-                    assert!(our_payloads.len() == 1);
+                    assert!(our_payloads.len() == 2);
                     let object_deser = get_root::<echo_fb::Tree1LFB>(&recved_msg.get_pkt_buffer());
                     let indices: Vec<usize> = (0usize..2usize).collect();
                     check_tree1l(indices.as_slice(), &our_payloads, &object_deser);
