@@ -7,10 +7,7 @@ pub mod echo_messages {
     #![allow(unused_imports)]
     include!(concat!(env!("OUT_DIR"), "/echo_proto.rs"));
 }
-use super::{
-    get_equal_fields, get_payloads_as_vec, init_payloads, init_payloads_as_vec, CerealizeClient,
-    CerealizeMessage,
-};
+use super::{get_payloads_as_vec, init_payloads, CerealizeClient, CerealizeMessage};
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPacket};
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
@@ -153,69 +150,14 @@ fn deserialize_single_buffer(
     single_buffer_proto
 }
 
-fn context_size(message_type: SimpleMessageType, size: usize) -> usize {
-    let payloads_vec = init_payloads_as_vec(&get_equal_fields(message_type, size));
-    let payloads: Vec<&[u8]> = payloads_vec.iter().map(|vec| vec.as_slice()).collect();
-
-    match message_type {
-        SimpleMessageType::Single => {
-            assert!(payloads.len() == 1);
-            let mut single_buffer_proto = echo_messages::SingleBufferProto::new();
-            single_buffer_proto.set_message(payloads[0].to_vec());
-            single_buffer_proto.compute_size() as usize
-        }
-        SimpleMessageType::List(list_elts) => {
-            assert!(payloads.len() == list_elts);
-            let mut list_proto = echo_messages::ListProto::new();
-            let list = list_proto.mut_messages();
-            for i in 0..list_elts {
-                list.push(payloads[i].to_vec());
-            }
-            list_proto.compute_size() as usize
-        }
-        SimpleMessageType::Tree(depth) => match depth {
-            TreeDepth::One => {
-                assert!(payloads.len() == 2);
-                let tree_cf = get_tree_1l_message(&[0, 1], &payloads);
-                tree_cf.compute_size() as usize
-            }
-            TreeDepth::Two => {
-                assert!(payloads.len() == 4);
-                let tree_cf = get_tree_2l_message(&[0, 1, 2, 3], &payloads);
-                tree_cf.compute_size() as usize
-            }
-            TreeDepth::Three => {
-                assert!(payloads.len() == 8);
-                let indices: Vec<usize> = (0usize..8usize).collect();
-                let tree_cf = get_tree_3l_message(indices.as_slice(), &payloads);
-                tree_cf.compute_size() as usize
-            }
-            TreeDepth::Four => {
-                assert!(payloads.len() == 16);
-                let indices: Vec<usize> = (0usize..16usize).collect();
-                let tree_cf = get_tree_4l_message(indices.as_slice(), &payloads);
-                tree_cf.compute_size() as usize
-            }
-            TreeDepth::Five => {
-                assert!(payloads.len() == 32);
-                let indices: Vec<usize> = (0usize..32usize).collect();
-                let tree_cf = get_tree_5l_message(indices.as_slice(), &payloads);
-                tree_cf.compute_size() as usize
-            }
-        },
-    }
-}
-
 pub struct ProtobufSerializer {
     message_type: SimpleMessageType,
-    context_size: usize,
 }
 
 impl ProtobufSerializer {
-    pub fn new(message_type: SimpleMessageType, size: usize) -> ProtobufSerializer {
+    pub fn new(message_type: SimpleMessageType, _size: usize) -> ProtobufSerializer {
         ProtobufSerializer {
             message_type: message_type,
-            context_size: context_size(message_type, size),
         }
     }
 }
@@ -304,6 +246,9 @@ where
                 }
             },
         }
+        output_stream
+            .flush()
+            .wrap_err("Failed to flush output stream.")?;
         cf.add_entry(CornPtr::Normal(ctx));
         Ok(cf)
     }
@@ -311,7 +256,8 @@ where
     fn new_context(&self) -> Self::Ctx {
         // TODO: could also try to directly allocate a packet buffer here, so a second copy into
         // registered memory isn't required
-        vec![0u8; self.context_size]
+        Vec::default()
+        //vec![0u8; self.context_size]
     }
 }
 
@@ -319,7 +265,6 @@ pub struct ProtobufEchoClient<'registered, 'normal> {
     message_type: SimpleMessageType,
     payload_ptrs: Vec<(*const u8, usize)>,
     sga: Cornflake<'registered, 'normal>,
-    total_size: usize,
 }
 
 impl<'registered, 'normal, D> CerealizeClient<'normal, D>
@@ -337,13 +282,11 @@ where
     ) -> Result<Self> {
         let payload_ptrs = init_payloads(&field_sizes, &mmap_metadata)?;
         let sga = Cornflake::default();
-        let total_size: usize = payload_ptrs.iter().map(|(_, size)| *size).sum();
 
         Ok(ProtobufEchoClient {
             message_type: message_type,
             payload_ptrs: payload_ptrs,
             sga: sga,
-            total_size: total_size,
         })
     }
 
@@ -417,6 +360,9 @@ where
                 }
             },
         }
+        output_stream
+            .flush()
+            .wrap_err("Failed to flush output stream.")?;
         self.sga.add_entry(CornPtr::Normal(ctx));
         Ok(())
     }
@@ -498,6 +444,6 @@ where
     }
 
     fn new_context(&self) -> Self::Ctx {
-        vec![0u8; context_size(self.message_type, self.total_size)]
+        Vec::default()
     }
 }
