@@ -92,8 +92,10 @@ pub enum SerializationType {
     CornflakesDynamic,
     /// Cornflakes with a fixed size header.
     CornflakesFixed,
-    /// Cornflakes where everything is copied into 1 packet buffer.
-    CornflakesOneCopy,
+    /// Copied into 1 buffer, but with dynamically sized header.
+    CornflakesOneCopyDynamic,
+    /// Cornflakes where everything is copied into 1 packet buffer, with fix sized header.
+    CornflakesOneCopyFixed,
 }
 
 impl std::str::FromStr for SerializationType {
@@ -108,9 +110,12 @@ impl std::str::FromStr for SerializationType {
             "cornflakes-fixed" | "CORNFLAKES-FIXED" | "Cornflakes-Fixed" | "CornflakesFixed" => {
                 SerializationType::CornflakesFixed
             }
-            "cornflakes1c" | "CORNFLAKES1C" | "Cornflakes1C" | "Cornflakes1c" => {
-                SerializationType::CornflakesOneCopy
-            }
+            "cornflakes1c-fixed" | "CORNFLAKES1C-FIXED" | "Cornflakes1C-Fixed"
+            | "Cornflakes1c-Fixed" => SerializationType::CornflakesOneCopyFixed,
+            "cornflakes1c-dynamic"
+            | "CORNFLAKES1C-DYNAMIC"
+            | "Cornflakes1C-Dynamic"
+            | "Cornflakes1c-Dynamic" => SerializationType::CornflakesOneCopyDynamic,
             x => {
                 bail!("{} serialization type unknown.", x);
             }

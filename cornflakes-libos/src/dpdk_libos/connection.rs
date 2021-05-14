@@ -221,6 +221,8 @@ impl std::str::FromStr for DPDKMode {
 pub struct DPDKConnection {
     /// Whether the receive is zero-copy
     zero_copy_recv: bool,
+    /// Whether to use scatter-gather on send.
+    use_scatter_gather: bool,
     /// Server or client mode.
     mode: DPDKMode,
     /// dpdk_port
@@ -267,7 +269,12 @@ impl DPDKConnection {
     /// (1) A list of mac address and IP addresses in the network.
     /// (2) DPDK rte_eal_init information.
     /// (3) UDP port information for UDP packet headers.
-    pub fn new(config_file: &str, mode: DPDKMode, zero_copy: bool) -> Result<DPDKConnection> {
+    pub fn new(
+        config_file: &str,
+        mode: DPDKMode,
+        zero_copy: bool,
+        use_scatter_gather: bool,
+    ) -> Result<DPDKConnection> {
         let (ip_to_mac, mac_to_ip, udp_port) = dpdk_utils::parse_yaml_map(config_file).wrap_err(
             "Failed to get ip to mac address mapping, or udp port information from yaml config.",
         )?;
@@ -327,6 +334,7 @@ impl DPDKConnection {
 
         Ok(DPDKConnection {
             zero_copy_recv: zero_copy,
+            use_scatter_gather: use_scatter_gather,
             mode: mode,
             dpdk_port: nb_ports - 1,
             ip_to_mac: ip_to_mac,
@@ -438,6 +446,7 @@ impl Datapath for DPDKConnection {
             .collect();
         tracing::debug!("Headers: {:?}", headers);
         let pkt_construct_timer = self.get_timer(PKT_CONSTRUCT_TIMER, cfg!(feature = "timers"))?;
+        let use_scatter_gather = self.use_scatter_gather;
         timefunc(
             &mut || {
                 for (i, (((ref sga, _), ref header), ref mut pkt)) in sgas
@@ -446,20 +455,34 @@ impl Datapath for DPDKConnection {
                     .zip(pkts.iter_mut())
                     .enumerate()
                 {
-                    pkt.construct_from_sga(
-                        &mut self.send_mbufs,
-                        i,
-                        sga,
-                        self.default_mempool,
-                        self.extbuf_mempool,
-                        header,
-                        self.default_memzone,
-                        &self.external_memory_regions,
-                    )
-                    .wrap_err(format!(
-                        "Unable to construct pkt from sga, sga idx: {}",
-                        sga.get_id()
-                    ))?;
+                    if use_scatter_gather {
+                        pkt.construct_from_sga(
+                            &mut self.send_mbufs,
+                            i,
+                            sga,
+                            self.default_mempool,
+                            self.extbuf_mempool,
+                            header,
+                            self.default_memzone,
+                            &self.external_memory_regions,
+                        )
+                        .wrap_err(format!(
+                            "Unable to construct pkt from sga with scatter-gather, sga idx: {}",
+                            sga.get_id()
+                        ))?;
+                    } else {
+                        pkt.construct_from_sga_without_scatter_gather(
+                            &mut self.send_mbufs,
+                            i,
+                            sga,
+                            self.default_mempool,
+                            header,
+                        )
+                        .wrap_err(format!(
+                            "Unable to construct pkt from sga without scatter-gather, sga idx: {}",
+                            sga.get_id()
+                        ))?;
+                    }
                 }
                 Ok(())
             },
