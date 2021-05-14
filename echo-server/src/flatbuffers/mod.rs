@@ -645,7 +645,7 @@ where
                 TreeDepth::One => {
                     assert!(our_payloads.len() == 1);
                     let object_deser = get_root::<echo_fb::Tree1LFB>(&recved_msg.get_pkt_buffer());
-                    let indices: Vec<usize> = (0usize..1usize).collect();
+                    let indices: Vec<usize> = (0usize..2usize).collect();
                     check_tree1l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Two => {

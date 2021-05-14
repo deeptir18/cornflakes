@@ -494,7 +494,7 @@ where
             }
             SimpleMessageType::Tree(depth) => match depth {
                 TreeDepth::One => {
-                    assert!(payloads.len() == 1);
+                    assert!(payloads.len() == 2);
                     let mut tree1l = builder.init_root::<echo_capnp::tree1_l_c_p::Builder>();
                     build_tree1l(&mut tree1l, &[0, 1], &payloads);
                 }
@@ -585,7 +585,7 @@ where
                     let object_deser = message_reader
                         .get_root::<echo_capnp::tree1_l_c_p::Reader>()
                         .wrap_err("Failed to deserialize Tree1L message.")?;
-                    let indices: Vec<usize> = (0usize..1usize).collect();
+                    let indices: Vec<usize> = (0usize..2usize).collect();
                     check_tree1l(indices.as_slice(), &our_payloads, object_deser)?;
                 }
                 TreeDepth::Two => {
@@ -613,7 +613,7 @@ where
                     let object_deser = message_reader
                         .get_root::<echo_capnp::tree5_l_c_p::Reader>()
                         .wrap_err("Failed to deserialize Tree5L message.")?;
-                    let indices: Vec<usize> = (16usize..32usize).collect();
+                    let indices: Vec<usize> = (0usize..32usize).collect();
                     check_tree5l(indices.as_slice(), &our_payloads, object_deser)?;
                 }
             },
