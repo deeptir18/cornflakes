@@ -1,11 +1,11 @@
 @0x81c88560bad9aacc;
 
 struct SingleBufferCP {
-    message @0 :Text;
+    message @0 :Data;
 }
 
 struct ListCP {
-    messages @0 :List(Text);
+    messages @0 :List(Data);
 }
 
 struct Tree1LCP {

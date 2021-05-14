@@ -22,9 +22,10 @@ libc = "0.2.81"
 prost = "0.7.0"
 capnp = "0.13.6"
 flatbuffers = "0.7.0"
+protobuf = "2.*.*"
 
 [build-dependencies]
-prost-build = "0.7.0"
+protoc-rust = "2.*.*"
 capnpc = "0.13"
 cornflakes-codegen = { path = "../cornflakes-codegen" }
 

@@ -131,7 +131,7 @@ fn main() -> Result<()> {
             }
             (NetworkDatapath::DPDK, SerializationType::Protobuf) => {
                 let mut connection = dpdk_datapath(false)?;
-                let serializer = ProtobufSerializer::new(opt.message);
+                let serializer = ProtobufSerializer::new(opt.message, opt.size);
                 let mut echo_server = EchoServer::new(serializer);
                 set_ctrlc_handler(&echo_server)?;
                 echo_server.init(&mut connection)?;
@@ -139,7 +139,7 @@ fn main() -> Result<()> {
             }
             (NetworkDatapath::DPDK, SerializationType::Flatbuffers) => {
                 let mut connection = dpdk_datapath(false)?;
-                let serializer = FlatbuffersSerializer::new(opt.message);
+                let serializer = FlatbuffersSerializer::new(opt.message, opt.size);
                 let mut echo_server = EchoServer::new(serializer);
                 set_ctrlc_handler(&echo_server)?;
                 echo_server.init(&mut connection)?;
@@ -147,7 +147,7 @@ fn main() -> Result<()> {
             }
             (NetworkDatapath::DPDK, SerializationType::Capnproto) => {
                 let mut connection = dpdk_datapath(false)?;
-                let serializer = CapnprotoSerializer::new(opt.message);
+                let serializer = CapnprotoSerializer::new(opt.message, opt.size);
                 let mut echo_server = EchoServer::new(serializer);
                 set_ctrlc_handler(&echo_server)?;
                 echo_server.init(&mut connection)?;

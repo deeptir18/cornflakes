@@ -51,7 +51,7 @@ where
     /// Serialization library might require long-lived context to serialize an object, so it
     /// doesn't go out of scope.
     /// TODO: does Ctx need to implement any trait?
-    type Ctx: Clone;
+    type Ctx;
     /// Message type
     fn message_type(&self) -> SimpleMessageType;
     /// Echo the received message into a corresponding scatter-gather array.
@@ -81,7 +81,7 @@ where
     where
         Self: Sized;
     /// Initializes the object header.
-    fn init(&mut self, ctx: &'normal mut Self::Ctx);
+    fn init(&mut self, ctx: &'normal mut Self::Ctx) -> Result<()>;
     /// Returns type of message.
     fn message_type(&self) -> SimpleMessageType;
     /// payload sizes

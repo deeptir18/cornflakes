@@ -57,7 +57,7 @@ where
 
     pub fn init_state(&mut self, ctx: &'normal mut S::Ctx, connection: &mut D) -> Result<()> {
         self.init(connection)?;
-        self.serializer.init(ctx);
+        self.serializer.init(ctx)?;
         Ok(())
     }
 

@@ -1,7 +1,13 @@
 use capnpc;
 use cornflakes_codegen::{compile, CompileOptions, HeaderType, Language};
-use prost_build;
-use std::{env, fs::canonicalize, path::Path, process::Command};
+use protoc_rust;
+use std::{
+    env,
+    fs::{canonicalize, read_to_string, File},
+    io::{BufWriter, Write},
+    path::Path,
+    process::Command,
+};
 
 fn main() {
     // store all compiled proto files in out_dir
@@ -14,15 +20,33 @@ fn main() {
     // compile protobuf echo
     let input_proto_path = echo_src_path.clone().join("protobuf");
     let input_proto_file = input_proto_path.clone().join("echo_proto.proto");
-    prost_build::compile_protos(
-        &[input_proto_file.as_path().to_str().unwrap()],
-        &[input_proto_path.as_path().to_str().unwrap()],
-    )
-    .expect(&format!(
-        "Protoc compilation failed on {:?}.",
-        input_proto_file
-    ));
+    protoc_rust::Codegen::new()
+        .out_dir(&out_dir)
+        .inputs(&[input_proto_file.as_path()])
+        .includes(&[input_proto_path.as_path()])
+        .customize(protoc_rust::Customize {
+            gen_mod_rs: Some(true),
+            ..Default::default()
+        })
+        .run()
+        .expect(&format!(
+            "Protoc compilation failed on {:?}.",
+            input_proto_file
+        ));
 
+    // issue with includes and ![allow()]s in generated code; remove them:
+    // Resolve the path to the generated file.
+    let proto_outpath = Path::new(&out_dir).join("echo_proto.rs");
+    // Read the generated code to a string.
+    let code = read_to_string(&proto_outpath).expect("Failed to read generated file");
+    // Write filtered lines to the same file.
+    let mut writer = BufWriter::new(File::create(proto_outpath).unwrap());
+    for line in code.lines() {
+        if !line.starts_with("//!") && !line.starts_with("#!") {
+            writer.write_all(line.as_bytes()).unwrap();
+            writer.write_all(&[b'\n']).unwrap();
+        }
+    }
     // compile capnproto echo
     let input_capnp_path = echo_src_path.clone().join("capnproto");
     let input_capnp_file = input_capnp_path.clone().join("echo.capnp");

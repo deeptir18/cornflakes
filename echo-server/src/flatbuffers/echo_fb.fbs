@@ -1,11 +1,11 @@
 namespace echo_fb;
 
 table SingleBufferFB {
-    message:byte;
+    message:[ubyte];
 }
 
 table ListFB {
-    messages:[byte];
+    messages:[SingleBufferFB];
 }
 
 table Tree1LFB {

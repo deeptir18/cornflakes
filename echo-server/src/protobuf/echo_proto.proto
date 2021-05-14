@@ -6,7 +6,7 @@ message SingleBufferProto {
 }
 
 message ListProto {
-    repeated bytes message = 1;
+    repeated bytes messages = 1;
 }
 
 message Tree1LProto {

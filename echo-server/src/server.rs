@@ -54,7 +54,9 @@ where
         mut send_fn: impl FnMut(&Vec<(Cornflake, AddressInfo)>) -> Result<()>,
     ) -> Result<()> {
         let mut out_sgas: Vec<(Cornflake, AddressInfo)> = Vec::with_capacity(sgas.len());
-        let mut contexts = vec![self.serializer.new_context(); sgas.len()];
+        let mut contexts: Vec<S::Ctx> = (0..sgas.len())
+            .map(|_i| self.serializer.new_context())
+            .collect();
         for (in_sga, ctx) in sgas.iter().zip(contexts.iter_mut()) {
             let mut out_sga = self.serializer.process_msg(&in_sga.0, ctx)?;
             out_sga.set_id(in_sga.0.get_id());
