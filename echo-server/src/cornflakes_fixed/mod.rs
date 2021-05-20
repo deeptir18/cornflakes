@@ -436,6 +436,13 @@ where
                 object_deser.deserialize(recved_msg.get_pkt_buffer());
                 let bytes_vec = object_deser.get_message().to_bytes_vec();
                 assert!(bytes_vec.len() == our_payloads[0].len());
+                if bytes_vec != our_payloads[0].clone() {
+                    tracing::debug!(
+                        "Payload not equal: ours: {:?}, theirs: {:?}",
+                        our_payloads[0],
+                        bytes_vec,
+                    );
+                }
                 assert!(bytes_vec == our_payloads[0]);
             }
             SimpleMessageType::List(list_size) => {
@@ -445,6 +452,14 @@ where
                 assert!(object_deser.get_messages().len() == our_payloads.len());
                 for (i, payload) in our_payloads.iter().enumerate() {
                     let bytes_vec = object_deser.get_messages().get(i).to_bytes_vec();
+                    if bytes_vec != payload.clone() {
+                        tracing::debug!(
+                            "Payload not equal for # i: {}, ours: {:?}, theirs: {:?}",
+                            i,
+                            payload,
+                            bytes_vec
+                        );
+                    }
                     assert!(bytes_vec == payload.clone());
                 }
             }

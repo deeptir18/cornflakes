@@ -42,6 +42,7 @@ impl AsRef<[u8]> for MbufWrapper {
     fn as_ref(&self) -> &[u8] {
         match self.mbuf {
             Some(mbuf) => {
+                tracing::debug!("Addr of original mbuf: {:?}", mbuf);
                 let payload_len = unsafe { (*mbuf).pkt_len as usize - self.header_size as usize };
                 mbuf_slice!(mbuf, self.header_size, payload_len)
             }
@@ -444,7 +445,6 @@ impl Datapath for DPDKConnection {
             .iter()
             .map(|(_, addr)| self.get_outgoing_header(addr))
             .collect();
-        tracing::debug!("Headers: {:?}", headers);
         let pkt_construct_timer = self.get_timer(PKT_CONSTRUCT_TIMER, cfg!(feature = "timers"))?;
         let use_scatter_gather = self.use_scatter_gather;
         timefunc(

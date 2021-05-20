@@ -96,6 +96,7 @@ impl Pkt {
             alloc_mbuf(header_mempool).wrap_err("Unable to allocate mbuf from mempool.")?;
         self.add_header_mbuf(header_mbuf, (header_info, sga.data_len(), sga.get_id()), 1)
             .wrap_err("Unable to initialize and add header mbuf.")?;
+        mbufs[0][pkt_id] = header_mbuf;
 
         // 3: copy the payloads from the sga into the mbufs
         self.copy_all_payloads(mbufs, pkt_id, sga)
@@ -327,6 +328,10 @@ impl Pkt {
         debug!("The mbuf idx we're changing: {}", idx);
         // check whether the payload is within the default memzone,
         // or in an external region
+        tracing::debug!(
+            "[set external payload] Address of payload: {:?}",
+            buf.as_ptr()
+        );
         if (buf.as_ptr() as usize) > default_memzone.0
             && (buf.as_ptr() as usize) < default_memzone.0 + default_memzone.1
         {
@@ -379,8 +384,6 @@ impl Pkt {
                 mbufs[idx][pkt_id],
                 original_mbuf_ptr
             );
-            // increase ref count of this mbuf
-            dpdk_call!(rte_pktmbuf_refcnt_update(original_mbuf_ptr, 1));
             unsafe {
                 (*mbufs[idx][pkt_id]).buf_iova = (*original_mbuf_ptr).buf_iova;
                 (*mbufs[idx][pkt_id]).buf_addr = buf.as_ptr().offset(-1 * data_off as isize) as _;
@@ -389,7 +392,15 @@ impl Pkt {
             }
             // set lkey of packet to be -1
             dpdk_call!(set_lkey_not_present(mbufs[idx][pkt_id]));
-            dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 1));
+
+            // only set reference for last mbuf in the list.
+            if unsafe { (*mbufs[idx][pkt_id]).next == ptr::null_mut() } {
+                dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 1));
+                // increase ref count of this mbuf if it's the last packet in the mbuf list
+                dpdk_call!(rte_pktmbuf_refcnt_update(original_mbuf_ptr, 1));
+            } else {
+                dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 0));
+            }
         // copy over the physical address
         } else {
             for region in external_regions.iter() {
@@ -409,7 +420,7 @@ impl Pkt {
             }
         }
         // update general packet metadata
-        tracing::debug!("Adding {:?} to buf", buf.len());
+        tracing::debug!("[set external payload] Adding {:?} to buf", buf.len());
         unsafe {
             (*mbufs[idx][pkt_id]).data_len = buf.len() as u16;
         }

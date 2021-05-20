@@ -1,9 +1,7 @@
 use super::CerealizeClient;
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
-    mem::MmapMetadata,
-    timing::{HistogramWrapper, RTTHistogram},
-    ClientSM, Datapath, MsgID, ScatterGather,
+    mem::MmapMetadata, timing::ManualHistogram, ClientSM, Datapath, MsgID, ScatterGather,
 };
 use cornflakes_utils::SimpleMessageType;
 use std::{marker::PhantomData, net::Ipv4Addr, ops::FnMut, time::Duration};
@@ -21,7 +19,7 @@ where
     recved: usize,
     retries: usize,
     last_sent_id: u32,
-    rtts: HistogramWrapper,
+    rtts: ManualHistogram,
     metadata: MmapMetadata,
     _marker: PhantomData<&'normal D>,
 }
@@ -35,6 +33,7 @@ where
         server_ip: Ipv4Addr,
         message: SimpleMessageType,
         sizes: Vec<usize>,
+        rtts: ManualHistogram,
     ) -> Result<EchoClient<'normal, S, D>> {
         let metadata = MmapMetadata::new(NUM_PAGES)?;
         let serializer = S::new(message, sizes, metadata.clone())?;
@@ -45,7 +44,7 @@ where
             recved: 0,
             retries: 0,
             last_sent_id: 0,
-            rtts: HistogramWrapper::new("Echo-Client-RTTs")?,
+            rtts: rtts,
             metadata: metadata,
             _marker: PhantomData,
         })
@@ -61,7 +60,8 @@ where
         Ok(())
     }
 
-    pub fn dump_stats(&mut self) {
+    pub fn dump(&mut self, path: Option<String>) -> Result<()> {
+        self.rtts.sort();
         tracing::info!(
             sent = self.sent,
             received = self.recved,
@@ -69,7 +69,15 @@ where
             unique_sent = self.last_sent_id,
             "High level sending stats",
         );
-        self.rtts.dump("End-to-end DPDK echo client RTTs:");
+        self.rtts.dump("End-to-end DPDK echo client RTTs:")?;
+
+        match path {
+            Some(p) => {
+                self.rtts.log_to_file(&p)?;
+            }
+            None => {}
+        }
+        Ok(())
     }
 
     pub fn get_num_recved(&self) -> usize {
@@ -105,7 +113,8 @@ where
         rtt: Duration,
     ) -> Result<()> {
         self.recved += 1;
-        self.rtts.record(rtt.as_nanos() as u64)?;
+        tracing::debug!("Receiving {}th packet", self.recved);
+        self.rtts.record(rtt.as_nanos() as u64);
         if cfg!(debug_assertions) {
             // check the payload that was echoed back is correct
             self.serializer.check_echoed_payload(&sga)?;

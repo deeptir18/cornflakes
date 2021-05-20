@@ -3,6 +3,8 @@ use color_eyre::eyre::{bail, Result};
 use hashbrown::HashMap;
 use hdrhistogram::Histogram;
 use std::{
+    fs::File,
+    io::Write,
     net::Ipv4Addr,
     sync::{Arc, Mutex},
     time::Instant,
@@ -39,19 +41,119 @@ pub fn record(timer: Option<Arc<Mutex<HistogramWrapper>>>, val: u64) -> Result<(
     Ok(())
 }
 
-/*#[macro_export]
-macro_rules! timefunc (
-($func: expr, $cond: expr, $record_func: path, $timer: expr) => {
-    if $cond {
-        let start = Instant::now();
-        let x = $func;
-        $record_func($timer, start.elapsed().as_nanos())?;
-        x
-    } else {
-        $func
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualHistogram {
+    current_count: usize,
+    latencies: Vec<u64>,
+    sorted_latencies: Vec<u64>,
+}
+
+impl ManualHistogram {
+    pub fn init(rate_pps: u64, total_time_sec: u64) -> Self {
+        // ten percent over
+        let num_values = ((rate_pps * total_time_sec) as f64 * 1.10) as usize;
+        ManualHistogram {
+            current_count: 0,
+            latencies: vec![0u64; num_values],
+            sorted_latencies: Vec::default(),
+        }
+    }
+
+    pub fn record(&mut self, val: u64) {
+        if self.current_count == self.latencies.len() {
+            self.latencies.push(val);
+        } else {
+            self.latencies[self.current_count] = val;
+        }
+        self.current_count += 1;
+    }
+
+    pub fn sort(&mut self) {
+        self.sorted_latencies = self.latencies.as_slice()[0..self.current_count].to_vec();
+        self.sorted_latencies.sort();
+    }
+
+    pub fn value_at_quantile(&self, quantile: f64) -> Result<u64> {
+        if self.sorted_latencies.len() == 0 {
+            bail!("Cannot run value_at_quantile until sort() has been called.");
+        }
+
+        if self.sorted_latencies.len() != self.current_count {
+            bail!("Sorted latencies vec does not have the same length as current count. Call sort again.");
+        }
+        let index = (self.sorted_latencies.len() as f64 * quantile) as usize;
+        Ok(self.sorted_latencies[index])
+    }
+
+    /// Logs all the latencies to a file
+    pub fn log_to_file(&self, path: &str) -> Result<()> {
+        let mut file = File::create(path)?;
+        for idx in 0..self.current_count {
+            writeln!(file, "{}", self.latencies[idx])?;
+        }
+        Ok(())
+    }
+
+    fn mean(&self) -> Result<f64> {
+        if self.sorted_latencies.len() == 0 {
+            bail!("Cannot run value_at_quantile until sort() has been called.");
+        }
+
+        if self.sorted_latencies.len() != self.current_count {
+            bail!("Sorted latencies vec does not have the same length as current count. Call sort again.");
+        }
+
+        let sum: u64 = self.sorted_latencies.iter().sum();
+        Ok(sum as f64 / (self.sorted_latencies.len() as f64))
+    }
+
+    fn max(&self) -> Result<u64> {
+        if self.sorted_latencies.len() == 0 {
+            bail!("Cannot run value_at_quantile until sort() has been called.");
+        }
+
+        if self.sorted_latencies.len() != self.current_count {
+            bail!("Sorted latencies vec does not have the same length as current count. Call sort again.");
+        }
+
+        Ok(self.sorted_latencies[self.sorted_latencies.len() - 1])
+    }
+
+    fn min(&self) -> Result<u64> {
+        if self.sorted_latencies.len() == 0 {
+            bail!("Cannot run value_at_quantile until sort() has been called.");
+        }
+
+        if self.sorted_latencies.len() != self.current_count {
+            bail!("Sorted latencies vec does not have the same length as current count. Call sort again.");
+        }
+
+        Ok(self.sorted_latencies[0])
+    }
+
+    pub fn dump(&self, msg: &str) -> Result<()> {
+        if self.current_count == 0 {
+            return Ok(());
+        }
+
+        tracing::info!(
+            msg,
+            p5_ns = self.value_at_quantile(0.05)?,
+            p25_ns = self.value_at_quantile(0.25)?,
+            p50_ns = self.value_at_quantile(0.5)?,
+            p75_ns = self.value_at_quantile(0.75)?,
+            p95_ns = self.value_at_quantile(0.95)?,
+            p99_ns = self.value_at_quantile(0.99)?,
+            p999_ns = self.value_at_quantile(0.999)?,
+            pkts_recved = self.current_count,
+            min_ns = self.min()?,
+            max_ns = self.max()?,
+            avg_ns = ?self.mean()?,
+        );
+        Ok(())
     }
 }
-);*/
+
 pub trait RTTHistogram {
     fn get_histogram_mut(&mut self) -> &mut Histogram<u64>;
     fn get_histogram(&self) -> &Histogram<u64>;
