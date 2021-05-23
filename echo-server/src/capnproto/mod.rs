@@ -1,9 +1,18 @@
-use super::{echo_capnp, get_payloads_as_vec, init_payloads, CerealizeClient, CerealizeMessage};
-use capnp::message::{Builder, HeapAllocator, Reader, ReaderOptions, SegmentArray};
+use super::{
+    echo_capnp, get_equal_fields, get_payloads_as_vec, init_payloads, init_payloads_as_vec,
+    CerealizeClient, CerealizeMessage,
+};
+use byteorder::{ByteOrder, LittleEndian};
+
+use capnp::message::{
+    Allocator, Builder, HeapAllocator, Reader, ReaderOptions, ReaderSegments, SegmentArray,
+};
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPacket};
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use std::slice;
+
+const FRAMING_ENTRY_SIZE: usize = 8;
 
 fn check_tree5l(
     indices: &[usize],
@@ -320,6 +329,103 @@ fn deserialize_single_buffer(
     Ok(())
 }
 
+fn read_context<'registered, T>(recved_msg: &'registered T) -> Vec<&'registered [u8]>
+where
+    T: ReceivedPacket,
+{
+    assert!(recved_msg.len() >= FRAMING_ENTRY_SIZE);
+    let num_segments = LittleEndian::read_u32(&recved_msg.get_pkt_buffer()[0..4]) as usize;
+    assert!(recved_msg.len() >= FRAMING_ENTRY_SIZE + num_segments * FRAMING_ENTRY_SIZE);
+    let mut size_so_far = FRAMING_ENTRY_SIZE + num_segments * FRAMING_ENTRY_SIZE;
+    let mut segments: Vec<&'registered [u8]> = Vec::default();
+    for i in 0..num_segments {
+        let cur_idx = FRAMING_ENTRY_SIZE + i * FRAMING_ENTRY_SIZE;
+        let offset =
+            LittleEndian::read_u32(&recved_msg.get_pkt_buffer()[cur_idx..(cur_idx + 4)]) as usize;
+        let size =
+            LittleEndian::read_u32(&recved_msg.get_pkt_buffer()[(cur_idx + 4)..(cur_idx + 8)])
+                as usize;
+        assert!(recved_msg.len() >= (size_so_far + size));
+        segments.push(&recved_msg.get_pkt_buffer()[offset..(offset + size)]);
+        size_so_far += size;
+    }
+    segments
+}
+
+fn fill_in_context<T>(framing: &mut Vec<u8>, builder: &Builder<T>)
+where
+    T: Allocator,
+{
+    let segments = builder.get_segments_for_output();
+    // write number of segments into the head
+    let mut cur_idx = 0;
+    LittleEndian::write_u32(&mut framing[cur_idx..(cur_idx + 4)], segments.len() as u32);
+    cur_idx += 8;
+    let mut cur_offset = (segments.len() + 1) * FRAMING_ENTRY_SIZE;
+    for seg in segments.iter() {
+        LittleEndian::write_u32(&mut framing[cur_idx..(cur_idx + 4)], cur_offset as u32);
+        cur_idx += 4;
+        LittleEndian::write_u32(&mut framing[cur_idx..(cur_idx + 4)], seg.len() as u32);
+        cur_idx += 4;
+        cur_offset += seg.len();
+    }
+}
+
+fn context_framing_size(message_type: SimpleMessageType, size: usize) -> usize {
+    let payloads_vec = init_payloads_as_vec(&get_equal_fields(message_type, size));
+    let payloads: Vec<&[u8]> = payloads_vec.iter().map(|vec| vec.as_slice()).collect();
+    let mut builder = Builder::new_default();
+    match message_type {
+        SimpleMessageType::Single => {
+            assert!(payloads.len() == 1);
+            let mut object = builder.init_root::<echo_capnp::single_buffer_c_p::Builder>();
+            object.set_message(payloads[0]);
+        }
+        SimpleMessageType::List(list_size) => {
+            assert!(payloads.len() == list_size);
+            let object = builder.init_root::<echo_capnp::list_c_p::Builder>();
+            let mut list = object.init_messages(list_size as u32);
+            for (i, payload) in payloads.iter().enumerate() {
+                list.set(i as u32, payload);
+            }
+        }
+        SimpleMessageType::Tree(depth) => match depth {
+            TreeDepth::One => {
+                assert!(payloads.len() == 2);
+                let mut tree1l = builder.init_root::<echo_capnp::tree1_l_c_p::Builder>();
+                build_tree1l(&mut tree1l, &[0, 1], &payloads);
+            }
+            TreeDepth::Two => {
+                assert!(payloads.len() == 4);
+                let mut tree2l = builder.init_root::<echo_capnp::tree2_l_c_p::Builder>();
+                let indices: Vec<usize> = (0usize..4usize).collect();
+                build_tree2l(&mut tree2l, indices.as_slice(), &payloads);
+            }
+            TreeDepth::Three => {
+                assert!(payloads.len() == 8);
+                let mut tree3l = builder.init_root::<echo_capnp::tree3_l_c_p::Builder>();
+                let indices: Vec<usize> = (0usize..8usize).collect();
+                build_tree3l(&mut tree3l, indices.as_slice(), &payloads);
+            }
+            TreeDepth::Four => {
+                assert!(payloads.len() == 16);
+                let mut tree4l = builder.init_root::<echo_capnp::tree4_l_c_p::Builder>();
+                let indices: Vec<usize> = (0usize..16usize).collect();
+                build_tree4l(&mut tree4l, indices.as_slice(), &payloads);
+            }
+            TreeDepth::Five => {
+                assert!(payloads.len() == 32);
+                let mut tree5l = builder.init_root::<echo_capnp::tree5_l_c_p::Builder>();
+                let indices: Vec<usize> = (0usize..32usize).collect();
+                build_tree5l(&mut tree5l, indices.as_slice(), &payloads);
+            }
+        },
+    }
+    // initialize sga from builder
+    let segments = builder.get_segments_for_output();
+    (segments.len() + 1) * FRAMING_ENTRY_SIZE
+}
+
 fn build_single_buffer_message<'a>(
     single_buffer_cp: &mut echo_capnp::single_buffer_c_p::Builder,
     index: usize,
@@ -330,12 +436,14 @@ fn build_single_buffer_message<'a>(
 
 pub struct CapnprotoSerializer {
     message_type: SimpleMessageType,
+    framing_size: usize,
 }
 
 impl CapnprotoSerializer {
-    pub fn new(message_type: SimpleMessageType, _size: usize) -> CapnprotoSerializer {
+    pub fn new(message_type: SimpleMessageType, size: usize) -> CapnprotoSerializer {
         CapnprotoSerializer {
             message_type: message_type,
+            framing_size: context_framing_size(message_type, size),
         }
     }
 }
@@ -345,7 +453,7 @@ where
 {
     // it seems like because initLeft() and initRight() take self and &self
     // we need to have different contexts for each nested object
-    type Ctx = Builder<HeapAllocator>;
+    type Ctx = (Vec<u8>, Builder<HeapAllocator>);
 
     fn message_type(&self) -> SimpleMessageType {
         self.message_type
@@ -354,10 +462,11 @@ where
     fn process_msg<'registered, 'normal: 'registered>(
         &self,
         recved_msg: &'registered D::ReceivedPkt,
-        builder: &'normal mut Self::Ctx,
+        ctx: &'normal mut Self::Ctx,
     ) -> Result<Cornflake<'registered, 'normal>> {
-        let segments = [recved_msg.get_pkt_buffer()];
-        let segment_array = SegmentArray::new(&segments[..]);
+        let (ref mut framing_vec, ref mut builder) = ctx;
+        let segment_array_vec = read_context(recved_msg);
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
         let message_reader = Reader::new(segment_array, ReaderOptions::default());
         match self.message_type {
             SimpleMessageType::Single => {
@@ -428,8 +537,12 @@ where
                 }
             },
         }
+
+        fill_in_context(framing_vec, &builder);
         let segments = builder.get_segments_for_output();
-        let mut cf = Cornflake::with_capacity(segments.len());
+        let mut cf = Cornflake::with_capacity(segments.len() + 1);
+
+        cf.add_entry(CornPtr::Normal(framing_vec.as_slice()));
 
         for seg in segments.iter() {
             cf.add_entry(CornPtr::Normal(seg));
@@ -438,7 +551,7 @@ where
     }
 
     fn new_context(&self) -> Self::Ctx {
-        Builder::new_default()
+        (vec![0u8; self.framing_size], Builder::new_default())
     }
 }
 
@@ -446,6 +559,7 @@ pub struct CapnprotoEchoClient<'registered, 'normal> {
     message_type: SimpleMessageType,
     payload_ptrs: Vec<(*const u8, usize)>,
     sga: Cornflake<'registered, 'normal>,
+    total_size: usize,
 }
 
 impl<'registered, 'normal, D> CerealizeClient<'normal, D>
@@ -453,7 +567,7 @@ impl<'registered, 'normal, D> CerealizeClient<'normal, D>
 where
     D: Datapath,
 {
-    type Ctx = Builder<HeapAllocator>;
+    type Ctx = (Vec<u8>, Builder<HeapAllocator>);
     type OutgoingMsg = Cornflake<'registered, 'normal>;
 
     fn new(
@@ -463,15 +577,18 @@ where
     ) -> Result<Self> {
         let payload_ptrs = init_payloads(&field_sizes, &mmap_metadata)?;
         let sga = Cornflake::default();
+        let total_size: usize = payload_ptrs.iter().map(|(_, size)| *size).sum();
 
         Ok(CapnprotoEchoClient {
             message_type: message_type,
             payload_ptrs: payload_ptrs,
             sga: sga,
+            total_size: total_size,
         })
     }
 
-    fn init(&mut self, builder: &'normal mut Self::Ctx) -> Result<()> {
+    fn init(&mut self, ctx: &'normal mut Self::Ctx) -> Result<()> {
+        let (ref mut framing_vec, ref mut builder) = ctx;
         let payloads: Vec<&[u8]> = self
             .payload_ptrs
             .clone()
@@ -526,10 +643,14 @@ where
         }
 
         // initialize sga from builder
+        fill_in_context(framing_vec, &builder);
         let segments = builder.get_segments_for_output();
-        self.sga = Cornflake::with_capacity(segments.len());
+        self.sga = Cornflake::with_capacity(segments.len() + 1);
+
+        self.sga.add_entry(CornPtr::Normal(framing_vec.as_slice()));
 
         for seg in segments.iter() {
+            tracing::debug!("seg: {:?}", seg);
             self.sga.add_entry(CornPtr::Normal(seg));
         }
 
@@ -550,8 +671,8 @@ where
 
     fn check_echoed_payload(&self, recved_msg: &D::ReceivedPkt) -> Result<()> {
         let our_payloads = get_payloads_as_vec(&self.payload_ptrs);
-        let segments = [recved_msg.get_pkt_buffer()];
-        let segment_array = SegmentArray::new(&segments[..]);
+        let segment_array_vec = read_context(recved_msg);
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
         let message_reader = Reader::new(segment_array, ReaderOptions::default());
         match self.message_type {
             SimpleMessageType::Single => {
@@ -623,6 +744,7 @@ where
     }
 
     fn new_context(&self) -> Self::Ctx {
-        Builder::new_default()
+        let framing_size = context_framing_size(self.message_type, self.total_size);
+        (vec![0u8; framing_size], Builder::new_default())
     }
 }

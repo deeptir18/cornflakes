@@ -73,6 +73,8 @@ pub trait ReceivedPacket {
     fn get_pkt_buffer(&self) -> &[u8];
 
     fn get_corn_ptr(&self) -> CornPtr;
+
+    fn len(&self) -> usize;
 }
 
 /// Whether an underlying buffer is borrowed or
@@ -242,7 +244,6 @@ impl<'registered, 'normal> Cornflake<'registered, 'normal> {
     /// * ptr - CornPtr<'a> representing owned or borrowed memory.
     /// * length - usize representing length of memory region.
     pub fn add_entry(&mut self, ptr: CornPtr<'registered, 'normal>) {
-        tracing::debug!("Adding {:?} to data_size", ptr.buf_size());
         self.data_size += ptr.buf_size();
         if ptr.buf_type() == CornType::Registered {
             self.num_borrowed += 1;

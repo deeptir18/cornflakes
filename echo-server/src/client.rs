@@ -60,13 +60,14 @@ where
         Ok(())
     }
 
-    pub fn dump(&mut self, path: Option<String>) -> Result<()> {
+    pub fn dump(&mut self, path: Option<String>, total_time: Duration) -> Result<()> {
         self.rtts.sort();
         tracing::info!(
             sent = self.sent,
             received = self.recved,
             retries = self.retries,
             unique_sent = self.last_sent_id,
+            total_time = ?total_time.as_secs_f64(),
             "High level sending stats",
         );
         self.rtts.dump("End-to-end DPDK echo client RTTs:")?;

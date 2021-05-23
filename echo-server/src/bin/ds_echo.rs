@@ -267,8 +267,9 @@ where
         opt.total_time,
         timeout,
     )?;
-    client.dump(opt.logfile.clone())?;
-    let exp_time = start_run.elapsed().as_nanos() as f64 / 1000000000.0;
+    let exp_duration = start_run.elapsed();
+    client.dump(opt.logfile.clone(), exp_duration)?;
+    let exp_time = exp_duration.as_nanos() as f64 / 1000000000.0;
     let achieved_load_pps = (client.get_num_recved() as f64) / exp_time as f64;
     let achieved_load_gbps = (opt.size as f64 * achieved_load_pps as f64) / (125000000 as f64);
     let load_gbps = ((opt.size as f64) * (opt.rate) as f64) / (125000000 as f64);

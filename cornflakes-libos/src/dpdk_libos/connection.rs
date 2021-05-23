@@ -155,6 +155,10 @@ impl ReceivedPacket for DPDKReceivedPkt {
             CornType::Registered => CornPtr::Registered(self.mbuf_wrapper.as_ref()),
         }
     }
+
+    fn len(&self) -> usize {
+        self.mbuf_wrapper.buf_size()
+    }
 }
 
 /// DPDKReceivedPkt implements ScatterGather so it can be returned by the pop function in the
