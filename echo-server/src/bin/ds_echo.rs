@@ -258,7 +258,7 @@ where
     client.init(connection)?;
     let start_run = Instant::now();
     let timeout = match opt.no_retries {
-        false => Duration::new(0, 100000),
+        false => Duration::new(0, 500000),
         true => Duration::new(10, 0),
     };
     client.run_open_loop(

@@ -408,8 +408,6 @@ class ScatterGather(runner.Experiment):
             host_p999 = utils.p999_func(latencies) / 1000.0
             host_median = utils.median_func(latencies) / 1000.0
             host_avg = utils.mean_func(latencies) / 1000.0
-            host_pkts_sent = stdout_info["pkts_sent"] / 1000.0
-            host_total_time = stdout_info["totaltime"] / 1000.0
 
             if print_stats:
                 utils.info("Client {}: "

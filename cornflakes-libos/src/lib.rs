@@ -94,7 +94,7 @@ pub trait PtrAttributes {
 /// Represents either a borrowed piece of memory.
 /// Or an owned value.
 /// TODO: having this be an enum might double storage necessary for IOvecs
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Copy)]
 pub enum CornPtr<'registered, 'normal> {
     /// Reference to some other memory (used for zero-copy send).
     Registered(&'registered [u8]),
@@ -166,7 +166,7 @@ impl<'registered, 'normal> ScatterGather for Cornflake<'registered, 'normal> {
     /// Pointer type is reference to CornPtr.
     type Ptr = CornPtr<'registered, 'normal>;
     /// Can return an iterator over CornPtr references.
-    type Collection = Vec<Self::Ptr>;
+    type Collection = Vec<CornPtr<'registered, 'normal>>;
 
     /// Returns the id of this cornflake.
     fn get_id(&self) -> MsgID {
@@ -195,7 +195,11 @@ impl<'registered, 'normal> ScatterGather for Cornflake<'registered, 'normal> {
 
     /// Exposes an iterator over the entries in the scatter-gather array.
     fn collection(&self) -> Self::Collection {
-        self.entries.clone()
+        let mut vec = Vec::new();
+        for i in 0..self.num_filled {
+            vec.push(self.entries[i].clone());
+        }
+        vec
     }
 
     /// Returns CornPtr at Index

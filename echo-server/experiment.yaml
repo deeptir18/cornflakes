@@ -1,0 +1,26 @@
+### Experiment runner yaml for Echo-Server benchmark
+
+time: 10
+programs:
+    start_server:
+        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu nice -n -19 taskset 0x1 {cornflakes_dir}/target/release/ds_echo --config_file {config_file} --mode server --size {size} --serialization {library} --message {message} {zero_copy_recv} --debug_level info
+        hosts: [server]
+        log: 
+            out: "{folder}/server.log"
+            err: "{folder}/server.err.log"
+            record: "{folder}/server.record.log"
+        stop: sudo kill -9 `ps aux | grep {cornflakes_dir}/target/release/ds_echo | awk '{{print $2}}' | head -n3`
+    start_client:
+            start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/ds_echo --config_file {config_file} --mode client --server_ip {server_ip} --time {time} --rate {rate} --serialization {library} --message {message} {zero_copy_recv} --logfile {folder}/{host}.latency.log --debug_level info
+            hosts: [client1, client2, client3, client4, client5, client6, client7, client8, client9, client10, client11]
+            log:
+                out: "{folder}/{host}.log"
+                err: "{folder}/{host}.err.log"
+                record: "{folder}/{host}.record.log"
+
+commands:
+    - program: start_server
+      begin: 0
+
+    - program: start_client
+      begin: 4

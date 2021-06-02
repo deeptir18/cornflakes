@@ -206,8 +206,8 @@ class Experiment(metaclass=abc.ABCMeta):
                     if status:
                         break
             if not status:
-                utils.warn("Failed to execute program after {} ",
-                           "retries.".format(utils.NUM_RETRIES))
+                utils.warn("Failed to execute program after {} retries.".format(
+                    utils.NUM_RETRIES))
                 exit(1)
 
                 # TODO: add some, enter to continues?

@@ -396,7 +396,6 @@ impl Pkt {
             // only set reference for last mbuf in the list.
             if unsafe { (*mbufs[idx][pkt_id]).next == ptr::null_mut() } {
                 dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 1));
-                // increase ref count of this mbuf if it's the last packet in the mbuf list
                 dpdk_call!(rte_pktmbuf_refcnt_update(original_mbuf_ptr, 1));
             } else {
                 dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 0));
