@@ -62,6 +62,10 @@ def get_basic_args():
                         dest="graph_only",
                         help="Run graph only",
                         action="store_true")
+    parser.add_argument("-perf", "--perf",
+                        dest="use_perf",
+                        help="Run perf on the server",
+                        action="store_true")
     user_namespace = UserNameSpace()
     parser.parse_known_args(namespace=user_namespace)
     return parser, user_namespace
@@ -192,7 +196,8 @@ class Experiment(metaclass=abc.ABCMeta):
                                    self.get_exp_config(),
                                    self.get_machine_config(),
                                    total_args.pprint,
-                                   program_version_info)
+                                   program_version_info,
+                                   total_args.use_perf)
             if not status:
                 time.sleep(5)
                 for i in range(utils.NUM_RETRIES):
@@ -317,7 +322,7 @@ class Iteration(metaclass=abc.ABCMeta):
                 return
 
     def run(self, folder, exp_config, machine_config, pprint,
-            program_version_info):
+            program_version_info, use_perf=False):
         """
         Runs the actual program.
         Arguments:
@@ -329,6 +334,7 @@ class Iteration(metaclass=abc.ABCMeta):
             * pprint - Instead of running, just print out command lines.
             * program_version_info - Metadata about the commit version of the
             repo at time of experiment.
+            * use_perf - Whether to use perf or not when running the server.
         """
         programs_to_join_immediately = {}
         programs_to_kill = {}
@@ -376,6 +382,10 @@ class Iteration(metaclass=abc.ABCMeta):
                                                      programs,
                                                      exp_time)
                 program_cmd = program_cmd.format(**program_args)
+                if use_perf and "perf" in program:
+                    utils.debug("current program args: {}", program_args)
+                    perf_cmd = program["perf"].format(**program_args)
+                    program_cmd = "{} {}".format(perf_cmd, program_cmd)
                 record_path = record_path.format(**program_args)
                 fail_ok = False
                 if kill_cmd is not None:

@@ -27,43 +27,67 @@ const PKT_CONSTRUCT_TIMER: &str = "PKT_CONSTRUCT_TIMER";
 const POP_PROCESSING_TIMER: &str = "POP_PROCESSING_TIMER";
 const PUSH_PROCESSING_TIMER: &str = "PUSH_PROCESSING_TIMER";
 
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+pub enum RecvMode {
+    /// Directly give pointer to same mbuf
+    ZeroCopyRecv,
+    /// Copy out to another mbuf (registered memory).
+    CopyToMbuf,
+    /// Copy out to normal, unregistered memory.
+    CopyOut,
+}
+
 /// Wrapper around rte_mbuf.
 #[derive(Clone)]
 pub struct MbufWrapper {
     /// Mbuf this wraps around.
-    pub mbuf: Option<*mut rte_mbuf>,
+    pub mbuf: *mut rte_mbuf,
     /// When not zero-copy: hold data in bytes
     pub copied_data: BytesMut,
     /// Networking header: for example, could be udp + ethernet + ip header.
     pub header_size: usize,
+    /// How the mbuf has been received.
+    pub recv_mode: RecvMode,
 }
 
 impl AsRef<[u8]> for MbufWrapper {
     fn as_ref(&self) -> &[u8] {
-        match self.mbuf {
-            Some(mbuf) => {
-                tracing::debug!("Addr of original mbuf: {:?}", mbuf);
-                let payload_len = unsafe { (*mbuf).pkt_len as usize - self.header_size as usize };
-                mbuf_slice!(mbuf, self.header_size, payload_len)
+        match self.recv_mode {
+            RecvMode::ZeroCopyRecv => {
+                tracing::debug!("Addr of original mbuf: {:?}", self.mbuf);
+                let payload_len = unsafe { (*self.mbuf).pkt_len as usize - self.header_size };
+                mbuf_slice!(self.mbuf, self.header_size, payload_len)
             }
-            None => self.copied_data.as_ref(),
+            RecvMode::CopyOut => self.copied_data.as_ref(),
+            RecvMode::CopyToMbuf => {
+                tracing::debug!("Addr of new copied out mbuf: {:?}", self.mbuf);
+                let payload_len = unsafe { (*self.mbuf).pkt_len as usize };
+                let slice = mbuf_slice!(self.mbuf, 0, payload_len);
+                tracing::debug!(
+                    "payload length: {}, header_size: {}, slice ptr: {:?}",
+                    payload_len,
+                    self.header_size,
+                    slice.as_ptr(),
+                );
+                slice
+            }
         }
-        // length of the payload ends up being pkt_len - header_size
     }
 }
 
 impl PtrAttributes for MbufWrapper {
     fn buf_type(&self) -> CornType {
-        match self.mbuf {
-            Some(_) => CornType::Registered,
-            None => CornType::Normal,
+        match self.recv_mode {
+            RecvMode::CopyOut => CornType::Normal,
+            _ => CornType::Registered,
         }
     }
 
     fn buf_size(&self) -> usize {
-        match self.mbuf {
-            Some(mbuf) => unsafe { (*mbuf).pkt_len as usize - self.header_size },
-            None => self.copied_data.len(),
+        match self.recv_mode {
+            RecvMode::ZeroCopyRecv => unsafe { (*self.mbuf).pkt_len as usize - self.header_size },
+            RecvMode::CopyToMbuf => unsafe { (*self.mbuf).pkt_len as usize },
+            RecvMode::CopyOut => self.copied_data.len(),
         }
     }
 }
@@ -85,7 +109,8 @@ impl DPDKReceivedPkt {
         mbuf: *mut rte_mbuf,
         header_size: usize,
         addr_info: utils::AddressInfo,
-        zero_copy: bool,
+        new_mbuf: *mut rte_mbuf,
+        recv_mode: RecvMode,
     ) -> DPDKReceivedPkt {
         tracing::debug!(
             "Address of received buffer: {:?}; after header: {:?}; data offset of received mbuf: {:?}",
@@ -93,11 +118,40 @@ impl DPDKReceivedPkt {
             mbuf_slice!(mbuf, header_size, 1024).as_mut_ptr() as *mut u8,
             unsafe { (*mbuf).data_off },
         );
-        let (mbuf, bytes): (Option<*mut rte_mbuf>, BytesMut) = match zero_copy {
-            true => (Some(mbuf), BytesMut::new()),
-            false => {
+        let (mbuf, bytes): (*mut rte_mbuf, BytesMut) = match recv_mode {
+            RecvMode::ZeroCopyRecv => (mbuf, BytesMut::new()),
+            RecvMode::CopyToMbuf => {
+                assert!(!new_mbuf.is_null());
                 let payload_len = unsafe { (*mbuf).pkt_len as usize - header_size };
-                tracing::debug!("Payload len: {:?}", payload_len);
+
+                unsafe {
+                    (*new_mbuf).pkt_len = (*mbuf).pkt_len - header_size as u32;
+                    (*new_mbuf).data_len = (*mbuf).data_len - header_size as u16;
+                    tracing::debug!("Current data off: {:?}", (*new_mbuf).data_off);
+                    //(*new_mbuf).data_off = 0;
+                }
+                let mbuf_slice = mbuf_slice!(mbuf, header_size, payload_len);
+                let new_mbuf_slice = mbuf_slice!(new_mbuf, 0, payload_len);
+                tracing::debug!(
+                    "Length of new mbuf slice: {:?}; new mbuf ptr: {:?}, new_mbuf_slice: {:?}",
+                    new_mbuf_slice.len(),
+                    new_mbuf,
+                    new_mbuf_slice.as_ptr(),
+                );
+                tracing::debug!(
+                    "Addr of slice that is being copied to: {:?}",
+                    new_mbuf_slice.as_ptr()
+                );
+                dpdk_call!(rte_memcpy_wrapper(
+                    new_mbuf_slice.as_mut_ptr() as _,
+                    mbuf_slice.as_ptr() as _,
+                    payload_len
+                ));
+                wrapper::free_mbuf_bare(mbuf);
+                (new_mbuf, BytesMut::new())
+            }
+            RecvMode::CopyOut => {
+                let payload_len = unsafe { (*mbuf).pkt_len as usize - header_size };
                 let mut bytes_mut = BytesMut::with_capacity(payload_len);
                 let mbuf_slice = mbuf_slice!(mbuf, header_size, payload_len);
                 dpdk_call!(rte_memcpy_wrapper(
@@ -109,10 +163,10 @@ impl DPDKReceivedPkt {
                 unsafe {
                     bytes_mut.set_len(payload_len);
                 }
+                wrapper::free_mbuf_bare(mbuf);
 
                 tracing::debug!("Bytes mut len: {}", bytes_mut.len());
-                wrapper::free_mbuf_bare(mbuf);
-                (None, bytes_mut)
+                (::std::ptr::null_mut(), bytes_mut)
             }
         };
         DPDKReceivedPkt {
@@ -121,6 +175,7 @@ impl DPDKReceivedPkt {
                 mbuf: mbuf,
                 header_size: header_size,
                 copied_data: bytes,
+                recv_mode: recv_mode,
             },
             addr_info: addr_info,
         }
@@ -131,11 +186,11 @@ impl DPDKReceivedPkt {
 /// once all references to this struct are out of scope.
 impl Drop for DPDKReceivedPkt {
     fn drop(&mut self) {
-        match self.mbuf_wrapper.mbuf {
-            Some(mbuf) => {
-                wrapper::free_mbuf(mbuf);
+        match self.mbuf_wrapper.recv_mode {
+            RecvMode::ZeroCopyRecv | RecvMode::CopyToMbuf => {
+                wrapper::free_mbuf(self.mbuf_wrapper.mbuf)
             }
-            None => {}
+            _ => {}
         }
     }
 }
@@ -224,8 +279,8 @@ impl std::str::FromStr for DPDKMode {
 }
 
 pub struct DPDKConnection {
-    /// Whether the receive is zero-copy
-    zero_copy_recv: bool,
+    /// Whether the receive is zero-copy, copy out, or copy to another mbuf
+    recv_mode: RecvMode,
     /// Whether to use scatter-gather on send.
     use_scatter_gather: bool,
     /// Server or client mode.
@@ -277,7 +332,7 @@ impl DPDKConnection {
     pub fn new(
         config_file: &str,
         mode: DPDKMode,
-        zero_copy: bool,
+        recv_mode: RecvMode,
         use_scatter_gather: bool,
     ) -> Result<DPDKConnection> {
         let (ip_to_mac, mac_to_ip, udp_port) = dpdk_utils::parse_yaml_map(config_file).wrap_err(
@@ -338,7 +393,7 @@ impl DPDKConnection {
         let default_memzone = wrapper::get_mempool_memzone_area(mempool)?;
 
         Ok(DPDKConnection {
-            zero_copy_recv: zero_copy,
+            recv_mode: recv_mode,
             use_scatter_gather: use_scatter_gather,
             mode: mode,
             dpdk_port: nb_ports - 1,
@@ -560,12 +615,18 @@ impl Datapath for DPDKConnection {
                 if mbuf.is_null() {
                     bail!("Mbuf for index {} in returned array is null.", idx);
                 }
+                let new_mbuf_ptr = match self.recv_mode {
+                    RecvMode::ZeroCopyRecv | RecvMode::CopyOut => ::std::ptr::null_mut(),
+                    RecvMode::CopyToMbuf => wrapper::alloc_mbuf(self.default_mempool)
+                        .wrap_err("Not able to allocate new mbuf on receive.")?,
+                };
                 let received_pkt = DPDKReceivedPkt::new(
                     msg_id,
                     self.recv_mbufs[idx],
                     utils::TOTAL_HEADER_SIZE,
                     addr_info,
-                    self.zero_copy_recv,
+                    new_mbuf_ptr,
+                    self.recv_mode,
                 );
 
                 let duration = match self.mode {
@@ -675,6 +736,10 @@ impl Datapath for DPDKConnection {
                 bail!("Don't know ethernet address for Ip address: {:?}", dst_addr);
             }
         }
+    }
+
+    fn get_header_size(&self) -> usize {
+        utils::TOTAL_HEADER_SIZE
     }
 }
 

@@ -16,8 +16,9 @@ pub const IPV4_IHL_NO_OPTIONS: u8 = 5;
 pub const IPV4_VERSION: u8 = 4;
 pub const IPDEFTTL: u8 = 64;
 pub const IPPROTO_UDP: u8 = 17;
+pub const HEADER_PADDING_SIZE: usize = 0;
 pub const TOTAL_HEADER_SIZE: usize =
-    ETHERNET2_HEADER2_SIZE + IPV4_HEADER2_SIZE + UDP_HEADER2_SIZE + 4;
+    ETHERNET2_HEADER2_SIZE + IPV4_HEADER2_SIZE + UDP_HEADER2_SIZE + 4 + HEADER_PADDING_SIZE;
 
 #[repr(u16)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]

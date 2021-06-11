@@ -18,6 +18,17 @@ pub struct CFBytes<'a> {
     pub ptr: &'a [u8],
 }
 
+fn align_up(x: usize, align_size: usize) -> usize {
+    // find value aligned up to align_size
+    let divisor = x / align_size;
+    if (divisor * align_size) < x {
+        return (divisor + 1) * align_size;
+    } else {
+        assert!(divisor * align_size == x);
+        return x;
+    }
+}
+
 /// Defines the amount of space pointing to this object would take in the header.
 pub trait HeaderRepr<'registered> {
     const CONSTANT_HEADER_SIZE: usize;
@@ -26,6 +37,11 @@ pub trait HeaderRepr<'registered> {
 
     fn total_header_size(&self) -> usize {
         self.dynamic_header_size() + <Self as HeaderRepr<'registered>>::CONSTANT_HEADER_SIZE
+    }
+
+    fn header_buffer_size_with_padding(&self, transport_header_size: usize) -> usize {
+        let current_size = self.total_header_size() + transport_header_size;
+        align_up(current_size, 64)
     }
 
     fn dynamic_header_offset(&self) -> usize;
@@ -46,6 +62,10 @@ pub trait HeaderRepr<'registered> {
     /// Initializes a header _buffer large enough to store the entire serialization header.
     fn init_header_buffer(&self) -> Vec<u8> {
         vec![0u8; self.dynamic_header_size()]
+    }
+
+    fn init_header_buffer_with_padding(&self) -> Vec<u8> {
+        vec![0u8; align_up(self.dynamic_header_size(), 64)]
     }
 
     fn serialize<'normal>(
@@ -74,6 +94,7 @@ pub trait HeaderRepr<'registered> {
     }
 
     fn deserialize(&mut self, buf: &'registered [u8]) {
+        tracing::debug!(len = buf.len(), "Input buf len");
         self.inner_deserialize(buf.as_ptr(), buf.len(), 0)
     }
 }

@@ -4,6 +4,7 @@ Cargo.lock
 **/*.swp
 **/results
 experiments/Rplots.pdf
+experiments/tmp.pdf
 
 experiments/main/__pycache__
 scatter-gather-bench/build/

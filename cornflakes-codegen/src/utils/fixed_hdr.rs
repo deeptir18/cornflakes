@@ -5,6 +5,17 @@ use std::{
     default::Default, fmt::Debug, marker::PhantomData, mem::size_of, ops::Index, ptr, slice, str,
 };
 
+fn align_up(x: usize, align_size: usize) -> usize {
+    // find value aligned up to align_size
+    let divisor = x / align_size;
+    if (divisor * align_size) < x {
+        return (divisor + 1) * align_size;
+    } else {
+        assert!(divisor * align_size == x);
+        return x;
+    }
+}
+
 pub const SIZE_FIELD: usize = 4;
 pub const OFFSET_FIELD: usize = 4;
 
@@ -50,6 +61,10 @@ pub trait HeaderRepr<'registered> {
         vec![0u8; self.total_header_size()]
     }
 
+    fn init_header_buffer_with_padding(&self) -> Vec<u8> {
+        vec![0u8; align_up(self.total_header_size(), 64)]
+    }
+
     fn serialize<'normal>(
         &self,
         header_buffer: &'normal mut [u8],
@@ -61,6 +76,7 @@ pub trait HeaderRepr<'registered> {
     ) -> Cornflake<'registered, 'normal> {
         let mut cf = Cornflake::default();
         let header_ptr = header_buffer.as_mut_ptr();
+
         let dynamic_header_ptr = unsafe {
             header_buffer
                 .as_ptr()

@@ -326,6 +326,9 @@ pub trait Datapath {
 
     /// Get destination address information from Ipv4 Address
     fn get_outgoing_addr_from_ip(&self, dst_addr: Ipv4Addr) -> Result<utils::AddressInfo>;
+
+    /// What is the transport header size for this datapath
+    fn get_header_size(&self) -> usize;
 }
 
 /// For applications that want to follow a simple open-loop request processing model at the client,

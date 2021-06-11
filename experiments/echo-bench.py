@@ -11,14 +11,16 @@ STRIP_THRESHOLD = 0.03
 # SIZES_TO_LOOP = [1024, 2048, 4096, 8192]
 SIZES_TO_LOOP = [4096, 8192]
 MESSAGE_TYPES = ["single"]
-MESSAGE_TYPES.extend(["list-{}".format(i) for i in range(1, 4)])
-MESSAGE_TYPES.extend(["tree-{}".format(i) for i in range(1, 4)])
+MESSAGE_TYPES.extend(["list-2", "list-4", "list-6", "list-8"])
+#MESSAGE_TYPES.extend(["list-{}".format(i) for i in range(1, 5)])
+#MESSAGE_TYPES.extend(["tree-{}".format(i) for i in range(1, 4)])
+RECV_TYPES = ["zero_copy_recv", "copy_to_dma_memory", "copy_out_recv"]
 MAX_CLIENT_RATE_PPS = 60000
-MAX_NUM_CLIENTS = 8
+MAX_NUM_CLIENTS = 7
 CLIENT_RATE_INCREMENT = 20000
 SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cornflakes-fixed",
-                           "cornflakes1c-dynamic", "cornflakes1c-fixed", "protobuf", "capnproto",
-                           "flatbuffers"]
+                           "cornflakes1c-dynamic", "cornflakes1c-fixed"]  # "cornflakes1c-fixed", "protobuf", "capnproto",
+# "flatbuffers"]
 
 
 def parse_client_time_and_pkts(line):
@@ -51,7 +53,8 @@ def parse_log_info(log):
 class EchoBenchIteration(runner.Iteration):
     def __init__(self, client_rates, size,
                  serialization, message_type,
-                 zero_copy_recv, trial=None):
+                 recv_type,
+                 trial=None):
         """
         Arguments:
         * client_rates: Mapping from {int, int} specifying rates and how many
@@ -61,14 +64,15 @@ class EchoBenchIteration(runner.Iteration):
         additional header space the serialization library will use).
         * serialization: Serialization library to use.
         * message_type: Type of data structure to echo.
-        * zero_copy_recv: Whether to use zero-copy for receive. For cornflakes,
-        will be enabled by default.
+        * recv_type: [zero_copy_recv, copy_to_dma_memory, copy_out_recv] - What receive
+        mode is used. For cornflakes, one of first two must be enabled.
+        zero-copy send from zero-copy receive.
         """
         self.client_rates = client_rates
         self.size = size
         self.serialization = serialization
         self.message_type = message_type
-        self.zero_copy_recv = zero_copy_recv
+        self.recv_mode = recv_type
         self.trial = trial
 
     def get_size(self):
@@ -80,8 +84,8 @@ class EchoBenchIteration(runner.Iteration):
     def get_message_type(self):
         return self.message_type
 
-    def get_zero_copy_recv(self):
-        return self.zero_copy_recv
+    def get_recv_type(self):
+        return self.recv_mode
 
     def get_trial(self):
         return self.trial
@@ -132,10 +136,7 @@ class EchoBenchIteration(runner.Iteration):
             exit(1)
 
     def get_recv_string(self):
-        if self.zero_copy_recv:
-            return "zero_copy_recv"
-        else:
-            return "copy_recv"
+        return self.recv_mode
 
     def get_size_string(self):
         return "size_{}".format(self.size)
@@ -197,13 +198,15 @@ class EchoBenchIteration(runner.Iteration):
         ret["message"] = self.message_type
         ret["folder"] = str(folder)
         if program == "start_server":
-
-            if self.zero_copy_recv:
+            ret["zero_copy_recv"] = ""
+            ret["copy_to_dma_memory"] = ""
+            if self.recv_mode == "zero_copy_recv":
                 ret["zero_copy_recv"] = " -z"
-            else:
-                ret["zero_copy_recv"] = ""
+            elif self.recv_mode == "copy_to_dma_memory":
+                ret["copy_to_dma_memory"] = "--copy_to_dma_memory"
         elif program == "start_client":
             ret["zero_copy_recv"] = " -z"  # always have zero_copy_recv on
+            ret["copy_to_dma_memory"] = ""
             # calculate client rate
             host_options = self.get_iteration_clients(
                 programs_metadata[program]["hosts"])
@@ -248,7 +251,7 @@ class EchoBench(runner.Experiment):
                                     total_args.size,
                                     total_args.serialization,
                                     total_args.message_type,
-                                    total_args.zero_copy_recv)
+                                    total_args.recv_mode)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             if total_args.analysis_only or total_args.graph_only:
@@ -264,33 +267,38 @@ class EchoBench(runner.Experiment):
         else:
             # loop over the options
             ret = []
-            for trial in range(utils.NUM_TRIALS):
+            for trial in range(2):
+                # for trial in range(utils.NUM_TRIALS):
                 for message_type in MESSAGE_TYPES:
                     for size in SIZES_TO_LOOP:
                         for serialization in SERIALIZATION_LIBRARIES:
                             if size == 8192\
                                 and message_type == "tree-5"\
                                 and (serialization == "cornflakes-dynamic"
-                                     or serialization == "1cdynamic"):
+                                     or serialization == "cornflakes-1cdynamic"):
                                 continue
-                            for zero_copy_recv in [True, False]:
+                            recv_modes = ["zero_copy_recv"]
+                            if (serialization == "cornflakes-dynamic"
+                                    or serialization == "cornflakes-fixed"):
+                                recv_modes.append("copy_to_dma_memory")
+                            else:
+                                recv_modes.append("copy_out_recv")
+                            for recv_mode in recv_modes:
                                 # for client rates:
                                 # for now loop over 2 rates and 1-2 machines
                                 # do some testing to determine optimal rates
                                 client_rates = [[(24000, 1)],
-                                                [(36000, 1)],
-                                                [(45000, 1)],
-                                                [(60000, 1)],
+                                                [(48000, 1)],
                                                 [(72000, 1)],
                                                 [(96000, 1)]]
                                 for i in range(2, int(self.config_yaml["max_clients"])):
-                                    client_rates.append([(80000, i)])
+                                    client_rates.append([(100000, i)])
                                 for rate in client_rates:
                                     it = EchoBenchIteration(rate,
                                                             size,
                                                             serialization,
                                                             message_type,
-                                                            zero_copy_recv,
+                                                            recv_mode,
                                                             trial=trial)
                                     ret.append(it)
             return ret
@@ -321,9 +329,10 @@ class EchoBench(runner.Experiment):
                                 dest="serialization",
                                 choices=SERIALIZATION_LIBRARIES,
                                 required=True)
-            parser.add_argument("-z", "--zero_copy_recv",
-                                dest="zero_copy_recv",
-                                action='store_true')
+            parser.add_argument("-z", "--recv_mode",
+                                dest="recv_mode",
+                                choices=RECV_TYPES,
+                                required=True)
         args = parser.parse_args(namespace=namespace)
         return args
 
@@ -334,11 +343,11 @@ class EchoBench(runner.Experiment):
         return self.config_yaml
 
     def get_logfile_header(self):
-        return "serialization,message_type,size,with_zero_copy_recv,"
-        "offered_load_pps,offered_load_gbps,"
-        "achieved_load_pps,achieved_load_gbps,"
-        "percent_acheived_rate,total_retries"
-        "avg,median,p99,p999"
+        return "serialization,message_type,size,recv_mode,"\
+            "offered_load_pps,offered_load_gbps,"\
+            "achieved_load_pps,achieved_load_gbps,"\
+            "percent_acheived_rate,total_retries"\
+            "avg,median,p99,p999"
 
     def run_analysis_individual_trial(self,
                                       higher_level_folder,
@@ -442,17 +451,17 @@ class EchoBench(runner.Experiment):
         csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
                                                                       iteration.get_message_type(),
                                                                       iteration.get_size(),
-                                                                      iteration.get_zero_copy_recv(),
+                                                                      iteration.get_recv_string(),
                                                                       total_offered_load_pps,
                                                                       total_offered_load_gbps,
                                                                       total_achieved_load_pps,
                                                                       total_achieved_load_gbps,
                                                                       percent_acheived_load,
                                                                       total_retries,
-                                                                      avg * 1000,
-                                                                      median * 1000,
-                                                                      p99 * 1000,
-                                                                      p999 * 1000)
+                                                                      avg,
+                                                                      median,
+                                                                      p99,
+                                                                      p999)
         return csv_line
 
     def graph_results(self, folder, logfile):

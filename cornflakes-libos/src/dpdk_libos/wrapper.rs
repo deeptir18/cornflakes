@@ -672,6 +672,9 @@ fn dpdk_init_helper() -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
         MBUF_BUF_SIZE as u16,
         rte_socket_id() as i32,
     ));
+    if mbuf_pool.is_null() {
+        tracing::warn!("mbuf pool is null.");
+    }
     assert!(!mbuf_pool.is_null());
 
     // initialize private data of mempool: set all lkeys to -1

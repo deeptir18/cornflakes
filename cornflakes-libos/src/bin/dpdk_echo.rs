@@ -1,8 +1,8 @@
-use color_eyre::eyre::{Result, WrapErr};
+use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::{
     dpdk_bindings,
     dpdk_libos::{
-        connection::{DPDKConnection, DPDKMode},
+        connection::{DPDKConnection, DPDKMode, RecvMode},
         echo::{EchoClient, EchoServer},
     },
     ClientSM, Datapath, ServerSM,
@@ -21,6 +21,8 @@ use structopt::StructOpt;
 struct Opt {
     #[structopt(short = "z", long = "zero_copy", help = "zero-copy mode.")]
     zero_copy: bool,
+    #[structopt(long = "copy_to_mbuf", help = "copy out to mbuf")]
+    copy_to_mbuf: bool,
     #[structopt(
         short = "debug",
         long = "debug_level",
@@ -81,12 +83,22 @@ fn main() -> Result<()> {
     dpdk_bindings::load_mlx5_driver();
 
     let payload = vec![b'a'; opt.size];
+    let recv_mode = match (opt.zero_copy, opt.copy_to_mbuf) {
+        (true, true) => {
+            bail!("Cannot have both zero-copy and copy-to-mbuf.");
+        }
+        (true, false) => RecvMode::ZeroCopyRecv,
+        (false, true) => RecvMode::CopyToMbuf,
+        (false, false) => RecvMode::CopyOut,
+    };
 
     let mut connection = match opt.mode {
-        DPDKMode::Server => DPDKConnection::new(&opt.config_file, opt.mode, opt.zero_copy, true)
+        DPDKMode::Server => DPDKConnection::new(&opt.config_file, opt.mode, recv_mode, true)
             .wrap_err("Failed to initialize DPDK server connection.")?,
-        DPDKMode::Client => DPDKConnection::new(&opt.config_file, opt.mode, true, true)
-            .wrap_err("Failed to initialize DPDK server connection.")?,
+        DPDKMode::Client => {
+            DPDKConnection::new(&opt.config_file, opt.mode, RecvMode::ZeroCopyRecv, true)
+                .wrap_err("Failed to initialize DPDK server connection.")?
+        }
     };
     match opt.mode {
         DPDKMode::Server => {

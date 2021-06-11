@@ -264,6 +264,10 @@ where
         recved_msg: &'registered D::ReceivedPkt,
         ctx: &'normal mut Self::Ctx,
     ) -> Result<Cornflake<'registered, 'normal>> {
+        tracing::debug!(
+            "Received packet addr: {:?}",
+            recved_msg.get_pkt_buffer().as_ptr()
+        );
         match self.message_type {
             SimpleMessageType::Single => {
                 let mut object_deser = echo_messages::SingleBufferCF::new();
@@ -285,7 +289,6 @@ where
                 for i in 0..list_field_deser.len() {
                     list_field_ser.append(list_field_deser[i]);
                 }
-
                 Ok(object_ser.serialize(ctx, rte_memcpy))
             }
             SimpleMessageType::Tree(depth) => match depth {
@@ -447,6 +450,11 @@ where
                 assert!(object_deser.get_messages().len() == our_payloads.len());
                 for (i, payload) in our_payloads.iter().enumerate() {
                     let bytes_vec = object_deser.get_messages()[i].to_bytes_vec();
+                    if bytes_vec != payload.clone() {
+                        tracing::debug!(i = i, "index");
+                        tracing::debug!("What should be received:{:?}", payload);
+                        tracing::debug!("Deser message: {:?}", bytes_vec,);
+                    }
                     assert!(bytes_vec == payload.clone());
                 }
             }
