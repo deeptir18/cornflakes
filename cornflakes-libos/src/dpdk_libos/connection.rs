@@ -3,7 +3,8 @@ use super::{
         dpdk_bindings::*,
         dpdk_call, mbuf_slice, mem,
         timing::{record, timefunc, HistogramWrapper},
-        utils, CornPtr, CornType, Datapath, MsgID, PtrAttributes, ReceivedPacket, ScatterGather,
+        utils, CornPtr, CornType, Datapath, DatapathMempoolOptions, MsgID, PtrAttributes,
+        ReceivedPacket, ScatterGather,
     },
     dpdk_utils, wrapper,
 };
@@ -12,6 +13,7 @@ use color_eyre::eyre::{bail, Result, WrapErr};
 use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
+    io::Write,
     net::Ipv4Addr,
     ptr, slice,
     sync::{Arc, Mutex},
@@ -26,6 +28,42 @@ const TX_BURST_TIMER: &str = "TX_BURST_TIMER";
 const PKT_CONSTRUCT_TIMER: &str = "PKT_CONSTRUCT_TIMER";
 const POP_PROCESSING_TIMER: &str = "POP_PROCESSING_TIMER";
 const PUSH_PROCESSING_TIMER: &str = "PUSH_PROCESSING_TIMER";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct DPDKBuffer {
+    /// Pointer to allocated mbuf.
+    pub mbuf: *mut rte_mbuf,
+    /// Id of originating mempool (application and datapath context).
+    pub mempool_id: usize,
+}
+
+impl AsRef<[u8]> for DPDKBuffer {
+    fn as_ref(&self) -> &[u8] {
+        let slice = mbuf_slice!(self.mbuf, 0, wrapper::MBUF_BUF_SIZE as usize);
+        tracing::debug!(
+            "Mbuf address: {:?}, slice address: {:?}, data off: {:?}, buf_addr: {:?}",
+            self.mbuf,
+            slice.as_ptr(),
+            unsafe { (*self.mbuf).data_off },
+            unsafe { (*self.mbuf).buf_addr }
+        );
+        slice
+    }
+}
+
+impl AsMut<[u8]> for DPDKBuffer {
+    fn as_mut(&mut self) -> &mut [u8] {
+        let slice = mbuf_slice!(self.mbuf, 0, wrapper::MBUF_BUF_SIZE as usize);
+        tracing::debug!(
+            "Mbuf address: {:?}, slice address: {:?}, data off: {:?}, buf_addr: {:?}",
+            self.mbuf,
+            slice.as_ptr(),
+            unsafe { (*self.mbuf).data_off },
+            unsafe { (*self.mbuf).buf_addr }
+        );
+        slice
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum RecvMode {
@@ -283,6 +321,12 @@ pub struct DPDKConnection {
     recv_mode: RecvMode,
     /// Whether to use scatter-gather on send.
     use_scatter_gather: bool,
+    /// Whether to attach payloads as external buffers or natively use that mbuf (which is a
+    /// debugging option).
+    use_external_buffers_for_native_mbufs: bool,
+    /// Whether to attach header before first payload (if it's in a native mbuf)
+    /// Application must be aware of this option.
+    prepend_header_to_first_mbuf: bool,
     /// Server or client mode.
     mode: DPDKMode,
     /// dpdk_port
@@ -293,10 +337,11 @@ pub struct DPDKConnection {
     //mac_to_ip: HashMap<MacAddress, Ipv4Addr>,
     /// Current window of outgoing packets mapped to start time.
     outgoing_window: HashMap<MsgID, Instant>,
-    /// Default mempool for allocating mbufs to copy into.
-    default_mempool: *mut rte_mempool,
-    /// Memory region this default mempool spans
-    default_memzone: (usize, usize),
+    /// mempools for allocating mbufs.
+    /// The default mempool (also used for RX) sits at idx 0.
+    mempools: Vec<(usize, *mut rte_mempool)>,
+    /// Vector of mempool information.
+    memzones: Vec<(usize, (usize, usize))>,
     /// Empty mempool for allocating external buffers.
     extbuf_mempool: *mut rte_mempool,
     /// Header information
@@ -334,6 +379,8 @@ impl DPDKConnection {
         mode: DPDKMode,
         recv_mode: RecvMode,
         use_scatter_gather: bool,
+        use_external_buffers_for_native_mbufs: bool,
+        prepend_header_to_first_mbuf: bool,
     ) -> Result<DPDKConnection> {
         let (ip_to_mac, mac_to_ip, udp_port) = dpdk_utils::parse_yaml_map(config_file).wrap_err(
             "Failed to get ip to mac address mapping, or udp port information from yaml config.",
@@ -390,18 +437,21 @@ impl DPDKConnection {
             );
         }
 
-        let default_memzone = wrapper::get_mempool_memzone_area(mempool)?;
+        let mempools = vec![(0, mempool)];
+        let memzones = vec![(0, wrapper::get_mempool_memzone_area(mempool)?)];
 
         Ok(DPDKConnection {
             recv_mode: recv_mode,
             use_scatter_gather: use_scatter_gather,
+            use_external_buffers_for_native_mbufs: use_external_buffers_for_native_mbufs,
+            prepend_header_to_first_mbuf: prepend_header_to_first_mbuf,
             mode: mode,
             dpdk_port: nb_ports - 1,
             ip_to_mac: ip_to_mac,
             //mac_to_ip: mac_to_ip,
             outgoing_window: outgoing_window,
-            default_mempool: mempool,
-            default_memzone: default_memzone,
+            mempools: mempools,
+            memzones: memzones,
             external_memory_regions: Vec::default(),
             extbuf_mempool: ext_mempool,
             addr_info: addr_info,
@@ -477,6 +527,7 @@ impl DPDKConnection {
 
 impl Datapath for DPDKConnection {
     type ReceivedPkt = DPDKReceivedPkt;
+    type DatapathPkt = DPDKBuffer;
     /// Sends out a cornflake to the given Ipv4Addr.
     /// Returns an error if the address is not present in the ip_to_mac table,
     /// or if there is a problem constructing a linked list of mbufs to copy/attach the cornflake
@@ -497,7 +548,7 @@ impl Datapath for DPDKConnection {
         )?;
         let mut pkts: Vec<wrapper::Pkt> = sgas
             .iter()
-            .map(|(sga, _)| wrapper::Pkt::init(sga.num_borrowed_segments() + 1))
+            .map(|(_sga, _)| wrapper::Pkt::new(self.use_external_buffers_for_native_mbufs))
             .collect();
 
         let headers: Vec<utils::HeaderInfo> = sgas
@@ -519,11 +570,12 @@ impl Datapath for DPDKConnection {
                             &mut self.send_mbufs,
                             i,
                             sga,
-                            self.default_mempool,
+                            self.mempools[0].1,
                             self.extbuf_mempool,
                             header,
-                            self.default_memzone,
+                            &self.memzones,
                             &self.external_memory_regions,
+                            self.prepend_header_to_first_mbuf,
                         )
                         .wrap_err(format!(
                             "Unable to construct pkt from sga with scatter-gather, sga idx: {}",
@@ -534,7 +586,7 @@ impl Datapath for DPDKConnection {
                             &mut self.send_mbufs,
                             i,
                             sga,
-                            self.default_mempool,
+                            self.mempools[0].1,
                             header,
                         )
                         .wrap_err(format!(
@@ -562,7 +614,10 @@ impl Datapath for DPDKConnection {
             }
             DPDKMode::Client => {
                 for (sga, _) in sgas.iter() {
-                    let _ = self.outgoing_window.insert(sga.get_id(), Instant::now());
+                    // only insert new time IF this packet has not already been sent
+                    if !self.outgoing_window.contains_key(&sga.get_id()) {
+                        let _ = self.outgoing_window.insert(sga.get_id(), Instant::now());
+                    }
                 }
             }
         }
@@ -617,7 +672,7 @@ impl Datapath for DPDKConnection {
                 }
                 let new_mbuf_ptr = match self.recv_mode {
                     RecvMode::ZeroCopyRecv | RecvMode::CopyOut => ::std::ptr::null_mut(),
-                    RecvMode::CopyToMbuf => wrapper::alloc_mbuf(self.default_mempool)
+                    RecvMode::CopyToMbuf => wrapper::alloc_mbuf(self.mempools[0].1)
                         .wrap_err("Not able to allocate new mbuf on receive.")?,
                 };
                 let received_pkt = DPDKReceivedPkt::new(
@@ -741,6 +796,96 @@ impl Datapath for DPDKConnection {
     fn get_header_size(&self) -> usize {
         utils::TOTAL_HEADER_SIZE
     }
+
+    fn init_native_mempools(&mut self, mempools: &Vec<DatapathMempoolOptions>) -> Result<()> {
+        unsafe extern "C" fn init_cb(
+            mp: *mut rte_mempool,
+            opaque: *mut ::std::os::raw::c_void,
+            m: *mut ::std::os::raw::c_void,
+            idx: u32,
+        ) {
+            let mbuf = m as *mut rte_mbuf;
+            let payload_vec = &*(opaque as *const Vec<u8>);
+            let payload_slice = payload_vec.as_slice();
+            let payload_to_write = &payload_slice[0..wrapper::MBUF_BUF_SIZE as usize];
+            let mut mbuf_slice = slice::from_raw_parts_mut(
+                ((*mbuf).buf_addr as *mut u8).offset((*mbuf).data_off as isize),
+                wrapper::MBUF_BUF_SIZE as usize,
+            );
+            match mbuf_slice.write_all(payload_to_write) {
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!(mbuf =? mbuf, idx=idx,  mempool = ?mp, payload_ptr =? payload_to_write.as_ptr(), "Failed to run write_all to mbuf in datapath init_native_buffers func: {:?}", e);
+                    panic!("Failed to run write all.");
+                }
+            }
+        }
+        let mut cur_idx = 1;
+        for mempool_info in mempools.iter() {
+            if mempool_info.payload.len() < wrapper::MBUF_BUF_SIZE as usize {
+                bail!("Provided payload too small to init in the mbufs.");
+            }
+
+            if mempool_info.idx != cur_idx {
+                bail!("Mempool indexes must be linear list starting from 1.");
+            }
+
+            let mbuf_pool = wrapper::create_native_mempool(
+                &format!("mempool_{}", mempool_info.idx),
+                1, // current number of physical dpdk ports
+            )
+            .wrap_err(format!("Not able to create mempool # {}", mempool_info.idx))?;
+            if mempool_info.payload.len() < wrapper::MBUF_BUF_SIZE as usize {
+                bail!("Provided payload too small to init in all of the mbufs.");
+            }
+
+            dpdk_call!(rte_mempool_obj_iter(
+                mbuf_pool,
+                Some(init_cb),
+                &mempool_info.payload as *const _ as *mut ::std::os::raw::c_void,
+            ));
+
+            // append this mempool to our state
+            self.mempools.push((cur_idx, mbuf_pool));
+            self.memzones.push((
+                cur_idx,
+                wrapper::get_mempool_memzone_area(mbuf_pool)
+                    .wrap_err("Not able to initialize memzone area for mbuf pool")?,
+            ));
+            cur_idx += 1;
+        }
+        Ok(())
+    }
+
+    fn alloc_datapath_pkt(&self, mempool_id: usize) -> Result<Self::DatapathPkt> {
+        for (idx, mempool) in self.mempools.iter() {
+            if *idx == mempool_id {
+                let mbuf = wrapper::alloc_mbuf(*mempool)
+                    .wrap_err(format!("Unable to alloc mbuf from mempool # {}", idx))?;
+                tracing::debug!(
+                    "Allocating DPDK buffer at address {:?} from mempool {:?}",
+                    mbuf,
+                    *idx
+                );
+                return Ok(DPDKBuffer {
+                    mbuf: mbuf,
+                    mempool_id: mempool_id,
+                });
+            }
+        }
+
+        bail!("Could not find mempool with mempool_id: {:?}", mempool_id);
+    }
+
+    fn free_datapath_pkt(&self, pkt: Self::DatapathPkt) -> Result<()> {
+        let mbuf = pkt.as_ref().as_ptr() as *mut rte_mbuf;
+        dpdk_call!(rte_pktmbuf_free(mbuf));
+        Ok(())
+    }
+
+    fn native_buf_size(&self) -> usize {
+        wrapper::MBUF_BUF_SIZE as usize
+    }
 }
 
 /// When the DPDKConnection goes out of scope,
@@ -756,7 +901,9 @@ impl Drop for DPDKConnection {
                 }
             }
         }
-        wrapper::free_mempool(self.default_mempool);
         wrapper::free_mempool(self.extbuf_mempool);
+        for (_, mempool) in self.mempools.iter() {
+            wrapper::free_mempool(*mempool);
+        }
     }
 }

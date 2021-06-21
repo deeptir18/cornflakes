@@ -15,7 +15,7 @@ use color_eyre::eyre::{bail, Result, WrapErr};
 use mem::MmapMetadata;
 use std::{
     net::Ipv4Addr,
-    ops::FnMut,
+    ops::{Fn, FnMut},
     slice::Iter,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -277,6 +277,21 @@ impl<'registered, 'normal> Cornflake<'registered, 'normal> {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct DatapathMempoolOptions {
+    pub payload: Vec<u8>,
+    pub idx: usize, // cannot be 0
+}
+
+impl DatapathMempoolOptions {
+    pub fn new(payload: Vec<u8>, idx: usize) -> Self {
+        DatapathMempoolOptions {
+            payload: payload,
+            idx: idx,
+        }
+    }
+}
+
 /// Set of functions each datapath must implement.
 /// Datapaths must be able to send a receive packets,
 /// as well as optionally keep track of per-packet timeouts.
@@ -284,6 +299,7 @@ pub trait Datapath {
     /// Each datapath must expose a received packet type that implements the ScatterGather trait
     /// and the ReceivedPacket trait.
     type ReceivedPkt: ScatterGather + ReceivedPacket;
+    type DatapathPkt: AsRef<[u8]> + AsMut<[u8]>;
 
     /// Send a scatter-gather array to the specified address.
     fn push_sgas(&mut self, sga: &Vec<(impl ScatterGather, utils::AddressInfo)>) -> Result<()>;
@@ -329,6 +345,29 @@ pub trait Datapath {
 
     /// What is the transport header size for this datapath
     fn get_header_size(&self) -> usize;
+
+    /// Init mempools
+    fn init_native_mempools(&mut self, mempools: &Vec<DatapathMempoolOptions>) -> Result<()>;
+
+    /// Get a packet from one of the mempools.
+    fn alloc_datapath_pkt(&self, mempool_id: usize) -> Result<Self::DatapathPkt>;
+
+    /// Free a packet from the mempool
+    fn free_datapath_pkt(&self, pkt: Self::DatapathPkt) -> Result<()>;
+
+    /// For natively allocated mbufs: what is the buffer size?
+    fn native_buf_size(&self) -> usize;
+}
+
+pub fn high_timeout_at_start(received: usize) -> Duration {
+    match received < 200 {
+        true => Duration::new(10, 0),
+        false => Duration::new(0, 1000000),
+    }
+}
+
+pub fn no_retries_timeout(_received: usize) -> Duration {
+    Duration::new(20, 0)
 }
 
 /// For applications that want to follow a simple open-loop request processing model at the client,
@@ -365,11 +404,13 @@ pub trait ClientSM {
 
     fn cleanup(&mut self, connection: &mut Self::Datapath) -> Result<()>;
 
+    fn received_so_far(&self) -> usize;
+
     fn run_closed_loop(
         &mut self,
         datapath: &mut Self::Datapath,
         num_pkts: u64,
-        time_out: Duration,
+        time_out: impl Fn(usize) -> Duration,
     ) -> Result<()> {
         let mut recved = 0;
         let server_ip = self.server_ip();
@@ -382,7 +423,7 @@ pub trait ClientSM {
                 if pkts.len() > 0 {
                     break pkts;
                 }
-                for id in datapath.timed_out(time_out)?.iter() {
+                for id in datapath.timed_out(time_out(self.received_so_far()))?.iter() {
                     self.msg_timeout_cb(*id, |sga| {
                         datapath.push_sgas(&vec![(sga, addr_info.clone())])
                     })?;
@@ -407,7 +448,7 @@ pub trait ClientSM {
         datapath: &mut Self::Datapath,
         intersend_rate: u64,
         total_time: u64,
-        time_out: Duration,
+        time_out: impl Fn(usize) -> Duration,
     ) -> Result<()> {
         let freq = datapath.timer_hz();
         let cycle_wait = (((intersend_rate * freq) as f64) / 1e9) as u64;
@@ -435,7 +476,7 @@ pub trait ClientSM {
                     ))?;
                 }
 
-                for id in datapath.timed_out(time_out)?.iter() {
+                for id in datapath.timed_out(time_out(self.received_so_far()))?.iter() {
                     self.msg_timeout_cb(*id, |sga| {
                         datapath.push_sgas(&vec![(sga, addr_info.clone())])
                     })?;
@@ -464,7 +505,7 @@ pub trait ServerSM {
             <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
             Duration,
         )>,
-        send_fn: impl FnMut(&Vec<(Cornflake, utils::AddressInfo)>) -> Result<()>,
+        datapath: &mut Self::Datapath,
     ) -> Result<()>;
 
     /// Runs the state machine, which responds to requests in a single-threaded fashion.
@@ -478,11 +519,7 @@ pub trait ServerSM {
         loop {
             let pkts = datapath.pop()?;
             if pkts.len() > 0 {
-                self.process_requests(&pkts, |sgas| {
-                    datapath
-                        .push_sgas(sgas)
-                        .wrap_err("Failed to send packet response.")
-                })?;
+                self.process_requests(&pkts, datapath)?;
             }
         }
     }

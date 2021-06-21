@@ -1,3 +1,7 @@
 [workspace]
 
-members = ["cornflakes-codegen",  "cornflakes-libos", "echo-server", "cornflakes-utils"]
+members = ["cornflakes-codegen",
+            "cornflakes-libos",
+            "echo-server",
+            "cornflakes-utils",
+            "data-structure-query"]

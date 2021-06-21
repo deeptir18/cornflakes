@@ -1,0 +1,29 @@
+### Experiment runner yaml for Data structure echo benchmark.
+### Here, the server doesn't deserialize the client's message necessarily,
+### and just returns 
+
+time: 20
+programs:
+    start_server:
+        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu nice -n -19 taskset 0x10 {cornflakes_dir}/target/release/ds_query --config_file {config_file} --mode server --size {server_size} --serialization {library} --message {server_message} {zero_copy_recv} {copy_to_dma_memory} --debug_level info
+        hosts: [server]
+        perf: sudo perf stat -e task-clock,cycles,instructions,cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses,L1-dcache-stores,dTLB-loads,dTLB-load-misses,dTLB-prefetch-misses,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses -o {folder}/server.perf.log
+        log: 
+            out: "{folder}/server.log"
+            err: "{folder}/server.err.log"
+            record: "{folder}/server.record.log"
+        stop: sudo kill -SIGINT `ps aux | grep {cornflakes_dir}/target/release/ds_query | awk '{{print $2}}' | head -n5`
+    start_client:
+            start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/ds_query --config_file {config_file} --mode client --server_ip {server_ip} --time {time} --rate {rate} --serialization {library} --size {size} --message {message} --server_message {server_message} --server_size {server_size} {zero_copy_recv} --logfile {folder}/{host}.latency.log --debug_level info
+            hosts: [client1, client2, client3, client4, client5, client6, client7, client8, client9, client10, client11]
+            log:
+                out: "{folder}/{host}.log"
+                err: "{folder}/{host}.err.log"
+                record: "{folder}/{host}.record.log"
+
+commands:
+    - program: start_server
+      begin: 0
+
+    - program: start_client
+      begin: 4

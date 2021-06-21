@@ -32,11 +32,19 @@ where
     pub fn new(
         server_ip: Ipv4Addr,
         message: SimpleMessageType,
+        server_message: SimpleMessageType,
         sizes: Vec<usize>,
+        server_sizes: Vec<usize>,
         rtts: ManualHistogram,
     ) -> Result<EchoClient<'normal, S, D>> {
         let metadata = MmapMetadata::new(NUM_PAGES)?;
-        let serializer = S::new(message, sizes, metadata.clone())?;
+        let serializer = S::new(
+            message,
+            server_message,
+            sizes,
+            server_sizes,
+            metadata.clone(),
+        )?;
         Ok(EchoClient {
             serializer: serializer,
             server_ip: server_ip,
@@ -97,10 +105,6 @@ where
         self.server_ip
     }
 
-    fn received_so_far(&self) -> usize {
-        self.recved
-    }
-
     fn send_next_msg(
         &mut self,
         mut send_fn: impl FnMut(Self::OutgoingMsg) -> Result<()>,
@@ -112,13 +116,21 @@ where
         send_fn(out_sga)
     }
 
+    fn received_so_far(&self) -> usize {
+        self.recved
+    }
+
     fn process_received_msg(
         &mut self,
         sga: <<Self as ClientSM>::Datapath as Datapath>::ReceivedPkt,
         rtt: Duration,
     ) -> Result<()> {
         self.recved += 1;
-        tracing::debug!("Receiving {}th packet", self.recved);
+        tracing::debug!(
+            pkt = self.recved,
+            rtt = rtt.as_nanos() as u64,
+            "Receiving pkt"
+        );
         self.rtts.record(rtt.as_nanos() as u64);
         if cfg!(debug_assertions) {
             // check the payload that was echoed back is correct

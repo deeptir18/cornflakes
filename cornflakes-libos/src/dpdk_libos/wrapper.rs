@@ -67,6 +67,7 @@ pub struct Pkt {
     /// packet.
     /// Num filed so far.
     _num_filled: usize,
+    use_external_buffers: bool,
 }
 
 impl Pkt {
@@ -76,10 +77,18 @@ impl Pkt {
     /// Arguments:
     /// * size - usize which represents the number of scatter-gather segments that will be in this
     /// packet.
-    pub fn init(_size: usize) -> Pkt {
+    pub fn _init(_size: usize) -> Pkt {
         Pkt {
             //mbufs: Vec::with_capacity(size),
             _num_filled: 0,
+            use_external_buffers: true,
+        }
+    }
+
+    pub fn new(use_external_buffers: bool) -> Pkt {
+        Pkt {
+            _num_filled: 0,
+            use_external_buffers: use_external_buffers,
         }
     }
 
@@ -117,8 +126,8 @@ impl Pkt {
     /// pointers to borrowed external memory.
     /// * header_info - Header information to fill in at the front of the first mbuf, for the
     /// entire packet (currently ethernet, ipv4 and udp packet headers).
-    /// * shared_info - Shared info map (including freeing function) for any potential external
-    /// memory that maps the index in the sga to the necessary shared info.
+    /// * memzones: Vector of memzones for native mbuf allocations.
+    /// * external_regions: Vector of information about externally registered memory regions.
     pub fn construct_from_sga(
         &mut self,
         mbufs: &mut [[*mut rte_mbuf; RECEIVE_BURST_SIZE as usize]; MAX_SCATTERS],
@@ -127,9 +136,30 @@ impl Pkt {
         header_mempool: *mut rte_mempool,
         extbuf_mempool: *mut rte_mempool,
         header_info: &utils::HeaderInfo,
-        default_memzone: (usize, usize),
+        memzones: &Vec<(usize, (usize, usize))>,
         external_regions: &Vec<mem::MmapMetadata>,
+        prepend_header_to_first_mbuf: bool,
     ) -> Result<()> {
+        if prepend_header_to_first_mbuf || !self.use_external_buffers {
+            // Call special function to construct linked list of mbufs.
+            self.construct_from_sga_without_external_buffers(
+                mbufs,
+                pkt_id,
+                sga,
+                header_mempool,
+                extbuf_mempool,
+                header_info,
+                memzones,
+                external_regions,
+                prepend_header_to_first_mbuf,
+            )?;
+            return Ok(());
+        }
+        tracing::debug!(
+            header = dpdk_call!(rte_mempool_count(header_mempool)),
+            extbuf = dpdk_call!(rte_mempool_count(extbuf_mempool)),
+            "Available in header mempool and extbuf mempool"
+        );
         // TODO: change this back
         // 1: allocate and add header mbuf
         mbufs[0][pkt_id] =
@@ -155,11 +185,206 @@ impl Pkt {
         }
 
         // 3: copy the payloads from the sga into the mbufs
-        self.set_sga_payloads(mbufs, pkt_id, sga, default_memzone, external_regions)
+        self.set_sga_payloads(mbufs, pkt_id, sga, memzones, external_regions)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
 
         tracing::debug!(header_mempool_avail =? dpdk_call!(rte_mempool_count(header_mempool)), extbuf_mempool_avail =? dpdk_call!(rte_mempool_count(extbuf_mempool)), "Number available in header_mempool, in extbuf_mempool");
 
+        Ok(())
+    }
+
+    /// For performance debugging purposes.
+    /// Construct from scatter-gather array,
+    /// where, the entries may refer to native mbufs (from a non-external memzone).
+    /// In this case, have the packet directly refer to this mbuf rather than a new externally
+    /// allocated mbuf.
+    /// Additionally, when prepend_header_to_first_mbuf is true, and the first mbuf refers to a
+    /// natively allocated mbuf, the header will be written in before the payload.
+    /// The application MUST be aware of this when setting the payload.
+    ///
+    /// Arguments:
+    /// * sga - Object that implements the ScatterGather trait, to be represented by this data
+    /// structure.
+    /// * header_mempool - Mempool used to allocate the mbuf in the front of the mbuf linked list,
+    /// containing the header.
+    /// * extbuf_mempool - Mempool used to allocate any mbufs after the first mbuf, which contain
+    /// pointers to borrowed external memory.
+    /// * header_info - Header information to fill in at the front of the first mbuf, for the
+    /// entire packet (currently ethernet, ipv4 and udp packet headers).
+    /// * memzones: Vector of memzones for native mbuf allocations.
+    /// * external_regions: Vector of information about externally registered memory regions.
+    pub fn construct_from_sga_without_external_buffers(
+        &mut self,
+        mbufs: &mut [[*mut rte_mbuf; RECEIVE_BURST_SIZE as usize]; MAX_SCATTERS],
+        pkt_id: usize,
+        sga: &impl ScatterGather,
+        header_mempool: *mut rte_mempool,
+        extbuf_mempool: *mut rte_mempool,
+        header_info: &utils::HeaderInfo,
+        memzones: &Vec<(usize, (usize, usize))>,
+        external_regions: &Vec<mem::MmapMetadata>,
+        prepend_header_to_first_mbuf: bool,
+    ) -> Result<()> {
+        let find_memzone = |buf: &[u8]| -> Option<(usize, usize)> {
+            for (_, (start, size)) in memzones.iter() {
+                if buf.as_ptr() as usize >= *start && (buf.as_ptr() as usize) < (*start + *size) {
+                    return Some((*start, *size));
+                }
+            }
+            return None;
+        };
+
+        let header_idx = match (!self.use_external_buffers, prepend_header_to_first_mbuf) {
+            (true, true) => 1,
+            (true, false) => 0,
+            (false, true) => 1,
+            (false, false) => 0,
+        };
+        let header_buf = sga.index(header_idx).as_ref();
+
+        // get first scatter-gather entry, and if it's NOT within a natively allocated memzone
+        // (either in normal or externally allocated memory): put the header in a separate native
+        // mbuf
+        let (start_iterating_idx, mut already_has_registered_segment) = match (
+            find_memzone(header_buf),
+            prepend_header_to_first_mbuf,
+        ) {
+            (Some((start, size)), true) => {
+                let sga_header = sga.index(0);
+                (assert!(sga_header.buf_type() == CornType::Normal));
+                // find the original mbuf ptr
+                let (header_mbuf, data_offset) =
+                    Pkt::recover_original_mbuf_ptr(header_buf, start, size)?;
+                // data offset must be atleast as large as header size: otherwise app did this
+                // wrong
+                if data_offset < utils::TOTAL_HEADER_SIZE + sga_header.buf_size() {
+                    bail!("Not enough space to write in header in front of data in first mbuf.");
+                }
+
+                unsafe {
+                    (*header_mbuf).data_off =
+                        (data_offset - utils::TOTAL_HEADER_SIZE - sga_header.buf_size()) as _;
+                }
+                let data_filled_in =
+                    fill_in_header(header_mbuf, header_info, sga.data_len(), sga.get_id())
+                        .wrap_err("unable to fill header info.")?;
+                unsafe {
+                    (*header_mbuf).nb_segs = sga.num_borrowed_segments() as u16;
+                    (*header_mbuf).data_len =
+                        (header_buf.len() + data_filled_in + sga_header.buf_size()) as u16;
+
+                    (*header_mbuf).pkt_len =
+                        (header_buf.len() + data_filled_in + sga_header.buf_size()) as u32;
+                    (*header_mbuf).next = ptr::null_mut();
+                    tracing::debug!("Setting header mbuf to have data length of {}, pkt_len so far of {}, nb_segs of {}", (*header_mbuf).data_len, (*header_mbuf).pkt_len, (*header_mbuf).nb_segs);
+                }
+
+                // copy in the first mbuf into the mbuf
+                let ctx_hdr_slice = mbuf_slice!(header_mbuf, data_filled_in, sga_header.buf_size());
+                dpdk_call!(rte_memcpy_wrapper(
+                    ctx_hdr_slice.as_mut_ptr() as _,
+                    sga_header.as_ref().as_ptr() as _,
+                    sga_header.buf_size()
+                ));
+                // this is the header buffer
+                mbufs[0][pkt_id] = header_mbuf;
+
+                // now copy in the payload header (which should be in CornPtr::Normal) in the
+                // first entry
+                (2, true)
+            }
+            _ => {
+                // Do not include header in first "external" mbuf allocate and add header mbuf
+                // Effectively run the normal function
+                mbufs[0][pkt_id] =
+                    alloc_mbuf(header_mempool).wrap_err("Unable to allocate mbuf from mempool.")?;
+                self.add_header_mbuf(
+                    mbufs[0][pkt_id],
+                    (header_info, sga.data_len(), sga.get_id()),
+                    sga.num_borrowed_segments() + 1,
+                )
+                .wrap_err("Unable to initialize and add header mbuf.")?;
+                (0, false)
+            }
+        };
+
+        let mut cur_mbuf_ctr = 0;
+        for i in start_iterating_idx..sga.num_segments() {
+            let cornptr = sga.index(i);
+            match cornptr.buf_type() {
+                CornType::Normal => {
+                    if already_has_registered_segment {
+                        tracing::warn!(
+                            i = i,
+                            "Cannot have cornptr normal after registered memory segment."
+                        );
+                        bail!("Cannot have cornptr normal after registered memory segment.");
+                    } else {
+                        // copy this payload into the head buffer
+                        tracing::debug!("Copied in {}th sga index into the header mbuf", i);
+                        self.copy_payload(mbufs, pkt_id, 0, cornptr.as_ref())
+                            .wrap_err("Failed to copy sga owned entry {} into pkt list.")?;
+                    }
+                }
+                CornType::Registered => {
+                    cur_mbuf_ctr += 1;
+                    already_has_registered_segment = true;
+                    if !self.use_external_buffers {
+                        // find the original mbuf this points to
+                        if let Some((start, size)) = find_memzone(cornptr.as_ref()) {
+                            let (original_mbuf, data_off) =
+                                Pkt::recover_original_mbuf_ptr(cornptr.as_ref(), start, size)?;
+                            tracing::debug!("For sga entry # {}, recovered {:?} as mbuf with data_off of payload as {}, buf addr: {:?}; cur mbuf array idx: {}", i, original_mbuf, data_off, unsafe {(*original_mbuf).buf_addr}, cur_mbuf_ctr);
+                            mbufs[cur_mbuf_ctr][pkt_id] = original_mbuf;
+                            let last_mbuf = mbufs[cur_mbuf_ctr - 1][pkt_id];
+                            tracing::debug!("Recovered this mbuf and previous mbuf");
+                            unsafe {
+                                (*last_mbuf).next = original_mbuf;
+                                (*original_mbuf).next = ptr::null_mut();
+                                (*original_mbuf).data_len = cornptr.as_ref().len() as u16;
+                                tracing::debug!(
+                                    "Old mbuf  buf addr: {:?}, data_off: {:?}",
+                                    (*original_mbuf).buf_addr,
+                                    (*original_mbuf).data_off
+                                );
+                                (*original_mbuf).buf_addr =
+                                    cornptr.as_ref().as_ptr().offset(-1 * data_off as isize) as _;
+                                (*original_mbuf).data_off = data_off as u16;
+                                tracing::debug!(
+                                    "New mbuf  buf addr: {:?}, data_off: {:?}",
+                                    (*original_mbuf).buf_addr,
+                                    (*original_mbuf).data_off
+                                );
+                            }
+                        } else {
+                            bail!(
+                                "Could not find memzone for packet payload: {:?}, sga_idx: {}, pkt_id: {}", cornptr.as_ref().as_ptr(), i, pkt_id
+                            );
+                        }
+                    } else {
+                        // allocate an external mbuf for this use case
+                        let mbuf = alloc_mbuf(extbuf_mempool)
+                            .wrap_err("Unable to allocate externally allocated mbuf.")?;
+                        mbufs[cur_mbuf_ctr][pkt_id] = mbuf;
+                        let last_mbuf = mbufs[cur_mbuf_ctr - 1][pkt_id];
+                        unsafe {
+                            (*last_mbuf).next = mbuf;
+                            (*mbuf).next = ptr::null_mut();
+                            (*mbuf).data_len = cornptr.as_ref().len() as u16;
+                        }
+                        self.set_external_payload(
+                            mbufs,
+                            pkt_id,
+                            cur_mbuf_ctr,
+                            cornptr.as_ref(),
+                            memzones,
+                            external_regions,
+                        )
+                        .wrap_err("Failed to set external payload into pkt list.")?;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -173,14 +398,15 @@ impl Pkt {
     /// allocated from an actual mempool.
     /// * header_info - Header information to fill in at the front of the first mbuf, for the
     /// entire packet (currently ethernet, ipv4 and udp packet headers).
-    /// * shared_info - Shared info map for registered memory regions.
+    /// * memzones: Vector of memzones for native mbuf allocations.
+    /// * external_regions: Vector of information about externally registered memory regions.
     #[cfg(test)]
     pub fn construct_from_test_sga(
         &mut self,
         sga: &impl ScatterGather,
         mbufs: &mut [[*mut rte_mbuf; RECEIVE_BURST_SIZE as usize]; MAX_SCATTERS],
         header_info: &utils::HeaderInfo,
-        default_memzone: (usize, usize),
+        memzones: &Vec<(usize, (usize, usize))>,
         external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
         self.add_header_mbuf(
@@ -203,7 +429,7 @@ impl Pkt {
         }
 
         // 3: copy the payloads from the sga into the mbufs
-        self.set_sga_payloads(mbufs, 0, sga, default_memzone, external_regions)
+        self.set_sga_payloads(mbufs, 0, sga, memzones, external_regions)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
 
         Ok(())
@@ -247,13 +473,14 @@ impl Pkt {
     ///
     /// Arguments:
     /// * sga - Object that implements the scatter-gather trait to copy payloads from.
-    /// * shared_info - Shared info map for registered memory regions.
+    /// * memzones: Vector of memzones for native mbuf allocations.
+    /// * external_regions: Vector of information about externally registered memory regions.
     fn set_sga_payloads(
         &mut self,
         mbufs: &mut [[*mut rte_mbuf; RECEIVE_BURST_SIZE as usize]; MAX_SCATTERS],
         pkt_id: usize,
         sga: &impl ScatterGather,
-        default_memzone: (usize, usize),
+        memzones: &Vec<(usize, (usize, usize))>,
         external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
         let mut current_attached_idx = 0;
@@ -269,7 +496,7 @@ impl Pkt {
                         pkt_id,
                         current_attached_idx,
                         cornptr.as_ref(),
-                        default_memzone,
+                        memzones,
                         external_regions,
                     )
                     .wrap_err("Failed to set external payload into pkt list.")?;
@@ -315,6 +542,58 @@ impl Pkt {
         Ok(())
     }
 
+    /// Recover the original mbuf ptr within memzone region given buffer address.
+    /// Returns mbuf address, and `data_off` field pointing to that buffer within the mbuf.
+    /// Assumes buffer pointer is WITHIN start <= buf.as_ptr() as usize < (start +
+    /// size)
+    fn recover_original_mbuf_ptr(
+        buf: &[u8],
+        start: usize,
+        _size: usize,
+    ) -> Result<(*mut rte_mbuf, usize)> {
+        // Note: this is how I *think* the mempool layout works
+        // Could be different for a different page size, as well as a different mbuf size
+        // Base mbuf either starts 64 bytes after the nearest page, or 24 bytes after the
+        // beginning of the mempool
+        let pg2mb = mem::closest_2mb_page(buf.as_ptr());
+        let base_mbuf = match pg2mb <= start {
+            true => start + MEMHDR_OFFSET,
+            false => pg2mb + MEMHDR_ALIGNED_OFFSET,
+        };
+        let ptr_int = buf.as_ptr() as usize;
+        let ptr_offset = (ptr_int) - base_mbuf;
+        let offset_within_alloc = ptr_offset % TOTAL_MEMPOOL_MBUF_SIZE;
+
+        tracing::debug!("Pointer offset: {:?}", ptr_offset);
+        if offset_within_alloc
+            < (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE)
+        {
+            bail!(
+                "Data pointer within allocation header: {:?} in {:?}",
+                offset_within_alloc,
+                (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE)
+            );
+        }
+
+        if offset_within_alloc > (MBUF_POOL_HDR_SIZE + MBUF_BUF_SIZE as usize + MBUF_PRIV_SIZE) {
+            bail!(
+                "Data pointer within allocation tailroom: {:?} in {:?}",
+                offset_within_alloc,
+                MBUF_POOL_HDR_SIZE + MBUF_BUF_SIZE as usize + MBUF_PRIV_SIZE
+            );
+        }
+
+        let original_mbuf_ptr = (ptr_int - offset_within_alloc) as *mut rte_mbuf;
+        let data_off = (ptr_int - unsafe { (*original_mbuf_ptr).buf_addr as usize }) as u16;
+
+        debug!(
+            "Original ptr: {}, original_ptr address: {:?}, offset within alloc: {}, resulting data off: {}",
+            ptr_int, original_mbuf_ptr, offset_within_alloc, data_off,
+        );
+
+        Ok((original_mbuf_ptr, data_off as usize))
+    }
+
     /// Set external payload in packet list.
     fn set_external_payload(
         &mut self,
@@ -322,86 +601,52 @@ impl Pkt {
         pkt_id: usize,
         idx: usize,
         buf: &[u8],
-        default_memzone: (usize, usize),
+        memzones: &Vec<(usize, (usize, usize))>,
         external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
         debug!("The mbuf idx we're changing: {}", idx);
-        // check whether the payload is within the default memzone,
-        // or in an external region
+        // check whether the payload is in one of the memzones, or an external region
         tracing::debug!(
             "[set external payload] Address of payload: {:?}",
             buf.as_ptr()
         );
-        if (buf.as_ptr() as usize) > default_memzone.0
-            && (buf.as_ptr() as usize) < default_memzone.0 + default_memzone.1
-        {
-            tracing::debug!("Default memzone: {:?}", default_memzone);
-            debug!("Within memzone check");
 
-            // Note: this is how I *think* the mempool layout works
-            // Could be different for a different page size, as well as a different mbuf size
-            // Base mbuf either starts 64 bytes after the nearest page, or 24 bytes after the
-            // beginning of the mempool
-            let pg2mb = mem::closest_2mb_page(buf.as_ptr());
-            let base_mbuf = match pg2mb <= default_memzone.0 {
-                true => default_memzone.0 + MEMHDR_OFFSET,
-                false => pg2mb + MEMHDR_ALIGNED_OFFSET,
-            };
-            let ptr_int = buf.as_ptr() as usize;
-            let ptr_offset = (ptr_int) - base_mbuf;
-            let offset_within_alloc = ptr_offset % TOTAL_MEMPOOL_MBUF_SIZE;
+        let mut in_native_mempool = false;
+        let mut in_external_pool = false;
+        for (_, (start, size)) in memzones.iter() {
+            if (buf.as_ptr() as usize) > *start && (buf.as_ptr() as usize) < (*start + *size) {
+                tracing::debug!("Default memzone: {:?}", (*start, *size));
+                debug!("Within memzone check");
+                let (original_mbuf_ptr, data_off) =
+                    Pkt::recover_original_mbuf_ptr(buf, *start, *size)?;
 
-            tracing::debug!("Pointer offset: {:?}", ptr_offset);
-            if offset_within_alloc
-                < (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE)
-            {
-                bail!(
-                    "Data pointer within allocation header: {:?} in {:?}",
-                    offset_within_alloc,
-                    (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE)
+                tracing::debug!(
+                    "Pointer to current extbuf: {:?}, Pointer to original mbuf ptr: {:?}",
+                    mbufs[idx][pkt_id],
+                    original_mbuf_ptr
                 );
-            }
+                unsafe {
+                    (*mbufs[idx][pkt_id]).buf_iova = (*original_mbuf_ptr).buf_iova;
+                    (*mbufs[idx][pkt_id]).buf_addr =
+                        buf.as_ptr().offset(-1 * data_off as isize) as _;
+                    (*mbufs[idx][pkt_id]).buf_len = buf.len() as _;
+                    (*mbufs[idx][pkt_id]).data_off = data_off as u16;
+                }
+                // set lkey of packet to be -1
+                dpdk_call!(set_lkey_not_present(mbufs[idx][pkt_id]));
 
-            if offset_within_alloc > (MBUF_POOL_HDR_SIZE + MBUF_BUF_SIZE as usize + MBUF_PRIV_SIZE)
-            {
-                bail!(
-                    "Data pointer within allocation tailroom: {:?} in {:?}",
-                    offset_within_alloc,
-                    MBUF_POOL_HDR_SIZE + MBUF_BUF_SIZE as usize + MBUF_PRIV_SIZE
-                );
+                // only set reference for last mbuf in the list.
+                if unsafe { (*mbufs[idx][pkt_id]).next == ptr::null_mut() } {
+                    dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 1));
+                    dpdk_call!(rte_pktmbuf_refcnt_update(original_mbuf_ptr, 1));
+                } else {
+                    dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 0));
+                }
+                in_native_mempool = true;
+                break;
             }
-            let data_off = (offset_within_alloc
-                - (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE))
-                as u16;
-            debug!(
-                "Original ptr: {}, offset within alloc: {}, resulting data off: {}",
-                ptr_int, offset_within_alloc, data_off,
-            );
-
-            let original_mbuf_ptr = (ptr_int - offset_within_alloc) as *mut rte_mbuf;
-            tracing::debug!(
-                "Pointer to current extbuf: {:?}, Pointer to original mbuf ptr: {:?}",
-                mbufs[idx][pkt_id],
-                original_mbuf_ptr
-            );
-            unsafe {
-                (*mbufs[idx][pkt_id]).buf_iova = (*original_mbuf_ptr).buf_iova;
-                (*mbufs[idx][pkt_id]).buf_addr = buf.as_ptr().offset(-1 * data_off as isize) as _;
-                (*mbufs[idx][pkt_id]).buf_len = buf.len() as _;
-                (*mbufs[idx][pkt_id]).data_off = data_off
-            }
-            // set lkey of packet to be -1
-            dpdk_call!(set_lkey_not_present(mbufs[idx][pkt_id]));
-
-            // only set reference for last mbuf in the list.
-            if unsafe { (*mbufs[idx][pkt_id]).next == ptr::null_mut() } {
-                dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 1));
-                dpdk_call!(rte_pktmbuf_refcnt_update(original_mbuf_ptr, 1));
-            } else {
-                dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 0));
-            }
-        // copy over the physical address
-        } else {
+        }
+        if !in_native_mempool {
             for region in external_regions.iter() {
                 if region.addr_within_range(buf.as_ptr()) {
                     debug!("Found region that matches");
@@ -415,9 +660,16 @@ impl Pkt {
                         (*mbufs[idx][pkt_id]).data_off = 0;
                         debug!(iova =? (*mbufs[idx][pkt_id]).buf_iova, addr =? (*mbufs[idx][pkt_id]).buf_addr, len =? (*mbufs[idx][pkt_id]).buf_len, "Set packet fields.");
                     }
+                    in_external_pool = true;
+                    break;
                 }
             }
         }
+
+        if !in_native_mempool && !in_external_pool {
+            bail!("For buffer: {:?}, pkt_id: {}, mbuf list id: {}: could not find native mempool or external memory region.", buf.as_ptr(), pkt_id, idx);
+        }
+
         // update general packet metadata
         tracing::debug!("[set external payload] Adding {:?} to buf", buf.len());
         unsafe {
@@ -648,24 +900,10 @@ pub fn free_mempool(mempool: *mut rte_mempool) {
     dpdk_call!(rte_mempool_free(mempool));
 }
 
-/// Initializes DPDK ports, and memory pools.
-/// Returns two mempools:
-/// (1) One that allocates mbufs with `MBUF_BUF_SIZE` of buffer space.
-/// (2) One that allocates empty mbuf structs, meant for attaching external data buffers.
-fn dpdk_init_helper() -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
-    let nb_ports = dpdk_call!(rte_eth_dev_count_avail());
-    if nb_ports <= 0 {
-        bail!("DPDK INIT: No ports available.");
-    }
-    info!(
-        "DPDK reports that {} ports (interfaces) are available",
-        nb_ports
-    );
-
-    // create an mbuf pool to register the rx queues
-    let name = CString::new("default_mbuf_pool")?;
+pub fn create_native_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
+    let name_str = CString::new(name)?;
     let mbuf_pool = dpdk_call!(rte_pktmbuf_pool_create(
-        name.as_ptr(),
+        name_str.as_ptr(),
         (NUM_MBUFS * nb_ports) as u32,
         MBUF_CACHE_SIZE as u32,
         MBUF_PRIV_SIZE as u16,
@@ -687,6 +925,26 @@ fn dpdk_init_helper() -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
         dpdk_call!(rte_mempool_free(mbuf_pool));
         bail!("Not able to initialize private data in extbuf pool.");
     }
+
+    Ok(mbuf_pool)
+}
+
+/// Initializes DPDK ports, and memory pools.
+/// Returns two mempools:
+/// (1) One that allocates mbufs with `MBUF_BUF_SIZE` of buffer space.
+/// (2) One that allocates empty mbuf structs, meant for attaching external data buffers.
+fn dpdk_init_helper() -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
+    let nb_ports = dpdk_call!(rte_eth_dev_count_avail());
+    if nb_ports <= 0 {
+        bail!("DPDK INIT: No ports available.");
+    }
+    info!(
+        "DPDK reports that {} ports (interfaces) are available",
+        nb_ports
+    );
+
+    let mbuf_pool = create_native_mempool("default_mbuf_pool", nb_ports)
+        .wrap_err("Not able to create default mbuf_pool in dpdk init.")?;
 
     let owner = RTE_ETH_DEV_NO_OWNER as u64;
     let mut p = dpdk_call!(rte_eth_find_next_owned_by(0, owner)) as u16;

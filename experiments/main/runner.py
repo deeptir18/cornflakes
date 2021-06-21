@@ -192,6 +192,7 @@ class Experiment(metaclass=abc.ABCMeta):
                 continue
             if not total_args.pprint:
                 iteration.create_folder(folder_path)
+            utils.debug("Running iteration: ", iteration)
             status = iteration.run(iteration.get_folder_name(folder_path),
                                    self.get_exp_config(),
                                    self.get_machine_config(),

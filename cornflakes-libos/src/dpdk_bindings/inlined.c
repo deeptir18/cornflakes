@@ -36,14 +36,17 @@ typedef unsigned long virtaddr_t;
 inline void free_referred_mbuf(void *buf) {
     struct rte_mbuf *mbuf = (struct rte_mbuf *)(buf);
     struct tx_pktmbuf_priv *priv_data = (struct tx_pktmbuf_priv *)(((char *)buf) + sizeof(struct rte_mbuf));
+    //printf("[free_refered_mbuf_] about to check if refers to anther\n");
     if (priv_data->refers_to_another == 1) {
         //printf("[free_refered_mbuf_] refers to another = 1\n");
         // get the mbuf this refers to
         // decrease the ref count of that mbuf
-        struct rte_mbuf *ref_mbuf = (struct rte_mbuf *)((char *)(mbuf->buf_addr) - (RTE_PKTMBUF_HEADROOM + MBUF_HEADER_SIZE + sizeof(struct tx_pktmbuf_priv)));
+        // buf_addr in mbuf is (128 + sizeof(priv)) away from the base address
+        struct rte_mbuf *ref_mbuf = (struct rte_mbuf *)((char *)(mbuf->buf_addr) - (RTE_PKTMBUF_HEADROOM + sizeof(struct tx_pktmbuf_priv)));
         uint16_t ref_cnt = rte_mbuf_refcnt_read(ref_mbuf);
         //printf("[free_refered_mbuf_] Original extbuf buffer: %p; Pointer of referred mbuf: %p; refcnt of reffered buf: %u\n", buf, ref_mbuf, (unsigned)ref_cnt);
         if (ref_cnt == 0 || ref_cnt == 1) {
+            //printf("Freeing mbuf %p\n", ref_mbuf);
             rte_pktmbuf_free(ref_mbuf);
         } else {
             rte_mbuf_refcnt_set(ref_mbuf, ref_cnt - 1);

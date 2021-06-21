@@ -7,7 +7,7 @@ use super::super::{
     ServerSM,
 };
 use super::connection::DPDKConnection;
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{bail, Result, WrapErr};
 use hashbrown::HashMap;
 use hdrhistogram::Histogram;
 use std::{
@@ -106,6 +106,10 @@ impl<'a, 'b> ClientSM for EchoClient<'a, 'b> {
             None => {}
         }
         Ok(())
+    }
+
+    fn received_so_far(&self) -> usize {
+        self.recved
     }
 
     fn cleanup(&mut self, connection: &mut Self::Datapath) -> Result<()> {
@@ -231,7 +235,7 @@ impl ServerSM for EchoServer {
             <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
             Duration,
         )>,
-        mut send_fn: impl FnMut(&Vec<(Cornflake, AddressInfo)>) -> Result<()>,
+        conn: &mut Self::Datapath,
     ) -> Result<()> {
         let proc_timer = self.get_timer(SERVER_PROCESSING_LATENCY, cfg!(feature = "timers"))?;
         let start = Instant::now();
@@ -254,7 +258,9 @@ impl ServerSM for EchoServer {
         if cfg!(feature = "timers") {
             record(proc_timer, start.elapsed().as_nanos() as u64)?;
         }
-        send_fn(&out_sgas)
+        conn.push_sgas(&out_sgas)
+            .wrap_err("Unable to push sgas out in datapath.")?;
+        Ok(())
     }
 
     fn get_histograms(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {

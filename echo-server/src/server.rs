@@ -1,5 +1,5 @@
 use super::CerealizeMessage;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
     timing::HistogramWrapper, utils::AddressInfo, Cornflake, Datapath, ReceivedPacket,
     ScatterGather, ServerSM,
@@ -51,7 +51,7 @@ where
             <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
             Duration,
         )>,
-        mut send_fn: impl FnMut(&Vec<(Cornflake, AddressInfo)>) -> Result<()>,
+        conn: &mut D,
     ) -> Result<()> {
         let mut out_sgas: Vec<(Cornflake, AddressInfo)> = Vec::with_capacity(sgas.len());
         let mut contexts: Vec<S::Ctx> = (0..sgas.len())
@@ -62,7 +62,9 @@ where
             out_sga.set_id(in_sga.0.get_id());
             out_sgas.push((out_sga, in_sga.0.get_addr().clone()));
         }
-        send_fn(&out_sgas)
+        conn.push_sgas(&out_sgas)
+            .wrap_err("Unable to send out sgas in datapath.")?;
+        Ok(())
     }
 
     fn get_histograms(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {

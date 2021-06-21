@@ -8,11 +8,7 @@ use cornflakes_libos::{
     ClientSM, Datapath, ServerSM,
 };
 use cornflakes_utils::{global_debug_init, TraceLevel};
-use std::{
-    net::Ipv4Addr,
-    process::exit,
-    time::{Duration, Instant},
-};
+use std::{net::Ipv4Addr, process::exit, time::Instant};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -93,12 +89,19 @@ fn main() -> Result<()> {
     };
 
     let mut connection = match opt.mode {
-        DPDKMode::Server => DPDKConnection::new(&opt.config_file, opt.mode, recv_mode, true)
-            .wrap_err("Failed to initialize DPDK server connection.")?,
-        DPDKMode::Client => {
-            DPDKConnection::new(&opt.config_file, opt.mode, RecvMode::ZeroCopyRecv, true)
+        DPDKMode::Server => {
+            DPDKConnection::new(&opt.config_file, opt.mode, recv_mode, true, true, false)
                 .wrap_err("Failed to initialize DPDK server connection.")?
         }
+        DPDKMode::Client => DPDKConnection::new(
+            &opt.config_file,
+            opt.mode,
+            RecvMode::ZeroCopyRecv,
+            true,
+            true,
+            false,
+        )
+        .wrap_err("Failed to initialize DPDK server connection.")?,
     };
     match opt.mode {
         DPDKMode::Server => {
@@ -134,14 +137,14 @@ fn main() -> Result<()> {
                 client.run_closed_loop(
                     &mut connection,
                     opt.iterations,
-                    Duration::new(0, 1000000),
+                    cornflakes_libos::high_timeout_at_start,
                 )?;
             } else {
                 client.run_open_loop(
                     &mut connection,
                     (1e9 / opt.rate as f64) as u64,
                     opt.total_time,
-                    Duration::new(0, 1000000),
+                    cornflakes_libos::high_timeout_at_start,
                 )?;
             }
             let exp_time = start_run.elapsed().as_nanos() as f64 / 1000000000.0;
