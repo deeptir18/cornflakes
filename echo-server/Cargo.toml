@@ -23,11 +23,13 @@ prost = "0.7.0"
 capnp = { version = "0.13.6", features = ["unaligned"] }
 flatbuffers = "0.7.0"
 protobuf = "2.*.*"
+cxx = "1.0"
 
 [build-dependencies]
 protoc-rust = "2.*.*"
 capnpc = "0.13"
 cornflakes-codegen = { path = "../cornflakes-codegen" }
+cxx-build = "1.0"
 
 [dev-dependencies]
 libc = "0.2.81"

@@ -1,4 +1,5 @@
 pub mod capnproto;
+pub mod cereal;
 pub mod client;
 pub mod cornflakes_dynamic;
 pub mod cornflakes_fixed;

@@ -205,6 +205,9 @@ fn main() -> Result<()> {
                 echo_server.init(&mut connection)?;
                 echo_server.run_state_machine(&mut connection)?;
             }
+            (NetworkDatapath::DPDK, SerializationType::Cereal) => {
+                unimplemented!();
+            }
         },
         EchoMode::Client => {
             let sizes = get_equal_fields(opt.message, opt.size);
@@ -273,6 +276,9 @@ fn main() -> Result<()> {
                     let mut ctx = echo_client.new_context();
                     echo_client.init_state(&mut ctx, &mut connection)?;
                     run_client(&mut echo_client, &mut connection, &opt)?;
+                }
+                (NetworkDatapath::DPDK, SerializationType::Cereal) => {
+                    unimplemented!();
                 }
             }
         }

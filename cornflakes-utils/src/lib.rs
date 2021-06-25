@@ -96,6 +96,8 @@ pub enum SerializationType {
     CornflakesOneCopyDynamic,
     /// Cornflakes where everything is copied into 1 packet buffer, with fix sized header.
     CornflakesOneCopyFixed,
+    /// Cereal serialization library.
+    Cereal,
 }
 
 impl std::str::FromStr for SerializationType {
@@ -105,6 +107,7 @@ impl std::str::FromStr for SerializationType {
             "protobuf" | "PROTOBUF" | "Protobuf" => SerializationType::Protobuf,
             "flatbuffers" | "FLATBUFFERS" | "Flatbuffers" => SerializationType::Flatbuffers,
             "capnproto" | "CAPNPROTO" | "Capnproto" => SerializationType::Capnproto,
+            "cereal" | "CEREAL" | "Cereal" => SerializationType::Cereal,
             "cornflakes-dynamic" | "CORNFLAKES-DYNAMIC" | "Cornflakes-Dynamic"
             | "CornflakesDynamic" => SerializationType::CornflakesDynamic,
             "cornflakes-fixed" | "CORNFLAKES-FIXED" | "Cornflakes-Fixed" | "CornflakesFixed" => {

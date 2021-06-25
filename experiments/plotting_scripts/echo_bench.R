@@ -11,6 +11,7 @@ showtext_auto()
 
 args <- commandArgs(trailingOnly=TRUE)
 d <- read.csv(args[1], sep=",", header = TRUE)
+# d <- subset(d, d[9] * 100 > 88)
 
 labels <- c("cf_zero_copy_send_zero_copy_recv" = "Cornflakes, Zero-Copy Send and Receive", "cf_copy_send_zero_copy_recv" = "Cornflakes, Copy-Send and Zero-Copy Receive", "cf_zero_copy_send_copy_recv" = "Cornflakes, Zero-Copy Send and Copy Receive", "cf_copy_recv_copy_send" = "Cornflakes, Copy Send and Copy Receive")
 
@@ -71,15 +72,16 @@ base_plot <- function(data) {
                   text = element_text(family="Fira Sans"),
                   legend.title = element_blank(),
                   legend.key.size = unit(10, 'mm'),
-                  legend.spacing.x = unit(0.1, 'cm'))
+                  legend.spacing.x = unit(0.1, 'cm')) +
+    coord_cartesian(ylim=c(0, 50))
     return(plot)
 }
 
 full_plot <- function(data) {
     plot <- base_plot(data)
     plot <- plot +
-        labs(x = "Offered Throughput (Gbps)", y = "p99 Latency (ns)") +
-        facet_grid(size ~ message_type)
+        labs(x = "Offered Throughput (Gbps)", y = "p99 Latency (µs)") +
+        facet_grid(message_type ~ size)
     print(plot)
     return(plot)
 }

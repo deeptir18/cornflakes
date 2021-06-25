@@ -9,17 +9,21 @@ import copy
 STRIP_THRESHOLD = 0.03
 
 # SIZES_TO_LOOP = [1024, 2048, 4096, 8192]
-SIZES_TO_LOOP = [4096, 8192]
+SIZES_TO_LOOP = [2048, 4096, 8192]
 MESSAGE_TYPES = ["single"]
-MESSAGE_TYPES.extend(["list-2", "list-4", "list-6", "list-8"])
-#MESSAGE_TYPES.extend(["list-{}".format(i) for i in range(1, 5)])
-#MESSAGE_TYPES.extend(["tree-{}".format(i) for i in range(1, 4)])
-RECV_TYPES = ["zero_copy_recv", "copy_to_dma_memory", "copy_out_recv"]
+MESSAGE_TYPES = []
+MESSAGE_TYPES.extend(["list-2", "list-4", "list-8",
+                     "tree-2", "tree-1", "tree-3"])
+# MESSAGE_TYPES.extend(["list-{}".format(i) for i in range(1, 5)])
+# MESSAGE_TYPES.extend(["tree-{}".format(i) for i in range(1, 4)])
+RECV_TYPES = ["zero_copy_recv"]  # "copy_to_dma_memory", "copy_out_recv"]
 MAX_CLIENT_RATE_PPS = 60000
 MAX_NUM_CLIENTS = 7
 CLIENT_RATE_INCREMENT = 20000
-SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cornflakes-fixed",
-                           "cornflakes1c-dynamic", "cornflakes1c-fixed"]  # "cornflakes1c-fixed", "protobuf", "capnproto",
+SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "capnproto", "protobuf",
+                           "flatbuffers",  # "cornflakes-fixed",
+                           # "cornflakes1c-fixed"]  # "cornflakes1c-fixed", "protobuf", "capnproto",
+                           "cornflakes1c-dynamic"]
 # "flatbuffers"]
 
 
@@ -267,7 +271,7 @@ class EchoBench(runner.Experiment):
         else:
             # loop over the options
             ret = []
-            for trial in range(2):
+            for trial in range(3):
                 # for trial in range(utils.NUM_TRIALS):
                 for message_type in MESSAGE_TYPES:
                     for size in SIZES_TO_LOOP:
@@ -277,13 +281,7 @@ class EchoBench(runner.Experiment):
                                 and (serialization == "cornflakes-dynamic"
                                      or serialization == "cornflakes-1cdynamic"):
                                 continue
-                            recv_modes = ["zero_copy_recv"]
-                            if (serialization == "cornflakes-dynamic"
-                                    or serialization == "cornflakes-fixed"):
-                                recv_modes.append("copy_to_dma_memory")
-                            else:
-                                recv_modes.append("copy_out_recv")
-                            for recv_mode in recv_modes:
+                            for recv_mode in RECV_TYPES:
                                 # for client rates:
                                 # for now loop over 2 rates and 1-2 machines
                                 # do some testing to determine optimal rates
@@ -293,6 +291,8 @@ class EchoBench(runner.Experiment):
                                                 [(96000, 1)]]
                                 for i in range(2, int(self.config_yaml["max_clients"])):
                                     client_rates.append([(100000, i)])
+                                for i in range(1, int(self.config_yaml["max_clients"])):
+                                    client_rates.append([(120000, i)])
                                 for rate in client_rates:
                                     it = EchoBenchIteration(rate,
                                                             size,
@@ -346,7 +346,7 @@ class EchoBench(runner.Experiment):
         return "serialization,message_type,size,recv_mode,"\
             "offered_load_pps,offered_load_gbps,"\
             "achieved_load_pps,achieved_load_gbps,"\
-            "percent_acheived_rate,total_retries"\
+            "percent_acheived_rate,total_retries,"\
             "avg,median,p99,p999"
 
     def run_analysis_individual_trial(self,

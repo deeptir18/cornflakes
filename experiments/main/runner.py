@@ -10,6 +10,7 @@ from fabric import Connection
 import git
 from collections import defaultdict
 import time
+from tqdm import tqdm
 
 
 class UserNameSpace(object):
@@ -185,10 +186,18 @@ class Experiment(metaclass=abc.ABCMeta):
         """
         program_version_info = self.get_program_version_info()
         folder_path = Path(total_args.folder)
+        ct = 0
+        total = len(iterations)
+        start = time.time()
+        expected_time = 20 * total / 3600.0
         for iteration in iterations:
+            ct += 1
+            utils.info("Running iteration  # {} out of {}, {} % done with iterations expected time to finish: {} hours".format(
+                ct - 1, total, (float(ct - 1)/float(total) * 100.0),
+                expected_time))
             if iteration.get_folder_name(folder_path).exists():
-                print("Iteration already exists, skipping:"
-                      "{}".format(iteration))
+                utils.info("Iteration already exists, skipping:"
+                           "{}".format(iteration))
                 continue
             if not total_args.pprint:
                 iteration.create_folder(folder_path)
@@ -215,8 +224,11 @@ class Experiment(metaclass=abc.ABCMeta):
                 utils.warn("Failed to execute program after {} retries.".format(
                     utils.NUM_RETRIES))
                 exit(1)
+            now = time.time()
+            total_so_far = now - start
+            expected_time = (float(total_so_far) / ct * total) / 3600.0
 
-                # TODO: add some, enter to continues?
+            # TODO: add some, enter to continues?
 
     def execute(self, parser, namespace):
         total_args = self.add_specific_args(parser, namespace)
