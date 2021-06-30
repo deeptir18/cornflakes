@@ -189,7 +189,7 @@ class Experiment(metaclass=abc.ABCMeta):
         ct = 0
         total = len(iterations)
         start = time.time()
-        expected_time = 20 * total / 3600.0
+        expected_time = 25 * total / 3600.0
         for iteration in iterations:
             ct += 1
             utils.info("Running iteration  # {} out of {}, {} % done with iterations expected time to finish: {} hours".format(
@@ -224,6 +224,8 @@ class Experiment(metaclass=abc.ABCMeta):
                 utils.warn("Failed to execute program after {} retries.".format(
                     utils.NUM_RETRIES))
                 exit(1)
+            # sleep before next trial
+            time.sleep(5)
             now = time.time()
             total_so_far = now - start
             expected_time = (float(total_so_far) / ct * total) / 3600.0
@@ -310,7 +312,7 @@ class Iteration(metaclass=abc.ABCMeta):
         host_addr = machine_config["hosts"][host]["addr"]
 
         ssh_command = "ssh -i {} {}@{} {}".format(key, user, host_addr, cmd)
-        sh.run(ssh_command, shell=True)
+        sh.run(ssh_command, timeout=10, shell=True)
 
     def run_cmd_sudo(self, cmd, host, machine_config, fail_ok=False, return_dict=None, proc_counter=None):
 
@@ -469,7 +471,8 @@ class Iteration(metaclass=abc.ABCMeta):
             (program_counter, kill_cmd) = programs_to_kill[host]
             try:
                 kill_cmd_with_sleep = kill_cmd + "; /bin/sleep 3"
-                utils.debug("Trying to run kill command")
+                utils.debug(
+                    "Trying to run kill command: {} on host {}".format(kill_cmd, host))
                 self.kill_remote_process(kill_cmd_with_sleep, host,
                                          machine_config)
             except:

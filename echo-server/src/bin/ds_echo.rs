@@ -10,6 +10,7 @@ use cornflakes_utils::{
 };
 use echo_server::{
     capnproto::{CapnprotoEchoClient, CapnprotoSerializer},
+    cereal::{CerealEchoClient, CerealSerializer},
     client::EchoClient,
     cornflakes_dynamic::{CornflakesDynamicEchoClient, CornflakesDynamicSerializer},
     cornflakes_fixed::{CornflakesFixedEchoClient, CornflakesFixedSerializer},
@@ -206,7 +207,13 @@ fn main() -> Result<()> {
                 echo_server.run_state_machine(&mut connection)?;
             }
             (NetworkDatapath::DPDK, SerializationType::Cereal) => {
-                unimplemented!();
+                let mut connection =
+                    dpdk_datapath(opt.zero_copy_recv, opt.copy_to_dmable_memory, false)?;
+                let serializer = CerealSerializer::new(opt.message, opt.size);
+                let mut echo_server = EchoServer::new(serializer);
+                set_ctrlc_handler(&echo_server)?;
+                echo_server.init(&mut connection)?;
+                echo_server.run_state_machine(&mut connection)?;
             }
         },
         EchoMode::Client => {
@@ -278,7 +285,13 @@ fn main() -> Result<()> {
                     run_client(&mut echo_client, &mut connection, &opt)?;
                 }
                 (NetworkDatapath::DPDK, SerializationType::Cereal) => {
-                    unimplemented!();
+                    let mut connection =
+                        dpdk_datapath(opt.zero_copy_recv, opt.copy_to_dmable_memory, false)?;
+                    let mut echo_client: EchoClient<CerealEchoClient, DPDKConnection> =
+                        EchoClient::new(opt.server_ip, opt.message, sizes, hist)?;
+                    let mut ctx = echo_client.new_context();
+                    echo_client.init_state(&mut ctx, &mut connection)?;
+                    run_client(&mut echo_client, &mut connection, &opt)?;
                 }
             }
         }

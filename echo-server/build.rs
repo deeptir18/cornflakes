@@ -26,7 +26,7 @@ fn main() {
         .file("src/cereal/cereal_classes.cc")
         .flag_if_supported("-std=c++14")
         .includes(vec![include_path])
-        .compile("cereal-api");
+        .compile("cxxbridge-cereal-api");
 
     // compile protobuf echo
     let input_proto_path = echo_src_path.clone().join("protobuf");
