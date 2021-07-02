@@ -20,7 +20,7 @@ RECV_TYPES = ["zero_copy_recv"]  # "copy_to_dma_memory", "copy_out_recv"]
 MAX_CLIENT_RATE_PPS = 60000
 MAX_NUM_CLIENTS = 7
 CLIENT_RATE_INCREMENT = 20000
-SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "capnproto", "protobuf",
+SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cereal", "capnproto", "protobuf",
                            "flatbuffers",  # "cornflakes-fixed",
                            # "cornflakes1c-fixed"]  # "cornflakes1c-fixed", "protobuf", "capnproto",
                            "cornflakes1c-dynamic"]
@@ -271,7 +271,7 @@ class EchoBench(runner.Experiment):
         else:
             # loop over the options
             ret = []
-            for trial in range(3):
+            for trial in range(2):
                 # for trial in range(utils.NUM_TRIALS):
                 for message_type in MESSAGE_TYPES:
                     for size in SIZES_TO_LOOP:

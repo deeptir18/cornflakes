@@ -140,11 +140,6 @@ fn get_single_buffer_message<'a>(payload: &'a [u8]) -> cxx::UniquePtr<ffi::Singl
 fn context_size(message_type: SimpleMessageType, size: usize) -> usize {
     let payloads_vec = init_payloads_as_vec(&get_equal_fields(message_type, size));
     let payloads: Vec<&[u8]> = payloads_vec.iter().map(|vec| vec.as_slice()).collect();
-    tracing::debug!(
-        message =? message_type,
-        size = size,
-        "Trying to get context size"
-    );
 
     match message_type {
         SimpleMessageType::Single => {
@@ -157,6 +152,7 @@ fn context_size(message_type: SimpleMessageType, size: usize) -> usize {
             assert!(payloads.len() == list_size);
             let list_cereal = ffi::new_list_cereal();
             for payload in payloads.iter() {
+                tracing::debug!("Append payload of size {:?}", payload.len());
                 list_cereal.append(payload);
             }
             list_cereal.serialized_size()
@@ -225,6 +221,7 @@ where
         let mut cf = Cornflake::with_capacity(1);
         match self.message_type {
             SimpleMessageType::Single => {
+                tracing::debug!(buf=?recved_message.get_pkt_buffer().as_ptr(), "In process msg for cereal");
                 let object_deser =
                     ffi::deserialize_single_cereal_from_array(recved_message.get_pkt_buffer());
                 let object_ser = ffi::new_single_cereal();

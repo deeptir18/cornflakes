@@ -1,6 +1,7 @@
 #include "cereal/types/vector.hpp"
 #include "cereal/types/string.hpp"
 #include "cereal/types/polymorphic.hpp"
+#include <cereal/types/memory.hpp>
 #include "cereal/archives/binary.hpp"
 #include "rust/cxx.h"
 #include "echo-server/src/cereal/include/cereal_headers.hh"
@@ -8,12 +9,40 @@
 #include <streambuf>
 
 class SingleCereal::impl {
-    friend SingleCereal;
+    friend class cereal::access;
+    friend class SingleCereal;
+    impl() : data( std::string("") ) {}
     // TODO: possibly, string isn't the right move here
     std::string data;
+
+    template<class Archive>
+    void load(Archive & ar) {
+        ar ( data );
+    }
+
+    template<class Archive>
+    void save(Archive & ar) const {
+        ar ( data );
+    }
 };
 
-SingleCereal::SingleCereal() : impl(new class SingleCereal::impl) {}
+template <class Archive> inline
+void SingleCereal::load(Archive & ar )  {
+    ar( impl );
+}
+
+template <class Archive> inline
+void SingleCereal::save(Archive & ar ) const {
+    ar( impl );
+}
+
+SingleCereal::SingleCereal() : impl(new class SingleCereal::impl()) {}
+
+SingleCereal::~SingleCereal() = default;
+
+SingleCereal::SingleCereal(SingleCereal && other) : impl(nullptr) {
+    impl = std::move(other.impl);
+}
 
 void SingleCereal::set_data(rust::Slice<const uint8_t> data) const {
     impl->data = std::move(std::string(reinterpret_cast<const char *>(data.data()), data.length()));
@@ -30,29 +59,15 @@ const std::string& SingleCereal::get_data() const {
 size_t SingleCereal::serialized_size() const {
     std::stringstream sstream(std::ios_base::out);
     cereal::BinaryOutputArchive oarchive(sstream);
-    serialize(oarchive);
+    save(oarchive);
     return sstream.str().size();
 }
 
 void SingleCereal::serialize_to_array(rust::Slice<uint8_t> buf) const {
-    printf("In serialize to array function, address of array is : %p\n", reinterpret_cast<char *>(buf.data()));
-    char *data_ptr = reinterpret_cast<char *>(buf.data());
-    *(data_ptr) = 'f';
-    membuf stream_buffer_copy = membuf(buf);
-    stream_buffer_copy.sputc('m');
-    stream_buffer_copy.sputc('e');
-    stream_buffer_copy.sputc('e');
-    printf("1st: %c, 2nd: %c, third: %c\n", *data_ptr, *(data_ptr +1), *(data_ptr + 2));
-    std::string original_foo = std::string(reinterpret_cast<char *>(buf.data()), 3);
-    
     membuf stream_buffer = membuf(buf);
     std::basic_ostream<char> stream(&stream_buffer);
-    stream.write("baa", 3);
-    stream.flush();
-    std::string foo = std::string(reinterpret_cast<char *>(buf.data()), 3);
-    printf("Wrote to string: original: %s, new: %s\n", original_foo.c_str(), foo.c_str());
     cereal::BinaryOutputArchive oarchive(stream);
-    serialize(oarchive);
+    save(oarchive);
 }
 
 bool SingleCereal::equals(const std::unique_ptr<SingleCereal> other) const {
@@ -69,25 +84,30 @@ bool SingleCereal::equals(const std::shared_ptr<SingleCereal> other) const {
     return false;
 }
 
+// We must also explicitly instantiate our template
+// functions for serialization
+template void SingleCereal::impl::save<cereal::BinaryOutputArchive>( cereal::BinaryOutputArchive & ) const;
+template void SingleCereal::impl::load<cereal::BinaryInputArchive>( cereal::BinaryInputArchive & );
+
+// Note that we need to instantiate for both loading and saving, even
+// if we use a single serialize function
+template void SingleCereal::save<cereal::BinaryOutputArchive>( cereal::BinaryOutputArchive & ) const;
+template void SingleCereal::load<cereal::BinaryInputArchive>( cereal::BinaryInputArchive & );
+
 std::unique_ptr<SingleCereal> deserialize_single_cereal_from_array(rust::Slice<const uint8_t> buf) {
     membuf stream_buffer = membuf(buf);
     std::basic_istream<char> stream(&stream_buffer);
     cereal::BinaryInputArchive iarchive(stream);
-    std::unique_ptr<SingleCereal> cereal;
+    SingleCereal cereal;
     try {
-        iarchive(cereal);
+        cereal.load(iarchive);
     }
     catch(std::runtime_error e) {
         printf("Failed to deserialize SingleCereal.\n");
         e.what();
     }
-    return cereal;
-}
-
-template <class Archive>
-void SingleCereal::serialize(Archive & ar ) const {
-    printf("In serialize func\n");
-    ar( impl->data );
+    std::unique_ptr<SingleCereal> new_cereal = std::make_unique<SingleCereal>(std::move(cereal));
+    return new_cereal;
 }
 
 std::unique_ptr<SingleCereal> new_single_cereal() {
@@ -100,6 +120,10 @@ class ListCereal::impl {
 };
 
 ListCereal::ListCereal() : impl(new class ListCereal::impl) {}
+
+ListCereal::ListCereal(ListCereal && other) : impl(nullptr) {
+    impl = other.impl;
+}
 
 void ListCereal::append(rust::Slice<const uint8_t> data) const {
     impl->list_data.push_back(std::move(std::string(reinterpret_cast<const char *>(data.data()), data.length())));
@@ -141,31 +165,60 @@ std::unique_ptr<ListCereal> deserialize_list_cereal_from_array(rust::Slice<const
     membuf stream_buffer = membuf(buf);
     std::basic_istream<char> stream(&stream_buffer);
     cereal::BinaryInputArchive iarchive(stream);
-    std::unique_ptr<ListCereal> cereal;
+    ListCereal cereal;
     try {
         iarchive(cereal);
     }
     catch(std::runtime_error e) {
-        printf("Failed to deserialize Tree1Cereal.\n");
+        printf("Failed to deserialize ListCereal.\n");
         e.what();
     }
-    return cereal;
+    return std::make_unique<ListCereal>(std::move(cereal));
 }
 
 class Tree1Cereal::impl {
-    friend Tree1Cereal;
+    friend class cereal::access;
+    friend class Tree1Cereal;
     std::shared_ptr<SingleCereal> left;
     std::shared_ptr<SingleCereal> right;
+
+    impl() : left(nullptr), right(nullptr) {}
+
+    template<class Archive>
+    void load(Archive & ar) {
+        ar ( left, right );
+    }
+
+    template<class Archive>
+    void save(Archive & ar) const {
+        ar ( left, right );
+    }
 };
 
-Tree1Cereal::Tree1Cereal() : impl(new class Tree1Cereal::impl) {}
+template <class Archive> inline
+void Tree1Cereal::load(Archive & ar )  {
+    ar( impl );
+}
+
+template <class Archive> inline
+void Tree1Cereal::save(Archive & ar ) const {
+    ar( impl );
+}
+
+Tree1Cereal::Tree1Cereal() : impl(new class Tree1Cereal::impl()) {}
+
+Tree1Cereal::~Tree1Cereal() = default;
+
+Tree1Cereal::Tree1Cereal(Tree1Cereal && other) : impl(nullptr) {
+    impl = std::move(other.impl);
+}
 
 std::shared_ptr<SingleCereal> Tree1Cereal::get_left() const {
     return impl->left;
 }
 
 void Tree1Cereal::set_left(std::unique_ptr<SingleCereal> left) const {
-    impl->left = std::shared_ptr<SingleCereal>(left.get());
+    impl->left = std::shared_ptr<SingleCereal>(std::move(left));
 }
 
 std::shared_ptr<SingleCereal> Tree1Cereal::get_right() const {
@@ -173,13 +226,13 @@ std::shared_ptr<SingleCereal> Tree1Cereal::get_right() const {
 }
 
 void Tree1Cereal::set_right(std::unique_ptr<SingleCereal> right) const {
-    impl->right = std::shared_ptr<SingleCereal>(right.get());
+    impl->right = std::shared_ptr<SingleCereal>(std::move(right));
 }
 
 size_t Tree1Cereal::serialized_size() const {
     std::stringstream sstream(std::ios_base::out);
     cereal::BinaryOutputArchive oarchive(sstream);
-    serialize(oarchive);
+    save(oarchive);
     return sstream.str().size();
 }
 
@@ -187,8 +240,18 @@ void Tree1Cereal::serialize_to_array(rust::Slice<uint8_t> buf) const {
     membuf stream_buffer = membuf(buf);
     std::basic_ostream<char> stream(&stream_buffer);
     cereal::BinaryOutputArchive oarchive(stream);
-    serialize(oarchive);
+    save(oarchive);
 }
+
+// We must also explicitly instantiate our template
+// functions for serialization
+template void Tree1Cereal::impl::save<cereal::BinaryOutputArchive>( cereal::BinaryOutputArchive & ) const;
+template void Tree1Cereal::impl::load<cereal::BinaryInputArchive>( cereal::BinaryInputArchive & );
+
+// Note that we need to instantiate for both loading and saving, even
+// if we use a single serialize function
+template void Tree1Cereal::save<cereal::BinaryOutputArchive>( cereal::BinaryOutputArchive & ) const;
+template void Tree1Cereal::load<cereal::BinaryInputArchive>( cereal::BinaryInputArchive & );
 
 bool Tree1Cereal::equals(std::unique_ptr<Tree1Cereal> other) const {
     if ((!impl->left->equals(other->get_left())) || (!impl->right->equals(other->get_right()))) {
@@ -204,11 +267,6 @@ bool Tree1Cereal::equals(std::shared_ptr<Tree1Cereal> other) const {
         return true;
 }
 
-template <class Archive>
-void Tree1Cereal::serialize(Archive & ar ) const {
-    ar(impl->left, impl->right);
-}
-
 std::unique_ptr<Tree1Cereal> new_tree1_cereal() {
     return std::make_unique<Tree1Cereal>();
 }
@@ -217,21 +275,21 @@ std::unique_ptr<Tree1Cereal> deserialize_tree1_cereal_from_array(rust::Slice<con
     membuf stream_buffer = membuf(buf);
     std::basic_istream<char> stream(&stream_buffer);
     cereal::BinaryInputArchive iarchive(stream);
-    std::unique_ptr<Tree1Cereal> cereal;
+    Tree1Cereal cereal;
     try {
-        iarchive(cereal);
+        cereal.load(iarchive);
     }
     catch(std::runtime_error e) {
         printf("Failed to deserialize Tree1Cereal.\n");
         e.what();
     }
-    return cereal;
+    return std::make_unique<Tree1Cereal>(std::move(cereal));
 }
 
 std::unique_ptr<Tree1Cereal> reserialize_tree1(std::unique_ptr<Tree1Cereal> input) {
-    std::unique_ptr<Tree1Cereal> output;
-    std::unique_ptr<SingleCereal> left;
-    std::unique_ptr<SingleCereal> right;
+    std::unique_ptr<Tree1Cereal> output = std::make_unique<Tree1Cereal>();
+    std::unique_ptr<SingleCereal> left = std::make_unique<SingleCereal>();
+    std::unique_ptr<SingleCereal> right = std::make_unique<SingleCereal>();
 
     const std::string& left_data = input->get_left()->get_data();
     const std::string& right_data = input->get_right()->get_data();
@@ -245,9 +303,9 @@ std::unique_ptr<Tree1Cereal> reserialize_tree1(std::unique_ptr<Tree1Cereal> inpu
 }
 
 std::unique_ptr<Tree1Cereal> reserialize_tree1(std::shared_ptr<Tree1Cereal> input) {
-    std::unique_ptr<Tree1Cereal> output;
-    std::unique_ptr<SingleCereal> left;
-    std::unique_ptr<SingleCereal> right;
+    std::unique_ptr<Tree1Cereal> output = std::make_unique<Tree1Cereal>();
+    std::unique_ptr<SingleCereal> left = std::make_unique<SingleCereal>();
+    std::unique_ptr<SingleCereal> right = std::make_unique<SingleCereal>();
 
     const std::string& left_data = input->get_left()->get_data();
     const std::string& right_data = input->get_right()->get_data();
@@ -260,19 +318,48 @@ std::unique_ptr<Tree1Cereal> reserialize_tree1(std::shared_ptr<Tree1Cereal> inpu
     return output;
 }
 class Tree2Cereal::impl {
+    friend class cereal::access;
     friend Tree2Cereal;
     std::shared_ptr<Tree1Cereal> left;
     std::shared_ptr<Tree1Cereal> right;
+
+    impl() : left(nullptr), right(nullptr) {}
+
+    template <class Archive>
+    void load(Archive & ar) {
+        ar(left, right);
+    }
+
+    template <class Archive>
+    void save(Archive &ar) const {
+        ar(left, right);
+    }
 };
 
-Tree2Cereal::Tree2Cereal() : impl(new class Tree2Cereal::impl) {}
+template <class Archive>
+void Tree2Cereal::load(Archive &ar) {
+    ar(impl);
+}
+
+template <class Archive>
+void Tree2Cereal::save(Archive &ar) const {
+    ar(impl);
+}
+
+Tree2Cereal::Tree2Cereal() : impl(new class Tree2Cereal::impl()) {}
+
+Tree2Cereal::~Tree2Cereal() = default;
+
+Tree2Cereal::Tree2Cereal(Tree2Cereal && other) : impl(nullptr) {
+    impl = std::move(other.impl);
+}
 
 std::shared_ptr<Tree1Cereal> Tree2Cereal::get_left() const {
     return impl->left;
 }
 
 void Tree2Cereal::set_left(std::unique_ptr<Tree1Cereal> left) const {
-    impl->left = std::shared_ptr<Tree1Cereal>(left.get());
+    impl->left = std::shared_ptr<Tree1Cereal>(std::move(left));
 }
 
 std::shared_ptr<Tree1Cereal> Tree2Cereal::get_right() const {
@@ -280,13 +367,13 @@ std::shared_ptr<Tree1Cereal> Tree2Cereal::get_right() const {
 }
 
 void Tree2Cereal::set_right(std::unique_ptr<Tree1Cereal> right) const {
-    impl->right = std::shared_ptr<Tree1Cereal>(right.get());
+    impl->right = std::shared_ptr<Tree1Cereal>(std::move(right));
 }
 
 size_t Tree2Cereal::serialized_size() const {
     std::stringstream sstream(std::ios_base::out);
     cereal::BinaryOutputArchive oarchive(sstream);
-    serialize(oarchive);
+    save(oarchive);
     return sstream.str().size();
 }
 
@@ -294,7 +381,7 @@ void Tree2Cereal::serialize_to_array(rust::Slice<uint8_t> buf) const {
     membuf stream_buffer = membuf(buf);
     std::basic_ostream<char> stream(&stream_buffer);
     cereal::BinaryOutputArchive oarchive(stream);
-    serialize(oarchive);
+    save(oarchive);
 }
 
 bool Tree2Cereal::equals(std::unique_ptr<Tree2Cereal> other) const {
@@ -311,10 +398,15 @@ bool Tree2Cereal::equals(std::shared_ptr<Tree2Cereal> other) const {
         return true;
 }
 
-template <class Archive>
-void Tree2Cereal::serialize(Archive & ar ) const {
-    ar(impl->left, impl->right);
-}
+// We must also explicitly instantiate our template
+// functions for serialization
+template void Tree2Cereal::impl::save<cereal::BinaryOutputArchive>( cereal::BinaryOutputArchive & ) const;
+template void Tree2Cereal::impl::load<cereal::BinaryInputArchive>( cereal::BinaryInputArchive & );
+
+// Note that we need to instantiate for both loading and saving, even
+// if we use a single serialize function
+template void Tree2Cereal::save<cereal::BinaryOutputArchive>( cereal::BinaryOutputArchive & ) const;
+template void Tree2Cereal::load<cereal::BinaryInputArchive>( cereal::BinaryInputArchive & );
 
 std::unique_ptr<Tree2Cereal> new_tree2_cereal() {
     return std::make_unique<Tree2Cereal>();
@@ -324,19 +416,19 @@ std::unique_ptr<Tree2Cereal> deserialize_tree2_cereal_from_array(rust::Slice<con
     membuf stream_buffer = membuf(buf);
     std::basic_istream<char> stream(&stream_buffer);
     cereal::BinaryInputArchive iarchive(stream);
-    std::unique_ptr<Tree2Cereal> cereal;
+    Tree2Cereal cereal;
     try {
-        iarchive(cereal);
+        cereal.load(iarchive);
     }
     catch(std::runtime_error e) {
         printf("Failed to deserialize Tree2Cereal.\n");
         e.what();
     }
-    return cereal;
+    return std::make_unique<Tree2Cereal>(std::move(cereal));
 }
 
 std::unique_ptr<Tree2Cereal> reserialize_tree2(std::unique_ptr<Tree2Cereal> input) {
-    std::unique_ptr<Tree2Cereal> output;
+    std::unique_ptr<Tree2Cereal> output = std::make_unique<Tree2Cereal>();
     std::unique_ptr<Tree1Cereal> left = reserialize_tree1(input->get_left());
     std::unique_ptr<Tree1Cereal> right = reserialize_tree1(input->get_right());
 
@@ -346,7 +438,7 @@ std::unique_ptr<Tree2Cereal> reserialize_tree2(std::unique_ptr<Tree2Cereal> inpu
 }
 
 std::unique_ptr<Tree2Cereal> reserialize_tree2(std::shared_ptr<Tree2Cereal> input) {
-    std::unique_ptr<Tree2Cereal> output;
+    std::unique_ptr<Tree2Cereal> output = std::make_unique<Tree2Cereal>();
     std::unique_ptr<Tree1Cereal> left = reserialize_tree1(input->get_left());
     std::unique_ptr<Tree1Cereal> right = reserialize_tree1(input->get_right());
 
@@ -356,19 +448,48 @@ std::unique_ptr<Tree2Cereal> reserialize_tree2(std::shared_ptr<Tree2Cereal> inpu
 }
 
 class Tree3Cereal::impl {
+    friend class cereal::access;
     friend Tree3Cereal;
     std::shared_ptr<Tree2Cereal> left;
     std::shared_ptr<Tree2Cereal> right;
+
+    impl(): left(nullptr), right(nullptr) {}
+
+    template <class Archive>
+    void load(Archive & ar) {
+        ar(left, right);
+    }
+
+    template <class Archive>
+    void save(Archive &ar) const {
+        ar(left, right);
+    }
 };
 
-Tree3Cereal::Tree3Cereal() : impl(new class Tree3Cereal::impl) {}
+template <class Archive> inline
+void Tree3Cereal::load(Archive & ar )  {
+    ar( impl );
+}
+
+template <class Archive> inline
+void Tree3Cereal::save(Archive & ar ) const {
+    ar( impl );
+}
+
+Tree3Cereal::Tree3Cereal() : impl(new class Tree3Cereal::impl()) {}
+
+Tree3Cereal::~Tree3Cereal() = default;
+
+Tree3Cereal::Tree3Cereal(Tree3Cereal && other) : impl(nullptr) {
+    impl = std::move(other.impl);
+}
 
 std::shared_ptr<Tree2Cereal> Tree3Cereal::get_left() const {
     return impl->left;
 }
 
 void Tree3Cereal::set_left(std::unique_ptr<Tree2Cereal> left) const {
-    impl->left = std::shared_ptr<Tree2Cereal>(left.get());
+    impl->left = std::shared_ptr<Tree2Cereal>(std::move(left));
 }
 
 std::shared_ptr<Tree2Cereal> Tree3Cereal::get_right() const {
@@ -376,13 +497,13 @@ std::shared_ptr<Tree2Cereal> Tree3Cereal::get_right() const {
 }
 
 void Tree3Cereal::set_right(std::unique_ptr<Tree2Cereal> right) const {
-    impl->right = std::shared_ptr<Tree2Cereal>(right.get());
+    impl->right = std::shared_ptr<Tree2Cereal>(std::move(right));
 }
 
 size_t Tree3Cereal::serialized_size() const {
     std::stringstream sstream(std::ios_base::out);
     cereal::BinaryOutputArchive oarchive(sstream);
-    serialize(oarchive);
+    save(oarchive);
     return sstream.str().size();
 }
 
@@ -390,7 +511,7 @@ void Tree3Cereal::serialize_to_array(rust::Slice<uint8_t> buf) const {
     membuf stream_buffer = membuf(buf);
     std::basic_ostream<char> stream(&stream_buffer);
     cereal::BinaryOutputArchive oarchive(stream);
-    serialize(oarchive);
+    save(oarchive);
 }
 
 bool Tree3Cereal::equals(std::unique_ptr<Tree3Cereal> other) const {
@@ -407,10 +528,15 @@ bool Tree3Cereal::equals(std::shared_ptr<Tree3Cereal> other) const {
         return true;
 }
 
-template <class Archive>
-void Tree3Cereal::serialize(Archive & ar ) const {
-    ar(impl->left, impl->right);
-}
+// We must also explicitly instantiate our template
+// functions for serialization
+template void Tree3Cereal::impl::save<cereal::BinaryOutputArchive>( cereal::BinaryOutputArchive & ) const;
+template void Tree3Cereal::impl::load<cereal::BinaryInputArchive>( cereal::BinaryInputArchive & );
+
+// Note that we need to instantiate for both loading and saving, even
+// if we use a single serialize function
+template void Tree3Cereal::save<cereal::BinaryOutputArchive>( cereal::BinaryOutputArchive & ) const;
+template void Tree3Cereal::load<cereal::BinaryInputArchive>( cereal::BinaryInputArchive & );
 
 std::unique_ptr<Tree3Cereal> new_tree3_cereal() {
     return std::make_unique<Tree3Cereal>();
@@ -420,19 +546,19 @@ std::unique_ptr<Tree3Cereal> deserialize_tree3_cereal_from_array(rust::Slice<con
     membuf stream_buffer = membuf(buf);
     std::basic_istream<char> stream(&stream_buffer);
     cereal::BinaryInputArchive iarchive(stream);
-    std::unique_ptr<Tree3Cereal> cereal;
+    Tree3Cereal cereal;
     try {
-        iarchive(cereal);
+        cereal.load(iarchive);
     }
     catch(std::runtime_error e) {
         printf("Failed to deserialize Tree3Cereal.\n");
         e.what();
     }
-    return cereal;
+    return std::make_unique<Tree3Cereal>(std::move(cereal));
 }
 
 std::unique_ptr<Tree3Cereal> reserialize_tree3(std::unique_ptr<Tree3Cereal> input) {
-    std::unique_ptr<Tree3Cereal> output;
+    std::unique_ptr<Tree3Cereal> output = std::make_unique<Tree3Cereal>();
     std::unique_ptr<Tree2Cereal> left = reserialize_tree2(input->get_left());
     std::unique_ptr<Tree2Cereal> right = reserialize_tree2(input->get_right());
 
@@ -442,7 +568,7 @@ std::unique_ptr<Tree3Cereal> reserialize_tree3(std::unique_ptr<Tree3Cereal> inpu
 }
 
 std::unique_ptr<Tree3Cereal> reserialize_tree3(std::shared_ptr<Tree3Cereal> input) {
-    std::unique_ptr<Tree3Cereal> output;
+    std::unique_ptr<Tree3Cereal> output = std::make_unique<Tree3Cereal>();
     std::unique_ptr<Tree2Cereal> left = reserialize_tree2(input->get_left());
     std::unique_ptr<Tree2Cereal> right = reserialize_tree2(input->get_right());
 
@@ -453,18 +579,45 @@ std::unique_ptr<Tree3Cereal> reserialize_tree3(std::shared_ptr<Tree3Cereal> inpu
 
 class Tree4Cereal::impl {
     friend Tree4Cereal;
+    friend class cereal::access;
     std::shared_ptr<Tree3Cereal> left;
     std::shared_ptr<Tree3Cereal> right;
+        
+    template <class Archive>
+    void load(Archive & ar) {
+        ar( left, right );
+    }
+    
+    template <class Archive>
+    void save(Archive & ar) const {
+        ar( left, right );
+    }
 };
 
-Tree4Cereal::Tree4Cereal() : impl(new class Tree4Cereal::impl) {}
+template <class Archive>
+void Tree4Cereal::load(Archive & ar) {
+    ar( impl );
+}
+    
+template <class Archive>
+void Tree4Cereal::save(Archive & ar) const {
+    ar( impl );
+}
+
+Tree4Cereal::Tree4Cereal() : impl(new class Tree4Cereal::impl()) {}
+
+Tree4Cereal::~Tree4Cereal() = default;
+
+Tree4Cereal::Tree4Cereal(Tree4Cereal && other) : impl(nullptr) {
+    impl = std::move(other.impl);
+}
 
 std::shared_ptr<Tree3Cereal> Tree4Cereal::get_left() const {
     return impl->left;
 }
 
 void Tree4Cereal::set_left(std::unique_ptr<Tree3Cereal> left) const {
-    impl->left = std::shared_ptr<Tree3Cereal>(left.get());
+    impl->left = std::shared_ptr<Tree3Cereal>(std::move(left));
 }
 
 std::shared_ptr<Tree3Cereal> Tree4Cereal::get_right() const {
@@ -472,13 +625,13 @@ std::shared_ptr<Tree3Cereal> Tree4Cereal::get_right() const {
 }
 
 void Tree4Cereal::set_right(std::unique_ptr<Tree3Cereal> right) const {
-    impl->right = std::shared_ptr<Tree3Cereal>(right.get());
+    impl->right = std::shared_ptr<Tree3Cereal>(std::move(right));
 }
 
 size_t Tree4Cereal::serialized_size() const {
     std::stringstream sstream(std::ios_base::out);
     cereal::BinaryOutputArchive oarchive(sstream);
-    serialize(oarchive);
+    save(oarchive);
     return sstream.str().size();
 }
 
@@ -486,7 +639,7 @@ void Tree4Cereal::serialize_to_array(rust::Slice<uint8_t> buf) const {
     membuf stream_buffer = membuf(buf);
     std::basic_ostream<char> stream(&stream_buffer);
     cereal::BinaryOutputArchive oarchive(stream);
-    serialize(oarchive);
+    save(oarchive);
 }
 
 bool Tree4Cereal::equals(std::unique_ptr<Tree4Cereal> other) const {
@@ -503,10 +656,15 @@ bool Tree4Cereal::equals(std::shared_ptr<Tree4Cereal> other) const {
         return true;
 }
 
-template <class Archive>
-void Tree4Cereal::serialize(Archive & ar ) const {
-    ar(impl->left, impl->right);
-}
+// We must also explicitly instantiate our template
+// functions for serialization
+template void Tree4Cereal::impl::save<cereal::BinaryOutputArchive>( cereal::BinaryOutputArchive & ) const;
+template void Tree4Cereal::impl::load<cereal::BinaryInputArchive>( cereal::BinaryInputArchive & );
+
+// Note that we need to instantiate for both loading and saving, even
+// if we use a single serialize function
+template void Tree4Cereal::save<cereal::BinaryOutputArchive>( cereal::BinaryOutputArchive & ) const;
+template void Tree4Cereal::load<cereal::BinaryInputArchive>( cereal::BinaryInputArchive & );
 
 std::unique_ptr<Tree4Cereal> new_tree4_cereal() {
     return std::make_unique<Tree4Cereal>();
@@ -516,7 +674,7 @@ std::unique_ptr<Tree4Cereal> deserialize_tree4_cereal_from_array(rust::Slice<con
     membuf stream_buffer = membuf(buf);
     std::basic_istream<char> stream(&stream_buffer);
     cereal::BinaryInputArchive iarchive(stream);
-    std::unique_ptr<Tree4Cereal> cereal;
+    Tree4Cereal cereal;
     try {
         iarchive(cereal);
     }
@@ -524,11 +682,11 @@ std::unique_ptr<Tree4Cereal> deserialize_tree4_cereal_from_array(rust::Slice<con
         printf("Failed to deserialize Tree4Cereal.\n");
         e.what();
     }
-    return cereal;
+    return std::make_unique<Tree4Cereal>(std::move(cereal));
 }
 
 std::unique_ptr<Tree4Cereal> reserialize_tree4(std::unique_ptr<Tree4Cereal> input) {
-    std::unique_ptr<Tree4Cereal> output;
+    std::unique_ptr<Tree4Cereal> output = std::make_unique<Tree4Cereal>();
     std::unique_ptr<Tree3Cereal> left = reserialize_tree3(input->get_left());
     std::unique_ptr<Tree3Cereal> right = reserialize_tree3(input->get_right());
 
@@ -538,7 +696,7 @@ std::unique_ptr<Tree4Cereal> reserialize_tree4(std::unique_ptr<Tree4Cereal> inpu
 }
 
 std::unique_ptr<Tree4Cereal> reserialize_tree4(std::shared_ptr<Tree4Cereal> input) {
-    std::unique_ptr<Tree4Cereal> output;
+    std::unique_ptr<Tree4Cereal> output = std::make_unique<Tree4Cereal>();
     std::unique_ptr<Tree3Cereal> left = reserialize_tree3(input->get_left());
     std::unique_ptr<Tree3Cereal> right = reserialize_tree3(input->get_right());
 
@@ -549,18 +707,47 @@ std::unique_ptr<Tree4Cereal> reserialize_tree4(std::shared_ptr<Tree4Cereal> inpu
 
 class Tree5Cereal::impl {
     friend Tree5Cereal;
+    friend class cereal::access;
     std::shared_ptr<Tree4Cereal> left;
     std::shared_ptr<Tree4Cereal> right;
+
+    impl(): left(nullptr), right(nullptr) {}
+
+    template <class Archive>
+    void load(Archive &ar) {
+        ar(left, right);
+    }
+
+    template <class Archive>
+    void save(Archive &ar) const {
+        ar(left, right);
+    }
 };
 
-Tree5Cereal::Tree5Cereal() : impl(new class Tree5Cereal::impl) {}
+template <class Archive>
+void Tree5Cereal::load(Archive &ar) {
+    ar(impl);
+}
+
+template <class Archive>
+void Tree5Cereal::save(Archive &ar) const {
+    ar(impl);
+}
+
+Tree5Cereal::Tree5Cereal() : impl(new class Tree5Cereal::impl()) {}
+
+Tree5Cereal::~Tree5Cereal() = default;
+
+Tree5Cereal::Tree5Cereal(Tree5Cereal && other) : impl(nullptr) {
+    impl = std::move(other.impl);
+}
 
 std::shared_ptr<Tree4Cereal> Tree5Cereal::get_left() const {
     return impl->left;
 }
 
 void Tree5Cereal::set_left(std::unique_ptr<Tree4Cereal> left) const {
-    impl->left = std::shared_ptr<Tree4Cereal>(left.get());
+    impl->left = std::shared_ptr<Tree4Cereal>(std::move(left));
 }
 
 std::shared_ptr<Tree4Cereal> Tree5Cereal::get_right() const {
@@ -568,13 +755,13 @@ std::shared_ptr<Tree4Cereal> Tree5Cereal::get_right() const {
 }
 
 void Tree5Cereal::set_right(std::unique_ptr<Tree4Cereal> right) const {
-    impl->right = std::shared_ptr<Tree4Cereal>(right.get());
+    impl->right = std::shared_ptr<Tree4Cereal>(std::move(right));
 }
 
 size_t Tree5Cereal::serialized_size() const {
     std::stringstream sstream(std::ios_base::out);
     cereal::BinaryOutputArchive oarchive(sstream);
-    serialize(oarchive);
+    save(oarchive);
     return sstream.str().size();
 }
 
@@ -582,7 +769,7 @@ void Tree5Cereal::serialize_to_array(rust::Slice<uint8_t> buf) const {
     membuf stream_buffer = membuf(buf);
     std::basic_ostream<char> stream(&stream_buffer);
     cereal::BinaryOutputArchive oarchive(stream);
-    serialize(oarchive);
+    save(oarchive);
 }
 
 bool Tree5Cereal::equals(std::unique_ptr<Tree5Cereal> other) const {
@@ -599,11 +786,6 @@ bool Tree5Cereal::equals(std::shared_ptr<Tree5Cereal> other) const {
         return true;
 }
 
-template <class Archive>
-void Tree5Cereal::serialize(Archive & ar ) const {
-    ar(impl->left, impl->right);
-}
-
 std::unique_ptr<Tree5Cereal> new_tree5_cereal() {
     return std::make_unique<Tree5Cereal>();
 }
@@ -612,19 +794,19 @@ std::unique_ptr<Tree5Cereal> deserialize_tree5_cereal_from_array(rust::Slice<con
     membuf stream_buffer = membuf(buf);
     std::basic_istream<char> stream(&stream_buffer);
     cereal::BinaryInputArchive iarchive(stream);
-    std::unique_ptr<Tree5Cereal> cereal;
+    Tree5Cereal cereal;
     try {
-        iarchive(cereal);
+        cereal.load(iarchive);
     }
     catch(std::runtime_error e) {
         printf("Failed to deserialize Tree5Cereal.\n");
         e.what();
     }
-    return cereal;
+    return std::make_unique<Tree5Cereal>(std::move(cereal));
 }
 
 std::unique_ptr<Tree5Cereal> reserialize_tree5(std::unique_ptr<Tree5Cereal> input) {
-    std::unique_ptr<Tree5Cereal> output;
+    std::unique_ptr<Tree5Cereal> output = std::make_unique<Tree5Cereal>();
     std::unique_ptr<Tree4Cereal> left = reserialize_tree4(input->get_left());
     std::unique_ptr<Tree4Cereal> right = reserialize_tree4(input->get_right());
 
@@ -634,7 +816,7 @@ std::unique_ptr<Tree5Cereal> reserialize_tree5(std::unique_ptr<Tree5Cereal> inpu
 }
 
 std::unique_ptr<Tree5Cereal> reserialize_tree5(std::shared_ptr<Tree5Cereal> input) {
-    std::unique_ptr<Tree5Cereal> output;
+    std::unique_ptr<Tree5Cereal> output = std::make_unique<Tree5Cereal>();
     std::unique_ptr<Tree4Cereal> left = reserialize_tree4(input->get_left());
     std::unique_ptr<Tree4Cereal> right = reserialize_tree4(input->get_right());
 
@@ -642,3 +824,14 @@ std::unique_ptr<Tree5Cereal> reserialize_tree5(std::shared_ptr<Tree5Cereal> inpu
     output->set_right(std::move(right));
     return output;
 }
+
+// We must also explicitly instantiate our template
+// functions for serialization
+template void Tree5Cereal::impl::save<cereal::BinaryOutputArchive>( cereal::BinaryOutputArchive & ) const;
+template void Tree5Cereal::impl::load<cereal::BinaryInputArchive>( cereal::BinaryInputArchive & );
+
+// Note that we need to instantiate for both loading and saving, even
+// if we use a single serialize function
+template void Tree5Cereal::save<cereal::BinaryOutputArchive>( cereal::BinaryOutputArchive & ) const;
+template void Tree5Cereal::load<cereal::BinaryInputArchive>( cereal::BinaryInputArchive & );
+

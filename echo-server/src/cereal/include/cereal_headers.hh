@@ -2,9 +2,10 @@
 #include "cereal/types/vector.hpp"
 #include "cereal/types/string.hpp"
 #include "cereal/types/polymorphic.hpp"
+#include <memory>
 #include "rust/cxx.h"
-//#include "echo-server/src/cereal/include/cxx.h"
 #include <streambuf>
+#include <cereal/access.hpp>
 
 struct membuf : std::streambuf
 {
@@ -15,20 +16,24 @@ struct membuf : std::streambuf
   membuf(rust::Slice<const uint8_t> buf) {
       const uint8_t *begin = reinterpret_cast<const uint8_t*>(buf.data());
       const uint8_t *end = reinterpret_cast<const uint8_t *>(buf.data() + buf.length());
+      // set get pointer
       this->setg((char *)begin, (char *)begin, (char *)end);
+      this->setp((char *)begin, (char *)end);
   }
 
   membuf(rust::Slice<uint8_t> buf) {
       char *begin = reinterpret_cast<char *>(buf.data());
       char *end = reinterpret_cast<char *>(buf.data() + buf.length());
-      printf("Setting beginning of mbuf to be to %p, end to be %p, length is: %u\n", begin, end, (unsigned)buf.length());
-      this->setg(begin, begin, end);
+      // set put pointer
+      this->setp(begin, end);
   }
 };
 
 class SingleCereal {
     public:
         SingleCereal();
+        ~SingleCereal();
+        SingleCereal(SingleCereal && other);
         void set_data(rust::Slice<const uint8_t> data) const;
         void set_data(const std::string& data) const;
         const std::string& get_data() const;
@@ -36,13 +41,17 @@ class SingleCereal {
         void serialize_to_array(rust::Slice<uint8_t> buf) const;
         bool equals(const std::unique_ptr<SingleCereal> other) const;
         bool equals(const std::shared_ptr<SingleCereal> other) const;
+        template <class Archive>
+        void load(Archive & ar);
 
         template <class Archive>
-        void serialize(Archive & ar) const;
+        void save(Archive & ar) const;
 
     private:
         class impl;
-        std::shared_ptr<impl> impl;
+        std::unique_ptr<impl> impl;
+        friend class cereal::access;
+
 };
 
 std::unique_ptr<SingleCereal> new_single_cereal();
@@ -51,6 +60,7 @@ std::unique_ptr<SingleCereal> deserialize_single_cereal_from_array(rust::Slice<c
 class ListCereal {
     public:
         ListCereal();
+        ListCereal(ListCereal && other);
         void append(rust::Slice<const uint8_t> data) const;
         const std::string& get(size_t idx) const;
         void set(size_t idx, rust::Slice<const uint8_t> data) const;
@@ -70,6 +80,8 @@ std::unique_ptr<ListCereal> deserialize_list_cereal_from_array(rust::Slice<const
 class Tree1Cereal {
     public:
         Tree1Cereal();
+        ~Tree1Cereal();
+        Tree1Cereal(Tree1Cereal && other);
         std::shared_ptr<SingleCereal> get_left() const;
         void set_left(std::unique_ptr<SingleCereal> left) const;
         std::shared_ptr<SingleCereal> get_right() const;
@@ -78,13 +90,17 @@ class Tree1Cereal {
         void serialize_to_array(rust::Slice<uint8_t> buf) const;
         bool equals(std::unique_ptr<Tree1Cereal> other) const;
         bool equals(std::shared_ptr<Tree1Cereal> other) const;
+        
+        template <class Archive>
+        void load(Archive & ar);
 
-        template<class Archive>
-        void serialize(Archive & ar ) const;
+        template <class Archive>
+        void save(Archive & ar) const;
 
     private:
         class impl;
-        std::shared_ptr<impl> impl;
+        std::unique_ptr<impl> impl;
+        friend class cereal::access;
 };
 
 std::unique_ptr<Tree1Cereal> new_tree1_cereal();
@@ -95,6 +111,8 @@ std::unique_ptr<Tree1Cereal> reserialize_tree1(std::shared_ptr<Tree1Cereal> inpu
 class Tree2Cereal {
     public:
         Tree2Cereal();
+        ~Tree2Cereal();
+        Tree2Cereal(Tree2Cereal && other);
         std::shared_ptr<Tree1Cereal> get_left() const;
         void set_left(std::unique_ptr<Tree1Cereal> left) const;
         std::shared_ptr<Tree1Cereal> get_right() const;
@@ -104,12 +122,16 @@ class Tree2Cereal {
         bool equals(std::unique_ptr<Tree2Cereal> other) const;
         bool equals(std::shared_ptr<Tree2Cereal> other) const;
 
-        template<class Archive>
-        void serialize(Archive & ar ) const;
+        template <class Archive>
+        void load(Archive & ar);
+
+        template <class Archive>
+        void save(Archive & ar) const;
 
     private:
         class impl;
-        std::shared_ptr<impl> impl;
+        std::unique_ptr<impl> impl;
+        friend class cereal::access;
 };
 
 std::unique_ptr<Tree2Cereal> new_tree2_cereal();
@@ -120,6 +142,8 @@ std::unique_ptr<Tree2Cereal> reserialize_tree2(std::shared_ptr<Tree2Cereal> inpu
 class Tree3Cereal {
     public:
         Tree3Cereal();
+        ~Tree3Cereal();
+        Tree3Cereal(Tree3Cereal && other);
         std::shared_ptr<Tree2Cereal> get_left() const;
         void set_left(std::unique_ptr<Tree2Cereal> left) const;
         std::shared_ptr<Tree2Cereal> get_right() const;
@@ -129,12 +153,17 @@ class Tree3Cereal {
         bool equals(std::unique_ptr<Tree3Cereal> other) const;
         bool equals(std::shared_ptr<Tree3Cereal> other) const;
 
-        template<class Archive>
-        void serialize(Archive & ar ) const;
+
+        template <class Archive>
+        void load(Archive & ar);
+
+        template <class Archive>
+        void save(Archive & ar) const;
 
     private:
         class impl;
-        std::shared_ptr<impl> impl;
+        std::unique_ptr<impl> impl;
+        friend class cereal::access;
 };
 
 std::unique_ptr<Tree3Cereal> new_tree3_cereal();
@@ -145,6 +174,8 @@ std::unique_ptr<Tree3Cereal> reserialize_tree3(std::shared_ptr<Tree3Cereal> inpu
 class Tree4Cereal {
     public:
         Tree4Cereal();
+        ~Tree4Cereal();
+        Tree4Cereal(Tree4Cereal && other);
         std::shared_ptr<Tree3Cereal> get_left() const;
         void set_left(std::unique_ptr<Tree3Cereal> left) const;
         std::shared_ptr<Tree3Cereal> get_right() const;
@@ -154,12 +185,16 @@ class Tree4Cereal {
         bool equals(std::unique_ptr<Tree4Cereal> other) const;
         bool equals(std::shared_ptr<Tree4Cereal> other) const;
 
-        template<class Archive>
-        void serialize(Archive & ar ) const;
+        template <class Archive>
+        void load(Archive & ar);
+
+        template <class Archive>
+        void save(Archive & ar) const;
 
     private:
         class impl;
-        std::shared_ptr<impl> impl;
+        std::unique_ptr<impl> impl;
+        friend class cereal::access;
 };
 
 std::unique_ptr<Tree4Cereal> new_tree4_cereal();
@@ -170,6 +205,8 @@ std::unique_ptr<Tree4Cereal> reserialize_tree4(std::shared_ptr<Tree4Cereal> inpu
 class Tree5Cereal {
     public:
         Tree5Cereal();
+        ~Tree5Cereal();
+        Tree5Cereal(Tree5Cereal && other);
         std::shared_ptr<Tree4Cereal> get_left() const;
         void set_left(std::unique_ptr<Tree4Cereal> left) const;
         std::shared_ptr<Tree4Cereal> get_right() const;
@@ -179,12 +216,16 @@ class Tree5Cereal {
         bool equals(std::unique_ptr<Tree5Cereal> other) const;
         bool equals(std::shared_ptr<Tree5Cereal> other) const;
 
-        template<class Archive>
-        void serialize(Archive & ar ) const;
+        template <class Archive>
+        void load(Archive & ar);
+
+        template <class Archive>
+        void save(Archive & ar) const;
 
     private:
         class impl;
-        std::shared_ptr<impl> impl;
+        std::unique_ptr<impl> impl;
+        friend class cereal::access;
 };
 
 std::unique_ptr<Tree5Cereal> new_tree5_cereal();

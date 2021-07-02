@@ -162,10 +162,12 @@ fn init_payloads(
     let mut ret: Vec<(*const u8, usize)> = Vec::new();
     let mut current_offset = 0;
     let mut rng = thread_rng();
-    for size in actual_alloc_boundaries.iter() {
+    for (idx, size) in actual_alloc_boundaries.iter().enumerate() {
+        let payload_size = sizes[idx];
+        assert!(payload_size <= *size);
         let ptr = unsafe { mmap_metadata.ptr.offset(current_offset as isize) };
         current_offset += size;
-        ret.push((ptr, *size));
+        ret.push((ptr, payload_size));
 
         // write in some random garbage to these values
         let chars: String = iter::repeat(())

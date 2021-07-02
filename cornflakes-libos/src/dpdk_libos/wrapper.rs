@@ -155,11 +155,6 @@ impl Pkt {
             )?;
             return Ok(());
         }
-        tracing::info!(
-            header = dpdk_call!(rte_mempool_count(header_mempool)),
-            extbuf = dpdk_call!(rte_mempool_count(extbuf_mempool)),
-            "Available in header mempool and extbuf mempool"
-        );
         // TODO: change this back
         // 1: allocate and add header mbuf
         mbufs[0][pkt_id] =

@@ -57,7 +57,7 @@ summarized <- ddply(d, c("system_name", "size", "message_type", "offered_load_gb
                     avgmedian = mean(median))
 print(summarized)
 gathered <- gather(summarized, key="latency", value = "mmt", -system_name, -size, -message_type, -offered_load_gbps)
-gathered_p99 <- subset(gathered, gathered$latency == "mp999")
+gathered_p99 <- subset(gathered, gathered$latency == "mp99")
 print(gathered_p99)
 
 base_plot <- function(data) {
