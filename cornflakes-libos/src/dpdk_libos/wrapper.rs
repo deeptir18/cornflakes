@@ -40,7 +40,7 @@ pub const TOTAL_MEMPOOL_MBUF_SIZE: usize = MBUF_POOL_HDR_SIZE
     + MBUF_PRIV_SIZE
     + RTE_PKTMBUF_TAILROOM as usize
     + MBUF_MEMPOOL_PADDING;
-pub const MEMHDR_OFFSET: usize = 24; // offset to first mbuf from the beginning of the mempool
+pub const MEMHDR_OFFSET: usize = 64; // offset to first mbuf from the beginning of the mempool
 pub const MEMHDR_ALIGNED_OFFSET: usize = 64; // offset to first mbuf on a new page
 /// RX and TX Prefetch, Host, and Write-back threshold values should be
 /// carefully set for optimal performance. Consult the network
