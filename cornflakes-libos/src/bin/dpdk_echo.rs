@@ -145,6 +145,7 @@ fn main() -> Result<()> {
                     (1e9 / opt.rate as f64) as u64,
                     opt.total_time,
                     cornflakes_libos::high_timeout_at_start,
+                    true, // no retries
                 )?;
             }
             let exp_time = start_run.elapsed().as_nanos() as f64 / 1000000000.0;

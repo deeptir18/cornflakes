@@ -19,7 +19,7 @@ mod echo_capnp {
 }
 
 use color_eyre::eyre::{bail, Result};
-use cornflakes_libos::{mem::MmapMetadata, Cornflake, Datapath, ScatterGather};
+use cornflakes_libos::{mem::MmapMetadata, Cornflake, Datapath};
 use cornflakes_utils::SimpleMessageType;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -71,8 +71,7 @@ where
 {
     /// Context for serializer to build a message.
     type Ctx;
-    /// Outgoing Message
-    type OutgoingMsg: ScatterGather + Clone;
+
     /// Returns a new serializer.
     fn new(
         message_type: SimpleMessageType,
@@ -87,8 +86,8 @@ where
     fn message_type(&self) -> SimpleMessageType;
     /// payload sizes
     fn payload_sizes(&self) -> Vec<usize>;
-    /// produce the sga to echo
-    fn get_sga(&self) -> Result<Self::OutgoingMsg>;
+    /// produce the payload to echo.
+    fn get_msg(&self) -> Result<Vec<u8>>;
     /// check echoed payload
     fn check_echoed_payload(&self, recved_msg: &DatapathImpl::ReceivedPkt) -> Result<()>;
     /// new context

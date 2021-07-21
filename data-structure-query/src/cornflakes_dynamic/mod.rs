@@ -500,7 +500,6 @@ where
     D: Datapath,
 {
     type Ctx = Vec<u8>;
-    type OutgoingMsg = Cornflake<'registered, 'normal>;
 
     fn new(
         our_message_type: SimpleMessageType,
@@ -594,8 +593,8 @@ where
         self.server_message_type
     }
 
-    fn get_sga(&self) -> Result<Self::OutgoingMsg> {
-        Ok(self.sga.clone())
+    fn get_msg(&self) -> Result<Vec<u8>> {
+        Ok(self.sga.contiguous_repr())
     }
 
     fn check_echoed_payload(&self, recved_msg: &D::ReceivedPkt) -> Result<()> {

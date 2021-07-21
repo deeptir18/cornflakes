@@ -3,8 +3,8 @@ use super::{
         dpdk_bindings::*,
         dpdk_call, mbuf_slice, mem,
         timing::{record, timefunc, HistogramWrapper},
-        utils, CornPtr, CornType, Datapath, DatapathMempoolOptions, MsgID, PtrAttributes,
-        ReceivedPacket, ScatterGather,
+        utils, CornType, Datapath, DatapathMempoolOptions, MsgID, PtrAttributes, ReceivedPacket,
+        RefCnt, ScatterGather,
     },
     dpdk_utils, wrapper,
 };
@@ -35,6 +35,16 @@ pub struct DPDKBuffer {
     pub mbuf: *mut rte_mbuf,
     /// Id of originating mempool (application and datapath context).
     pub mempool_id: usize,
+}
+
+impl RefCnt for DPDKBuffer {
+    fn change_rc(&mut self, amt: isize) {
+        dpdk_call!(rte_pktmbuf_refcnt_update(self.mbuf, amt as i16));
+    }
+
+    fn count_rc(&self) -> usize {
+        dpdk_call!(rte_pktmbuf_refcnt_read(self.mbuf)) as usize
+    }
 }
 
 impl AsRef<[u8]> for DPDKBuffer {
@@ -242,11 +252,8 @@ impl ReceivedPacket for DPDKReceivedPkt {
         self.mbuf_wrapper.as_ref()
     }
 
-    fn get_corn_ptr(&self) -> CornPtr {
-        match self.mbuf_wrapper.buf_type() {
-            CornType::Normal => CornPtr::Normal(self.mbuf_wrapper.as_ref()),
-            CornType::Registered => CornPtr::Registered(self.mbuf_wrapper.as_ref()),
-        }
+    fn get_corn_type(&self) -> CornType {
+        self.mbuf_wrapper.buf_type()
     }
 
     fn len(&self) -> usize {
@@ -528,6 +535,42 @@ impl DPDKConnection {
 impl Datapath for DPDKConnection {
     type ReceivedPkt = DPDKReceivedPkt;
     type DatapathPkt = DPDKBuffer;
+    /// Sends a single buffer to the given address.
+    fn push_buf(&mut self, buf: (MsgID, &[u8]), addr: utils::AddressInfo) -> Result<()> {
+        let header = self.get_outgoing_header(&addr);
+        self.send_mbufs[0][0] =
+            wrapper::get_mbuf_with_memcpy(self.mempools[0].1, &header, buf.1, buf.0)?;
+
+        // if client, add start time for packet
+        // if server, end packet processing counter
+        match self.mode {
+            DPDKMode::Server => {
+                if cfg!(feature = "timers") {
+                    self.end_entry(PROCESSING_TIMER, buf.0, addr.ipv4_addr)?;
+                }
+            }
+            DPDKMode::Client => {
+                // only insert new time IF this packet has not already been sent
+                if !self.outgoing_window.contains_key(&buf.0) {
+                    let _ = self.outgoing_window.insert(buf.0, Instant::now());
+                }
+            }
+        }
+
+        // send out the scatter-gather array
+        let mbuf_ptr = &mut self.send_mbufs[0][0] as _;
+        timefunc(
+            &mut || {
+                wrapper::tx_burst(self.dpdk_port, 0, mbuf_ptr, 1)
+                    .wrap_err(format!("Failed to send SGAs."))
+            },
+            cfg!(feature = "timers"),
+            self.get_timer(TX_BURST_TIMER, cfg!(feature = "timers"))?,
+        )?;
+
+        Ok(())
+    }
+
     /// Sends out a cornflake to the given Ipv4Addr.
     /// Returns an error if the address is not present in the ip_to_mac table,
     /// or if there is a problem constructing a linked list of mbufs to copy/attach the cornflake
@@ -885,6 +928,24 @@ impl Datapath for DPDKConnection {
 
     fn native_buf_size(&self) -> usize {
         wrapper::MBUF_BUF_SIZE as usize
+    }
+
+    fn allocate(&self, size: usize, _align: usize) -> Result<Self::DatapathPkt> {
+        if size > wrapper::MBUF_BUF_SIZE as usize {
+            bail!("Cannot allocate request with size: {:?}", size);
+        }
+        let mempool = self.mempools[0].1;
+        let mbuf = wrapper::alloc_mbuf(mempool)
+            .wrap_err(format!("Unable to alloc mbuf from mempool # {}", 0))?;
+        tracing::debug!(
+            "Allocating DPDK buffer at address {:?} from mempool {:?}",
+            mbuf,
+            0
+        );
+        return Ok(DPDKBuffer {
+            mbuf: mbuf,
+            mempool_id: 0,
+        });
     }
 }
 

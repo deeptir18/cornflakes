@@ -167,3 +167,5 @@ impl MmapMetadata {
         }
     }
 }
+
+// now: how to build a simple block allocator from these huge pages

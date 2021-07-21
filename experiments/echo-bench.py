@@ -11,8 +11,7 @@ STRIP_THRESHOLD = 0.03
 # SIZES_TO_LOOP = [1024, 2048, 4096, 8192]
 SIZES_TO_LOOP = [2048, 4096, 8192]
 MESSAGE_TYPES = ["single"]
-MESSAGE_TYPES = []
-MESSAGE_TYPES.extend(["list-2", "list-4", "list-8",
+MESSAGE_TYPES.extend(["list-2", "list-4", "list-8", "list-12", "list-16",
                      "tree-2", "tree-1", "tree-3"])
 # MESSAGE_TYPES.extend(["list-{}".format(i) for i in range(1, 5)])
 # MESSAGE_TYPES.extend(["tree-{}".format(i) for i in range(1, 4)])
@@ -199,8 +198,15 @@ class EchoBenchIteration(runner.Iteration):
         ret["config_file"] = config_yaml["config_file"]
         ret["size"] = "{}".format(self.size)
         ret["library"] = self.serialization
+        ret["client-library"] = self.serialization
         ret["message"] = self.message_type
         ret["folder"] = str(folder)
+
+        if ret["library"] == "cornflakes-dynamic":
+            ret["client-library"] = "cornflakes1c-dynamic"
+        elif ret["library"] == "cornflakes-fixed":
+            ret["client-library"] = "cornflakes1c-fixed"
+
         if program == "start_server":
             ret["zero_copy_recv"] = ""
             ret["copy_to_dma_memory"] = ""
@@ -291,6 +297,8 @@ class EchoBench(runner.Experiment):
                                                 [(96000, 1)]]
                                 for i in range(2, int(self.config_yaml["max_clients"])):
                                     client_rates.append([(100000, i)])
+                                for i in range(1, int(self.config_yaml["max_clients"])):
+                                    client_rates.append([(110000, i)])
                                 for i in range(1, int(self.config_yaml["max_clients"])):
                                     client_rates.append([(120000, i)])
                                 for rate in client_rates:

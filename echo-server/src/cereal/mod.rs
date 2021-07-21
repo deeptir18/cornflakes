@@ -2,7 +2,9 @@ use super::{
     get_equal_fields, init_payloads, init_payloads_as_vec, CerealizeClient, CerealizeMessage,
 };
 use color_eyre::eyre::Result;
-use cornflakes_libos::{mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPacket};
+use cornflakes_libos::{
+    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPacket, ScatterGather,
+};
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use cxx;
 use std::slice;
@@ -291,7 +293,6 @@ where
     D: Datapath,
 {
     type Ctx = Vec<u8>;
-    type OutgoingMsg = Cornflake<'registered, 'normal>;
 
     fn new(
         message_type: SimpleMessageType,
@@ -370,8 +371,8 @@ where
         self.payload_ptrs.iter().map(|(_ptr, len)| *len).collect()
     }
 
-    fn get_sga(&self) -> Result<Self::OutgoingMsg> {
-        Ok(self.sga.clone())
+    fn get_msg(&self) -> Result<Vec<u8>> {
+        Ok(self.sga.contiguous_repr())
     }
 
     fn check_echoed_payload(&self, recved_msg: &D::ReceivedPkt) -> Result<()> {

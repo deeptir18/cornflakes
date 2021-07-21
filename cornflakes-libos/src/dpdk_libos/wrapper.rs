@@ -70,6 +70,33 @@ pub struct Pkt {
     use_external_buffers: bool,
 }
 
+/// Constructs and sends a packet with an mbuf from the given mempool, copying the payload.
+pub fn get_mbuf_with_memcpy(
+    header_mempool: *mut rte_mempool,
+    header_info: &utils::HeaderInfo,
+    buf: &[u8],
+    id: MsgID,
+) -> Result<*mut rte_mbuf> {
+    let header_mbuf =
+        alloc_mbuf(header_mempool).wrap_err("Unable to allocate mbuf from mempool.")?;
+    let data_offset = fill_in_header(header_mbuf, header_info, buf.len(), id)
+        .wrap_err("unable to fill header info.")?;
+    unsafe {
+        (*header_mbuf).data_len = (data_offset + buf.len()) as u16;
+        (*header_mbuf).pkt_len = (data_offset + buf.len()) as u32;
+        (*header_mbuf).next = ptr::null_mut();
+        (*header_mbuf).nb_segs = 1;
+    }
+    // copy the payload into the mbuf
+    let ctx_hdr_slice = mbuf_slice!(header_mbuf, data_offset, buf.len());
+    dpdk_call!(rte_memcpy_wrapper(
+        ctx_hdr_slice.as_mut_ptr() as _,
+        buf.as_ref().as_ptr() as _,
+        buf.len(),
+    ));
+    Ok(header_mbuf)
+}
+
 impl Pkt {
     /// Initialize a Pkt data structure, with a given number of segments.
     /// Allocates space in the `mbufs` and `data_offsets` fields according to the size.
@@ -961,14 +988,14 @@ fn dpdk_init_helper() -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
 pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, usize)> {
     let mut ret: Vec<(usize, usize)> = vec![];
     extern "C" fn mz_cb(
-        _mp: *mut rte_mempool,
+        mp: *mut rte_mempool,
         opaque: *mut ::std::os::raw::c_void,
         memhdr: *mut rte_mempool_memhdr,
-        _idx: ::std::os::raw::c_uint,
+        idx: ::std::os::raw::c_uint,
     ) {
         let mr = unsafe { &mut *(opaque as *mut Vec<(usize, usize)>) };
         let (addr, len) = unsafe { ((*memhdr).addr, (*memhdr).len) };
-        /*let op = match idx > 0 {
+        let op = match idx > 0 {
             true => {
                 let len = mr.len();
                 mr[len - 1]
@@ -987,11 +1014,12 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
                 diff = dif,
                 "In mempool hdr iteration",
             );
-        }*/
+        }
 
         mr.push((addr as usize, len as usize));
     }
-    /*let mut op: Vec<usize> = vec![];
+
+    let mut op: Vec<usize> = vec![];
 
     unsafe extern "C" fn check_each_mbuf(
         mp: *mut rte_mempool,
@@ -1008,16 +1036,6 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
             }
             false => 0,
         };
-        if idx != 0 && (mbuf as usize - op) != 9664 {
-            tracing::debug!(
-                "NOT THE SAME DIF: idx: {}, mbuf addr: {:?} ({:?}), opaque (last): {:?}, dif: {:?}",
-                idx,
-                mbuf as usize,
-                mbuf,
-                op,
-                (mbuf as usize - op)
-            );
-        }
         if idx < 10 || idx > 8180 || idx == 379 {
             tracing::debug!(
                 "idx: {}, mbuf addr: {:?} ({:?}), opaque (last): {:?}, dif: {:?}",
@@ -1034,7 +1052,7 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
         mbuf_pool,
         Some(check_each_mbuf),
         &mut op as *mut _ as *mut ::std::os::raw::c_void
-    ));*/
+    ));
 
     dpdk_call!(rte_mempool_mem_iter(
         mbuf_pool,

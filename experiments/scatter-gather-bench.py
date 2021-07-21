@@ -9,13 +9,13 @@ import subprocess as sh
 STRIP_THRESHOLD = 0.03
 
 SEGMENT_SIZES_TO_LOOP = [64, 128]
-SEGMENT_SIZES_TO_LOOP.extend([i for i in range(256, 8192 + 256, 256)])
-MAX_CLIENT_RATE_PPS = 100000
+#SEGMENT_SIZES_TO_LOOP.extend([i for i in range(256, 8192 + 256, 256)])
+MAX_CLIENT_RATE_PPS = 200000
 MAX_RATE_GBPS = 5  # TODO: should be configured per machine
 MIN_RATE_PPS = 5000
-MAX_RATE_PPS = 100000
+MAX_RATE_PPS = 200000
 MAX_PKT_SIZE = 8192
-MBUFS_MAX = 32
+MBUFS_MAX = 5
 
 # EVENTUAL TODO:
 # Make it such that graphing analysis is run locally
@@ -202,6 +202,7 @@ class ScatterGatherIteration(runner.Iteration):
                          programs_metadata,
                          exp_time):
         ret = {}
+        ret["config_eal"] = " ".join(config_yaml["dpdk"]["eal_init"])
         if program == "start_server":
             ret["cornflakes_dir"] = config_yaml["cornflakes_dir"]
             ret["server_ip"] = config_yaml["hosts"][host]["ip"]
@@ -286,15 +287,15 @@ class ScatterGather(runner.Experiment):
                                                   num_mbufs)
                         rate = min(MAX_RATE_PPS, rate)
                         it = ScatterGatherIteration([(rate,
-                                                     1)], segment_size,
+                                                    1)], segment_size,
                                                     num_mbufs, False, False,
                                                     trial=trial)
                         it_wc = ScatterGatherIteration([(rate,
-                                                        1)], segment_size,
+                                                       1)], segment_size,
                                                        num_mbufs, True, False,
                                                        trial=trial)
                         it_as_one = ScatterGatherIteration([(rate,
-                                                            1)], segment_size,
+                                                           1)], segment_size,
                                                            num_mbufs, True,
                                                            True, trial=trial)
                         ret.append(it)
@@ -392,7 +393,7 @@ class ScatterGather(runner.Experiment):
             host_offered_rate = float(run_info["args"]["rate"])
             total_offered_rate += host_offered_rate
             host_offered_load = float(utils.get_tput_gbps(host_offered_rate,
-                                      iteration.get_total_size()))
+                                                          iteration.get_total_size()))
             total_offered_load += host_offered_load
 
             host_pkts_sent = stdout_info["pkts_sent"]
@@ -427,10 +428,10 @@ class ScatterGather(runner.Experiment):
         avg = utils.mean_func(sorted_latencies) / float(1000)
 
         if print_stats:
-            total_stats = "offered load: {:.2f} req/s | {:.2f} Gbps, "  \
-                "achieved load: {:.2f} req/s | {:.2f} Gbps, " \
+            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, "  \
+                "achieved load: {:.4f} req/s | {:.4f} Gbps, " \
                 "percentage achieved rate: {:.3f}," \
-                "avg latency: {:.2f} us, p99: {:.2f} us, p999: {:.2f}, median: {:.2f} us".format(
+                "avg latency: {:.4f} us, p99: {:.4f} us, p999: {:.4f}, median: {:.4f} us".format(
                     total_offered_rate, total_offered_load,
                     total_achieved_rate, total_achieved_load,
                     float(total_achieved_rate / total_offered_rate),

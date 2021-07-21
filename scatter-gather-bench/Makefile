@@ -26,8 +26,8 @@ PKGCONF ?= pkg-config
 
 PC_FILE := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --path libdpdk 2>/dev/null)
 CFLAGS += -O3 $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --cflags libdpdk)
-LDFLAGS_SHARED = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --libs libdpdk)
-LDFLAGS_STATIC = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --static --libs libdpdk)
+LDFLAGS_SHARED = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --libs libdpdk) -lrte_net_mlx5 -lrte_bus_pci -lrte_bus_vdev -lrte_common_mlx5
+LDFLAGS_STATIC = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --static --libs libdpdk) -lrte_net_mlx5 -lrte_bus_pci -lrte_bus_vdev -lrte_common_mlx5
 
 CFLAGS += -DALLOW_EXPERIMENTAL_API -lm
 

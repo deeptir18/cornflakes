@@ -14,6 +14,7 @@ pub mod utils;
 use color_eyre::eyre::{bail, Result, WrapErr};
 use mem::MmapMetadata;
 use std::{
+    io::Write,
     net::Ipv4Addr,
     ops::{Fn, FnMut},
     slice::Iter,
@@ -72,7 +73,7 @@ pub trait ReceivedPacket {
 
     fn get_pkt_buffer(&self) -> &[u8];
 
-    fn get_corn_ptr(&self) -> CornPtr;
+    fn get_corn_type(&self) -> CornType;
 
     fn len(&self) -> usize;
 }
@@ -292,6 +293,88 @@ impl DatapathMempoolOptions {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CfBuf<D>
+where
+    D: Datapath,
+{
+    buf: D::DatapathPkt,
+}
+
+impl<D> CfBuf<D>
+where
+    D: Datapath,
+{
+    pub fn new(buf: D::DatapathPkt) -> Self {
+        CfBuf { buf: buf }
+    }
+
+    pub fn allocate(conn: &mut D, size: usize, alignment: usize) -> Result<Self> {
+        let mut buf = conn.allocate(size, alignment)?;
+        // TODO: should we be allocating the ref count here?
+        // Or should the "datapath" be doing it
+        buf.increment_rc();
+        Ok(CfBuf { buf: buf })
+    }
+}
+
+impl<D> Write for CfBuf<D>
+where
+    D: Datapath,
+{
+    // TODO: should this just overwrite the entire buffer?
+    // Should it keep an index of what has been written of sorts?
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buf.as_mut().write(&buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<D> AsRef<[u8]> for CfBuf<D>
+where
+    D: Datapath,
+{
+    fn as_ref(&self) -> &[u8] {
+        self.buf.as_ref()
+    }
+}
+
+impl<D> AsMut<[u8]> for CfBuf<D>
+where
+    D: Datapath,
+{
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.buf.as_mut()
+    }
+}
+
+/// Some datapaths have their own ref counting schema,
+/// So this trait exposes ref counting over those schemes.
+pub trait RefCnt {
+    fn count_rc(&self) -> usize;
+
+    fn change_rc(&mut self, amt: isize);
+
+    fn increase_rc(&mut self, amt: usize) {
+        self.change_rc(amt as isize);
+    }
+
+    fn decrease_rc(&mut self, amt: usize) {
+        self.change_rc((amt as isize) * -1);
+    }
+
+    fn increment_rc(&mut self) {
+        self.change_rc(1);
+    }
+
+    fn decrement_rc(&mut self) {
+        self.change_rc(-1);
+    }
+}
+
 /// Set of functions each datapath must implement.
 /// Datapaths must be able to send a receive packets,
 /// as well as optionally keep track of per-packet timeouts.
@@ -299,7 +382,10 @@ pub trait Datapath {
     /// Each datapath must expose a received packet type that implements the ScatterGather trait
     /// and the ReceivedPacket trait.
     type ReceivedPkt: ScatterGather + ReceivedPacket;
-    type DatapathPkt: AsRef<[u8]> + AsMut<[u8]>;
+    type DatapathPkt: AsRef<[u8]> + AsMut<[u8]> + RefCnt;
+
+    /// Send a single buffer to the specified address.
+    fn push_buf(&mut self, buf: (MsgID, &[u8]), addr: utils::AddressInfo) -> Result<()>;
 
     /// Send a scatter-gather array to the specified address.
     fn push_sgas(&mut self, sga: &Vec<(impl ScatterGather, utils::AddressInfo)>) -> Result<()>;
@@ -357,6 +443,8 @@ pub trait Datapath {
 
     /// For natively allocated mbufs: what is the buffer size?
     fn native_buf_size(&self) -> usize;
+
+    fn allocate(&self, size: usize, alignment: usize) -> Result<Self::DatapathPkt>;
 }
 
 pub fn high_timeout_at_start(received: usize) -> Duration {
@@ -375,14 +463,12 @@ pub fn no_retries_timeout(_received: usize) -> Duration {
 /// how received messages are processed.
 pub trait ClientSM {
     type Datapath: Datapath;
-    type OutgoingMsg: ScatterGather;
 
     /// Server ip.
     fn server_ip(&self) -> Ipv4Addr;
 
     /// Generate next request to be sent and send it with the provided callback.
-    fn send_next_msg(&mut self, send_fn: impl FnMut(Self::OutgoingMsg) -> Result<()>)
-        -> Result<()>;
+    fn get_next_msg(&mut self) -> Result<(MsgID, &[u8])>;
 
     /// What to do with a received request.
     fn process_received_msg(
@@ -392,11 +478,7 @@ pub trait ClientSM {
     ) -> Result<()>;
 
     /// What to do when a particular message times out.
-    fn msg_timeout_cb(
-        &mut self,
-        id: MsgID,
-        send_fn: impl FnMut(Self::OutgoingMsg) -> Result<()>,
-    ) -> Result<()>;
+    fn msg_timeout_cb(&mut self, id: MsgID) -> Result<(MsgID, &[u8])>;
 
     /// Initializes any internal state with any datapath specific configuration,
     /// e.g., registering external memory.
@@ -417,16 +499,14 @@ pub trait ClientSM {
         let addr_info = datapath.get_outgoing_addr_from_ip(server_ip)?;
 
         while recved < num_pkts {
-            self.send_next_msg(|sga| datapath.push_sgas(&vec![(sga, addr_info.clone())]))?;
+            datapath.push_buf(self.get_next_msg()?, addr_info.clone())?;
             let recved_pkts = loop {
                 let pkts = datapath.pop()?;
                 if pkts.len() > 0 {
                     break pkts;
                 }
                 for id in datapath.timed_out(time_out(self.received_so_far()))?.iter() {
-                    self.msg_timeout_cb(*id, |sga| {
-                        datapath.push_sgas(&vec![(sga, addr_info.clone())])
-                    })?;
+                    datapath.push_buf(self.msg_timeout_cb(*id)?, addr_info.clone())?;
                 }
             };
 
@@ -449,6 +529,7 @@ pub trait ClientSM {
         intersend_rate: u64,
         total_time: u64,
         time_out: impl Fn(usize) -> Duration,
+        no_retries: bool,
     ) -> Result<()> {
         let freq = datapath.timer_hz();
         let cycle_wait = (((intersend_rate * freq) as f64) / 1e9) as u64;
@@ -461,7 +542,7 @@ pub trait ClientSM {
         while datapath.current_cycles() < (total_time * freq + start) {
             // Send the next message
             tracing::debug!(time = ?time_start.elapsed(), "About to send next packet");
-            self.send_next_msg(|sga| datapath.push_sgas(&vec![(sga, addr_info.clone())]))?;
+            datapath.push_buf(self.get_next_msg()?, addr_info.clone())?;
             let last_sent = datapath.current_cycles();
 
             while datapath.current_cycles() <= last_sent + cycle_wait {
@@ -476,10 +557,10 @@ pub trait ClientSM {
                     ))?;
                 }
 
-                for id in datapath.timed_out(time_out(self.received_so_far()))?.iter() {
-                    self.msg_timeout_cb(*id, |sga| {
-                        datapath.push_sgas(&vec![(sga, addr_info.clone())])
-                    })?;
+                if !no_retries {
+                    for id in datapath.timed_out(time_out(self.received_so_far()))?.iter() {
+                        datapath.push_buf(self.msg_timeout_cb(*id)?, addr_info.clone())?;
+                    }
                 }
             }
         }
@@ -501,7 +582,7 @@ pub trait ServerSM {
     /// * send_fn - A send callback to send a response to this request back.
     fn process_requests(
         &mut self,
-        sga: &Vec<(
+        sga: Vec<(
             <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
             Duration,
         )>,
@@ -519,7 +600,8 @@ pub trait ServerSM {
         loop {
             let pkts = datapath.pop()?;
             if pkts.len() > 0 {
-                self.process_requests(&pkts, datapath)?;
+                // give ownership of the received packets to the app.
+                self.process_requests(pkts, datapath)?;
             }
         }
     }

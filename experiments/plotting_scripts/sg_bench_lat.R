@@ -91,7 +91,7 @@ ggplot(heatmap_data,
             ylab(label = "number of mbufs") +
             scale_fill_gradientn(colours=c("#f1a340", "#f7f7f7", "#998ec3")) +
             # scale_fill_viridis_c(option="magma") +
-            expand_limits(x = 0, y = 1) +
+            expand_limits(x = 4000, y = 1) +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
                   legend.title = element_blank(),

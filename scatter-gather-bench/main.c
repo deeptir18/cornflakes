@@ -38,7 +38,7 @@
 #include <rte_arp.h>
 #include <rte_memzone.h>
 #include <rte_malloc.h>
-// #include <mlx5_custom.h>
+//#include <rte_pmd_mlx5.h>
 
 #define NNUMA 2
 #define MIN(X, Y)  ((X) < (Y) ? (X) : (Y))
@@ -671,7 +671,6 @@ static int wait_for_link_status_up(uint16_t port_id) {
 
 }
 
-
 static int init_dpdk_port(uint16_t port_id, struct rte_mempool *mbuf_pool) {
     printf("Initializing port %u\n", (unsigned)(port_id));
     NETPERF_TRUE(ERANGE, rte_eth_dev_is_valid_port(port_id)); 
@@ -1168,7 +1167,17 @@ static void swap_headers(struct rte_mbuf *tx_buf, struct rte_mbuf *rx_buf, size_
 
 }
 
+
 static int do_server(void) {
+    // initialize ext_mem
+    /*struct rte_mbuf *tx_bufs_allocated[MAX_SCATTERS];
+    for (int i = 0; i < MAX_SCATTERS; i++) {
+        tx_bufs_allocated[i] = rte_pktmbuf_alloc(tx_mbuf_pool);
+        if (tx_bufs_allocated[i] == NULL) {
+            printf("Failed to allocate tx buf burst seg %i\n", i);
+        }
+    }*/
+
     struct rte_mbuf *rx_bufs[BURST_SIZE];
     // for fake GSO, need to transmit up to MAX_SCATTERS separate packets
     // potentially
@@ -1219,9 +1228,12 @@ static int do_server(void) {
                         for (int seg = 0; seg < nb_segs_segment; seg++) {
                             tx_bufs[seg][pkt] = rte_pktmbuf_alloc(tx_mbuf_pool);
                             if (tx_bufs[seg][pkt] == NULL) {
-                                // printf("Failed to allocate tx buf burst # %i, seg %i\n", i, seg);
+                                printf("Failed to allocate tx buf burst # %i, seg %i\n", i, seg);
                                 exit(1);
                             }
+                            /*tx_bufs[seg][pkt]->buf_addr = tx_bufs_allocated[seg]->buf_addr;
+                            tx_bufs[seg][pkt]->buf_iova = tx_bufs_allocated[seg]->buf_iova;
+                            tx_bufs[seg][pkt]->data_off = tx_bufs_allocated[seg]->data_off;*/
                             // printf("\t->Allocated packet segment %d, for pkt %d\n", seg, pkt);
                             if (seg == 0) {
                                 // copy in the packet header to the first segment

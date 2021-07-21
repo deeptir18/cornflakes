@@ -56,6 +56,13 @@ base_plot <- function(data) {
             geom_errorbar(aes(ymin=mmedian-mediansd, ymax=mmedian+mediansd),position="dodge", stat="identity") +
             scale_fill_viridis_d() +
             scale_color_viridis_d() +
+            geom_text(data, 
+                      mapping = aes(x=factor(num_mbufs), 
+                                    y = mmedian + mediansd, 
+                                    label = mmedian,
+                                    family = "Fira Sans",
+                                    vjust = -1.0), 
+                      position = position_dodge2(width = 0.9, preserve = "single")) +
             labs(x = "Number of Segments", y = "Median Latency (ns)") +
                         theme_light() +
             theme(legend.position = "top",

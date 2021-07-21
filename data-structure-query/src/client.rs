@@ -1,10 +1,8 @@
 use super::CerealizeClient;
 use color_eyre::eyre::{Result, WrapErr};
-use cornflakes_libos::{
-    mem::MmapMetadata, timing::ManualHistogram, ClientSM, Datapath, MsgID, ScatterGather,
-};
+use cornflakes_libos::{mem::MmapMetadata, timing::ManualHistogram, ClientSM, Datapath, MsgID};
 use cornflakes_utils::SimpleMessageType;
-use std::{marker::PhantomData, net::Ipv4Addr, ops::FnMut, time::Duration};
+use std::{marker::PhantomData, net::Ipv4Addr, time::Duration};
 
 pub const NUM_PAGES: usize = 30;
 
@@ -21,6 +19,7 @@ where
     last_sent_id: u32,
     rtts: ManualHistogram,
     metadata: MmapMetadata,
+    buffer: Vec<u8>,
     _marker: PhantomData<&'normal D>,
 }
 
@@ -54,6 +53,7 @@ where
             last_sent_id: 0,
             rtts: rtts,
             metadata: metadata,
+            buffer: Vec::default(),
             _marker: PhantomData,
         })
     }
@@ -65,6 +65,7 @@ where
     pub fn init_state(&mut self, ctx: &'normal mut S::Ctx, connection: &mut D) -> Result<()> {
         self.init(connection)?;
         self.serializer.init(ctx)?;
+        self.buffer = self.serializer.get_msg()?;
         Ok(())
     }
 
@@ -99,21 +100,15 @@ where
     S: CerealizeClient<'normal, D>,
     D: Datapath,
 {
-    type OutgoingMsg = S::OutgoingMsg;
     type Datapath = D;
     fn server_ip(&self) -> Ipv4Addr {
         self.server_ip
     }
 
-    fn send_next_msg(
-        &mut self,
-        mut send_fn: impl FnMut(Self::OutgoingMsg) -> Result<()>,
-    ) -> Result<()> {
+    fn get_next_msg(&mut self) -> Result<(MsgID, &[u8])> {
         self.last_sent_id += 1;
         self.sent += 1;
-        let mut out_sga = self.serializer.get_sga()?;
-        out_sga.set_id(self.last_sent_id);
-        send_fn(out_sga)
+        Ok((self.last_sent_id, &self.buffer.as_slice()))
     }
 
     fn received_so_far(&self) -> usize {
@@ -154,15 +149,9 @@ where
         Ok(())
     }
 
-    fn msg_timeout_cb(
-        &mut self,
-        id: MsgID,
-        mut send_fn: impl FnMut(Self::OutgoingMsg) -> Result<()>,
-    ) -> Result<()> {
+    fn msg_timeout_cb(&mut self, id: MsgID) -> Result<(MsgID, &[u8])> {
         tracing::info!(id, last_sent = self.last_sent_id, "Retry callback");
         self.retries += 1;
-        let mut sga = self.serializer.get_sga()?;
-        sga.set_id(id);
-        send_fn(sga)
+        Ok((id, &self.buffer.as_slice()))
     }
 }

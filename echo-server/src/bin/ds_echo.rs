@@ -320,6 +320,7 @@ where
         (1e9 / opt.rate as f64) as u64,
         opt.total_time,
         timeout,
+        opt.no_retries,
     )?;
     let exp_duration = start_run.elapsed();
     client.dump(opt.logfile.clone(), exp_duration)?;

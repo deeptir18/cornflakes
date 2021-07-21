@@ -10,9 +10,9 @@ programs:
             out: "{folder}/server.log"
             err: "{folder}/server.err.log"
             record: "{folder}/server.record.log"
-        stop: sudo kill -SIGINT `ps aux | grep {cornflakes_dir}/target/release/ds_echo | awk '{{print $2}}' | head -n5`
+        stop: sudo kill -SIGINT `ps aux | grep {cornflakes_dir}/target/release/ds_echo | grep -v grep | awk '{{print $2}}'`
     start_client:
-            start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/ds_echo --config_file {config_file} --mode client --server_ip {server_ip} --time {time} --rate {rate} --serialization {library} --size {size} --message {message} {zero_copy_recv} --logfile {folder}/{host}.latency.log --debug_level info
+            start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/ds_echo --config_file {config_file} --mode client --server_ip {server_ip} --time {time} --rate {rate} --serialization {client-library} --size {size} --message {message} {zero_copy_recv} --logfile {folder}/{host}.latency.log --debug_level info
             hosts: [client1, client2, client3, client4, client5, client6, client7, client8, client9, client10, client11]
             log:
                 out: "{folder}/{host}.log"

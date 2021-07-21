@@ -114,8 +114,9 @@ macro_rules! dpdk_call (
     ($x: expr) => { unsafe { $x } }
 );
 
-pub mod connection;
+pub mod connection; // no reference counting for payloads
 mod dpdk_utils;
 pub mod echo;
 pub mod fast_echo;
+// pub mod rc_connection; // has reference counting turned on for payloads
 mod wrapper;

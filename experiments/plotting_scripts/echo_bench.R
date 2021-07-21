@@ -49,20 +49,20 @@ options(width=10000)
 
 d$system_name <- apply(d, 1, get_system_name)
 d <- subset(d, d$system_name != "cf_zero_copy_send_copy_recv")
-summarized <- ddply(d, c("system_name", "size", "message_type", "offered_load_gbps"),
+summarized <- ddply(d, c("system_name", "size", "message_type", "achieved_load_gbps"),
                     summarise,
                     mavg = mean(avg),
                     mp99 = mean(p99),
                     mp999 = mean(p999),
                     avgmedian = mean(median))
 print(summarized)
-gathered <- gather(summarized, key="latency", value = "mmt", -system_name, -size, -message_type, -offered_load_gbps)
-gathered_p99 <- subset(gathered, gathered$latency == "mp99")
+gathered <- gather(summarized, key="latency", value = "mmt", -system_name, -size, -message_type, -achieved_load_gbps)
+gathered_p99 <- subset(gathered, gathered$latency == "avgmedian")
 print(gathered_p99)
 
 base_plot <- function(data) {
     plot <- ggplot(data,
-                   aes(x = offered_load_gbps,
+                   aes(x = achieved_load_gbps,
                        y = mmt,
                        color = system_name,
                        shape = system_name,
@@ -87,7 +87,7 @@ base_plot <- function(data) {
 full_plot <- function(data) {
     plot <- base_plot(data)
     plot <- plot +
-        labs(x = "Offered Throughput (Gbps)", y = "p999 Latency (µs)") +
+        labs(x = "Achieved Throughput (Gbps)", y = "Median Latency (µs)") +
         facet_grid(message_type ~ size)
     print(plot)
     return(plot)

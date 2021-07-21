@@ -3,8 +3,8 @@ use super::super::{
     mem,
     timing::{record, HistogramWrapper, RTTHistogram},
     utils::AddressInfo,
-    ClientSM, CornPtr, Cornflake, Datapath, MsgID, PtrAttributes, ReceivedPacket, ScatterGather,
-    ServerSM,
+    ClientSM, CornPtr, CornType, Cornflake, Datapath, MsgID, PtrAttributes, ReceivedPacket,
+    ScatterGather, ServerSM,
 };
 use super::connection::DPDKConnection;
 use color_eyre::eyre::{bail, Result, WrapErr};
@@ -20,18 +20,12 @@ use std::{
 
 const SERVER_PROCESSING_LATENCY: &str = "SERVER_PROC_LATENCY";
 
-/*fn simple_cornflake(payload: &'a Vec<u8>) -> Cornflake<'a> {
-    let cornptr = CornPtr::Normal(payload.as_ref());
-    let mut cornflake = Cornflake::default();
-    cornflake.add_entry(cornptr);
-    cornflake
-}*/
-
 pub struct EchoClient<'a, 'b> {
     sent: usize,
     recved: usize,
     last_sent_id: MsgID,
     retries: usize,
+    buffer: Vec<u8>,
     sga: Cornflake<'a, 'b>,
     server_ip: Ipv4Addr,
     rtts: Histogram<u64>,
@@ -71,6 +65,7 @@ impl<'a, 'b> EchoClient<'a, 'b> {
             recved: 0,
             last_sent_id: 0,
             retries: 0,
+            buffer: sga.contiguous_repr(),
             sga: sga,
             server_ip: server_ip,
             rtts: Histogram::new_with_max(10_000_000_000, 2).unwrap(),
@@ -96,7 +91,6 @@ impl<'a, 'b> EchoClient<'a, 'b> {
 
 impl<'a, 'b> ClientSM for EchoClient<'a, 'b> {
     type Datapath = DPDKConnection;
-    type OutgoingMsg = Cornflake<'a, 'b>;
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
         match self.external_memory {
@@ -127,15 +121,11 @@ impl<'a, 'b> ClientSM for EchoClient<'a, 'b> {
         self.server_ip
     }
 
-    fn send_next_msg(
-        &mut self,
-        mut send_fn: impl FnMut(Self::OutgoingMsg) -> Result<()>,
-    ) -> Result<()> {
+    fn get_next_msg(&mut self) -> Result<(MsgID, &[u8])> {
         tracing::debug!(id = self.last_sent_id + 1, "Sending");
         self.last_sent_id += 1;
-        self.sga.set_id(self.last_sent_id);
         self.sent += 1;
-        send_fn(self.sga.clone())
+        Ok((self.last_sent_id, &self.buffer.as_slice()))
     }
 
     fn process_received_msg(
@@ -164,15 +154,10 @@ impl<'a, 'b> ClientSM for EchoClient<'a, 'b> {
         Ok(())
     }
 
-    fn msg_timeout_cb(
-        &mut self,
-        id: MsgID,
-        mut send_fn: impl FnMut(Self::OutgoingMsg) -> Result<()>,
-    ) -> Result<()> {
+    fn msg_timeout_cb(&mut self, id: MsgID) -> Result<(MsgID, &[u8])> {
         tracing::info!(id, last_sent = self.last_sent_id, "Retry callback");
         self.retries += 1;
-        self.sga.set_id(id);
-        send_fn(self.sga.clone())
+        Ok((id, &self.buffer.as_slice()))
     }
 }
 
@@ -219,7 +204,6 @@ impl EchoServer {
 
 impl ServerSM for EchoServer {
     type Datapath = DPDKConnection;
-    //type OutgoingMsg = Cornflake<'a>;
 
     fn init(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
         Ok(())
@@ -231,7 +215,7 @@ impl ServerSM for EchoServer {
 
     fn process_requests(
         &mut self,
-        sgas: &Vec<(
+        sgas: Vec<(
             <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
             Duration,
         )>,
@@ -242,11 +226,15 @@ impl ServerSM for EchoServer {
         let mut out_sgas: Vec<(Cornflake, AddressInfo)> = Vec::with_capacity(sgas.len());
         for in_sga in sgas.iter() {
             let mut cornflake = Cornflake::with_capacity(1);
-            cornflake.add_entry(in_sga.0.get_corn_ptr());
+            let cornptr = match in_sga.0.get_corn_type() {
+                CornType::Normal => CornPtr::Normal(in_sga.0.get_pkt_buffer()),
+                CornType::Registered => CornPtr::Registered(in_sga.0.get_pkt_buffer()),
+            };
             tracing::debug!(
-                input_cornptr_length = in_sga.0.get_corn_ptr().buf_size(),
+                input_cornptr_length = cornptr.buf_size(),
                 "length of input cornptr packet"
             );
+            cornflake.add_entry(cornptr);
             cornflake.set_id(in_sga.0.get_id());
             tracing::debug!(
                 "Setting cornptr to {:?}; usize: {:?}",

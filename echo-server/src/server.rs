@@ -47,7 +47,7 @@ where
 
     fn process_requests(
         &mut self,
-        sgas: &Vec<(
+        sgas: Vec<(
             <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
             Duration,
         )>,
