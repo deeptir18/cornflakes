@@ -9,7 +9,9 @@ import subprocess as sh
 STRIP_THRESHOLD = 0.03
 
 SEGMENT_SIZES_TO_LOOP = [64, 128]
-#SEGMENT_SIZES_TO_LOOP.extend([i for i in range(256, 8192 + 256, 256)])
+TOTAL_SIZES_TO_LOOP = [64, 128]
+NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16, 32, 64]
+# SEGMENT_SIZES_TO_LOOP.extend([i for i in range(256, 8192 + 256, 256)])
 MAX_CLIENT_RATE_PPS = 200000
 MAX_RATE_GBPS = 5  # TODO: should be configured per machine
 MIN_RATE_PPS = 5000
@@ -144,7 +146,10 @@ class ScatterGatherIteration(runner.Iteration):
             else:
                 return "with_copy"
         else:
-            return "zero_copy"
+            if self.as_one:
+                return "zero_copy_one_buffer"
+            else:
+                return "zero_copy"
 
     def get_segment_size_string(self):
         return "segmentsize_{}".format(self.segment_size)
@@ -224,8 +229,13 @@ class ScatterGatherIteration(runner.Iteration):
                     ret["num_mbufs"] = self.num_mbufs
             else:
                 ret["with_copy"] = ""
-                ret["segment_size"] = self.segment_size
-                ret["num_mbufs"] = self.num_mbufs
+                if self.as_one:
+                    ret["as_one"] = "as_one"
+                    ret["num_mbufs"] = 1
+                    ret["segment_size"] = self.segment_size * self.num_mbufs
+                else:
+                    ret["segment_size"] = self.segment_size
+                    ret["num_mbufs"] = self.num_mbufs
             # calculate client rate
             host_options = self.get_iteration_clients(
                 programs_metadata[program]["hosts"])
@@ -278,6 +288,39 @@ class ScatterGather(runner.Experiment):
             return [it]
         else:
             ret = []
+            if total_args.constant_total_size:
+                # loop by different number of segments within a constant size
+                for trial in range(utils.NUM_TRIALS):
+                    for total_size in TOTAL_SIZES_TO_LOOP:
+                        for num_mbufs in NB_SEGMENTS_TO_LOOP:
+                            segment_size = int(total_size / num_mbufs)
+                            rate_gbps = MAX_RATE_GBPS
+                            rate = utils.get_tput_pps(rate_gbps,
+                                                      num_mbufs)
+                            rate = min(MAX_RATE_PPS, rate)
+                            it = ScatterGatherIteration([(rate,
+                                                          1)], segment_size,
+                                                        num_mbufs, False, False,
+                                                        trial=trial)
+                            it_as_one = ScatterGatherIteration([(rate,
+                                                                 1)], segment_size,
+                                                               num_mbufs, False,
+                                                               True,
+                                                               trial=trial)
+                            it_wc = ScatterGatherIteration([(rate,
+                                                             1)], segment_size,
+                                                           num_mbufs, True, False,
+                                                           trial=trial)
+                            it_wc_as_one = ScatterGatherIteration([(rate,
+                                                                    1)], segment_size,
+                                                                  num_mbufs, True,
+                                                                  True, trial=trial)
+                            ret.append(it)
+                            ret.append(it_as_one)
+                            ret.append(it_wc)
+                            ret.append(it_wc_as_one)
+
+                return ret
             for trial in range(utils.NUM_TRIALS):
                 for segment_size in SEGMENT_SIZES_TO_LOOP:
                     max_num_mbufs = MBUFS_MAX
@@ -312,6 +355,10 @@ class ScatterGather(runner.Experiment):
                             dest="as_one",
                             action='store_true',
                             help="Whether the server sends the payload as a single buffer.")
+        parser.add_argument("-cnst", "--constant_total_size",
+                            dest="constant_total_size",
+                            action='store_true',
+                            help="Whether to loop by constant total size instead of segment size.")
         if namespace.exp_type == "individual":
             parser.add_argument("-r", "--rate",
                                 dest="rate",
@@ -453,30 +500,46 @@ class ScatterGather(runner.Experiment):
                                                                    p999 * 1000)
         return csv_line
 
-    def graph_results(self, folder, logfile):
+    def graph_results(self, total_args, folder, logfile):
         cornflakes_repo = self.config_yaml["cornflakes_dir"]
-        plotting_script = Path(cornflakes_repo) / \
-            "experiments" / "plotting_scripts" / "sg_bench.R"
         plot_path = Path(folder) / "plots"
         plot_path.mkdir(exist_ok=True)
         full_log = Path(folder) / logfile
-        for size in SEGMENT_SIZES_TO_LOOP:
-            output_file = plot_path / "segsize_{}.pdf".format(size)
-            args = [str(plotting_script), str(full_log),
-                    str(size), str(output_file)]
+
+        # if looped normally, run plots by segment size
+        if not(total_args.constant_total_size):
+            plotting_script = Path(cornflakes_repo) / \
+                "experiments" / "plotting_scripts" / "sg_bench.R"
+            for size in SEGMENT_SIZES_TO_LOOP:
+                output_file = plot_path / "segsize_{}.pdf".format(size)
+                args = [str(plotting_script), str(full_log),
+                        str(size), str(output_file), "by_segment_size"]
+                try:
+                    sh.run(args)
+                except:
+                    utils.warn("Failed to run plot command: {}".format(args))
+            # plot heatmap
+            heatmap_script = Path(cornflakes_repo) / "experiments" / \
+                "plotting_scripts" / "sg_bench_map.R"
+            heatmap_file = plot_path / "heatmap.pdf"
+            args = [str(heatmap_script), str(full_log), str(heatmap_file)]
             try:
                 sh.run(args)
             except:
-                utils.warn("Failed to run plot command: {}".format(args))
-        # plot heatmap
-        heatmap_script = Path(cornflakes_repo) / "experiments" / \
-            "plotting_scripts" / "sg_bench_map.R"
-        heatmap_file = plot_path / "heatmap.pdf"
-        args = [str(heatmap_script), str(full_log), str(heatmap_file)]
-        try:
-            sh.run(args)
-        except:
-            utils.warn("Failed to run heatmap plot command: {}".format(args))
+                utils.warn(
+                    "Failed to run heatmap plot command: {}".format(args))
+        # if looped with constant size, run plots by number of splits
+        else:
+            plotting_script = Path(cornflakes_repo) / \
+                "experiments" / "plotting_scripts" / "sg_bench.R"
+            for total_size in TOTAL_SIZES_TO_LOOP:
+                output_file = plot_path / "totalsize_{}.pdf".format(total_size)
+                args = [str(plotting_script), str(full_log), str(total_size),
+                        str(output_file), "by_total_size"]
+                try:
+                    sh.run(args)
+                except:
+                    utils.warn("Failed to run plot command: {}".format(args))
 
 
 def main():

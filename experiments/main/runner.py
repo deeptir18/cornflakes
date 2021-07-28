@@ -144,13 +144,13 @@ class Experiment(metaclass=abc.ABCMeta):
         return
 
     @abc.abstractmethod
-    def graph_results(self, folder, logfile):
+    def graph_results(self, total_args, folder, logfile):
         return
 
-    def run_graphing_scripts(self, folder, logfile=None):
+    def run_graphing_scripts(self, total_args, folder, logfile=None):
         if logfile is None:
             return
-        self.graph_results(folder, logfile)
+        self.graph_results(total_args, folder, logfile)
 
     def run_analysis_loop(self, total_args, iterations, print_stats=False, logfile=None):
         """
@@ -246,7 +246,7 @@ class Experiment(metaclass=abc.ABCMeta):
                                        print_stats=False,
                                        logfile=total_args.logfile)
             if not(total_args.no_graph) and not(namespace.pprint):
-                self.run_graphing_scripts(total_args.folder,
+                self.run_graphing_scripts(total_args, total_args.folder,
                                           logfile=total_args.logfile)
 
         elif total_args.exp_type == "individual":
