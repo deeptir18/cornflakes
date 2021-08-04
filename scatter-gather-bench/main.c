@@ -1515,7 +1515,7 @@ static int do_memcpy_bench() {
     while (count > 0) {
         // current thing to copy
         char *cur_ptr = (char *)payload_to_copy + (cur_off);
-        memcpy(tmp, cur_ptr, segment_size);
+        rte_memcpy(tmp, cur_ptr, segment_size);
         // next offset to copy ends up being what is stored in the current
         // offsets
         cur_off = *(size_t *)cur_ptr;
