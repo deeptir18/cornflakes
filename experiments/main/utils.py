@@ -8,7 +8,7 @@ from colorama import Style
 from statistics import mean
 
 NUM_TRIALS = 5
-NUM_RETRIES = 5
+NUM_RETRIES = 0
 
 
 def info(*args):

@@ -8,16 +8,17 @@ import parse
 import subprocess as sh
 STRIP_THRESHOLD = 0.03
 
-SEGMENT_SIZES_TO_LOOP = [64, 128]
-TOTAL_SIZES_TO_LOOP = [64, 128]
-NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16, 32, 64]
-# SEGMENT_SIZES_TO_LOOP.extend([i for i in range(256, 8192 + 256, 256)])
+SEGMENT_SIZES_TO_LOOP = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
+TOTAL_SIZES_TO_LOOP = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
+NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16, 32]
+#SEGMENT_SIZES_TO_LOOP.extend([i for i in range(256, 8192 + 256, 256)])
 MAX_CLIENT_RATE_PPS = 200000
 MAX_RATE_GBPS = 5  # TODO: should be configured per machine
 MIN_RATE_PPS = 5000
 MAX_RATE_PPS = 200000
 MAX_PKT_SIZE = 8192
 MBUFS_MAX = 5
+ARRAY_SIZES_TO_LOOP = [10000, 32000, 64000, 256000, 1024000, 4096000, 16384000, 65536000]
 
 # EVENTUAL TODO:
 # Make it such that graphing analysis is run locally
@@ -59,7 +60,7 @@ def parse_log_info(log):
 
 class ScatterGatherIteration(runner.Iteration):
     def __init__(self, client_rates, segment_size,
-                 num_mbufs, with_copy, as_one, trial=None):
+                 num_mbufs, with_copy, as_one, trial=None, array_size = 10000):
         """
         Arguments:
         * client_rates: Mapping from {int, int} specifying rates and how many
@@ -75,6 +76,10 @@ class ScatterGatherIteration(runner.Iteration):
         self.with_copy = with_copy
         self.trial = trial
         self.as_one = as_one
+        self.array_size = array_size
+
+    def get_array_size(self):
+        return self.array_size
 
     def get_segment_size(self):
         return self.segment_size
@@ -151,6 +156,9 @@ class ScatterGatherIteration(runner.Iteration):
             else:
                 return "zero_copy"
 
+    def get_array_size_string(self):
+        return "arraysize_{}".format(self.array_size)
+
     def get_segment_size_string(self):
         return "segmentsize_{}".format(self.segment_size)
 
@@ -168,11 +176,13 @@ class ScatterGatherIteration(runner.Iteration):
         return "Iteration info: client rates: {}, " \
             "segment size: {}, " \
             " num_mbufs: {}, " \
-            " with_copy: {}" \
+            " with_copy: {}," \
+            "array size: {}," \
             " trial: {}".format(self.get_client_rate_string(),
                                 self.get_segment_size_string(),
                                 self.get_num_mbufs_string(),
                                 self.get_with_copy_string(),
+                                self.get_array_size(),
                                 self.get_trial_string())
 
     def get_size_folder(self, high_level_folder):
@@ -182,7 +192,7 @@ class ScatterGatherIteration(runner.Iteration):
     def get_parent_folder(self, high_level_folder):
         # returned path doesn't include the trial
         path = Path(high_level_folder)
-        return path / self.get_segment_size_string() / self.get_num_mbufs_string() / self.get_client_rate_string() / self.get_with_copy_string()
+        return path / self.get_segment_size_string() / self.get_num_mbufs_string() / self.get_array_size_string() / self.get_client_rate_string() / self.get_with_copy_string()
 
     def get_folder_name(self, high_level_folder):
         return self.get_parent_folder(high_level_folder) / self.get_trial_string()
@@ -208,6 +218,7 @@ class ScatterGatherIteration(runner.Iteration):
                          exp_time):
         ret = {}
         ret["config_eal"] = " ".join(config_yaml["dpdk"]["eal_init"])
+        ret["array_size"] = self.array_size
         if program == "start_server":
             ret["cornflakes_dir"] = config_yaml["cornflakes_dir"]
             ret["server_ip"] = config_yaml["hosts"][host]["ip"]
@@ -288,7 +299,7 @@ class ScatterGather(runner.Experiment):
             return [it]
         else:
             ret = []
-            if total_args.constant_total_size:
+            if total_args.looping_variable == "total_size":
                 # loop by different number of segments within a constant size
                 for trial in range(utils.NUM_TRIALS):
                     for total_size in TOTAL_SIZES_TO_LOOP:
@@ -297,53 +308,107 @@ class ScatterGather(runner.Experiment):
                             rate_gbps = MAX_RATE_GBPS
                             rate = utils.get_tput_pps(rate_gbps,
                                                       num_mbufs)
-                            rate = min(MAX_RATE_PPS, rate)
+                            rate = int(min(MAX_RATE_PPS, rate))
                             it = ScatterGatherIteration([(rate,
                                                           1)], segment_size,
                                                         num_mbufs, False, False,
                                                         trial=trial)
-                            it_as_one = ScatterGatherIteration([(rate,
-                                                                 1)], segment_size,
-                                                               num_mbufs, False,
-                                                               True,
-                                                               trial=trial)
                             it_wc = ScatterGatherIteration([(rate,
                                                              1)], segment_size,
                                                            num_mbufs, True, False,
                                                            trial=trial)
-                            it_wc_as_one = ScatterGatherIteration([(rate,
-                                                                    1)], segment_size,
-                                                                  num_mbufs, True,
-                                                                  True, trial=trial)
                             ret.append(it)
-                            ret.append(it_as_one)
                             ret.append(it_wc)
-                            ret.append(it_wc_as_one)
 
                 return ret
-            for trial in range(utils.NUM_TRIALS):
-                for segment_size in SEGMENT_SIZES_TO_LOOP:
-                    max_num_mbufs = MBUFS_MAX
-                    for num_mbufs in range(1, max_num_mbufs + 1):
-                        rate_gbps = MAX_RATE_GBPS
-                        rate = utils.get_tput_pps(rate_gbps, segment_size *
+            elif total_args.looping_variable == "segment_size":
+                for trial in range(utils.NUM_TRIALS):
+                    for segment_size in SEGMENT_SIZES_TO_LOOP:
+                        max_num_mbufs = MBUFS_MAX
+                        for num_mbufs in range(1, max_num_mbufs + 1):
+                            rate_gbps = MAX_RATE_GBPS
+                            rate = utils.get_tput_pps(rate_gbps, segment_size *
                                                   num_mbufs)
-                        rate = min(MAX_RATE_PPS, rate)
-                        it = ScatterGatherIteration([(rate,
+                            rate = min(MAX_RATE_PPS, rate)
+                            it = ScatterGatherIteration([(rate,
                                                     1)], segment_size,
                                                     num_mbufs, False, False,
                                                     trial=trial)
-                        it_wc = ScatterGatherIteration([(rate,
+                            it_wc = ScatterGatherIteration([(rate,
                                                        1)], segment_size,
                                                        num_mbufs, True, False,
                                                        trial=trial)
-                        it_as_one = ScatterGatherIteration([(rate,
-                                                           1)], segment_size,
-                                                           num_mbufs, True,
-                                                           True, trial=trial)
-                        ret.append(it)
-                        ret.append(it_wc)
-                        ret.append(it_as_one)
+                            ret.append(it)
+                            ret.append(it_wc)
+                return ret
+            elif total_args.looping_variable == "array_size":
+                for trial in range(utils.NUM_TRIALS):
+                    for array_size in ARRAY_SIZES_TO_LOOP:
+                        for segment_size in SEGMENT_SIZES_TO_LOOP:
+                            # for now, for looping by array size,
+                            # keep only 1 mbuf (no scatter-gather)
+                            for num_mbufs in range(1, MBUFS_MAX + 1):
+                                if segment_size < 8192 and num_mbufs > 1:
+                                    continue;
+                                rate_gbps = MAX_RATE_GBPS
+                                rate = utils.get_tput_pps(rate_gbps, 
+                                                        segment_size * num_mbufs)
+                                rate = min(MAX_RATE_PPS, rate)
+                                it = ScatterGatherIteration([(rate,
+                                                        1)], segment_size,
+                                                        num_mbufs, False, False,
+                                                        trial=trial,
+                                                        array_size = array_size)
+                                it_wc = ScatterGatherIteration([(rate,
+                                                        1)], segment_size,
+                                                        num_mbufs, True, False,
+                                                        trial=trial,
+                                                        array_size = array_size)
+                                ret.append(it)
+                                ret.append(it_wc)
+                return ret
+            elif total_args.looping_variable == "array_segment_cross":
+                for trial in range(utils.NUM_TRIALS):
+                    for array_size in [10000, 64000, 1024000, 65536000]:
+                        for segment_size in SEGMENT_SIZES_TO_LOOP:
+                            for num_mbufs in range(1, MBUFS_MAX + 1):
+                                rate_gbps = MAX_RATE_GBPS
+                                rate = utils.get_tput_pps(rate_gbps, 
+                                                        segment_size * num_mbufs)
+                                rate = min(MAX_RATE_PPS, rate)
+                                it = ScatterGatherIteration([(rate,
+                                                        1)], segment_size,
+                                                        num_mbufs, False, False,
+                                                        trial=trial,
+                                                        array_size = array_size)
+                                it_wc = ScatterGatherIteration([(rate,
+                                                        1)], segment_size,
+                                                        num_mbufs, True, False,
+                                                        trial=trial,
+                                                        array_size = array_size)
+                                ret.append(it)
+                                ret.append(it_wc)
+                return ret
+            elif total_args.looping_variable == "array_total_cross":
+                for trial in range(utils.NUM_TRIALS):
+                    for array_size in [10000, 64000, 1024000, 65536000]:
+                        for total_size in TOTAL_SIZES_TO_LOOP:
+                            for num_mbufs in NB_SEGMENTS_TO_LOOP:
+                                segment_size = int(total_size / num_mbufs)
+                                rate_gbps = MAX_RATE_GBPS
+                                rate = utils.get_tput_pps(rate_gbps,
+                                                      num_mbufs)
+                                rate = int(min(MAX_RATE_PPS, rate))
+                                it = ScatterGatherIteration([(rate,
+                                                          1)], segment_size,
+                                                            num_mbufs, False, False,
+                                                            trial=trial)
+                                it_wc = ScatterGatherIteration([(rate,
+                                                             1)], segment_size,
+                                                            num_mbufs, True, False,
+                                                            trial=trial)
+                                ret.append(it)
+                                ret.append(it_wc)
             return ret
 
     def add_specific_args(self, parser, namespace):
@@ -355,10 +420,11 @@ class ScatterGather(runner.Experiment):
                             dest="as_one",
                             action='store_true',
                             help="Whether the server sends the payload as a single buffer.")
-        parser.add_argument("-cnst", "--constant_total_size",
-                            dest="constant_total_size",
-                            action='store_true',
-                            help="Whether to loop by constant total size instead of segment size.")
+        parser.add_argument("-arr", "--array_size",
+                            dest="array_size",
+                            type=int,
+                            default = 10000,
+                            help = "Array size")
         if namespace.exp_type == "individual":
             parser.add_argument("-r", "--rate",
                                 dest="rate",
@@ -381,6 +447,13 @@ class ScatterGather(runner.Experiment):
             parser.add_argument("-l", "--logfile",
                                 help="Logfile name",
                                 default="summary.log")
+            parser.add_argument("-lp", "--looping_variable", 
+                            dest = "looping_variable",
+                            choices = ["total_size", "segment_size",
+                                "array_size", "array_segment_cross",
+                                "array_total_cross"], 
+                            default = "segment_size", 
+                            help = "What variable to loop over")
         args = parser.parse_args(namespace=namespace)
         return args
 
@@ -391,7 +464,7 @@ class ScatterGather(runner.Experiment):
         return self.config_yaml
 
     def get_logfile_header(self):
-        return "segment_size,num_mbufs,with_copy,as_one," \
+        return "segment_size,num_mbufs,with_copy,as_one,array_size," \
             "offered_load_pps,offered_load_gbps," \
             "achieved_load_pps,achieved_load_gbps," \
             "percent_acheived_rate," \
@@ -485,10 +558,11 @@ class ScatterGather(runner.Experiment):
                     avg, p99, p999, median)
             utils.info("Total Stats: ", total_stats)
         percent_acheived_rate = float(total_achieved_rate / total_offered_rate)
-        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_segment_size(),
+        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_segment_size(),
                                                                    iteration.get_num_mbufs(),
                                                                    iteration.get_with_copy(),
                                                                    iteration.get_as_one(),
+                                                                   iteration.get_array_size(),
                                                                    total_offered_rate,
                                                                    total_offered_load,
                                                                    total_achieved_rate,
@@ -507,7 +581,7 @@ class ScatterGather(runner.Experiment):
         full_log = Path(folder) / logfile
 
         # if looped normally, run plots by segment size
-        if not(total_args.constant_total_size):
+        if total_args.looping_variable == "total_size":
             plotting_script = Path(cornflakes_repo) / \
                 "experiments" / "plotting_scripts" / "sg_bench.R"
             for size in SEGMENT_SIZES_TO_LOOP:
@@ -529,7 +603,7 @@ class ScatterGather(runner.Experiment):
                 utils.warn(
                     "Failed to run heatmap plot command: {}".format(args))
         # if looped with constant size, run plots by number of splits
-        else:
+        elif total_args.looping_variable == "segment_size":
             plotting_script = Path(cornflakes_repo) / \
                 "experiments" / "plotting_scripts" / "sg_bench.R"
             for total_size in TOTAL_SIZES_TO_LOOP:
@@ -540,9 +614,32 @@ class ScatterGather(runner.Experiment):
                     sh.run(args)
                 except:
                     utils.warn("Failed to run plot command: {}".format(args))
+        elif total_args.looping_variable == "array_size":
+            plotting_script = Path(cornflakes_repo) / \
+                "experiments" / "plotting_scripts" / "sg_bench.R"
+            for segment_size in SEGMENT_SIZES_TO_LOOP:
+                for num_mbufs in range(1, MBUFS_MAX + 1):
+                    if segment_size < 8192 and num_mbufs > 1:
+                        continue
+                    total_size = int(num_mbufs * segment_size)
+                    output_file = plot_path / "totalsize_{}.pdf".format(total_size)
+                    args = [str(plotting_script), str(full_log), str(total_size),
+                        str(output_file), "by_array_size"]
+                    try:
+                        sh.run(args)
+                    except:
+                        utils.warn("Failed to run plot command: {}".format(args))
+            ## implement graphing for this case
+            pass
+        elif total_args.looping_variable == "array_segment_cross":
+            pass
+        elif total_args.looping_variable == "array_total_cross":
+            ## implement graphing for this case
+            pass
 
 
 def main():
+    utils.debug('Starting Scatter-Gather bench experiment')
     parser, namespace = runner.get_basic_args()
     scatter_gather = ScatterGather(
         namespace.exp_config,

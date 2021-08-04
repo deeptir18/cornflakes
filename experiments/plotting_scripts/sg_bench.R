@@ -36,7 +36,7 @@ WIDTH <- 0.9
 
 d$system_name <- apply(d, 1, get_system_name)
 d$total_size <- d$segment_size * d$num_mbufs
-summarized <- ddply(d, c("system_name", "segment_size", "num_mbufs", "with_copy", "as_one", "total_size"),
+summarized <- ddply(d, c("system_name", "segment_size", "num_mbufs", "with_copy", "as_one", "total_size", "array_size"),
                     summarise,
                     mavg = mean(avg),
                     mmedian = mean(median),
@@ -129,10 +129,50 @@ base_total_size_plot <- function(data) {
     return(plot)
 }
 
+base_array_size_plot <- function(data) {
+    # separate plots for separate data sizes
+    data <- subset(data, total_size == subset_arg)
+    plot <- ggplot(data,
+                  aes(x = factor(array_size),
+                      y = mmedian,
+                      fill  = system_name)) +
+            expand_limits(y = 0) +
+            geom_bar(position="dodge", stat="identity", width = 0.9) +
+            geom_errorbar(aes(ymin=mmedian-mediansd, ymax=mmedian+mediansd),position="dodge", stat="identity") +
+            scale_fill_viridis_d() +
+            scale_color_viridis_d() +
+            geom_text(data, 
+                      mapping = aes(x=factor(array_size), 
+                                    y = mmedian + mediansd, 
+                                    label = mmedian,
+                                    family = "Fira Sans",
+                                    vjust = -0.45,
+                                    hjust = -0.1,
+                                    angle = 45), 
+                      size = 2,
+                      position = position_dodge2(width = 0.9, preserve = "single")) +
+            labs(x = "Working Set Size (bytes)", y = "Median Latency (ns)") +
+                        theme_light() +
+            theme(legend.position = "top",
+                  text = element_text(family="Fira Sans"),
+                  legend.title = element_blank(),
+                  legend.key.size = unit(10, 'mm'),
+                  legend.spacing.x = unit(0.1, 'cm'),
+                  legend.text=element_text(size=15),
+                  axis.title=element_text(size=27,face="plain", colour="#000000"),
+                  axis.text.y=element_text(size=27, colour="#000000"),
+                  axis.text.x=element_text(size=10, colour="#000000", angle=45))
+    print(plot)
+    return(plot)
+}
+
+
 if (args[4] == "by_segment_size") {
     base_segment_plot(summarized)
-} else {
+} else if (args[4] == "by_total_size") {
     base_total_size_plot(summarized)
+} else if (args[4] == "by_array_size") {
+    base_array_size_plot(summarized)
 }
 ggsave("tmp.pdf", width=9, height=6)
 embed_fonts("tmp.pdf", outfile=args[3])

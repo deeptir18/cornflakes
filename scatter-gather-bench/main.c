@@ -19,7 +19,7 @@
 #include "fcntl.h"
 #include <sys/types.h>
 #include <unistd.h>
-#include <numaif.h>
+//#include <numaif.h>
 
 #include <rte_memory.h>
 #include <rte_launch.h>
@@ -67,9 +67,21 @@ struct tx_pktmbuf_priv
     int32_t field2; // needs to be atleast 8 bytes large
 };
 
+struct ClientRequest
+{
+    uint64_t timestamp;
+    uint64_t packet_id;
+    uint64_t segment_size;
+    uint64_t num_segments;
+    uint64_t segment_offsets[32]; // maximum number of segments we'd be asking for (within array_size)
+};
+
 static void add_latency(Latency_Dist_t *dist, uint64_t latency) {
     dist->latencies[dist->total_count] = latency;
     dist->total_count++;
+    if (dist->total_count > MAX_ITERATIONS) {
+        printf("[add_latency] Adding too much to total_count\n");
+    }
     dist->latency_sum += latency;
     if (latency < dist->min) {
         dist->min = latency;
@@ -100,18 +112,19 @@ static void dump_latencies(Latency_Dist_t *dist, float total_time, size_t messag
         arr[i] = dist->latencies[i];
     }
     
-    qsort(arr, dist->total_count, sizeof(uint64_t), cmpfunc);
-    uint64_t avg_latency = (dist->latency_sum) / (dist->total_count);
-    uint64_t median = arr[(size_t)((double)dist->total_count * 0.50)];
-    uint64_t p99 = arr[(size_t)((double)dist->total_count * 0.99)];
-    uint64_t p999 = arr[(size_t)((double)dist->total_count * 0.999)];
+    if (!has_latency_log) {
+        qsort(arr, dist->total_count, sizeof(uint64_t), cmpfunc);
+        uint64_t avg_latency = (dist->latency_sum) / (dist->total_count);
+        uint64_t median = arr[(size_t)((double)dist->total_count * 0.50)];
+        uint64_t p99 = arr[(size_t)((double)dist->total_count * 0.99)];
+        uint64_t p999 = arr[(size_t)((double)dist->total_count * 0.999)];
     
-    float achieved_rate = (float)(dist->total_count) / (float)total_time * (float)(message_size) * 8.0 / (float)1e9;
-    float percent_rate = achieved_rate / rate_gbps;
-    printf("Stats:\n\t- Min latency: %u ns\n\t- Max latency: %u ns\n\t- Avg latency: %" PRIu64 " ns", (unsigned)dist->min, (unsigned)dist->max, avg_latency);
-    printf("\n\t- Median latency: %u ns\n\t- p99 latency: %u ns\n\t- p999 latency: %u ns", (unsigned)median, (unsigned)p99, (unsigned)p999);
-    printf("\n\t- Achieved Goodput: %0.4f Gbps ( %0.4f %% ) \n", achieved_rate, percent_rate);
-    if (has_latency_log) {
+        float achieved_rate = (float)(dist->total_count) / (float)total_time * (float)(message_size) * 8.0 / (float)1e9;
+        float percent_rate = achieved_rate / rate_gbps;
+        printf("Stats:\n\t- Min latency: %u ns\n\t- Max latency: %u ns\n\t- Avg latency: %" PRIu64 " ns", (unsigned)dist->min, (unsigned)dist->max, avg_latency);
+        printf("\n\t- Median latency: %u ns\n\t- p99 latency: %u ns\n\t- p999 latency: %u ns", (unsigned)median, (unsigned)p99, (unsigned)p999);
+        printf("\n\t- Achieved Goodput: %0.4f Gbps ( %0.4f %% ) \n", achieved_rate, percent_rate);
+    } else {
         FILE *fp = fopen(latency_log, "w");
         for (int i = 0; i < dist->total_count; i++) {
             fprintf(fp, "%lu\n", dist->latencies[i]);
@@ -119,7 +132,7 @@ static void dump_latencies(Latency_Dist_t *dist, float total_time, size_t messag
         fclose(fp);
     }
     free((void *)arr);
-
+    printf("Finished reporting function\n");
 }
 
 typedef struct Packet_Map_t
@@ -135,6 +148,9 @@ static void add_latency_to_map(Packet_Map_t *map, uint64_t rtt, uint32_t id) {
     map->rtts[map->total_count] = rtt;
     map->ids[map->total_count] = id;
     map->total_count++;
+    if (map->total_count > (MAX_ITERATIONS * 32)) {
+        printf("[add_latency_to_map] ERROR: Overflow in Packet map");
+    }
 }
 
 static void free_pktmap(Packet_Map_t *map) {
@@ -367,14 +383,122 @@ static Latency_Dist_t latency_dist = { .min = LONG_MAX, .max = 0, .total_count =
 static Packet_Map_t packet_map = {.total_count = 0, .grouped_rtts = NULL, .sent_ids = NULL };
 static uint64_t clock_offset = 0;
 static int zero_copy_mode = 1;
-static int as_one_buffer = 0;
 static int with_read_mode = 0;
 static void *payload_to_copy = NULL;
 static rte_iova_t payload_iova = 0;
+size_t array_size = 10000; // default array size
+static struct ClientRequest *client_requests = NULL; // array of client requests
+static void *client_request_payloads = NULL;
 
 // static unsigned int num_queues = 1;
 /******************************************/
 /******************************************/
+
+// generates the client requests (which contain random offsets within array
+// size)
+static void initialize_client_requests() {
+    // first: fill in the client requests
+    size_t num_requests = (size_t)((float)seconds * rate * 1.20);
+    //printf("Total num requests: %u\n", (unsigned)num_requests);
+    client_requests = malloc(sizeof(struct ClientRequest) * num_requests);
+    if (client_requests == NULL) {
+        printf("Failed to malloc client requests array\n");
+        exit(1);
+    } else {
+        printf("Initialized client requests at %p\n", client_requests);
+    }
+    struct ClientRequest *current_req = (struct ClientRequest*)client_requests;
+    size_t num_segments_within_region = (array_size - segment_size) / 64;
+    for (size_t iter = 0; iter < num_requests; iter++) {
+        //printf("Iter: %u, current_req: %p\n", (unsigned)iter, current_req);
+        current_req->timestamp = 0;
+        current_req->packet_id = (uint64_t)iter;
+        current_req->segment_size = segment_size;
+        current_req->num_segments = num_mbufs;
+        for (size_t i = 0; i < (size_t)num_mbufs; i++) {
+            // make sure that the random offset region doesn't bleed outside the
+            // array
+            size_t random_segment = (size_t)(rand() % (num_segments_within_region));
+            uint64_t random_offset = (uint64_t)random_segment * 64; // always 64 bit aligned
+            current_req->segment_offsets[i] = random_offset;
+            //printf("For packet # %u, setting idx %u segment rando as %u\n", (unsigned)iter, (unsigned)i, (unsigned)random_offset);
+        }
+        current_req++;
+    }
+
+    
+    // second: fill in the client "payload" data (including the headers)
+    size_t payload_size = 32 + (8 * num_mbufs);
+    size_t full_payload_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + payload_size;
+    client_request_payloads = malloc(full_payload_size * num_requests);
+    if (client_request_payloads == NULL) {
+        printf("Failed to malloc client requests payload\n");
+        exit(1);
+    }
+
+    char *payload = (char *)(client_request_payloads);
+    current_req = (struct ClientRequest *)client_requests;
+    for (size_t iter = 0; iter < num_requests; iter++) {
+        //printf("Iter: %u, Payload: %p, current_req: %p\n", (unsigned)iter, payload, current_req);
+        size_t header_size = 0;
+        struct rte_ether_hdr *eth_hdr = (struct rte_ether_hdr *)payload;
+        header_size += sizeof(struct rte_ether_hdr);
+
+        struct rte_ipv4_hdr *ipv4_hdr = (struct rte_ipv4_hdr *)(payload + header_size);
+        header_size += sizeof(struct rte_ipv4_hdr);
+
+        struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)(payload + header_size);
+        header_size += sizeof(struct rte_udp_hdr);
+
+        uint64_t *timestamp_ptr = (uint64_t *)(payload + header_size);
+        uint64_t *id_ptr = (uint64_t *)(payload + header_size + 8);
+        uint64_t *segment_size_ptr = (uint64_t *)(payload + header_size + 16);
+        uint64_t *num_segments_ptr = (uint64_t *)(payload + header_size + 24);
+
+        uint64_t *offsets_ptr = (uint64_t *)(payload + header_size + 32);
+
+        // fill in the header
+        rte_ether_addr_copy(&my_eth, &eth_hdr->s_addr);
+        rte_ether_addr_copy(&server_mac, &eth_hdr->d_addr);
+        eth_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+
+        /* add in ipv4 header*/
+        ipv4_hdr->version_ihl = IP_VHL_DEF;
+        ipv4_hdr->type_of_service = 0;
+        ipv4_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + payload_size);
+        ipv4_hdr->packet_id = 0;
+        ipv4_hdr->fragment_offset = 0;
+        ipv4_hdr->time_to_live = IP_DEFTTL;
+        ipv4_hdr->next_proto_id = IPPROTO_UDP;
+        ipv4_hdr->src_addr = rte_cpu_to_be_32(my_ip);
+        ipv4_hdr->dst_addr = rte_cpu_to_be_32(server_ip);
+        /* offload checksum computation in hardware */
+        ipv4_hdr->hdr_checksum = 0;
+
+        /* add in UDP hdr*/
+        udp_hdr->src_port = rte_cpu_to_be_16(client_port);
+        udp_hdr->dst_port = rte_cpu_to_be_16(server_port);
+        udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + payload_size);
+        udp_hdr->dgram_cksum = 0;
+
+        // add request metadata
+        *timestamp_ptr =  current_req->timestamp;
+        *id_ptr =  current_req->packet_id;
+        *segment_size_ptr = current_req->segment_size;
+        *num_segments_ptr = current_req->num_segments;
+
+        // fill in offsets
+        for (uint64_t i = 0; i < current_req->num_segments; i++) {
+            offsets_ptr[i] = current_req->segment_offsets[i];
+        }
+
+        payload += full_payload_size;
+        current_req++;
+    }
+
+    free((void *)client_requests);
+
+}
 
 static int str_to_mac(const char *s, struct rte_ether_addr *mac_out) {
     assert(RTE_ETHER_ADDR_LEN == 6);
@@ -414,8 +538,8 @@ static int str_to_long(const char *str, long *val)
 }
 
 static void print_usage(void) {
-    printf("To run client: netperf <EAL_INIT> -- --mode=CLIENT --ip=<CLIENT_IP> --server_ip=<SERVER_IP> --server_mac=<SERVER_MAC> --port=<PORT> --time=<TIME_SECONDS> --segment_size<SEGMENT_SIZE_BYTES> --rate<RATE_PKTS_PER_S>.\n");
-    printf("To run server: netperf <EAL_INIT> -- --mode=SERVER --ip=<SERVER_IP>  --num_mbufs=<INT> <--with_copy> <--as_one>\n");
+    printf("To run client: netperf <EAL_INIT> -- --mode=CLIENT --ip=<CLIENT_IP> --server_ip=<SERVER_IP> --server_mac=<SERVER_MAC> --port=<PORT> --time=<TIME_SECONDS> --segment_size<SEGMENT_SIZE_BYTES> --rate<RATE_PKTS_PER_S> --array_size=<ARRAY_SIZE> --num_segments=<NUM_SEGMENTS>.\n");
+    printf("To run server: netperf <EAL_INIT> -- --mode=SERVER --ip=<SERVER_IP>  --num_mbufs=<INT> <--with_copy>\n");
 }
 
 static inline struct tx_pktmbuf_priv *tx_pktmbuf_get_priv(struct rte_mbuf *buf)
@@ -471,13 +595,13 @@ static int parse_args(int argc, char *argv[]) {
         {"time",   optional_argument, 0,  't' },
         {"rate",   optional_argument, 0,  'r' },
         {"num_mbufs", optional_argument, 0, 'n'},
+        {"array_size", optional_argument, 0, 'a'},
         {"with_copy", no_argument, 0, 'k'},
-        {"as_one", no_argument, 0, 'q'},
         {"with_read", no_argument, 0, 'b'},
         {0,           0,                 0,  0   }
     };
     int long_index = 0;
-    while ((opt = getopt_long(argc, argv,"m:i:s:l:p:c:z:t:r:n:b:k:",
+    while ((opt = getopt_long(argc, argv,"m:i:s:l:p:c:z:t:r:n:a:b:k:",
                    long_options, &long_index )) != -1) {
         switch (opt) {
             case 'm':
@@ -536,8 +660,12 @@ static int parse_args(int argc, char *argv[]) {
                 str_to_long(optarg, &tmp);
                 num_mbufs = (size_t)(tmp);
                 break;
+            case 'a':
+                str_to_long(optarg, &tmp);
+                array_size = (size_t)(tmp);
+                break;
             case 'k':
-                printf("Setting zero copy mode off");
+                printf("Setting zero copy mode off.\n");
                 zero_copy_mode = 0;
                 break;
             case 'b':
@@ -567,7 +695,7 @@ static int parse_args(int argc, char *argv[]) {
             printf("If options for --time, --rate, or --segment_size aren't provided, defaults will be used.\n");
         }
         float rate_gbps = (float)rate * (float)(segment_size * num_mbufs) * 8.0 / (float)1e9;
-        printf("Running with:\n\t- port: %u\n\t- time: %u seconds\n\t- segment_size: %u bytes\n\t- rate: %u pkts/sec (%u ns inter-packet send time)\n\t- rate_gbps: %0.4f Gbps\n\t- num_mbufs: %u segments\n", (unsigned)client_port, (unsigned)seconds, (unsigned)segment_size, (unsigned)rate, (unsigned)intersend_time, rate_gbps, (unsigned)num_mbufs);
+        printf("Running with:\n\t- port: %u\n\t- time: %u seconds\n\t- segment_size: %u bytes\n\t- rate: %u pkts/sec (%u ns inter-packet send time)\n\t- rate_gbps: %0.4f Gbps\n\t- num_mbufs: %u segments\n\t- array_size: %u\n", (unsigned)client_port, (unsigned)seconds, (unsigned)segment_size, (unsigned)rate, (unsigned)intersend_time, rate_gbps, (unsigned)num_mbufs, (unsigned)array_size);
     } else {
         // init a separate mbuf pool to external mbufs
         extbuf_pool = rte_pktmbuf_pool_create(
@@ -582,19 +710,27 @@ static int parse_args(int argc, char *argv[]) {
         }
         if (rte_mempool_obj_iter(
                 extbuf_pool,
+                &rte_pktmbuf_init,
+                NULL) != (NUM_MBUFS * dpdk_nbports)) {
+            printf("Failed to run pktmbuf_init on extbuf mempool\n");
+            return 1;
+        }
+        if (rte_mempool_obj_iter(
+                extbuf_pool,
                 &custom_init_priv,
                 NULL) != (NUM_MBUFS * dpdk_nbports)) {
+            printf("Failed to run custom_init_priv on extbuf mempool\n");
             return 1;
         }
 
-        // if not using zero copy mode, init the payload to copy out
-        // init the payload to copy AND the registered memory
-        payload_to_copy = rte_malloc("region", 10000, 0);
+        // for both zero-copy and scatter-gather, init the region where payloads
+        // will be sent from
+        payload_to_copy = rte_malloc("region", array_size, 0);
         if (payload_to_copy == NULL) {
             printf("Failed to malloc region\n");
             exit(1);
         }
-        memset(payload_to_copy, 0xAB, 10000);
+        memset(payload_to_copy, 0xAB, array_size);
         // find the IO address of this buffer
         payload_iova = rte_malloc_virt2iova(payload_to_copy);
         if (payload_iova == RTE_BAD_IOVA) {
@@ -856,7 +992,7 @@ static int parse_packet(struct sockaddr_in *src,
         return 1;
     }
     if (RTE_ETHER_TYPE_IPV4 != eth_type) {
-        printf("Bad ether type");
+        printf("Bad ether type.\n");
         return 1;
     }
 
@@ -939,6 +1075,8 @@ int calculate_total_pkts_required(uint32_t seg_size, uint32_t nb_segs) {
 
 static int do_client(void) {
     printf("Starting do client\n");
+    // initialize all the packets
+    initialize_client_requests();
     clock_offset = raw_time();
     uint64_t start_time, end_time;
     struct rte_mbuf *pkts[BURST_SIZE];
@@ -950,7 +1088,7 @@ static int do_client(void) {
     uint16_t nb_rx;
     uint64_t reqs = 0;
     uint64_t cycle_wait = intersend_time * rte_get_timer_hz() / (1e9);
-    size_t payload_size = 24;
+    size_t payload_size = 32;
     float rate_gbps = (float)rate * (float)(segment_size * num_mbufs) * 8.0 / (float)1e9;
     
     // TODO: add in scaffolding for timing/printing out quick statistics
@@ -958,6 +1096,8 @@ static int do_client(void) {
     int outstanding = 0;
     uint64_t id = 0;
     int total_pkts_required = calculate_total_pkts_required(segment_size, num_mbufs);
+    size_t header_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr);
+    size_t full_payload_size = header_size + 32 + (8 * num_mbufs);
     while (rte_get_timer_cycles_() < start_time + seconds * rte_get_timer_hz_()) {
         // send a packet
         pkt = rte_pktmbuf_alloc_(tx_mbuf_pool);
@@ -965,86 +1105,38 @@ static int do_client(void) {
             printf("Error allocating tx mbuf\n");
             return -EINVAL;
         }
-        size_t header_size = 0;
+        char *payload_ptr = (char *)(client_request_payloads) + reqs * full_payload_size;
+        //printf("Sending packet # %u, payload ptr being copied in: %p\n", (unsigned)reqs, payload_ptr);
         size_t payload_length = 32;
 
         uint8_t *ptr = rte_pktmbuf_mtod(pkt, uint8_t *);
-        /* add in an ethernet header */
-        eth_hdr = (struct rte_ether_hdr *)ptr;
-        rte_ether_addr_copy(&my_eth, &eth_hdr->s_addr);
-        rte_ether_addr_copy(&server_mac, &eth_hdr->d_addr);
-        eth_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
-        ptr += sizeof(*eth_hdr);
-        header_size += sizeof(*eth_hdr);
-
-        /* add in ipv4 header*/
-        ipv4_hdr = (struct rte_ipv4_hdr *)ptr;
-        ipv4_hdr->version_ihl = IP_VHL_DEF;
-        ipv4_hdr->type_of_service = 0;
-        ipv4_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + payload_size);
-        ipv4_hdr->packet_id = 0;
-        ipv4_hdr->fragment_offset = 0;
-        ipv4_hdr->time_to_live = IP_DEFTTL;
-        ipv4_hdr->next_proto_id = IPPROTO_UDP;
-        ipv4_hdr->src_addr = rte_cpu_to_be_32(my_ip);
-        ipv4_hdr->dst_addr = rte_cpu_to_be_32(server_ip);
-        /* offload checksum computation in hardware */
-        ipv4_hdr->hdr_checksum = 0;
-        header_size += sizeof(*ipv4_hdr);
-        ptr += sizeof(*ipv4_hdr);
-
-        /* add in UDP hdr*/
-        udp_hdr = (struct rte_udp_hdr *)ptr;
-        udp_hdr->src_port = rte_cpu_to_be_16(client_port);
-        udp_hdr->dst_port = rte_cpu_to_be_16(server_port);
-        udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + payload_size);
-        udp_hdr->dgram_cksum = 0;
-        ptr += sizeof(*udp_hdr);
-        header_size += sizeof(*udp_hdr);
+        uint64_t *timestamp_ptr = rte_pktmbuf_mtod_offset(pkt, uint64_t *, header_size);
+        rte_memcpy((char *)ptr, (char *)payload_ptr, full_payload_size);
         
         /* record timestamp in the payload itself*/
         uint64_t send_time = time_now(clock_offset);
-        uint64_t *timestamp_ptr = (uint64_t *)(ptr);
         *timestamp_ptr = send_time;
-        ptr += 8;
-
-        /* record a packet id */
-        uint64_t *id_ptr = (uint64_t *)(ptr);
-        *id_ptr = id;
-        ptr += 8;
-
-        /* write in the segment size */
-        uint64_t *segment_size_ptr = (uint64_t *)(ptr);
-        *segment_size_ptr = (uint64_t)segment_size;
-        ptr += 8;
-
-        /* write in the num_mbufs */
-        uint64_t *num_mbufs_ptr = (uint64_t *)(ptr);
-        *num_mbufs_ptr = (uint64_t)num_mbufs;
-        ptr += 8;
-        
 
         pkt->l2_len = RTE_ETHER_HDR_LEN;
         pkt->l3_len = sizeof(struct rte_ipv4_hdr);
         pkt->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
-        pkt->data_len = payload_length + header_size;
-        pkt->pkt_len = payload_length + header_size;
+        pkt->data_len = full_payload_size;
+        pkt->pkt_len = full_payload_size;
         pkt->nb_segs = 1;
 
         if (with_read_mode) {
             pkt->data_len = num_mbufs * segment_size;
             pkt->pkt_len = num_mbufs * segment_size;
-
         }
+
         int pkts_sent = 0;
 
         while (pkts_sent < 1) {
             pkts_sent = rte_eth_tx_burst(our_dpdk_port_id, 0, &pkt, 1);
         }
-        id++;
         outstanding += total_pkts_required;
         uint64_t last_sent = rte_get_timer_cycles();
-        // printf("Sent packet at %u, %d is outstanding, intersend is %u\n", (unsigned)last_sent, outstanding, (unsigned)intersend_time);
+        //printf("Sent packet at %u, %u send_time, %d is outstanding, intersend is %u\n", (unsigned)last_sent, (unsigned)send_time, outstanding, (unsigned)intersend_time);
 
         /* now poll on receiving packets */
         nb_rx = 0;
@@ -1068,7 +1160,7 @@ static int do_client(void) {
                     uint64_t now = (uint64_t)time_now(clock_offset);
                     uint64_t then = (*(uint64_t *)payload);
                     uint64_t id = (*(uint64_t *)(payload + 8));
-                    //printf("Got a packet at time now: %u with payload_length: %u (with header), id: %u\n", (unsigned)(now), (unsigned)payload_length + 42, (unsigned)id);
+                    //printf("Got a packet at time now: %u from %u, with payload_length: %u (with header), id: %u\n", (unsigned)(now), (unsigned)then, (unsigned)payload_length + 42, (unsigned)id);
                     add_latency_to_map(&packet_map, now - then, id);
                     rte_pktmbuf_free_(pkts[i]);
                     outstanding--;
@@ -1088,6 +1180,9 @@ static int do_client(void) {
     calculate_latencies(&packet_map, &latency_dist, reqs, total_pkts_required);
     dump_latencies(&latency_dist, total_time, num_mbufs * segment_size, rate_gbps);
     free_pktmap(&packet_map);
+    printf("Freed packet map; about to free client requests payloads at %p\n", client_request_payloads);
+    free(client_request_payloads);
+    printf("Freed client request payloads\n");
     return 0;
 }
 
@@ -1143,7 +1238,8 @@ static void swap_headers(struct rte_mbuf *tx_buf, struct rte_mbuf *rx_buf, size_
    *tx_buf_id_ptr = *rx_buf_id_ptr;
 }
 
-void swap_headers_into_static_payload(struct rte_mbuf *rx_buf, size_t payload_length) {
+void swap_headers_into_static_payload(struct rte_mbuf *rx_buf, size_t payload_length, size_t offset) {
+    void *payload_ptr = (void *)((char *)payload_to_copy + offset); // will be a 64 byte offset
     struct rte_ether_hdr *rx_ptr_mac_hdr;
     struct rte_ipv4_hdr *rx_ptr_ipv4_hdr;
     struct rte_udp_hdr *rx_rte_udp_hdr;
@@ -1155,14 +1251,14 @@ void swap_headers_into_static_payload(struct rte_mbuf *rx_buf, size_t payload_le
 
    /* swap src and dst ether addresses */
    rx_ptr_mac_hdr = rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);
-   tx_ptr_mac_hdr = (struct rte_ether_hdr *)(payload_to_copy);
+   tx_ptr_mac_hdr = (struct rte_ether_hdr *)(payload_ptr);
    rte_ether_addr_copy(&rx_ptr_mac_hdr->s_addr, &tx_ptr_mac_hdr->d_addr);
    rte_ether_addr_copy(&rx_ptr_mac_hdr->d_addr, &tx_ptr_mac_hdr->s_addr);
    tx_ptr_mac_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
 
    /* swap src and dst ip addresses */
    rx_ptr_ipv4_hdr = rte_pktmbuf_mtod_offset(rx_buf, struct rte_ipv4_hdr *, RTE_ETHER_HDR_LEN);
-   tx_ptr_ipv4_hdr = (struct rte_ipv4_hdr *)((char *)payload_to_copy + RTE_ETHER_HDR_LEN);
+   tx_ptr_ipv4_hdr = (struct rte_ipv4_hdr *)((char *)payload_ptr + RTE_ETHER_HDR_LEN);
    tx_ptr_ipv4_hdr->src_addr = rx_ptr_ipv4_hdr->dst_addr;
    tx_ptr_ipv4_hdr->dst_addr = rx_ptr_ipv4_hdr->src_addr;
 
@@ -1179,33 +1275,24 @@ void swap_headers_into_static_payload(struct rte_mbuf *rx_buf, size_t payload_le
 
    /* Swap UDP ports */
    rx_rte_udp_hdr = rte_pktmbuf_mtod_offset(rx_buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
-   tx_rte_udp_hdr = (struct rte_udp_hdr *)((char *)payload_to_copy + RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
+   tx_rte_udp_hdr = (struct rte_udp_hdr *)((char *)payload_ptr + RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
    tx_rte_udp_hdr->src_port = rx_rte_udp_hdr->dst_port;
    tx_rte_udp_hdr->dst_port = rx_rte_udp_hdr->src_port;
    tx_rte_udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + payload_length);
    tx_rte_udp_hdr->dgram_cksum = 0;
 
    /* Set packet id and timestamp */
-   tx_buf_id_ptr = (uint64_t *)((char *)payload_to_copy + RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
+   tx_buf_id_ptr = (uint64_t *)((char *)payload_ptr + RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
    rx_buf_id_ptr = rte_pktmbuf_mtod_offset(rx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN);
    *tx_buf_id_ptr = *rx_buf_id_ptr;
 
-   tx_buf_id_ptr = (uint64_t *)((char *)payload_to_copy + RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + 8);
+   tx_buf_id_ptr = (uint64_t *)((char *)payload_ptr + RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + 8);
    rx_buf_id_ptr = rte_pktmbuf_mtod_offset(rx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN + 8);
    *tx_buf_id_ptr = *rx_buf_id_ptr;
 }
 
 
 static int do_server(void) {
-    // initialize ext_mem
-    /*struct rte_mbuf *tx_bufs_allocated[MAX_SCATTERS];
-    for (int i = 0; i < MAX_SCATTERS; i++) {
-        tx_bufs_allocated[i] = rte_pktmbuf_alloc(tx_mbuf_pool);
-        if (tx_bufs_allocated[i] == NULL) {
-            printf("Failed to allocate tx buf burst seg %i\n", i);
-        }
-    }*/
-
     struct rte_mbuf *rx_bufs[BURST_SIZE];
     // for fake GSO, need to transmit up to MAX_SCATTERS separate packets
     // potentially
@@ -1214,6 +1301,7 @@ static int do_server(void) {
     struct rte_mbuf *tx_bufs[MAX_SCATTERS][MAX_SCATTERS];
     struct rte_mbuf *rx_buf;
     struct rte_mbuf *tx_buf;
+    uint64_t offsets[MAX_SCATTERS];
     uint8_t queue = 0; // our application only uses one queue
     
     uint16_t nb_rx, n_to_tx, nb_tx, i;
@@ -1234,52 +1322,53 @@ static int do_server(void) {
             struct rte_mbuf* secondary = NULL;
             
             if (valid == 0) {
-                // printf("Received a valid packet\n");
+                //printf("Received a valid packet\n");
                 rx_buf = rx_bufs[i];
                 size_t header_size = rx_buf->pkt_len - payload_length;
                 uint32_t segment_length = (uint32_t)(*(uint64_t *)((char *)payload + 16));
                 uint16_t nb_segs = (uint16_t)(*(uint64_t *)((char *)payload + 24));
+                // fill in the offsets
+                for (uint16_t seg = 0; seg < nb_segs; seg++) {
+                    offsets[(size_t)seg] = *((uint64_t *)((char *)payload + 32 + (8 * (size_t)seg)));
+                }
+
                 nb_req += 1;
 
                 int total_pkts_required = calculate_total_pkts_required(segment_length, (uint32_t)nb_segs);
                 uint32_t payload_left = segment_length * nb_segs;
                 //printf("Total packets required for %u segment_size and %u nb_segs is %d; total_payload: %u\n", (unsigned)segment_length, (unsigned)nb_segs, total_pkts_required, (unsigned)payload_left);
-                struct rte_mempool *allocating_mempool = tx_mbuf_pool;
-                size_t payload_offset = 0;
-                if (total_pkts_required == 1) {
-                    swap_headers_into_static_payload(rx_buf, payload_left - (RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr)));
-                    allocating_mempool = extbuf_pool;
-                }
                 
+                size_t seg_offset = 0;
                 for (int pkt = 0; pkt < total_pkts_required; pkt++) {
                     struct rte_mbuf *prev = NULL;
                     uint32_t actual_segment_size = MIN(payload_left, MIN(segment_length, MAX_SEGMENT_SIZE));
                     int nb_segs_segment = (MIN(payload_left, (uint32_t)MAX_SEGMENT_SIZE)) / actual_segment_size;
                     uint32_t pkt_len = actual_segment_size * (uint32_t)nb_segs_segment;
 
-                    //printf("->Pkt # %d: length: %u, nb_segs: %d, payload_left: %u, seg size: %u\n", pkt, (unsigned)pkt_len, nb_segs_segment, (unsigned)payload_left, (unsigned)actual_segment_size);
-
                     if (zero_copy_mode) {
                         for (int seg = 0; seg < nb_segs_segment; seg++) {
-                            tx_bufs[seg][pkt] = rte_pktmbuf_alloc(allocating_mempool);
+                            void *payload_at_offset = (void *)((char *)payload_to_copy + offsets[seg_offset]);
+                            // TODO: is this cast to iova correct here?
+                            rte_iova_t iova_at_offset = (rte_iova_t)((char *)payload_iova + offsets[seg_offset]);
+                            tx_bufs[seg][pkt] = rte_pktmbuf_alloc(extbuf_pool); // allocate an external buffer for each segment
                             if (tx_bufs[seg][pkt] == NULL) {
                                 printf("Failed to allocate tx buf burst # %i, seg %i\n", i, seg);
                                 exit(1);
                             }
 
-                            if (total_pkts_required == 1) {
-                                tx_bufs[seg][pkt]->buf_addr = payload_to_copy;
-                                tx_bufs[seg][pkt]->buf_iova = payload_iova;
-                                tx_bufs[seg][pkt]->data_off = payload_offset;
-                                payload_offset += actual_segment_size;
-                            }
+                            tx_bufs[seg][pkt]->buf_addr = payload_at_offset;
+                            tx_bufs[seg][pkt]->buf_iova = iova_at_offset;
+                            tx_bufs[seg][pkt]->data_off = 0;
+                            
                             //printf("\t->Allocated packet segment %d, for pkt %d\n", seg, pkt);
                             if (seg == 0) {
                                 // copy in the packet header to the first segment
                                 // for fake GSO segmentation.
-                                if (total_pkts_required > 1) {
-                                    swap_headers(tx_bufs[seg][pkt], rx_buf, (size_t)(pkt_len));
-                                }
+                                // this does copy into the payload, but we're
+                                // assuming that there's either 1 client per
+                                // core (hash based on source ethernet header)
+                                // or only 1 client is sending
+                                swap_headers_into_static_payload(rx_buf, pkt_len - (RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr)), (size_t)(offsets[seg_offset]));
                                 //printf("Setting pkt len as %u\n", pkt_len);
                                 tx_bufs[seg][pkt]->pkt_len = pkt_len;
                                 tx_bufs[seg][pkt]->nb_segs = nb_segs_segment;
@@ -1301,9 +1390,12 @@ static int do_server(void) {
                             printf("Failed to allocate tx buf burst # %i, seg %i\n", i, 0);
                             exit(1);
                         }
-                        if (total_pkts_required > 1) {
-                            swap_headers(tx_bufs[0][pkt], rx_buf, (size_t)(pkt_len));
-                        }
+                        swap_headers(tx_bufs[0][pkt],
+                                     rx_buf, 
+                                     (size_t)(pkt_len) - 
+                                     (RTE_ETHER_HDR_LEN + 
+                                        sizeof(struct rte_ipv4_hdr) + 
+                                        sizeof(struct rte_udp_hdr)));
                         tx_bufs[0][pkt]->pkt_len = pkt_len;
                         tx_bufs[0][pkt]->data_len = pkt_len;
                         tx_bufs[0][pkt]->nb_segs = 1;
@@ -1312,21 +1404,21 @@ static int do_server(void) {
                         tx_bufs[0][pkt]->l4_len = sizeof(struct rte_udp_hdr);
                         tx_bufs[0][pkt]->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
                         char *payload_ptr = rte_pktmbuf_mtod_offset(tx_bufs[0][pkt], char *, header_size + 16);
-                        if (total_pkts_required == 1) {
-                            // copying directly from the initialized payload
-                            payload_ptr = rte_pktmbuf_mtod_offset(tx_bufs[0][pkt], char *, 0);
-                        }
-                        char *copy_pointer = payload_to_copy;
                         size_t amt_to_copy_left = pkt_len;
                         for (int seg = 0; seg < (size_t)(nb_segs); seg++) {
+                            void *copy_pointer = (void *)((char *)payload_to_copy + offsets[seg_offset]);
+                            // specifically DON'T copy less for the copy-out
+                            // solution
                             size_t amt_to_copy = MIN(amt_to_copy_left, actual_segment_size);
                             rte_memcpy(payload_ptr, copy_pointer, amt_to_copy);
                             payload_ptr += (size_t)amt_to_copy;
-                            copy_pointer += (size_t)amt_to_copy;
                             amt_to_copy_left -= amt_to_copy;
                         }
                     tx_bufs[0][pkt]->next = NULL;
                     }
+                    // at the end of finishing each packet
+                    // increment segment offset and amount of total payload left
+                    seg_offset += 1;
                     payload_left -= pkt_len;
                 }
                 assert(payload_left == 0);
