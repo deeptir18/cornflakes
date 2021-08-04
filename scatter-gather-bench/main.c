@@ -41,7 +41,9 @@
 //#include <rte_pmd_mlx5.h>
 
 #define NNUMA 2
-#define MIN(X, Y)  ((X) < (Y) ? (X) : (Y))
+#define MAX(x, y) (((x) > (y)) ? (x) : (y))
+#define MIN(x, y) (((x) < (y)) ? (x) : (y))
+
 /******************************************/
 /******************************************/
 typedef unsigned long physaddr_t;
@@ -353,7 +355,8 @@ static void default_onfail(int error_arg, const char *expr_arg,
 /*Static Variables*/
 enum {
     MODE_UDP_CLIENT = 0,
-    MODE_UDP_SERVER
+    MODE_UDP_SERVER,
+    MODE_MEMCPY_BENCH
 };
 
 const struct rte_ether_addr ether_broadcast = {
@@ -609,8 +612,10 @@ static int parse_args(int argc, char *argv[]) {
                     mode = MODE_UDP_CLIENT;
                 } else if (!strcmp(optarg, "SERVER")) {
                     mode = MODE_UDP_SERVER;
+                } else if (!strcmp(optarg, "MEMCPY")) {
+                    mode = MODE_MEMCPY_BENCH;
                 } else {
-                    printf("mode should be SERVER or CLIENT\n");
+                    printf("mode should be SERVER or CLIENT or MEMCPY\n");
                     return -EINVAL;
                 }
                 break;
@@ -675,6 +680,17 @@ static int parse_args(int argc, char *argv[]) {
                  exit(EXIT_FAILURE);
         }
     }
+    
+    if (mode == MODE_MEMCPY_BENCH) {
+        // just initialize payload to copy
+        payload_to_copy = rte_malloc("region", array_size, 0);
+        if (payload_to_copy == NULL) {
+            printf("Failed to malloc region\n");
+            exit(1);
+        }
+        return 0;
+    }
+
     if (mode == MODE_UDP_CLIENT) {
         if (!has_server_ip) {
             printf("Server ip, -s, --server_ip=, required.\n");
@@ -1445,6 +1461,83 @@ static void sig_handler(int signum){
     }
 }
 
+static int do_memcpy_bench() {
+    // initialize pointers within
+    // number of segments: divide the array_size by the segment_size
+    if (array_size % segment_size != 0) {
+        printf("Segment size %u is not aligned to array size %u\n", (unsigned)segment_size, (unsigned)array_size);
+        exit(1);
+    }
+    size_t len = (size_t)(array_size / segment_size);
+    size_t* indices = malloc(sizeof(size_t) * len);
+    if (indices == NULL) {
+        printf("Failed to allocate indices.\n");
+        exit(1);
+    }
+
+    for (size_t i = 0; i < len; i++) {
+        indices[i] = i;
+    }
+
+    for (size_t i = 0; i < len -1; i++) {
+        size_t j = i + (rand() % (len - i));
+        if (i != j) {
+            size_t tmp = indices[i];
+            indices[i] = indices[j];
+            indices[j] = tmp;
+        }
+    }
+
+    void *tmp = malloc(segment_size);
+    if (tmp == NULL) {
+        printf("Was not able to allocate tmp array to store segment size\n");
+        exit(1);
+    }
+
+    // now fill memory with pointer references (offsets)
+    for (size_t i = 1; i < len; i++) {
+        size_t prev_off = (i - 1) * segment_size; 
+        size_t *prev_ptr = (size_t *)((char *)payload_to_copy + prev_off);
+        *prev_ptr = (size_t)(indices[i] * segment_size);
+    }
+
+    //  fill last and first
+    uint64_t *last_off = (uint64_t *)((char *)payload_to_copy + (len - 1) * segment_size);
+    *last_off = (uint64_t)(indices[0] * segment_size);
+    
+    // do the benchmark
+    size_t original_count = MAX(1000, len * 10);
+    size_t count = original_count;
+    clock_offset = raw_time();
+    uint64_t start = time_now(clock_offset);
+    // start at the first pointer
+    size_t cur_off = 0;
+    while (count > 0) {
+        // current thing to copy
+        char *cur_ptr = (char *)payload_to_copy + (cur_off);
+        memcpy(tmp, cur_ptr, segment_size);
+        // next offset to copy ends up being what is stored in the current
+        // offsets
+        cur_off = *(size_t *)cur_ptr;
+        count--;
+    }
+
+    uint64_t end = time_now(clock_offset);
+    uint64_t time_taken = end - start;
+    uint64_t avg = (uint64_t)((float)(time_taken) / (float)original_count);
+    free(tmp);
+    free(indices);
+    rte_free(payload_to_copy);
+
+    printf("For array size of %u, segment size of %u, did %u memcpys in %u ns; %u avg.\n",
+            (unsigned)array_size,
+            (unsigned)segment_size,
+            (unsigned)original_count,
+            (unsigned)time_taken,
+            (unsigned)(avg));
+    return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1457,6 +1550,10 @@ main(int argc, char **argv)
     ret = parse_args(argc, argv);
     if (ret != 0) {
         return ret;
+    }
+
+    if (mode == MODE_MEMCPY_BENCH) {
+        return do_memcpy_bench();
     }
 
     //signal(SIGINT, sig_handler); // Register signal handler

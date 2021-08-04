@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2010-2014 Intel Corporation
 
-export PKG_CONFIG_PATH=/h/deeptir/cornflakes/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu/pkgconfig
+#export PKG_CONFIG_PATH=/proj/demeter-PG0/deeptir/cornflakes/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu/pkgconfig
 
 # binary name
 APP = netperf
