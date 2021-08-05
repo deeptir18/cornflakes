@@ -9,7 +9,7 @@ use cornflakes_libos::{
 use hashbrown::HashMap;
 use std::{
     fs::File,
-    io::{self, prelude::*, BufReader, Write},
+    io::{prelude::*, BufReader, Write},
     marker::PhantomData,
     net::Ipv4Addr,
     sync::{Arc, Mutex},
@@ -55,7 +55,7 @@ where
     S: SerializedRequestGenerator,
     D: Datapath,
 {
-    fn new(
+    pub fn new(
         client_id: usize,
         value_size: usize,
         num_values: usize,

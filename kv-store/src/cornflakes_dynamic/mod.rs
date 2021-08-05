@@ -31,9 +31,20 @@ where
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
     ) -> Result<(Self::HeaderCtx, Cornflake)> {
-        // for here: we deserialize the pkt as normal -- and then the outgoing header ctx and
-        // cornflakes refers to data in the incoming packet
-        // hopefully this should work
+        match num_values {
+            0 => {
+                bail!("Number of get values cannot be 0");
+            }
+            1 => {
+                let mut get_request = kv_messages: GetReq::new();
+                get_request.deserialize(&pkt.get_pkt_buffer());
+
+                let mut response = kv_messages::GetResp::new();
+                response.set_id(get_request.get_id());
+            }
+            x => {}
+        }
+
         Ok((Vec::default(), Cornflake::default()))
     }
 

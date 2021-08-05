@@ -4,10 +4,11 @@ use cornflakes_codegen::{compile, CompileOptions, HeaderType, Language};
 //use protoc_rust;
 use std::{
     env,
-    fs::{canonicalize, read_to_string, File},
-    io::{BufWriter, Write},
+    //fs::{canonicalize, read_to_string, File},
+    fs::canonicalize,
+    //io::{BufWriter, Write},
     path::Path,
-    process::Command,
+    //process::Command,
 };
 
 fn main() {
@@ -24,11 +25,11 @@ fn main() {
 
     // store all compiled proto files in out_dir
     let out_dir = env::var("OUT_DIR").unwrap();
-    let out_dir_path = Path::new(&out_dir);
+    let _out_dir_path = Path::new(&out_dir);
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let cargo_dir = Path::new(&cargo_manifest_dir);
     let kv_src_path = canonicalize(cargo_dir.clone().join("src")).unwrap();
-    let include_path = canonicalize(cargo_dir.parent().unwrap())
+    let _include_path = canonicalize(cargo_dir.parent().unwrap())
         .unwrap()
         .join("include");
 
