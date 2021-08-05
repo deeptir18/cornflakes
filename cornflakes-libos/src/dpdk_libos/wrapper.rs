@@ -988,7 +988,7 @@ fn dpdk_init_helper() -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
 pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, usize)> {
     let mut ret: Vec<(usize, usize)> = vec![];
     extern "C" fn mz_cb(
-        mp: *mut rte_mempool,
+        _mp: *mut rte_mempool,
         opaque: *mut ::std::os::raw::c_void,
         memhdr: *mut rte_mempool_memhdr,
         idx: ::std::os::raw::c_uint,
@@ -1022,13 +1022,13 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
     let mut op: Vec<usize> = vec![];
 
     unsafe extern "C" fn check_each_mbuf(
-        mp: *mut rte_mempool,
-        mut opaque: *mut ::std::os::raw::c_void,
+        _mp: *mut rte_mempool,
+        opaque: *mut ::std::os::raw::c_void,
         m: *mut ::std::os::raw::c_void,
         idx: u32,
     ) {
         let mbuf = m as *mut rte_mbuf;
-        let mr = unsafe { &mut *(opaque as *mut Vec<usize>) };
+        let mr = &mut *(opaque as *mut Vec<usize>);
         let op = match idx > 0 {
             true => {
                 let len = mr.len();

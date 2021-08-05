@@ -293,7 +293,191 @@ impl DatapathMempoolOptions {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+// how do we make it such that the programmer DOESN'T need to know what is registered and what is
+#[derive(Debug, PartialEq, Eq)]
+pub enum RcCornPtr<'a, D>
+where
+    D: Datapath,
+{
+    RawRef(&'a [u8]),     // used for object header potentially
+    RefCounted(CfBuf<D>), // used for any datapath value
+}
+
+impl<'a, D> Clone for RcCornPtr<'a, D>
+where
+    D: Datapath,
+{
+    fn clone(&self) -> Self {
+        match self {
+            RcCornPtr::RawRef(buf) => RcCornPtr::RawRef(buf),
+            RcCornPtr::RefCounted(buf) => RcCornPtr::RefCounted(buf.clone()),
+        }
+    }
+}
+
+impl<'a, D> Default for RcCornPtr<'a, D>
+where
+    D: Datapath,
+{
+    fn default() -> Self {
+        RcCornPtr::RawRef(&[])
+    }
+}
+
+impl<'a, D> AsRef<[u8]> for RcCornPtr<'a, D>
+where
+    D: Datapath,
+{
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            RcCornPtr::RawRef(buf) => buf,
+            RcCornPtr::RefCounted(buf) => buf.as_ref(),
+        }
+    }
+}
+
+impl<'a, D> PtrAttributes for RcCornPtr<'a, D>
+where
+    D: Datapath,
+{
+    fn buf_type(&self) -> CornType {
+        match self {
+            RcCornPtr::RefCounted(_) => CornType::Registered,
+            RcCornPtr::RawRef(_) => CornType::Normal,
+        }
+    }
+
+    fn buf_size(&self) -> usize {
+        match self {
+            RcCornPtr::RefCounted(buf) => buf.len(),
+            RcCornPtr::RawRef(buf) => buf.len(),
+        }
+    }
+}
+
+#[derive(Default, Clone, PartialEq, Eq)]
+pub struct RcCornflake<'a, D>
+where
+    D: Datapath,
+{
+    /// Id for message. If None, datapath doesn't need to keep track of per-packet timeouts.
+    id: MsgID,
+    /// Pointers to scattered memory segments.
+    entries: Vec<RcCornPtr<'a, D>>,
+    /// Data size represented by this cornflake (in ttoal)
+    data_size: usize,
+    /// Number that refer to ref-counted regions.
+    num_refcnted: usize,
+    /// Number of total filled entries
+    num_filled: usize,
+}
+
+impl<'a, D> RcCornflake<'a, D>
+where
+    D: Datapath,
+{
+    pub fn new() -> Self {
+        RcCornflake {
+            id: MsgID::default(),
+            entries: Vec::default(),
+            data_size: 0,
+            num_refcnted: 0,
+            num_filled: 0,
+        }
+    }
+
+    pub fn with_capacity(cap: usize) -> Self {
+        RcCornflake {
+            id: MsgID::default(),
+            entries: vec![RcCornPtr::RawRef(&[]); cap],
+            data_size: 0,
+            num_refcnted: 0,
+            num_filled: 0,
+        }
+    }
+
+    pub fn add_entry(&mut self, entry: RcCornPtr<'a, D>) {
+        self.data_size += entry.buf_size();
+        self.num_filled += 1;
+        if entry.buf_type() == CornType::Registered {
+            self.num_refcnted += 1;
+        }
+        self.entries.push(entry);
+    }
+}
+
+impl<'a, D> ScatterGather for RcCornflake<'a, D>
+where
+    D: Datapath,
+{
+    /// Pointer type is reference to CornPtr.
+    type Ptr = RcCornPtr<'a, D>;
+    /// Can return an iterator over CornPtr references.
+    type Collection = Vec<RcCornPtr<'a, D>>;
+
+    /// Returns the id of this cornflake.
+    fn get_id(&self) -> MsgID {
+        self.id
+    }
+
+    /// Sets the id.
+    fn set_id(&mut self, id: MsgID) {
+        self.id = id;
+    }
+
+    /// Returns number of entries in this cornflake.
+    fn num_segments(&self) -> usize {
+        self.num_filled
+    }
+
+    /// Returns the number of borrowed memory regions in this cornflake.
+    fn num_borrowed_segments(&self) -> usize {
+        self.num_refcnted
+    }
+
+    /// Amount of data represented by this scatter-gather array.
+    fn data_len(&self) -> usize {
+        self.data_size
+    }
+
+    /// Exposes an iterator over the entries in the scatter-gather array.
+    fn collection(&self) -> Self::Collection {
+        let mut vec = Vec::new();
+        for i in 0..self.num_filled {
+            vec.push(self.entries[i].clone());
+        }
+        vec
+    }
+
+    /// Returns CornPtr at Index
+    fn index(&self, idx: usize) -> &Self::Ptr {
+        &self.entries[idx]
+    }
+
+    /// Apply an iterator to entries of the scatter-gather array, without consuming the
+    /// scatter-gather array.
+    fn iter_apply(&self, mut consume_element: impl FnMut(&Self::Ptr) -> Result<()>) -> Result<()> {
+        for i in 0..self.num_filled {
+            let entry = &self.entries[i];
+            consume_element(entry).wrap_err(format!(
+                "Unable to run function on pointer {} in cornflake",
+                i
+            ))?;
+        }
+        Ok(())
+    }
+
+    fn contiguous_repr(&self) -> Vec<u8> {
+        let mut ret: Vec<u8> = Vec::new();
+        for i in 0..self.num_filled {
+            let entry = &self.entries[i];
+            ret.extend_from_slice(entry.as_ref());
+        }
+        ret
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct CfBuf<D>
 where
     D: Datapath,
@@ -315,6 +499,21 @@ where
         // Or should the "datapath" be doing it
         buf.increment_rc();
         Ok(CfBuf { buf: buf })
+    }
+
+    pub fn len(&self) -> usize {
+        self.buf.as_ref().len()
+    }
+}
+
+impl<D> Clone for CfBuf<D>
+where
+    D: Datapath,
+{
+    fn clone(&self) -> CfBuf<D> {
+        CfBuf {
+            buf: self.buf.clone(),
+        }
     }
 }
 
@@ -382,7 +581,7 @@ pub trait Datapath {
     /// Each datapath must expose a received packet type that implements the ScatterGather trait
     /// and the ReceivedPacket trait.
     type ReceivedPkt: ScatterGather + ReceivedPacket;
-    type DatapathPkt: AsRef<[u8]> + AsMut<[u8]> + RefCnt;
+    type DatapathPkt: AsRef<[u8]> + AsMut<[u8]> + RefCnt + PartialEq + Eq + Clone + std::fmt::Debug;
 
     /// Send a single buffer to the specified address.
     fn push_buf(&mut self, buf: (MsgID, &[u8]), addr: utils::AddressInfo) -> Result<()>;

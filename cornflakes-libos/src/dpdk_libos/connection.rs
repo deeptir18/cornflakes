@@ -29,12 +29,28 @@ const PKT_CONSTRUCT_TIMER: &str = "PKT_CONSTRUCT_TIMER";
 const POP_PROCESSING_TIMER: &str = "POP_PROCESSING_TIMER";
 const PUSH_PROCESSING_TIMER: &str = "PUSH_PROCESSING_TIMER";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, PartialEq, Eq)]
 pub struct DPDKBuffer {
     /// Pointer to allocated mbuf.
     pub mbuf: *mut rte_mbuf,
     /// Id of originating mempool (application and datapath context).
     pub mempool_id: usize,
+}
+
+impl Clone for DPDKBuffer {
+    fn clone(&self) -> DPDKBuffer {
+        dpdk_call!(rte_pktmbuf_refcnt_update(self.mbuf, 1));
+        DPDKBuffer {
+            mbuf: self.mbuf,
+            mempool_id: self.mempool_id,
+        }
+    }
+}
+
+impl std::fmt::Debug for DPDKBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Mbuf addr: {:?}", self.mbuf)
+    }
 }
 
 impl RefCnt for DPDKBuffer {
