@@ -1468,6 +1468,10 @@ static int do_memcpy_bench() {
         printf("Segment size %u is not aligned to array size %u\n", (unsigned)segment_size, (unsigned)array_size);
         exit(1);
     }
+
+    if (segment_size % 64 != 0) {
+        printf("Segment size %u not divisible by 64.\n", (unsigned)segment_size);
+    }
     size_t len = (size_t)(array_size / segment_size);
     size_t* indices = malloc(sizeof(size_t) * len);
     if (indices == NULL) {
@@ -1494,6 +1498,18 @@ static int do_memcpy_bench() {
         exit(1);
     }
 
+    if (!zero_copy_mode) {
+        // fill in the whole memory with integers
+        uint64_t max_int = MAX_ITERATIONS;
+        uint64_t cur_int = 0;
+        uint64_t *cur_ptr = (uint64_t *)payload_to_copy;
+        for (size_t i = 0; i < (array_size / 8); i++) {
+            *cur_ptr = cur_int;
+            cur_ptr++;
+            cur_int = (cur_int + 1) % MAX_ITERATIONS;
+        }
+    }
+
     // now fill memory with pointer references (offsets)
     for (size_t i = 1; i < len; i++) {
         size_t prev_off = (i - 1) * segment_size; 
@@ -1506,7 +1522,7 @@ static int do_memcpy_bench() {
     *last_off = (uint64_t)(indices[0] * segment_size);
     
     // do the benchmark
-    size_t original_count = MAX(1000, len * 10);
+    size_t original_count = MAX(MAX_ITERATIONS, len * 10);
     size_t count = original_count;
     clock_offset = raw_time();
     uint64_t start = time_now(clock_offset);
@@ -1515,10 +1531,18 @@ static int do_memcpy_bench() {
     while (count > 0) {
         // current thing to copy
         char *cur_ptr = (char *)payload_to_copy + (cur_off);
-        rte_memcpy(tmp, cur_ptr, segment_size);
-        // next offset to copy ends up being what is stored in the current
-        // offsets
-        cur_off = *(size_t *)cur_ptr;
+        if (!zero_copy_mode) {
+            rte_memcpy(tmp, cur_ptr, segment_size);
+            cur_off = *(size_t *)cur_ptr;
+        } else {
+            cur_off = *(size_t *)cur_ptr;
+            // read every 64 byte chunk in this
+            size_t tmp = 0;
+            for (int i = 1; i < segment_size / 64; i += 64) {
+                size_t *ptr = (size_t *)(cur_ptr + i * 64);
+                tmp = *ptr;
+            }
+        }
         count--;
     }
 
@@ -1529,13 +1553,25 @@ static int do_memcpy_bench() {
     free(indices);
     rte_free(payload_to_copy);
 
-    printf("For array size of %u, segment size of %u, did %u memcpys in %u ns; %u avg.\n",
+    if (zero_copy_mode) {
+        printf("for array size of %u, did %u %u-byte segment reads in %u ns; %u avg.\n",
+            (unsigned)array_size,
+            (unsigned)original_count,
+            (unsigned)segment_size,
+            (unsigned)time_taken,
+            (unsigned)(avg));
+        printf("%lu,%u,False,%lu\n", array_size, segment_size, avg);
+        return 0;
+    } else {
+        printf("for array size of %u, segment size of %u, did %u memcpys in %u ns; %u avg.\n",
             (unsigned)array_size,
             (unsigned)segment_size,
             (unsigned)original_count,
             (unsigned)time_taken,
             (unsigned)(avg));
-    return 0;
+        printf("%lu,%u,True,%lu\n", array_size, segment_size, avg);
+        return 0;
+    }
 }
 
 int

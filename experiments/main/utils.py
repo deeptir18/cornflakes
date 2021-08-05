@@ -7,7 +7,7 @@ from colorama import Fore
 from colorama import Style
 from statistics import mean
 
-NUM_TRIALS = 5
+NUM_TRIALS = 3
 NUM_RETRIES = 0
 
 
