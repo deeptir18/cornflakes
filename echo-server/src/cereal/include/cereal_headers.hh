@@ -39,7 +39,7 @@ class SingleCereal {
         const std::string& get_data() const;
         size_t serialized_size() const;
         void serialize_to_array(rust::Slice<uint8_t> buf) const;
-        bool equals(const std::unique_ptr<SingleCereal> other) const;
+        bool _equals(const std::unique_ptr<SingleCereal> other) const;
         bool equals(const std::shared_ptr<SingleCereal> other) const;
         template <class Archive>
         void load(Archive & ar);
@@ -63,7 +63,7 @@ class ListCereal {
         ListCereal(ListCereal && other);
         void append(rust::Slice<const uint8_t> data) const;
         const std::string& get(size_t idx) const;
-        void set(size_t idx, rust::Slice<const uint8_t> data) const;
+        void _set(size_t idx, rust::Slice<const uint8_t> data) const;
         size_t serialized_size() const;
         void serialize_to_array(rust::Slice<uint8_t> buf) const;
 

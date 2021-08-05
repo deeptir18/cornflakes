@@ -24,13 +24,13 @@ mod ffi {
         fn get_data(self: &SingleCereal) -> &CxxString;
         fn serialized_size(self: &SingleCereal) -> usize;
         fn serialize_to_array(self: &SingleCereal, buf: &mut [u8]);
-        fn equals(self: &SingleCereal, other: UniquePtr<SingleCereal>) -> bool;
+        fn _equals(self: &SingleCereal, other: UniquePtr<SingleCereal>) -> bool;
         fn new_single_cereal() -> UniquePtr<SingleCereal>;
         fn deserialize_single_cereal_from_array(buf: &[u8]) -> UniquePtr<SingleCereal>;
 
         fn append(self: &ListCereal, value: &[u8]);
         fn get(self: &ListCereal, idx: usize) -> &CxxString;
-        fn set(self: &ListCereal, idx: usize, value: &[u8]);
+        fn _set(self: &ListCereal, idx: usize, value: &[u8]);
         fn serialized_size(self: &ListCereal) -> usize;
         fn serialize_to_array(self: &ListCereal, buf: &mut [u8]);
         fn new_list_cereal() -> UniquePtr<ListCereal>;

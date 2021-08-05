@@ -70,7 +70,7 @@ void SingleCereal::serialize_to_array(rust::Slice<uint8_t> buf) const {
     save(oarchive);
 }
 
-bool SingleCereal::equals(const std::unique_ptr<SingleCereal> other) const {
+bool SingleCereal::_equals(const std::unique_ptr<SingleCereal> other) const {
     if (impl->data.compare(other->get_data()) == 0) {
         return true;
     }
@@ -134,7 +134,7 @@ const std::string& ListCereal::get(size_t idx) const {
     return impl->list_data[idx];
 }
 
-void ListCereal::set(size_t idx, rust::Slice<const uint8_t> data) const {
+void ListCereal::_set(size_t idx, rust::Slice<const uint8_t> data) const {
     impl->list_data[idx] = std::move(std::string(reinterpret_cast<const char *>(data.data()), data.length()));
 }
 
