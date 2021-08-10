@@ -488,6 +488,16 @@ where
         }
     }
 
+    pub fn new_with_bounds(buf: &D::DatapathPkt, offset: usize, len: usize) -> Self {
+        // increment the ref count of the datapath packet
+        let owned_buf = buf.clone();
+        CfBuf {
+            len: len,
+            offset: offset,
+            buf: owned_buf,
+        }
+    }
+
     pub fn clone_with_bounds(&self, offset: usize, len: usize) -> Result<CfBuf<D>> {
         if offset < self.offset {
             bail!(
