@@ -13,7 +13,7 @@ use super::{
 };
 use color_eyre::eyre::Result;
 use cornflakes_libos::{
-    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPacket, ScatterGather,
+    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPkt, ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use echo_messages::echo_fb;
@@ -435,14 +435,14 @@ where
 
     fn process_msg<'registered, 'normal: 'registered>(
         &self,
-        recved_msg: &'registered D::ReceivedPkt,
+        recved_msg: &'registered ReceivedPkt<D>,
         ctx: &'normal mut Self::Ctx,
     ) -> Result<Cornflake<'registered, 'normal>> {
         let mut cf = Cornflake::with_capacity(1);
         match self.message_type {
             SimpleMessageType::Single => {
                 let object_deser =
-                    get_root::<echo_fb::SingleBufferFB>(&recved_msg.get_pkt_buffer());
+                    get_root::<echo_fb::SingleBufferFB>(&recved_msg.index(0).as_ref());
                 let args = echo_fb::SingleBufferFBArgs {
                     message: Some(ctx.create_vector_direct::<u8>(object_deser.message().unwrap())),
                 };
@@ -451,7 +451,7 @@ where
                 cf.add_entry(CornPtr::Normal(ctx.finished_data()));
             }
             SimpleMessageType::List(list_elts) => {
-                let object_deser = get_root::<echo_fb::ListFB>(&recved_msg.get_pkt_buffer());
+                let object_deser = get_root::<echo_fb::ListFB>(&recved_msg.index(0).as_ref());
                 let args_vec: Vec<echo_fb::SingleBufferFBArgs> = (0..list_elts)
                     .map(|idx| echo_fb::SingleBufferFBArgs {
                         message: Some(ctx.create_vector_direct::<u8>(
@@ -472,35 +472,35 @@ where
             }
             SimpleMessageType::Tree(depth) => match depth {
                 TreeDepth::One => {
-                    let object_deser = get_root::<echo_fb::Tree1LFB>(&recved_msg.get_pkt_buffer());
+                    let object_deser = get_root::<echo_fb::Tree1LFB>(&recved_msg.index(0).as_ref());
                     let args = get_tree1l_args_from_tree1l(ctx, vec![object_deser]);
                     let tree1l = echo_fb::Tree1LFB::create(ctx, &args[0]);
                     ctx.finish(tree1l, None);
                     cf.add_entry(CornPtr::Normal(ctx.finished_data()));
                 }
                 TreeDepth::Two => {
-                    let object_deser = get_root::<echo_fb::Tree2LFB>(&recved_msg.get_pkt_buffer());
+                    let object_deser = get_root::<echo_fb::Tree2LFB>(&recved_msg.index(0).as_ref());
                     let args = get_tree2l_args_from_tree2l(ctx, vec![object_deser]);
                     let tree2l = echo_fb::Tree2LFB::create(ctx, &args[0]);
                     ctx.finish(tree2l, None);
                     cf.add_entry(CornPtr::Normal(ctx.finished_data()));
                 }
                 TreeDepth::Three => {
-                    let object_deser = get_root::<echo_fb::Tree3LFB>(&recved_msg.get_pkt_buffer());
+                    let object_deser = get_root::<echo_fb::Tree3LFB>(&recved_msg.index(0).as_ref());
                     let args = get_tree3l_args_from_tree3l(ctx, vec![object_deser]);
                     let tree3l = echo_fb::Tree3LFB::create(ctx, &args[0]);
                     ctx.finish(tree3l, None);
                     cf.add_entry(CornPtr::Normal(ctx.finished_data()));
                 }
                 TreeDepth::Four => {
-                    let object_deser = get_root::<echo_fb::Tree4LFB>(&recved_msg.get_pkt_buffer());
+                    let object_deser = get_root::<echo_fb::Tree4LFB>(&recved_msg.index(0).as_ref());
                     let args = get_tree4l_args_from_tree4l(ctx, vec![object_deser]);
                     let tree4l = echo_fb::Tree4LFB::create(ctx, &args[0]);
                     ctx.finish(tree4l, None);
                     cf.add_entry(CornPtr::Normal(ctx.finished_data()));
                 }
                 TreeDepth::Five => {
-                    let object_deser = get_root::<echo_fb::Tree5LFB>(&recved_msg.get_pkt_buffer());
+                    let object_deser = get_root::<echo_fb::Tree5LFB>(&recved_msg.index(0).as_ref());
                     let args = get_tree5l_args_from_tree5l(ctx, vec![object_deser]);
                     let tree5l = echo_fb::Tree5LFB::create(ctx, &args[0]);
                     ctx.finish(tree5l, None);
@@ -614,21 +614,21 @@ where
         Ok(self.sga.contiguous_repr())
     }
 
-    fn check_echoed_payload(&self, recved_msg: &D::ReceivedPkt) -> Result<()> {
+    fn check_echoed_payload(&self, recved_msg: &ReceivedPkt<D>) -> Result<()> {
         let our_payloads = get_payloads_as_vec(&self.payload_ptrs);
 
         match self.message_type {
             SimpleMessageType::Single => {
                 assert!(our_payloads.len() == 1);
                 let object_deser =
-                    get_root::<echo_fb::SingleBufferFB>(&recved_msg.get_pkt_buffer());
+                    get_root::<echo_fb::SingleBufferFB>(&recved_msg.index(0).as_ref());
                 let bytes_vec = object_deser.message().unwrap().to_vec();
                 assert!(bytes_vec.len() == our_payloads[0].len());
                 assert!(bytes_vec == our_payloads[0]);
             }
             SimpleMessageType::List(list_size) => {
                 assert!(our_payloads.len() == list_size);
-                let object_deser = get_root::<echo_fb::ListFB>(&recved_msg.get_pkt_buffer());
+                let object_deser = get_root::<echo_fb::ListFB>(&recved_msg.index(0).as_ref());
                 assert!(object_deser.messages().unwrap().len() == our_payloads.len());
                 for (i, payload) in our_payloads.iter().enumerate() {
                     let bytes_vec = object_deser
@@ -645,31 +645,31 @@ where
             SimpleMessageType::Tree(depth) => match depth {
                 TreeDepth::One => {
                     assert!(our_payloads.len() == 2);
-                    let object_deser = get_root::<echo_fb::Tree1LFB>(&recved_msg.get_pkt_buffer());
+                    let object_deser = get_root::<echo_fb::Tree1LFB>(&recved_msg.index(0).as_ref());
                     let indices: Vec<usize> = (0usize..2usize).collect();
                     check_tree1l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Two => {
                     assert!(our_payloads.len() == 4);
-                    let object_deser = get_root::<echo_fb::Tree2LFB>(&recved_msg.get_pkt_buffer());
+                    let object_deser = get_root::<echo_fb::Tree2LFB>(&recved_msg.index(0).as_ref());
                     let indices: Vec<usize> = (0usize..4usize).collect();
                     check_tree2l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Three => {
                     assert!(our_payloads.len() == 8);
-                    let object_deser = get_root::<echo_fb::Tree3LFB>(&recved_msg.get_pkt_buffer());
+                    let object_deser = get_root::<echo_fb::Tree3LFB>(&recved_msg.index(0).as_ref());
                     let indices: Vec<usize> = (0usize..8usize).collect();
                     check_tree3l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Four => {
                     assert!(our_payloads.len() == 16);
-                    let object_deser = get_root::<echo_fb::Tree4LFB>(&recved_msg.get_pkt_buffer());
+                    let object_deser = get_root::<echo_fb::Tree4LFB>(&recved_msg.index(0).as_ref());
                     let indices: Vec<usize> = (0usize..16usize).collect();
                     check_tree4l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Five => {
                     assert!(our_payloads.len() == 32);
-                    let object_deser = get_root::<echo_fb::Tree5LFB>(&recved_msg.get_pkt_buffer());
+                    let object_deser = get_root::<echo_fb::Tree5LFB>(&recved_msg.index(0).as_ref());
                     let indices: Vec<usize> = (0usize..32usize).collect();
                     check_tree5l(indices.as_slice(), &our_payloads, &object_deser);
                 }

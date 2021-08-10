@@ -1344,10 +1344,10 @@ pub fn free_mbuf(pkt: *mut rte_mbuf) {
     }
 }
 
-#[inline]
+/*#[inline]
 pub fn free_mbuf_bare(pkt: *mut rte_mbuf) {
     dpdk_call!(rte_pktmbuf_free(pkt));
-}
+}*/
 
 #[inline]
 pub fn dpdk_register_extmem(

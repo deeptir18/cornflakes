@@ -2,7 +2,7 @@ use super::{get_equal_fields, CerealizeMessage};
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
     mem::MmapMetadata, timing::HistogramWrapper, utils::AddressInfo, Cornflake, Datapath,
-    ReceivedPacket, ScatterGather, ServerSM,
+    ReceivedPkt, ScatterGather, ServerSM,
 };
 use cornflakes_utils::SimpleMessageType;
 use std::{
@@ -80,10 +80,7 @@ where
 
     fn process_requests(
         &mut self,
-        sgas: Vec<(
-            <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
-            Duration,
-        )>,
+        sgas: Vec<(ReceivedPkt<<Self as ServerSM>::Datapath>, Duration)>,
         datapath: &mut D,
     ) -> Result<()> {
         let transport_header = datapath.get_header_size();

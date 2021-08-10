@@ -1,8 +1,8 @@
 use super::CerealizeMessage;
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
-    timing::HistogramWrapper, utils::AddressInfo, Cornflake, Datapath, ReceivedPacket,
-    ScatterGather, ServerSM,
+    timing::HistogramWrapper, utils::AddressInfo, Cornflake, Datapath, ReceivedPkt, ScatterGather,
+    ServerSM,
 };
 use std::{
     marker::PhantomData,
@@ -47,10 +47,7 @@ where
 
     fn process_requests(
         &mut self,
-        sgas: Vec<(
-            <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
-            Duration,
-        )>,
+        sgas: Vec<(ReceivedPkt<<Self as ServerSM>::Datapath>, Duration)>,
         conn: &mut D,
     ) -> Result<()> {
         let mut out_sgas: Vec<(Cornflake, AddressInfo)> = Vec::with_capacity(sgas.len());

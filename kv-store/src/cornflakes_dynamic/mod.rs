@@ -1,4 +1,5 @@
 use color_eyre::eyre::{bail, Result, WrapErr};
+pub mod hardcoded_cf;
 
 pub mod kv_messages {
     include!(concat!(env!("OUT_DIR"), "/kv_cf_dynamic.rs"));
@@ -27,11 +28,11 @@ where
 
     fn handle_get(
         &self,
-        pkt: D::ReceivedPkt,
+        pkt: ReceivedPkt<D>,
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
     ) -> Result<(Self::HeaderCtx, Cornflake)> {
-        match num_values {
+        /*match num_values {
             0 => {
                 bail!("Number of get values cannot be 0");
             }
@@ -43,14 +44,14 @@ where
                 response.set_id(get_request.get_id());
             }
             x => {}
-        }
+        }*/
 
         Ok((Vec::default(), Cornflake::default()))
     }
 
     fn handle_put(
         &self,
-        pkt: D::ReceivedPkt,
+        pkt: ReceivedPkt<D>,
         map: &mut HashMap<String, CfBuf<D>>,
         num_values: usize,
     ) -> Result<(Self::HeaderCtx, Cornflake)> {

@@ -9,7 +9,7 @@ use capnp::message::{
 };
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
-    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPacket, ScatterGather,
+    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPkt, ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use std::slice;
@@ -331,24 +331,24 @@ fn deserialize_single_buffer(
     Ok(())
 }
 
-fn read_context<'registered, T>(recved_msg: &'registered T) -> Vec<&'registered [u8]>
+fn read_context<'registered, D>(recved_msg: &'registered ReceivedPkt<D>) -> Vec<&'registered [u8]>
 where
-    T: ReceivedPacket,
+    D: Datapath,
 {
-    assert!(recved_msg.len() >= FRAMING_ENTRY_SIZE);
-    let num_segments = LittleEndian::read_u32(&recved_msg.get_pkt_buffer()[0..4]) as usize;
-    assert!(recved_msg.len() >= FRAMING_ENTRY_SIZE + num_segments * FRAMING_ENTRY_SIZE);
+    assert!(recved_msg.data_len() >= FRAMING_ENTRY_SIZE);
+    let num_segments = LittleEndian::read_u32(&recved_msg.index(0).as_ref()[0..4]) as usize;
+    assert!(recved_msg.data_len() >= FRAMING_ENTRY_SIZE + num_segments * FRAMING_ENTRY_SIZE);
     let mut size_so_far = FRAMING_ENTRY_SIZE + num_segments * FRAMING_ENTRY_SIZE;
     let mut segments: Vec<&'registered [u8]> = Vec::default();
     for i in 0..num_segments {
         let cur_idx = FRAMING_ENTRY_SIZE + i * FRAMING_ENTRY_SIZE;
         let offset =
-            LittleEndian::read_u32(&recved_msg.get_pkt_buffer()[cur_idx..(cur_idx + 4)]) as usize;
+            LittleEndian::read_u32(&recved_msg.index(0).as_ref()[cur_idx..(cur_idx + 4)]) as usize;
         let size =
-            LittleEndian::read_u32(&recved_msg.get_pkt_buffer()[(cur_idx + 4)..(cur_idx + 8)])
+            LittleEndian::read_u32(&recved_msg.index(0).as_ref()[(cur_idx + 4)..(cur_idx + 8)])
                 as usize;
-        assert!(recved_msg.len() >= (size_so_far + size));
-        segments.push(&recved_msg.get_pkt_buffer()[offset..(offset + size)]);
+        assert!(recved_msg.data_len() >= (size_so_far + size));
+        segments.push(&recved_msg.index(0).as_ref()[offset..(offset + size)]);
         size_so_far += size;
     }
     segments
@@ -463,7 +463,7 @@ where
 
     fn process_msg<'registered, 'normal: 'registered>(
         &self,
-        recved_msg: &'registered D::ReceivedPkt,
+        recved_msg: &'registered ReceivedPkt<D>,
         ctx: &'normal mut Self::Ctx,
     ) -> Result<Cornflake<'registered, 'normal>> {
         let (ref mut framing_vec, ref mut builder) = ctx;
@@ -670,7 +670,7 @@ where
         Ok(self.sga.contiguous_repr())
     }
 
-    fn check_echoed_payload(&self, recved_msg: &D::ReceivedPkt) -> Result<()> {
+    fn check_echoed_payload(&self, recved_msg: &ReceivedPkt<D>) -> Result<()> {
         let our_payloads = get_payloads_as_vec(&self.payload_ptrs);
         let segment_array_vec = read_context(recved_msg);
         let segment_array = SegmentArray::new(&segment_array_vec.as_slice());

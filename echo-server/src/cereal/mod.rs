@@ -3,7 +3,7 @@ use super::{
 };
 use color_eyre::eyre::Result;
 use cornflakes_libos::{
-    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPacket, ScatterGather,
+    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPkt, ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use cxx;
@@ -217,22 +217,22 @@ where
 
     fn process_msg<'registered, 'normal: 'registered>(
         &self,
-        recved_message: &'registered D::ReceivedPkt,
+        recved_message: &'registered ReceivedPkt<D>,
         ctx: &'normal mut Self::Ctx,
     ) -> Result<Cornflake<'registered, 'normal>> {
         let mut cf = Cornflake::with_capacity(1);
         match self.message_type {
             SimpleMessageType::Single => {
-                tracing::debug!(buf=?recved_message.get_pkt_buffer().as_ptr(), "In process msg for cereal");
+                tracing::debug!(buf=?recved_message.index(0).as_ref().as_ptr(), "In process msg for cereal");
                 let object_deser =
-                    ffi::deserialize_single_cereal_from_array(recved_message.get_pkt_buffer());
+                    ffi::deserialize_single_cereal_from_array(recved_message.index(0).as_ref());
                 let object_ser = ffi::new_single_cereal();
                 object_ser.set_data(object_deser.get_data().as_bytes());
                 object_ser.serialize_to_array(ctx.as_mut_slice());
             }
             SimpleMessageType::List(list_length) => {
                 let object_deser =
-                    ffi::deserialize_list_cereal_from_array(recved_message.get_pkt_buffer());
+                    ffi::deserialize_list_cereal_from_array(recved_message.index(0).as_ref());
                 let object_ser = ffi::new_list_cereal();
                 for i in 0..list_length {
                     object_ser.append(object_deser.get(i).as_bytes());
@@ -242,32 +242,32 @@ where
             SimpleMessageType::Tree(depth) => match depth {
                 TreeDepth::One => {
                     let object_deser =
-                        ffi::deserialize_tree1_cereal_from_array(recved_message.get_pkt_buffer());
+                        ffi::deserialize_tree1_cereal_from_array(recved_message.index(0).as_ref());
                     let object_ser = ffi::reserialize_tree1(object_deser);
                     object_ser.serialize_to_array(ctx.as_mut_slice());
                 }
                 TreeDepth::Two => {
                     let object_deser =
-                        ffi::deserialize_tree2_cereal_from_array(recved_message.get_pkt_buffer());
+                        ffi::deserialize_tree2_cereal_from_array(recved_message.index(0).as_ref());
                     let object_ser = ffi::reserialize_tree2(object_deser);
                     object_ser.serialize_to_array(ctx.as_mut_slice());
                 }
                 TreeDepth::Three => {
                     let object_deser =
-                        ffi::deserialize_tree3_cereal_from_array(recved_message.get_pkt_buffer());
+                        ffi::deserialize_tree3_cereal_from_array(recved_message.index(0).as_ref());
                     let object_ser = ffi::reserialize_tree3(object_deser);
                     object_ser.serialize_to_array(ctx.as_mut_slice());
                 }
                 TreeDepth::Four => {
                     let object_deser =
-                        ffi::deserialize_tree4_cereal_from_array(recved_message.get_pkt_buffer());
+                        ffi::deserialize_tree4_cereal_from_array(recved_message.index(0).as_ref());
                     let object_ser = ffi::reserialize_tree4(object_deser);
                     object_ser.serialize_to_array(ctx.as_mut_slice());
                 }
 
                 TreeDepth::Five => {
                     let object_deser =
-                        ffi::deserialize_tree5_cereal_from_array(recved_message.get_pkt_buffer());
+                        ffi::deserialize_tree5_cereal_from_array(recved_message.index(0).as_ref());
                     let object_ser = ffi::reserialize_tree5(object_deser);
                     object_ser.serialize_to_array(ctx.as_mut_slice());
                 }
@@ -375,7 +375,7 @@ where
         Ok(self.sga.contiguous_repr())
     }
 
-    fn check_echoed_payload(&self, recved_msg: &D::ReceivedPkt) -> Result<()> {
+    fn check_echoed_payload(&self, recved_msg: &ReceivedPkt<D>) -> Result<()> {
         let payloads: Vec<&[u8]> = self
             .payload_ptrs
             .clone()
@@ -385,14 +385,14 @@ where
         match self.message_type {
             SimpleMessageType::Single => {
                 let object_deser =
-                    ffi::deserialize_single_cereal_from_array(recved_msg.get_pkt_buffer());
+                    ffi::deserialize_single_cereal_from_array(recved_msg.index(0).as_ref());
                 let bytes_vec = object_deser.get_data().as_bytes().to_vec();
                 assert!(bytes_vec.len() == payloads[0].len());
                 assert!(bytes_vec == payloads[0].to_vec());
             }
             SimpleMessageType::List(_list_size) => {
                 let object_deser =
-                    ffi::deserialize_list_cereal_from_array(recved_msg.get_pkt_buffer());
+                    ffi::deserialize_list_cereal_from_array(recved_msg.index(0).as_ref());
                 for (i, payload) in payloads.iter().enumerate() {
                     let bytes_vec = object_deser.get(i).as_bytes().to_vec();
                     assert!(bytes_vec == payload.to_vec());
@@ -402,35 +402,35 @@ where
                 TreeDepth::One => {
                     let our_tree1_cereal = get_tree1_message(&[0, 1], &payloads);
                     let object_deser =
-                        ffi::deserialize_tree1_cereal_from_array(recved_msg.get_pkt_buffer());
+                        ffi::deserialize_tree1_cereal_from_array(recved_msg.index(0).as_ref());
                     assert!(our_tree1_cereal.equals(object_deser));
                 }
                 TreeDepth::Two => {
                     let indices: Vec<usize> = (0usize..4usize).collect();
                     let ours = get_tree2_message(&indices, &payloads);
                     let object_deser =
-                        ffi::deserialize_tree2_cereal_from_array(recved_msg.get_pkt_buffer());
+                        ffi::deserialize_tree2_cereal_from_array(recved_msg.index(0).as_ref());
                     assert!(ours.equals(object_deser));
                 }
                 TreeDepth::Three => {
                     let indices: Vec<usize> = (0usize..8usize).collect();
                     let ours = get_tree3_message(&indices, &payloads);
                     let object_deser =
-                        ffi::deserialize_tree3_cereal_from_array(recved_msg.get_pkt_buffer());
+                        ffi::deserialize_tree3_cereal_from_array(recved_msg.index(0).as_ref());
                     assert!(ours.equals(object_deser));
                 }
                 TreeDepth::Four => {
                     let indices: Vec<usize> = (0usize..16usize).collect();
                     let ours = get_tree4_message(&indices, &payloads);
                     let object_deser =
-                        ffi::deserialize_tree4_cereal_from_array(recved_msg.get_pkt_buffer());
+                        ffi::deserialize_tree4_cereal_from_array(recved_msg.index(0).as_ref());
                     assert!(ours.equals(object_deser));
                 }
                 TreeDepth::Five => {
                     let indices: Vec<usize> = (0usize..32usize).collect();
                     let ours = get_tree5_message(&indices, &payloads);
                     let object_deser =
-                        ffi::deserialize_tree5_cereal_from_array(recved_msg.get_pkt_buffer());
+                        ffi::deserialize_tree5_cereal_from_array(recved_msg.index(0).as_ref());
                     assert!(ours.equals(object_deser));
                 }
             },

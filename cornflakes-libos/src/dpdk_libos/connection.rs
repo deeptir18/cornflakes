@@ -3,12 +3,11 @@ use super::{
         dpdk_bindings::*,
         dpdk_call, mbuf_slice, mem,
         timing::{record, timefunc, HistogramWrapper},
-        utils, CornType, Datapath, DatapathMempoolOptions, MsgID, PtrAttributes, ReceivedPacket,
+        utils, CornType, Datapath, DatapathMempoolOptions, MsgID, PtrAttributes, ReceivedPkt,
         RefCnt, ScatterGather,
     },
     dpdk_utils, wrapper,
 };
-use bytes::BytesMut;
 use color_eyre::eyre::{bail, Result, WrapErr};
 use eui48::MacAddress;
 use hashbrown::HashMap;
@@ -29,12 +28,42 @@ const PKT_CONSTRUCT_TIMER: &str = "PKT_CONSTRUCT_TIMER";
 const POP_PROCESSING_TIMER: &str = "POP_PROCESSING_TIMER";
 const PUSH_PROCESSING_TIMER: &str = "PUSH_PROCESSING_TIMER";
 
-#[derive(Copy, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct DPDKBuffer {
     /// Pointer to allocated mbuf.
     pub mbuf: *mut rte_mbuf,
     /// Id of originating mempool (application and datapath context).
     pub mempool_id: usize,
+    /// Actual application data offset (header could be in front)
+    pub offset: usize,
+}
+
+impl DPDKBuffer {
+    fn new(mbuf: *mut rte_mbuf, mempool_id: usize, data_offset: usize) -> Self {
+        DPDKBuffer {
+            mbuf: mbuf,
+            mempool_id: mempool_id,
+            offset: data_offset,
+        }
+    }
+}
+
+impl Default for DPDKBuffer {
+    fn default() -> Self {
+        DPDKBuffer {
+            // TODO: might be safest to NOT have this function
+            mbuf: ptr::null_mut(),
+            mempool_id: 0,
+            offset: 0,
+        }
+    }
+}
+
+impl Drop for DPDKBuffer {
+    fn drop(&mut self) {
+        // decrement the reference count of the mbuf, or if at 1 or 0, free it
+        wrapper::free_mbuf(self.mbuf);
+    }
 }
 
 impl Clone for DPDKBuffer {
@@ -43,13 +72,14 @@ impl Clone for DPDKBuffer {
         DPDKBuffer {
             mbuf: self.mbuf,
             mempool_id: self.mempool_id,
+            offset: self.offset,
         }
     }
 }
 
 impl std::fmt::Debug for DPDKBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "Mbuf addr: {:?}", self.mbuf)
+        write!(f, "Mbuf addr: {:?}, off: {}", self.mbuf, self.offset)
     }
 }
 
@@ -65,7 +95,8 @@ impl RefCnt for DPDKBuffer {
 
 impl AsRef<[u8]> for DPDKBuffer {
     fn as_ref(&self) -> &[u8] {
-        let slice = mbuf_slice!(self.mbuf, 0, wrapper::MBUF_BUF_SIZE as usize);
+        let data_len = unsafe { (*self.mbuf).data_len } as usize;
+        let slice = mbuf_slice!(self.mbuf, self.offset, data_len - self.offset);
         tracing::debug!(
             "Mbuf address: {:?}, slice address: {:?}, data off: {:?}, buf_addr: {:?}",
             self.mbuf,
@@ -79,7 +110,8 @@ impl AsRef<[u8]> for DPDKBuffer {
 
 impl AsMut<[u8]> for DPDKBuffer {
     fn as_mut(&mut self) -> &mut [u8] {
-        let slice = mbuf_slice!(self.mbuf, 0, wrapper::MBUF_BUF_SIZE as usize);
+        let data_len = unsafe { (*self.mbuf).data_len } as usize;
+        let slice = mbuf_slice!(self.mbuf, self.offset, data_len - self.offset);
         tracing::debug!(
             "Mbuf address: {:?}, slice address: {:?}, data off: {:?}, buf_addr: {:?}",
             self.mbuf,
@@ -91,234 +123,13 @@ impl AsMut<[u8]> for DPDKBuffer {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub enum RecvMode {
-    /// Directly give pointer to same mbuf
-    ZeroCopyRecv,
-    /// Copy out to another mbuf (registered memory).
-    CopyToMbuf,
-    /// Copy out to normal, unregistered memory.
-    CopyOut,
-}
-
-/// Wrapper around rte_mbuf.
-#[derive(Clone)]
-pub struct MbufWrapper {
-    /// Mbuf this wraps around.
-    pub mbuf: *mut rte_mbuf,
-    /// When not zero-copy: hold data in bytes
-    pub copied_data: BytesMut,
-    /// Networking header: for example, could be udp + ethernet + ip header.
-    pub header_size: usize,
-    /// How the mbuf has been received.
-    pub recv_mode: RecvMode,
-}
-
-impl AsRef<[u8]> for MbufWrapper {
-    fn as_ref(&self) -> &[u8] {
-        match self.recv_mode {
-            RecvMode::ZeroCopyRecv => {
-                tracing::debug!("Addr of original mbuf: {:?}", self.mbuf);
-                let payload_len = unsafe { (*self.mbuf).pkt_len as usize - self.header_size };
-                mbuf_slice!(self.mbuf, self.header_size, payload_len)
-            }
-            RecvMode::CopyOut => self.copied_data.as_ref(),
-            RecvMode::CopyToMbuf => {
-                tracing::debug!("Addr of new copied out mbuf: {:?}", self.mbuf);
-                let payload_len = unsafe { (*self.mbuf).pkt_len as usize };
-                let slice = mbuf_slice!(self.mbuf, 0, payload_len);
-                tracing::debug!(
-                    "payload length: {}, header_size: {}, slice ptr: {:?}",
-                    payload_len,
-                    self.header_size,
-                    slice.as_ptr(),
-                );
-                slice
-            }
-        }
-    }
-}
-
-impl PtrAttributes for MbufWrapper {
-    fn buf_type(&self) -> CornType {
-        match self.recv_mode {
-            RecvMode::CopyOut => CornType::Normal,
-            _ => CornType::Registered,
-        }
-    }
-
+impl PtrAttributes for DPDKBuffer {
     fn buf_size(&self) -> usize {
-        match self.recv_mode {
-            RecvMode::ZeroCopyRecv => unsafe { (*self.mbuf).pkt_len as usize - self.header_size },
-            RecvMode::CopyToMbuf => unsafe { (*self.mbuf).pkt_len as usize },
-            RecvMode::CopyOut => self.copied_data.len(),
-        }
-    }
-}
-
-/// The DPDK datapath returns this on the datapath pop function.
-/// Exposes methods around the mbuf.
-pub struct DPDKReceivedPkt {
-    /// ID of received message.
-    id: MsgID,
-    // pointer to underlying rte_mbuf
-    mbuf_wrapper: MbufWrapper,
-    // the address information about the received packet
-    addr_info: utils::AddressInfo,
-}
-
-impl DPDKReceivedPkt {
-    fn new(
-        id: MsgID,
-        mbuf: *mut rte_mbuf,
-        header_size: usize,
-        addr_info: utils::AddressInfo,
-        new_mbuf: *mut rte_mbuf,
-        recv_mode: RecvMode,
-    ) -> DPDKReceivedPkt {
-        tracing::debug!(
-            "Address of received buffer: {:?}; after header: {:?}; data offset of received mbuf: {:?}",
-            mbuf,
-            mbuf_slice!(mbuf, header_size, 1024).as_mut_ptr() as *mut u8,
-            unsafe { (*mbuf).data_off },
-        );
-        let (mbuf, bytes): (*mut rte_mbuf, BytesMut) = match recv_mode {
-            RecvMode::ZeroCopyRecv => (mbuf, BytesMut::new()),
-            RecvMode::CopyToMbuf => {
-                assert!(!new_mbuf.is_null());
-                let payload_len = unsafe { (*mbuf).pkt_len as usize - header_size };
-
-                unsafe {
-                    (*new_mbuf).pkt_len = (*mbuf).pkt_len - header_size as u32;
-                    (*new_mbuf).data_len = (*mbuf).data_len - header_size as u16;
-                    tracing::debug!("Current data off: {:?}", (*new_mbuf).data_off);
-                    //(*new_mbuf).data_off = 0;
-                }
-                let mbuf_slice = mbuf_slice!(mbuf, header_size, payload_len);
-                let new_mbuf_slice = mbuf_slice!(new_mbuf, 0, payload_len);
-                tracing::debug!(
-                    "Length of new mbuf slice: {:?}; new mbuf ptr: {:?}, new_mbuf_slice: {:?}",
-                    new_mbuf_slice.len(),
-                    new_mbuf,
-                    new_mbuf_slice.as_ptr(),
-                );
-                tracing::debug!(
-                    "Addr of slice that is being copied to: {:?}",
-                    new_mbuf_slice.as_ptr()
-                );
-                dpdk_call!(rte_memcpy_wrapper(
-                    new_mbuf_slice.as_mut_ptr() as _,
-                    mbuf_slice.as_ptr() as _,
-                    payload_len
-                ));
-                wrapper::free_mbuf_bare(mbuf);
-                (new_mbuf, BytesMut::new())
-            }
-            RecvMode::CopyOut => {
-                let payload_len = unsafe { (*mbuf).pkt_len as usize - header_size };
-                let mut bytes_mut = BytesMut::with_capacity(payload_len);
-                let mbuf_slice = mbuf_slice!(mbuf, header_size, payload_len);
-                dpdk_call!(rte_memcpy_wrapper(
-                    bytes_mut.as_mut_ptr() as _,
-                    mbuf_slice.as_ptr() as _,
-                    payload_len
-                ));
-
-                unsafe {
-                    bytes_mut.set_len(payload_len);
-                }
-                wrapper::free_mbuf_bare(mbuf);
-
-                tracing::debug!("Bytes mut len: {}", bytes_mut.len());
-                (::std::ptr::null_mut(), bytes_mut)
-            }
-        };
-        DPDKReceivedPkt {
-            id: id,
-            mbuf_wrapper: MbufWrapper {
-                mbuf: mbuf,
-                header_size: header_size,
-                copied_data: bytes,
-                recv_mode: recv_mode,
-            },
-            addr_info: addr_info,
-        }
-    }
-}
-
-/// Implementing drop for DPDKReceivedPkt ensures that the underlying mbuf is freed,
-/// once all references to this struct are out of scope.
-impl Drop for DPDKReceivedPkt {
-    fn drop(&mut self) {
-        match self.mbuf_wrapper.recv_mode {
-            RecvMode::ZeroCopyRecv | RecvMode::CopyToMbuf => {
-                wrapper::free_mbuf(self.mbuf_wrapper.mbuf)
-            }
-            _ => {}
-        }
-    }
-}
-
-impl ReceivedPacket for DPDKReceivedPkt {
-    fn get_addr(&self) -> &utils::AddressInfo {
-        &self.addr_info
+        unsafe { (*self.mbuf).data_len as usize }
     }
 
-    fn get_pkt_buffer(&self) -> &[u8] {
-        self.mbuf_wrapper.as_ref()
-    }
-
-    fn get_corn_type(&self) -> CornType {
-        self.mbuf_wrapper.buf_type()
-    }
-
-    fn len(&self) -> usize {
-        self.mbuf_wrapper.buf_size()
-    }
-}
-
-/// DPDKReceivedPkt implements ScatterGather so it can be returned by the pop function in the
-/// Datapath trait.
-impl ScatterGather for DPDKReceivedPkt {
-    type Ptr = MbufWrapper;
-    type Collection = Option<Self::Ptr>;
-
-    fn get_id(&self) -> MsgID {
-        self.id
-    }
-
-    fn set_id(&mut self, id: MsgID) {
-        self.id = id;
-    }
-
-    fn num_segments(&self) -> usize {
-        1
-    }
-
-    fn num_borrowed_segments(&self) -> usize {
-        0
-    }
-
-    fn data_len(&self) -> usize {
-        self.mbuf_wrapper.buf_size()
-    }
-
-    fn index(&self, _idx: usize) -> &Self::Ptr {
-        &self.mbuf_wrapper
-    }
-
-    fn collection(&self) -> Self::Collection {
-        Some(self.mbuf_wrapper.clone())
-    }
-
-    fn iter_apply(&self, mut consume_element: impl FnMut(&Self::Ptr) -> Result<()>) -> Result<()> {
-        consume_element(&self.mbuf_wrapper)
-    }
-
-    fn contiguous_repr(&self) -> Vec<u8> {
-        let mut ret: Vec<u8> = Vec::new();
-        ret.extend_from_slice(self.mbuf_wrapper.as_ref());
-        ret
+    fn buf_type(&self) -> CornType {
+        CornType::Registered
     }
 }
 
@@ -340,8 +151,6 @@ impl std::str::FromStr for DPDKMode {
 }
 
 pub struct DPDKConnection {
-    /// Whether the receive is zero-copy, copy out, or copy to another mbuf
-    recv_mode: RecvMode,
     /// Whether to use scatter-gather on send.
     use_scatter_gather: bool,
     /// Whether to attach payloads as external buffers or natively use that mbuf (which is a
@@ -400,7 +209,6 @@ impl DPDKConnection {
     pub fn new(
         config_file: &str,
         mode: DPDKMode,
-        recv_mode: RecvMode,
         use_scatter_gather: bool,
         use_external_buffers_for_native_mbufs: bool,
         prepend_header_to_first_mbuf: bool,
@@ -464,7 +272,6 @@ impl DPDKConnection {
         let memzones = vec![(0, wrapper::get_mempool_memzone_area(mempool)?)];
 
         Ok(DPDKConnection {
-            recv_mode: recv_mode,
             use_scatter_gather: use_scatter_gather,
             use_external_buffers_for_native_mbufs: use_external_buffers_for_native_mbufs,
             prepend_header_to_first_mbuf: prepend_header_to_first_mbuf,
@@ -549,7 +356,6 @@ impl DPDKConnection {
 }
 
 impl Datapath for DPDKConnection {
-    type ReceivedPkt = DPDKReceivedPkt;
     type DatapathPkt = DPDKBuffer;
     /// Sends a single buffer to the given address.
     fn push_buf(&mut self, buf: (MsgID, &[u8]), addr: utils::AddressInfo) -> Result<()> {
@@ -699,7 +505,7 @@ impl Datapath for DPDKConnection {
     /// Feturns a Vec<(DPDKReceivedPkt, Duration)> for each valid packet.
     /// For client mode, provides duration since sending sga with this id.
     /// FOr server mode, returns 0 duration.
-    fn pop(&mut self) -> Result<Vec<(Self::ReceivedPkt, Duration)>> {
+    fn pop(&mut self) -> Result<Vec<(ReceivedPkt<Self>, Duration)>> {
         let received = wrapper::rx_burst(
             self.dpdk_port,
             0,
@@ -708,7 +514,7 @@ impl Datapath for DPDKConnection {
             &self.addr_info,
         )
         .wrap_err("Error on calling rte_eth_rx_burst.")?;
-        let mut ret: Vec<(DPDKReceivedPkt, Duration)> = Vec::new();
+        let mut ret: Vec<(ReceivedPkt<Self>, Duration)> = Vec::new();
 
         // Debugging end to end processing time
         if cfg!(feature = "timers") && self.mode == DPDKMode::Server {
@@ -729,19 +535,15 @@ impl Datapath for DPDKConnection {
                 if mbuf.is_null() {
                     bail!("Mbuf for index {} in returned array is null.", idx);
                 }
-                let new_mbuf_ptr = match self.recv_mode {
-                    RecvMode::ZeroCopyRecv | RecvMode::CopyOut => ::std::ptr::null_mut(),
-                    RecvMode::CopyToMbuf => wrapper::alloc_mbuf(self.mempools[0].1)
-                        .wrap_err("Not able to allocate new mbuf on receive.")?,
-                };
-                let received_pkt = DPDKReceivedPkt::new(
-                    msg_id,
+
+                // for now, this datapath just returns single packets without split receive
+                let received_buffer = vec![DPDKBuffer::new(
                     self.recv_mbufs[idx],
+                    0,
                     utils::TOTAL_HEADER_SIZE,
-                    addr_info,
-                    new_mbuf_ptr,
-                    self.recv_mode,
-                );
+                )];
+
+                let received_pkt = ReceivedPkt::new(received_buffer, msg_id, addr_info);
 
                 let duration = match self.mode {
                     DPDKMode::Client => match self.outgoing_window.remove(&msg_id) {
@@ -929,6 +731,7 @@ impl Datapath for DPDKConnection {
                 return Ok(DPDKBuffer {
                     mbuf: mbuf,
                     mempool_id: mempool_id,
+                    offset: 0,
                 });
             }
         }
@@ -961,6 +764,7 @@ impl Datapath for DPDKConnection {
         return Ok(DPDKBuffer {
             mbuf: mbuf,
             mempool_id: 0,
+            offset: 0,
         });
     }
 }

@@ -3,8 +3,8 @@ use super::super::{
     mem,
     timing::{record, HistogramWrapper, RTTHistogram},
     utils::AddressInfo,
-    ClientSM, CornPtr, CornType, Cornflake, Datapath, MsgID, PtrAttributes, ReceivedPacket,
-    ScatterGather, ServerSM,
+    ClientSM, CornPtr, Cornflake, Datapath, MsgID, PtrAttributes, ReceivedPkt, ScatterGather,
+    ServerSM,
 };
 use super::connection::DPDKConnection;
 use color_eyre::eyre::{bail, Result, WrapErr};
@@ -130,7 +130,7 @@ impl<'a, 'b> ClientSM for EchoClient<'a, 'b> {
 
     fn process_received_msg(
         &mut self,
-        sga: <<Self as ClientSM>::Datapath as Datapath>::ReceivedPkt,
+        sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
         time: Duration,
     ) -> Result<()> {
         self.recved += 1;
@@ -215,10 +215,7 @@ impl ServerSM for EchoServer {
 
     fn process_requests(
         &mut self,
-        sgas: Vec<(
-            <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
-            Duration,
-        )>,
+        sgas: Vec<(ReceivedPkt<<Self as ServerSM>::Datapath>, Duration)>,
         conn: &mut Self::Datapath,
     ) -> Result<()> {
         let proc_timer = self.get_timer(SERVER_PROCESSING_LATENCY, cfg!(feature = "timers"))?;
@@ -226,10 +223,7 @@ impl ServerSM for EchoServer {
         let mut out_sgas: Vec<(Cornflake, AddressInfo)> = Vec::with_capacity(sgas.len());
         for in_sga in sgas.iter() {
             let mut cornflake = Cornflake::with_capacity(1);
-            let cornptr = match in_sga.0.get_corn_type() {
-                CornType::Normal => CornPtr::Normal(in_sga.0.get_pkt_buffer()),
-                CornType::Registered => CornPtr::Registered(in_sga.0.get_pkt_buffer()),
-            };
+            let cornptr = CornPtr::Registered(in_sga.0.index(0).as_ref());
             tracing::debug!(
                 input_cornptr_length = cornptr.buf_size(),
                 "length of input cornptr packet"

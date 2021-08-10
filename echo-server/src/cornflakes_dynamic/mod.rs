@@ -11,7 +11,7 @@ use color_eyre::eyre::Result;
 use cornflakes_codegen::utils::dynamic_hdr::*;
 use cornflakes_libos::{
     dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, mem::MmapMetadata, Cornflake, Datapath,
-    PtrAttributes, ReceivedPacket, ScatterGather,
+    PtrAttributes, ReceivedPkt, ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use std::slice;
@@ -261,17 +261,17 @@ where
 
     fn process_msg<'registered, 'normal: 'registered>(
         &self,
-        recved_msg: &'registered D::ReceivedPkt,
+        recved_msg: &'registered ReceivedPkt<D>,
         ctx: &'normal mut Self::Ctx,
     ) -> Result<Cornflake<'registered, 'normal>> {
         tracing::debug!(
             "Received packet addr: {:?}",
-            recved_msg.get_pkt_buffer().as_ptr()
+            recved_msg.index(0).as_ref().as_ptr()
         );
         match self.message_type {
             SimpleMessageType::Single => {
                 let mut object_deser = echo_messages::SingleBufferCF::new();
-                object_deser.deserialize(recved_msg.get_pkt_buffer());
+                object_deser.deserialize(recved_msg.index(0).as_ref());
 
                 let mut object_ser = echo_messages::SingleBufferCF::new();
                 object_ser.set_message(object_deser.get_message());
@@ -280,7 +280,7 @@ where
             }
             SimpleMessageType::List(_list_elts) => {
                 let mut object_deser = echo_messages::ListCF::new();
-                object_deser.deserialize(recved_msg.get_pkt_buffer());
+                object_deser.deserialize(recved_msg.index(0).as_ref());
                 let list_field_deser = object_deser.get_messages();
                 tracing::debug!("list field deser length: {}", list_field_deser.len());
                 let mut object_ser = echo_messages::ListCF::new();
@@ -294,27 +294,27 @@ where
             SimpleMessageType::Tree(depth) => match depth {
                 TreeDepth::One => {
                     let mut tree_deser = echo_messages::Tree1LCF::new();
-                    tree_deser.deserialize(recved_msg.get_pkt_buffer());
+                    tree_deser.deserialize(recved_msg.index(0).as_ref());
                     Ok(deserialize_tree1l(&tree_deser).serialize(ctx, rte_memcpy))
                 }
                 TreeDepth::Two => {
                     let mut tree_deser = echo_messages::Tree2LCF::new();
-                    tree_deser.deserialize(recved_msg.get_pkt_buffer());
+                    tree_deser.deserialize(recved_msg.index(0).as_ref());
                     Ok(deserialize_tree2l(&tree_deser).serialize(ctx, rte_memcpy))
                 }
                 TreeDepth::Three => {
                     let mut tree_deser = echo_messages::Tree3LCF::new();
-                    tree_deser.deserialize(recved_msg.get_pkt_buffer());
+                    tree_deser.deserialize(recved_msg.index(0).as_ref());
                     Ok(deserialize_tree3l(&tree_deser).serialize(ctx, rte_memcpy))
                 }
                 TreeDepth::Four => {
                     let mut tree_deser = echo_messages::Tree4LCF::new();
-                    tree_deser.deserialize(recved_msg.get_pkt_buffer());
+                    tree_deser.deserialize(recved_msg.index(0).as_ref());
                     Ok(deserialize_tree4l(&tree_deser).serialize(ctx, rte_memcpy))
                 }
                 TreeDepth::Five => {
                     let mut tree_deser = echo_messages::Tree5LCF::new();
-                    tree_deser.deserialize(recved_msg.get_pkt_buffer());
+                    tree_deser.deserialize(recved_msg.index(0).as_ref());
                     Ok(deserialize_tree5l(&tree_deser).serialize(ctx, rte_memcpy))
                 }
             },
@@ -432,12 +432,12 @@ where
         Ok(self.sga.contiguous_repr())
     }
 
-    fn check_echoed_payload(&self, recved_msg: &D::ReceivedPkt) -> Result<()> {
+    fn check_echoed_payload(&self, recved_msg: &ReceivedPkt<D>) -> Result<()> {
         let our_payloads = get_payloads_as_vec(&self.payload_ptrs);
         match self.message_type {
             SimpleMessageType::Single => {
                 let mut object_deser = echo_messages::SingleBufferCF::new();
-                object_deser.deserialize(recved_msg.get_pkt_buffer());
+                object_deser.deserialize(recved_msg.index(0).as_ref());
                 let bytes_vec = object_deser.get_message().to_bytes_vec();
                 assert!(bytes_vec.len() == our_payloads[0].len());
                 assert!(bytes_vec == our_payloads[0]);
@@ -445,7 +445,7 @@ where
             SimpleMessageType::List(list_size) => {
                 assert!(our_payloads.len() == list_size);
                 let mut object_deser = echo_messages::ListCF::new();
-                object_deser.deserialize(recved_msg.get_pkt_buffer());
+                object_deser.deserialize(recved_msg.index(0).as_ref());
                 assert!(object_deser.get_messages().len() == our_payloads.len());
                 for (i, payload) in our_payloads.iter().enumerate() {
                     let bytes_vec = object_deser.get_messages()[i].to_bytes_vec();
@@ -460,31 +460,31 @@ where
             SimpleMessageType::Tree(depth) => match depth {
                 TreeDepth::One => {
                     let mut object_deser = echo_messages::Tree1LCF::new();
-                    object_deser.deserialize(recved_msg.get_pkt_buffer());
+                    object_deser.deserialize(recved_msg.index(0).as_ref());
                     check_tree1l(&[0usize, 1usize], &our_payloads, &object_deser);
                 }
                 TreeDepth::Two => {
                     let indices: Vec<usize> = (0usize..4usize).collect();
                     let mut object_deser = echo_messages::Tree2LCF::new();
-                    object_deser.deserialize(recved_msg.get_pkt_buffer());
+                    object_deser.deserialize(recved_msg.index(0).as_ref());
                     check_tree2l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Three => {
                     let indices: Vec<usize> = (0usize..8usize).collect();
                     let mut object_deser = echo_messages::Tree3LCF::new();
-                    object_deser.deserialize(recved_msg.get_pkt_buffer());
+                    object_deser.deserialize(recved_msg.index(0).as_ref());
                     check_tree3l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Four => {
                     let indices: Vec<usize> = (0usize..16usize).collect();
                     let mut object_deser = echo_messages::Tree4LCF::new();
-                    object_deser.deserialize(recved_msg.get_pkt_buffer());
+                    object_deser.deserialize(recved_msg.index(0).as_ref());
                     check_tree4l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Five => {
                     let indices: Vec<usize> = (0usize..32usize).collect();
                     let mut object_deser = echo_messages::Tree5LCF::new();
-                    object_deser.deserialize(recved_msg.get_pkt_buffer());
+                    object_deser.deserialize(recved_msg.index(0).as_ref());
                     check_tree5l(indices.as_slice(), &our_payloads, &object_deser);
                 }
             },

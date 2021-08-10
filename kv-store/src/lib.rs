@@ -4,7 +4,7 @@ use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::{
     timing::{HistogramWrapper, ManualHistogram},
     utils::AddressInfo,
-    CfBuf, ClientSM, Cornflake, Datapath, MsgID, ReceivedPacket, ScatterGather, ServerSM,
+    CfBuf, ClientSM, Cornflake, Datapath, MsgID, ReceivedPkt, ServerSM,
 };
 use hashbrown::HashMap;
 use std::{
@@ -167,7 +167,7 @@ where
 
     fn process_received_msg(
         &mut self,
-        _sga: <<Self as ClientSM>::Datapath as Datapath>::ReceivedPkt,
+        _sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
         rtt: Duration,
     ) -> Result<()> {
         self.recved += 1;
@@ -256,14 +256,14 @@ where
     /// Peforms get request
     fn handle_get(
         &self,
-        pkt: D::ReceivedPkt,
+        pkt: ReceivedPkt<D>,
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
     ) -> Result<(Self::HeaderCtx, Cornflake)>;
 
     fn handle_put(
         &self,
-        pkt: D::ReceivedPkt,
+        pkt: ReceivedPkt<D>,
         map: &mut HashMap<String, CfBuf<D>>,
         num_values: usize,
     ) -> Result<(Self::HeaderCtx, Cornflake)>;
@@ -353,10 +353,7 @@ where
 
     fn process_requests(
         &mut self,
-        sgas: Vec<(
-            <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
-            Duration,
-        )>,
+        sgas: Vec<(ReceivedPkt<<Self as ServerSM>::Datapath>, Duration)>,
         conn: &mut D,
     ) -> Result<()> {
         let mut out_sgas: Vec<(Cornflake, AddressInfo)> = Vec::with_capacity(sgas.len());

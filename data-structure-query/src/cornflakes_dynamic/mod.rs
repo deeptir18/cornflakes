@@ -9,7 +9,7 @@ use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_codegen::utils::dynamic_hdr::*;
 use cornflakes_libos::{
     dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, mem::MmapMetadata, Cornflake, Datapath,
-    DatapathMempoolOptions, PtrAttributes, ReceivedPacket, ScatterGather,
+    DatapathMempoolOptions, PtrAttributes, ReceivedPkt, ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use std::slice;
@@ -232,7 +232,7 @@ where
 
     fn process_msg<'registered, 'normal: 'registered>(
         &self,
-        recved_msg: &'registered D::ReceivedPkt,
+        recved_msg: &'registered ReceivedPkt<D>,
         ctx: &'normal mut Self::Ctx,
         transport_header: usize,
     ) -> Result<Cornflake<'registered, 'normal>> {
@@ -312,7 +312,7 @@ where
             SimpleMessageType::Single => {
                 if self.deserialize_received {
                     let mut object_deser = ds_query_messages::SingleBufferCF::new();
-                    object_deser.deserialize(recved_msg.get_pkt_buffer());
+                    object_deser.deserialize(recved_msg.index(0).as_ref());
                 }
                 let mut single_buffer_cf = ds_query_messages::SingleBufferCF::new();
                 single_buffer_cf.set_message(CFBytes::new(&payloads[0]));
@@ -321,7 +321,7 @@ where
             SimpleMessageType::List(list_size) => {
                 if self.deserialize_received {
                     let mut object_deser = ds_query_messages::ListCF::new();
-                    object_deser.deserialize(recved_msg.get_pkt_buffer());
+                    object_deser.deserialize(recved_msg.index(0).as_ref());
                     let list_field_deser = object_deser.get_messages();
                     tracing::debug!("list field deser length: {}", list_field_deser.len());
                 }
@@ -341,7 +341,7 @@ where
                 TreeDepth::One => {
                     if self.deserialize_received {
                         let mut tree_deser = ds_query_messages::Tree1LCF::new();
-                        tree_deser.deserialize(recved_msg.get_pkt_buffer());
+                        tree_deser.deserialize(recved_msg.index(0).as_ref());
                     }
                     assert!(payloads.len() == 2);
                     let tree_cf = get_tree1l_message(&[0, 1], &payloads);
@@ -350,7 +350,7 @@ where
                 TreeDepth::Two => {
                     if self.deserialize_received {
                         let mut tree_deser = ds_query_messages::Tree2LCF::new();
-                        tree_deser.deserialize(recved_msg.get_pkt_buffer());
+                        tree_deser.deserialize(recved_msg.index(0).as_ref());
                     }
                     let tree_cf = get_tree2l_message(&[0, 1, 2, 3], &payloads);
                     Ok(tree_cf.serialize(ctx_ptr, rte_memcpy))
@@ -358,7 +358,7 @@ where
                 TreeDepth::Three => {
                     if self.deserialize_received {
                         let mut tree_deser = ds_query_messages::Tree3LCF::new();
-                        tree_deser.deserialize(recved_msg.get_pkt_buffer());
+                        tree_deser.deserialize(recved_msg.index(0).as_ref());
                     }
                     let indices: Vec<usize> = (0usize..8usize).collect();
                     let tree_cf = get_tree3l_message(indices.as_slice(), &payloads);
@@ -367,7 +367,7 @@ where
                 TreeDepth::Four => {
                     if self.deserialize_received {
                         let mut tree_deser = ds_query_messages::Tree4LCF::new();
-                        tree_deser.deserialize(recved_msg.get_pkt_buffer());
+                        tree_deser.deserialize(recved_msg.index(0).as_ref());
                     }
                     let indices: Vec<usize> = (0usize..16usize).collect();
                     let tree_cf = get_tree4l_message(indices.as_slice(), &payloads);
@@ -376,7 +376,7 @@ where
                 TreeDepth::Five => {
                     if self.deserialize_received {
                         let mut tree_deser = ds_query_messages::Tree5LCF::new();
-                        tree_deser.deserialize(recved_msg.get_pkt_buffer());
+                        tree_deser.deserialize(recved_msg.index(0).as_ref());
                     }
                     let indices: Vec<usize> = (0usize..32usize).collect();
                     let tree_cf = get_tree5l_message(indices.as_slice(), &payloads);
@@ -597,12 +597,12 @@ where
         Ok(self.sga.contiguous_repr())
     }
 
-    fn check_echoed_payload(&self, recved_msg: &D::ReceivedPkt) -> Result<()> {
+    fn check_echoed_payload(&self, recved_msg: &ReceivedPkt<D>) -> Result<()> {
         let our_payloads = init_payloads_as_vec(&self.server_field_sizes);
         match self.server_message_type {
             SimpleMessageType::Single => {
                 let mut object_deser = ds_query_messages::SingleBufferCF::new();
-                object_deser.deserialize(recved_msg.get_pkt_buffer());
+                object_deser.deserialize(recved_msg.index(0).as_ref());
                 let bytes_vec = object_deser.get_message().to_bytes_vec();
                 assert!(bytes_vec.len() == our_payloads[0].len());
                 assert!(bytes_vec == our_payloads[0]);
@@ -610,7 +610,7 @@ where
             SimpleMessageType::List(list_size) => {
                 assert!(our_payloads.len() == list_size);
                 let mut object_deser = ds_query_messages::ListCF::new();
-                object_deser.deserialize(recved_msg.get_pkt_buffer());
+                object_deser.deserialize(recved_msg.index(0).as_ref());
                 assert!(object_deser.get_messages().len() == our_payloads.len());
                 for (i, payload) in our_payloads.iter().enumerate() {
                     let bytes_vec = object_deser.get_messages()[i].to_bytes_vec();
@@ -625,31 +625,31 @@ where
             SimpleMessageType::Tree(depth) => match depth {
                 TreeDepth::One => {
                     let mut object_deser = ds_query_messages::Tree1LCF::new();
-                    object_deser.deserialize(recved_msg.get_pkt_buffer());
+                    object_deser.deserialize(recved_msg.index(0).as_ref());
                     check_tree1l(&[0usize, 1usize], &our_payloads, &object_deser);
                 }
                 TreeDepth::Two => {
                     let indices: Vec<usize> = (0usize..4usize).collect();
                     let mut object_deser = ds_query_messages::Tree2LCF::new();
-                    object_deser.deserialize(recved_msg.get_pkt_buffer());
+                    object_deser.deserialize(recved_msg.index(0).as_ref());
                     check_tree2l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Three => {
                     let indices: Vec<usize> = (0usize..8usize).collect();
                     let mut object_deser = ds_query_messages::Tree3LCF::new();
-                    object_deser.deserialize(recved_msg.get_pkt_buffer());
+                    object_deser.deserialize(recved_msg.index(0).as_ref());
                     check_tree3l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Four => {
                     let indices: Vec<usize> = (0usize..16usize).collect();
                     let mut object_deser = ds_query_messages::Tree4LCF::new();
-                    object_deser.deserialize(recved_msg.get_pkt_buffer());
+                    object_deser.deserialize(recved_msg.index(0).as_ref());
                     check_tree4l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Five => {
                     let indices: Vec<usize> = (0usize..32usize).collect();
                     let mut object_deser = ds_query_messages::Tree5LCF::new();
-                    object_deser.deserialize(recved_msg.get_pkt_buffer());
+                    object_deser.deserialize(recved_msg.index(0).as_ref());
                     check_tree5l(indices.as_slice(), &our_payloads, &object_deser);
                 }
             },

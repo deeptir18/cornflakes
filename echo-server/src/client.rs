@@ -1,6 +1,8 @@
 use super::CerealizeClient;
 use color_eyre::eyre::{Result, WrapErr};
-use cornflakes_libos::{mem::MmapMetadata, timing::ManualHistogram, ClientSM, Datapath, MsgID};
+use cornflakes_libos::{
+    mem::MmapMetadata, timing::ManualHistogram, ClientSM, Datapath, MsgID, ReceivedPkt,
+};
 use cornflakes_utils::SimpleMessageType;
 use std::{marker::PhantomData, net::Ipv4Addr, time::Duration};
 
@@ -111,7 +113,7 @@ where
 
     fn process_received_msg(
         &mut self,
-        sga: <<Self as ClientSM>::Datapath as Datapath>::ReceivedPkt,
+        sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
         rtt: Duration,
     ) -> Result<()> {
         self.recved += 1;

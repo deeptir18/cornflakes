@@ -19,7 +19,7 @@ mod echo_capnp {
 }
 
 use color_eyre::eyre::{bail, Result};
-use cornflakes_libos::{mem::MmapMetadata, Cornflake, Datapath};
+use cornflakes_libos::{mem::MmapMetadata, Cornflake, Datapath, ReceivedPkt};
 use cornflakes_utils::SimpleMessageType;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -58,7 +58,7 @@ where
     /// Echo the received message into a corresponding scatter-gather array.
     fn process_msg<'registered, 'normal: 'registered>(
         &self,
-        recved_msg: &'registered DatapathImpl::ReceivedPkt,
+        recved_msg: &'registered ReceivedPkt<DatapathImpl>,
         ctx: &'normal mut Self::Ctx,
     ) -> Result<Cornflake<'registered, 'normal>>;
 
@@ -89,7 +89,7 @@ where
     /// produce the payload to echo.
     fn get_msg(&self) -> Result<Vec<u8>>;
     /// check echoed payload
-    fn check_echoed_payload(&self, recved_msg: &DatapathImpl::ReceivedPkt) -> Result<()>;
+    fn check_echoed_payload(&self, recved_msg: &ReceivedPkt<DatapathImpl>) -> Result<()>;
     /// new context
     fn new_context(&self) -> Self::Ctx;
 }

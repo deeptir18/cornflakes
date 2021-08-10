@@ -10,7 +10,7 @@ pub mod echo_messages {
 use super::{get_payloads_as_vec, init_payloads, CerealizeClient, CerealizeMessage};
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
-    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPacket, ScatterGather,
+    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPkt, ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use protobuf::{CodedOutputStream, Message};
@@ -176,16 +176,17 @@ where
 
     fn process_msg<'registered, 'normal: 'registered>(
         &self,
-        recved_msg: &'registered D::ReceivedPkt,
+        recved_msg: &'registered ReceivedPkt<D>,
         ctx: &'normal mut Self::Ctx,
     ) -> Result<Cornflake<'registered, 'normal>> {
         let mut cf = Cornflake::with_capacity(1);
         let mut output_stream = CodedOutputStream::vec(ctx);
         match self.message_type {
             SimpleMessageType::Single => {
-                let object_deser =
-                    echo_messages::SingleBufferProto::parse_from_bytes(recved_msg.get_pkt_buffer())
-                        .wrap_err("Failed to deserialize single buffer proto.")?;
+                let object_deser = echo_messages::SingleBufferProto::parse_from_bytes(
+                    recved_msg.index(0).as_ref(),
+                )
+                .wrap_err("Failed to deserialize single buffer proto.")?;
                 let mut object_ser = echo_messages::SingleBufferProto::new();
                 object_ser.set_message(object_deser.get_message().to_vec());
                 object_ser.write_to(&mut output_stream).wrap_err(
@@ -194,7 +195,7 @@ where
             }
             SimpleMessageType::List(_list_elts) => {
                 let object_deser =
-                    echo_messages::ListProto::parse_from_bytes(recved_msg.get_pkt_buffer())
+                    echo_messages::ListProto::parse_from_bytes(recved_msg.index(0).as_ref())
                         .wrap_err("Failed to deserialize list proto.")?;
                 let mut object_ser = echo_messages::ListProto::new();
                 let list = object_ser.mut_messages();
@@ -208,7 +209,7 @@ where
             SimpleMessageType::Tree(depth) => match depth {
                 TreeDepth::One => {
                     let object_deser =
-                        echo_messages::Tree1LProto::parse_from_bytes(recved_msg.get_pkt_buffer())
+                        echo_messages::Tree1LProto::parse_from_bytes(recved_msg.index(0).as_ref())
                             .wrap_err("Failed to deserialize Tree1LProto.")?;
                     deserialize_tree1l(&object_deser)
                         .write_to(&mut output_stream)
@@ -216,7 +217,7 @@ where
                 }
                 TreeDepth::Two => {
                     let object_deser =
-                        echo_messages::Tree2LProto::parse_from_bytes(recved_msg.get_pkt_buffer())
+                        echo_messages::Tree2LProto::parse_from_bytes(recved_msg.index(0).as_ref())
                             .wrap_err("Failed to deserialize Tree1LProto.")?;
                     deserialize_tree2l(&object_deser)
                         .write_to(&mut output_stream)
@@ -224,7 +225,7 @@ where
                 }
                 TreeDepth::Three => {
                     let object_deser =
-                        echo_messages::Tree3LProto::parse_from_bytes(recved_msg.get_pkt_buffer())
+                        echo_messages::Tree3LProto::parse_from_bytes(recved_msg.index(0).as_ref())
                             .wrap_err("Failed to deserialize Tree1LProto.")?;
                     deserialize_tree3l(&object_deser)
                         .write_to(&mut output_stream)
@@ -232,7 +233,7 @@ where
                 }
                 TreeDepth::Four => {
                     let object_deser =
-                        echo_messages::Tree4LProto::parse_from_bytes(recved_msg.get_pkt_buffer())
+                        echo_messages::Tree4LProto::parse_from_bytes(recved_msg.index(0).as_ref())
                             .wrap_err("Failed to deserialize Tree1LProto.")?;
                     deserialize_tree4l(&object_deser)
                         .write_to(&mut output_stream)
@@ -240,7 +241,7 @@ where
                 }
                 TreeDepth::Five => {
                     let object_deser =
-                        echo_messages::Tree5LProto::parse_from_bytes(recved_msg.get_pkt_buffer())
+                        echo_messages::Tree5LProto::parse_from_bytes(recved_msg.index(0).as_ref())
                             .wrap_err("Failed to deserialize Tree1LProto.")?;
                     deserialize_tree5l(&object_deser)
                         .write_to(&mut output_stream)
@@ -380,15 +381,14 @@ where
         Ok(self.sga.contiguous_repr())
     }
 
-    fn check_echoed_payload(&self, recved_msg: &D::ReceivedPkt) -> Result<()> {
+    fn check_echoed_payload(&self, recved_msg: &ReceivedPkt<D>) -> Result<()> {
         let our_payloads = get_payloads_as_vec(&self.payload_ptrs);
         match self.message_type {
             SimpleMessageType::Single => {
-                let object_deser =
-                    echo_messages::SingleBufferProto::parse_from_bytes(recved_msg.get_pkt_buffer())
-                        .wrap_err(
-                            "Failed to deserialize received packet into SingleBufferProto.",
-                        )?;
+                let object_deser = echo_messages::SingleBufferProto::parse_from_bytes(
+                    recved_msg.index(0).as_ref(),
+                )
+                .wrap_err("Failed to deserialize received packet into SingleBufferProto.")?;
                 let bytes_vec = object_deser.get_message().to_vec();
                 assert!(bytes_vec.len() == our_payloads[0].len());
                 assert!(bytes_vec == our_payloads[0]);
@@ -396,7 +396,7 @@ where
             SimpleMessageType::List(list_size) => {
                 assert!(our_payloads.len() == list_size);
                 let object_deser =
-                    echo_messages::ListProto::parse_from_bytes(recved_msg.get_pkt_buffer())
+                    echo_messages::ListProto::parse_from_bytes(recved_msg.index(0).as_ref())
                         .wrap_err("Failed to deserialize received packet into ListProto.")?;
                 assert!(object_deser.get_messages().len() == list_size);
                 for (i, payload) in our_payloads.iter().enumerate() {
@@ -407,34 +407,34 @@ where
             SimpleMessageType::Tree(depth) => match depth {
                 TreeDepth::One => {
                     let object_deser =
-                        echo_messages::Tree1LProto::parse_from_bytes(recved_msg.get_pkt_buffer())
+                        echo_messages::Tree1LProto::parse_from_bytes(recved_msg.index(0).as_ref())
                             .wrap_err("Failed to deserialize received packet into Tree1LProto.")?;
                     check_tree1l(&[0, 1], &our_payloads, &object_deser);
                 }
                 TreeDepth::Two => {
                     let object_deser =
-                        echo_messages::Tree2LProto::parse_from_bytes(recved_msg.get_pkt_buffer())
+                        echo_messages::Tree2LProto::parse_from_bytes(recved_msg.index(0).as_ref())
                             .wrap_err("Failed to deserialize received packet into Tree2LProto.")?;
                     check_tree2l(&[0, 1, 2, 3], &our_payloads, &object_deser);
                 }
                 TreeDepth::Three => {
                     let indices: Vec<usize> = (0usize..8usize).collect();
                     let object_deser =
-                        echo_messages::Tree3LProto::parse_from_bytes(recved_msg.get_pkt_buffer())
+                        echo_messages::Tree3LProto::parse_from_bytes(recved_msg.index(0).as_ref())
                             .wrap_err("Failed to deserialize received packet into Tree3LProto.")?;
                     check_tree3l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Four => {
                     let indices: Vec<usize> = (0usize..16usize).collect();
                     let object_deser =
-                        echo_messages::Tree4LProto::parse_from_bytes(recved_msg.get_pkt_buffer())
+                        echo_messages::Tree4LProto::parse_from_bytes(recved_msg.index(0).as_ref())
                             .wrap_err("Failed to deserialize received packet into Tree4LProto.")?;
                     check_tree4l(indices.as_slice(), &our_payloads, &object_deser);
                 }
                 TreeDepth::Five => {
                     let indices: Vec<usize> = (0usize..32usize).collect();
                     let object_deser =
-                        echo_messages::Tree5LProto::parse_from_bytes(recved_msg.get_pkt_buffer())
+                        echo_messages::Tree5LProto::parse_from_bytes(recved_msg.index(0).as_ref())
                             .wrap_err("Failed to deserialize received packet into Tree5LProto.")?;
                     check_tree5l(indices.as_slice(), &our_payloads, &object_deser);
                 }

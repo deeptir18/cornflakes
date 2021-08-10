@@ -17,11 +17,12 @@ use std::{
     io::Write,
     net::Ipv4Addr,
     ops::{Fn, FnMut},
-    slice::Iter,
+    slice::{Iter, IterMut},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use timing::HistogramWrapper;
+use utils::AddressInfo;
 
 pub type MsgID = u32;
 
@@ -64,18 +65,6 @@ pub trait ScatterGather {
 
     /// Returns a buffer where all the scatter-gather entries are copied into a contiguous array.
     fn contiguous_repr(&self) -> Vec<u8>;
-}
-
-/// Trait defining functionality any _received_ packets should have.
-/// So the receiver can access address and any other relevant information.
-pub trait ReceivedPacket {
-    fn get_addr(&self) -> &utils::AddressInfo;
-
-    fn get_pkt_buffer(&self) -> &[u8];
-
-    fn get_corn_type(&self) -> CornType;
-
-    fn len(&self) -> usize;
 }
 
 /// Whether an underlying buffer is borrowed or
@@ -483,6 +472,8 @@ where
     D: Datapath,
 {
     buf: D::DatapathPkt,
+    offset: usize,
+    len: usize,
 }
 
 impl<D> CfBuf<D>
@@ -490,7 +481,42 @@ where
     D: Datapath,
 {
     pub fn new(buf: D::DatapathPkt) -> Self {
-        CfBuf { buf: buf }
+        CfBuf {
+            len: buf.buf_size(),
+            buf: buf,
+            offset: 0,
+        }
+    }
+
+    pub fn clone_with_bounds(&self, offset: usize, len: usize) -> Result<CfBuf<D>> {
+        if offset < self.offset {
+            bail!(
+                "Offset arg: {} cannot be less than current offset: {}",
+                offset,
+                self.offset
+            );
+        }
+        if len > (self.len - (self.offset - offset)) {
+            bail!(
+                "Invalid length: {}; length must be <= {}",
+                len,
+                (self.len - (self.offset - offset)),
+            );
+        }
+        let mut buf = self.clone();
+        buf.set_len(len);
+        buf.set_offset(offset);
+        Ok(buf)
+    }
+
+    /// Assumes len is valid
+    pub fn set_len(&mut self, len: usize) {
+        self.len = len;
+    }
+
+    /// Assumes offset is valid
+    pub fn set_offset(&mut self, offset: usize) {
+        self.offset = offset;
     }
 
     pub fn allocate(conn: &mut D, size: usize, alignment: usize) -> Result<Self> {
@@ -498,11 +524,28 @@ where
         // TODO: should we be allocating the ref count here?
         // Or should the "datapath" be doing it
         buf.increment_rc();
-        Ok(CfBuf { buf: buf })
+        Ok(CfBuf {
+            len: buf.buf_size(),
+            buf: buf,
+            offset: 0,
+        })
     }
 
     pub fn len(&self) -> usize {
-        self.buf.as_ref().len()
+        self.len
+    }
+}
+
+impl<D> Default for CfBuf<D>
+where
+    D: Datapath,
+{
+    fn default() -> Self {
+        CfBuf {
+            buf: D::DatapathPkt::default(),
+            offset: 0,
+            len: 0,
+        }
     }
 }
 
@@ -513,6 +556,8 @@ where
     fn clone(&self) -> CfBuf<D> {
         CfBuf {
             buf: self.buf.clone(),
+            offset: self.offset,
+            len: self.len,
         }
     }
 }
@@ -537,7 +582,7 @@ where
     D: Datapath,
 {
     fn as_ref(&self) -> &[u8] {
-        self.buf.as_ref()
+        &self.buf.as_ref()[self.offset..(self.offset + self.len)]
     }
 }
 
@@ -546,7 +591,7 @@ where
     D: Datapath,
 {
     fn as_mut(&mut self) -> &mut [u8] {
-        self.buf.as_mut()
+        &mut self.buf.as_mut()[self.offset..(self.offset + self.len)]
     }
 }
 
@@ -574,14 +619,112 @@ pub trait RefCnt {
     }
 }
 
+pub struct ReceivedPkt<D>
+where
+    D: Datapath,
+{
+    pkts: Vec<D::DatapathPkt>,
+    id: MsgID,
+    addr: AddressInfo,
+}
+
+impl<D> ReceivedPkt<D>
+where
+    D: Datapath,
+{
+    pub fn new(pkts: Vec<D::DatapathPkt>, id: MsgID, addr: AddressInfo) -> Self {
+        ReceivedPkt {
+            pkts: pkts,
+            id: id,
+            addr: addr,
+        }
+    }
+
+    pub fn get_id(&self) -> MsgID {
+        self.id
+    }
+
+    pub fn get_addr(&self) -> AddressInfo {
+        self.addr
+    }
+
+    pub fn index(&self, idx: usize) -> &D::DatapathPkt {
+        &self.pkts[idx]
+    }
+
+    pub fn iter(&self) -> Iter<D::DatapathPkt> {
+        self.pkts.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> IterMut<D::DatapathPkt> {
+        self.pkts.iter_mut()
+    }
+
+    pub fn num_segments(&self) -> usize {
+        self.pkts.len()
+    }
+
+    pub fn data_len(&self) -> usize {
+        let mut ret: usize = 0;
+        for pkt in self.pkts.iter() {
+            ret += pkt.as_ref().len();
+        }
+        ret
+    }
+
+    pub fn contiguous_repr(&self) -> Vec<u8> {
+        let mut ret: Vec<u8> = Vec::new();
+        for pkt in self.pkts.iter() {
+            ret.append(&mut pkt.as_ref().to_vec());
+        }
+        ret
+    }
+
+    /// Returns the index and offset within index a certain index (into the entire array) appears
+    pub fn index_at_offset(&self, offset: usize) -> (usize, usize) {
+        let mut cur_idx_size = 0;
+        for idx in 0..self.num_segments() {
+            if (cur_idx_size + self.index(idx).buf_size()) > offset {
+                return (idx, (offset - cur_idx_size));
+            }
+            cur_idx_size += self.index(idx).buf_size();
+        }
+        // TODO: possibly use results for better error handling
+        tracing::warn!(
+            data_len = self.data_len(),
+            offset = offset,
+            "Passed in offset larger than data_len"
+        );
+        unreachable!();
+    }
+}
+
+impl<D> IntoIterator for ReceivedPkt<D>
+where
+    D: Datapath,
+{
+    type Item = D::DatapathPkt;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.pkts.into_iter()
+    }
+}
+
 /// Set of functions each datapath must implement.
 /// Datapaths must be able to send a receive packets,
 /// as well as optionally keep track of per-packet timeouts.
 pub trait Datapath {
-    /// Each datapath must expose a received packet type that implements the ScatterGather trait
-    /// and the ReceivedPacket trait.
-    type ReceivedPkt: ScatterGather + ReceivedPacket;
-    type DatapathPkt: AsRef<[u8]> + AsMut<[u8]> + RefCnt + PartialEq + Eq + Clone + std::fmt::Debug;
+    /// Base datapath buffer type.
+    type DatapathPkt: AsRef<[u8]>
+        + AsMut<[u8]>
+        + RefCnt
+        + PartialEq
+        + Eq
+        + Clone
+        + std::fmt::Debug
+        + Default
+        + PtrAttributes;
 
     /// Send a single buffer to the specified address.
     fn push_buf(&mut self, buf: (MsgID, &[u8]), addr: utils::AddressInfo) -> Result<()>;
@@ -592,7 +735,9 @@ pub trait Datapath {
     /// Receive the next packet (from any) underlying `connection`, if any.
     /// Application is responsible for freeing any memory referred to by Cornflake.
     /// None response means no packet received.
-    fn pop(&mut self) -> Result<Vec<(Self::ReceivedPkt, Duration)>>;
+    fn pop(&mut self) -> Result<Vec<(ReceivedPkt<Self>, Duration)>>
+    where
+        Self: Sized;
 
     /// Check if any outstanding packets have timed-out.
     fn timed_out(&self, time_out: Duration) -> Result<Vec<MsgID>>;
@@ -672,7 +817,7 @@ pub trait ClientSM {
     /// What to do with a received request.
     fn process_received_msg(
         &mut self,
-        sga: <<Self as ClientSM>::Datapath as Datapath>::ReceivedPkt,
+        sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
         rtt: Duration,
     ) -> Result<()>;
 
@@ -781,10 +926,7 @@ pub trait ServerSM {
     /// * send_fn - A send callback to send a response to this request back.
     fn process_requests(
         &mut self,
-        sga: Vec<(
-            <<Self as ServerSM>::Datapath as Datapath>::ReceivedPkt,
-            Duration,
-        )>,
+        sga: Vec<(ReceivedPkt<<Self as ServerSM>::Datapath>, Duration)>,
         datapath: &mut Self::Datapath,
     ) -> Result<()>;
 

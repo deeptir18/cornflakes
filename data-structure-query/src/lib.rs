@@ -18,7 +18,7 @@ mod ds_query_capnp {
 }
 
 use color_eyre::eyre::{bail, Result};
-use cornflakes_libos::{mem::MmapMetadata, Cornflake, Datapath};
+use cornflakes_libos::{mem::MmapMetadata, Cornflake, Datapath, ReceivedPkt};
 use cornflakes_utils::SimpleMessageType;
 use std::{io::Write, iter::repeat, slice};
 
@@ -65,7 +65,7 @@ where
     /// Send back message type in a scatter-gather array.
     fn process_msg<'registered, 'normal: 'registered>(
         &self,
-        recved_msg: &'registered DatapathImpl::ReceivedPkt,
+        recved_msg: &'registered ReceivedPkt<DatapathImpl>,
         ctx: &'normal mut Self::Ctx,
         transport_header: usize,
     ) -> Result<Cornflake<'registered, 'normal>>;
@@ -103,7 +103,7 @@ where
     /// produce the sga to echo
     fn get_msg(&self) -> Result<Vec<u8>>;
     /// check echoed payload: based on server message type
-    fn check_echoed_payload(&self, recved_msg: &DatapathImpl::ReceivedPkt) -> Result<()>;
+    fn check_echoed_payload(&self, recved_msg: &ReceivedPkt<DatapathImpl>) -> Result<()>;
     /// new context
     fn new_context(&self) -> Self::Ctx;
 }

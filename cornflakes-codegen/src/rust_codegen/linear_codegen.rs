@@ -772,7 +772,7 @@ fn add_struct_definition(
 }
 
 fn add_dependencies(repr: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
-    compiler.add_dependency("cornflakes_codegen::utils::dynamic_hdr::*")?;
+    compiler.add_dependency("cornflakes_codegen::utils::{ObjectRef, dynamic_hdr::*}")?;
     compiler.add_dependency("cornflakes_libos::CornPtr")?;
     compiler.add_dependency("cornflakes_codegen::utils::dynamic_hdr::HeaderRepr")?;
     compiler.add_dependency("std::slice")?;
