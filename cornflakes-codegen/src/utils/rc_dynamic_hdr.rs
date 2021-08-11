@@ -58,7 +58,7 @@ where
     ///     * size -> In the case of a fixed-sized list, the number of elements to deserialize.
     fn inner_deserialize(
         &mut self,
-        pkt: &ReceivedPkt<D>,
+        pkt: &'a ReceivedPkt<D>,
         relative_offset: usize,
         size: usize,
     ) -> Result<()>;
@@ -74,7 +74,20 @@ where
 
     fn serialize(
         &self,
-        header_buffer: &'a mut [u8],
+        copy_func: unsafe fn(
+            dst: *mut ::std::os::raw::c_void,
+            src: *const ::std::os::raw::c_void,
+            len: usize,
+        ),
+    ) -> Result<(Vec<u8>, RcCornflake<'a, D>)> {
+        let mut header_buffer_vec = self.init_header_buffer();
+        let cf = self.serialize_with_context(header_buffer_vec.as_mut_slice(), copy_func)?;
+        Ok((header_buffer_vec, cf))
+    }
+
+    fn serialize_with_context(
+        &self,
+        header_buffer: &mut [u8],
         copy_func: unsafe fn(
             dst: *mut ::std::os::raw::c_void,
             src: *const ::std::os::raw::c_void,
@@ -85,6 +98,9 @@ where
         // assert that the header buffer size is big enough
         assert!(header_buffer.len() >= self.dynamic_header_size());
         let header_ptr = header_buffer.as_mut_ptr();
+
+        // put in a filler buffer at the front
+        rc_cornflake.add_entry(RcCornPtr::RawRef(&[]));
 
         // get all the pointers, and fill in the header
         let mut rc_cornptrs = self
@@ -119,27 +135,50 @@ where
 
     /// Deserializes the packet into this object.
     /// Received packet could be a scatter-gather array.
-    fn deserialize(&mut self, buf: ReceivedPkt<D>) -> Result<()> {
-        self.inner_deserialize(&buf, 0, buf.data_len())
+    fn deserialize(&mut self, pkt: &'a ReceivedPkt<D>) -> Result<()> {
+        self.inner_deserialize(pkt, 0, pkt.data_len())
             .wrap_err("Failed to call inner_deserialize on top level object")?;
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub struct CFString<'a> {
+#[derive(Debug, PartialEq, Eq, Copy)]
+pub struct CFString<'a, D>
+where
+    D: Datapath,
+{
     pub ptr: &'a [u8],
+    _marker: PhantomData<D>,
 }
 
-impl<'a> CFString<'a> {
+impl<'a, D> Clone for CFString<'a, D>
+where
+    D: Datapath,
+{
+    fn clone(&self) -> Self {
+        CFString {
+            ptr: self.ptr,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, D> CFString<'a, D>
+where
+    D: Datapath,
+{
     pub fn new(ptr: &'a str) -> Self {
         CFString {
             ptr: ptr.as_bytes(),
+            _marker: PhantomData,
         }
     }
 
     pub fn new_from_bytes(ptr: &'a [u8]) -> Self {
-        CFString { ptr: ptr }
+        CFString {
+            ptr: ptr,
+            _marker: PhantomData,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -152,15 +191,19 @@ impl<'a> CFString<'a> {
     }
 }
 
-impl<'a> Default for CFString<'a> {
+impl<'a, D> Default for CFString<'a, D>
+where
+    D: Datapath,
+{
     fn default() -> Self {
         CFString {
             ptr: Default::default(),
+            _marker: PhantomData,
         }
     }
 }
 
-impl<'a, D> HeaderRepr<'a, D> for CFString<'a>
+impl<'a, D> HeaderRepr<'a, D> for CFString<'a, D>
 where
     D: Datapath,
 {
@@ -193,53 +236,35 @@ where
     /// could show up in any of the entries of the scatter-gather array.
     fn inner_deserialize(
         &mut self,
-        pkt: &ReceivedPkt<D>,
+        pkt: &'a ReceivedPkt<D>,
         relative_offset: usize,
-        _size: usize,
+        size: usize,
     ) -> Result<()> {
-        let (header_seg, off_within_header_seg) = pkt.index_at_offset(relative_offset);
-        let header_segment = pkt.index(header_seg);
-        // TODO: have better error handling here -- error out if there is not if length in the
-        // buffer
-
-        ensure!(
-            (header_segment.buf_size() - off_within_header_seg) >= (SIZE_FIELD + OFFSET_FIELD),
-            "Not enough space in header segment for CfString header info."
-        );
-        let header_buf = unsafe {
-            header_segment
-                .as_ref()
-                .as_ptr()
-                .offset(off_within_header_seg as isize)
-        };
-        let object_ref = ObjectRef(header_buf);
-        let payload_offset = object_ref.get_offset();
-        let payload_size = object_ref.get_size();
-
-        let (payload_seg, off_within_payload_seg) = pkt.index_at_offset(payload_offset);
-        let payload_segment = pkt.index(payload_seg);
-        ensure!(
-            (payload_segment.buf_size() - off_within_payload_seg) >= payload_size,
-            "Not enough space in payload segment for CfString payload."
-        );
-        let payload_buf = unsafe {
-            payload_segment
-                .as_ref()
-                .as_ptr()
-                .offset(off_within_payload_seg as isize)
-        };
-        self.ptr = unsafe { slice::from_raw_parts(payload_buf, payload_size) };
+        let header_slice = pkt.contiguous_slice(relative_offset, size)?;
+        let object_ref = ObjectRef(header_slice.as_ptr());
+        self.ptr = pkt.contiguous_slice(object_ref.get_offset(), object_ref.get_size())?;
         Ok(())
     }
 }
 
 /// Ref counted bytes buffer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct RcBytes<D>
 where
     D: Datapath,
 {
-    pub ptr: CfBuf<D>,
+    ptr: CfBuf<D>,
+}
+
+impl<D> Clone for RcBytes<D>
+where
+    D: Datapath,
+{
+    fn clone(&self) -> RcBytes<D> {
+        RcBytes {
+            ptr: self.ptr.clone(),
+        }
+    }
 }
 
 impl<D> RcBytes<D>
@@ -305,23 +330,12 @@ where
     /// could show up in any of the entries of the scatter-gather array.
     fn inner_deserialize(
         &mut self,
-        pkt: &ReceivedPkt<D>,
+        pkt: &'a ReceivedPkt<D>,
         relative_offset: usize,
-        _size: usize,
+        size: usize,
     ) -> Result<()> {
-        let (header_seg, off_within_header_seg) = pkt.index_at_offset(relative_offset);
-        let header_segment = pkt.index(header_seg);
-        ensure!(
-            (header_segment.buf_size() - off_within_header_seg) >= (SIZE_FIELD + OFFSET_FIELD),
-            "Not enough space in header segment for RcBytes header info."
-        );
-        let header_buf = unsafe {
-            header_segment
-                .as_ref()
-                .as_ptr()
-                .offset(off_within_header_seg as isize)
-        };
-        let object_ref = ObjectRef(header_buf);
+        let header_slice = pkt.contiguous_slice(relative_offset, size)?;
+        let object_ref = ObjectRef(header_slice.as_ptr());
         let payload_offset = object_ref.get_offset();
         let payload_size = object_ref.get_size();
 
@@ -447,7 +461,7 @@ where
 
     fn inner_deserialize(
         &mut self,
-        pkt: &ReceivedPkt<D>,
+        pkt: &'a ReceivedPkt<D>,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
@@ -578,29 +592,15 @@ where
     // Re-initializing owned list is not 0-copy. 0-copy only works for ref-list.
     fn inner_deserialize(
         &mut self,
-        pkt: &ReceivedPkt<D>,
+        pkt: &'a ReceivedPkt<D>,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
         self.num_set = size;
         self.num_space = size;
         self.list_ptr = BytesMut::with_capacity(size * size_of::<T>());
-        // copy the bytes from the buf to the list_ptr
-        let (payload_seg, payload_off) = pkt.index_at_offset(relative_offset);
-        let payload_segment = pkt.index(payload_seg);
-
-        // For now, assume that the list must be contiguous within a segment
-        ensure!((payload_segment.buf_size() - payload_off) >= size * (size_of::<T>()), format!("Not enough space in payload segment {} with length {} (at offset {}), for {:?} list of length {}.", payload_seg, payload_segment.buf_size(), payload_off, std::any::type_name::<T>(), size));
-
-        let payload_ptr = unsafe {
-            payload_segment
-                .as_ref()
-                .as_ptr()
-                .offset(payload_off as isize)
-        };
-        self.list_ptr
-            .chunk_mut()
-            .copy_from_slice(unsafe { slice::from_raw_parts(payload_ptr, size * size_of::<T>()) });
+        let payload_slice = pkt.contiguous_slice(relative_offset, size * size_of::<T>())?;
+        self.list_ptr.chunk_mut().copy_from_slice(payload_slice);
 
         Ok(())
     }
@@ -706,24 +706,13 @@ where
 
     fn inner_deserialize(
         &mut self,
-        pkt: &ReceivedPkt<D>,
+        pkt: &'a ReceivedPkt<D>,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
         self.num_space = size;
-        let (payload_seg, payload_off) = pkt.index_at_offset(relative_offset);
-        // payload must be contiguous in the packet: check there's enough space
-        // For now, assume that the list must be contiguous within a segment
-        let payload_segment = pkt.index(payload_seg);
-        ensure!((payload_segment.buf_size() - payload_off) >= size * (size_of::<T>()), format!("Not enough space in payload segment {} with length {} (at offset {}), for {:?} list of length {}.", payload_seg, payload_segment.buf_size(), payload_off, std::any::type_name::<T>(), size));
-
-        let buf = unsafe {
-            payload_segment
-                .as_ref()
-                .as_ptr()
-                .offset(payload_off as isize)
-        };
-        self.list_ptr = buf as _;
+        let payload_slice = pkt.contiguous_slice(relative_offset, size * (size_of::<T>()))?;
+        self.list_ptr = payload_slice.as_ptr() as _;
         Ok(())
     }
 }
@@ -856,7 +845,7 @@ where
 
     fn inner_deserialize(
         &mut self,
-        pkt: &ReceivedPkt<D>,
+        pkt: &'a ReceivedPkt<D>,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
@@ -870,23 +859,9 @@ where
                 elt.inner_deserialize(pkt, T::CONSTANT_HEADER_SIZE, cur_header_offset)?;
                 elts.push(elt);
             } else {
-                let (header_seg, header_off) = pkt.index_at_offset(cur_header_offset);
-                let header_segment = pkt.index(header_seg);
-                ensure!(
-                    (header_segment.buf_size() - header_off) >= T::CONSTANT_HEADER_SIZE,
-                    format!("Not enough space in header segment {} with length {} (at off {}) for constant header portion of Type {}, sized {}", header_seg, header_segment.buf_size(), header_off, std::any::type_name::<T>(), T::CONSTANT_HEADER_SIZE)
-                );
-
-                let cur_header_ptr =
-                    unsafe { header_segment.as_ref().as_ptr().offset(header_off as isize) };
-                let object_ref = ObjectRef(cur_header_ptr);
-
-                let (payload_seg, payload_off) = pkt.index_at_offset(object_ref.get_offset());
-                let payload_segment = pkt.index(payload_seg);
-                ensure!(
-                    (payload_segment.buf_size() - payload_off) >= object_ref.get_size(),
-                    format!("Not enough space in payload segment {} with length {} (at off {}) for dynamic object {}, sized {}", payload_seg, payload_segment.buf_size(), payload_off, std::any::type_name::<T>(), T::CONSTANT_HEADER_SIZE)
-                );
+                let header_slice =
+                    pkt.contiguous_slice(cur_header_offset, T::CONSTANT_HEADER_SIZE)?;
+                let object_ref = ObjectRef(header_slice.as_ptr());
 
                 let mut elt = T::default();
                 elt.inner_deserialize(pkt, object_ref.get_size(), object_ref.get_offset())?;

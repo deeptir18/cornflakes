@@ -1,10 +1,11 @@
+pub mod cornflakes_dynamic;
 pub mod ycsb_parser;
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::{
     timing::{HistogramWrapper, ManualHistogram},
     utils::AddressInfo,
-    CfBuf, ClientSM, Cornflake, Datapath, MsgID, ReceivedPkt, ServerSM,
+    CfBuf, ClientSM, Datapath, MsgID, RcCornflake, ReceivedPkt, ServerSM,
 };
 use hashbrown::HashMap;
 use std::{
@@ -254,22 +255,26 @@ where
         Self: Sized;
 
     /// Peforms get request
-    fn handle_get(
+    fn handle_get<'a>(
         &self,
         pkt: ReceivedPkt<D>,
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
-    ) -> Result<(Self::HeaderCtx, Cornflake)>;
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)>;
 
-    fn handle_put(
+    fn handle_put<'a>(
         &self,
         pkt: ReceivedPkt<D>,
         map: &mut HashMap<String, CfBuf<D>>,
         num_values: usize,
-    ) -> Result<(Self::HeaderCtx, Cornflake)>;
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)>;
 
-    /// Integrates the header ctx object into the cornflake.
-    fn process_header(&self, ctx: &Self::HeaderCtx, cornflake: &mut Cornflake) -> Result<()>;
+    // Integrates the header ctx object into the cornflake.
+    fn process_header<'a>(
+        &self,
+        ctx: &'a Self::HeaderCtx,
+        cornflake: &mut RcCornflake<'a, D>,
+    ) -> Result<()>;
 }
 
 pub struct KVServer<S, D>
@@ -356,7 +361,7 @@ where
         sgas: Vec<(ReceivedPkt<<Self as ServerSM>::Datapath>, Duration)>,
         conn: &mut D,
     ) -> Result<()> {
-        let mut out_sgas: Vec<(Cornflake, AddressInfo)> = Vec::with_capacity(sgas.len());
+        let mut out_sgas: Vec<(RcCornflake<D>, AddressInfo)> = Vec::with_capacity(sgas.len());
         let mut contexts: Vec<S::HeaderCtx> = Vec::default();
         for (in_sga, _) in sgas.into_iter() {
             // process the framing in the msg
@@ -376,13 +381,18 @@ where
                 }
             };
             let addr = in_sga.get_addr().clone();
-            let (header_ctx, mut cf) = match msg_type {
+            let (header_ctx, cf) = match msg_type {
                 MsgType::Get(size) => self.serializer.handle_get(in_sga, &self.map, size),
                 MsgType::Put(size) => self.serializer.handle_put(in_sga, &mut self.map, size),
             }?;
-            self.serializer.process_header(&header_ctx, &mut cf)?;
             contexts.push(header_ctx);
             out_sgas.push((cf, addr));
+        }
+
+        for i in 0..out_sgas.len() {
+            let (cf, _addr) = &mut out_sgas[i];
+            let ctx = &contexts[i];
+            self.serializer.process_header(ctx, cf)?;
         }
 
         conn.push_sgas(&out_sgas)

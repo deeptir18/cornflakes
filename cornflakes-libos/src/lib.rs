@@ -11,7 +11,7 @@ pub mod mem;
 pub mod timing;
 pub mod utils;
 
-use color_eyre::eyre::{bail, Result, WrapErr};
+use color_eyre::eyre::{ensure, Result, WrapErr};
 use mem::MmapMetadata;
 use std::{
     io::Write,
@@ -65,6 +65,9 @@ pub trait ScatterGather {
 
     /// Returns a buffer where all the scatter-gather entries are copied into a contiguous array.
     fn contiguous_repr(&self) -> Vec<u8>;
+
+    /// Replaces an index with another element.
+    fn replace(&mut self, idx: usize, entry: Self::Ptr);
 }
 
 /// Whether an underlying buffer is borrowed or
@@ -218,6 +221,11 @@ impl<'registered, 'normal> ScatterGather for Cornflake<'registered, 'normal> {
         }
         ret
     }
+
+    fn replace(&mut self, index: usize, entry: CornPtr<'registered, 'normal>) {
+        assert!(index <= self.num_filled);
+        self.entries[index] = entry;
+    }
 }
 
 impl<'registered, 'normal> Cornflake<'registered, 'normal> {
@@ -255,14 +263,12 @@ impl<'registered, 'normal> Cornflake<'registered, 'normal> {
     }
 
     pub fn get(&self, idx: usize) -> Result<&CornPtr<'registered, 'normal>> {
-        if idx >= self.entries.len() {
-            bail!(
-                "Trying to get {} idx from CornPtr, but it only has length {}.",
-                idx,
-                self.entries.len()
-            );
-        }
-
+        ensure!(
+            idx >= self.entries.len(),
+            "Trying to get {} idx from CornPtr, but it only has length {}.",
+            idx,
+            self.entries.len()
+        );
         Ok(&self.entries[idx])
     }
 }
@@ -344,7 +350,7 @@ where
     }
 }
 
-#[derive(Default, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RcCornflake<'a, D>
 where
     D: Datapath,
@@ -359,6 +365,21 @@ where
     num_refcnted: usize,
     /// Number of total filled entries
     num_filled: usize,
+}
+
+impl<'a, D> Default for RcCornflake<'a, D>
+where
+    D: Datapath,
+{
+    fn default() -> Self {
+        RcCornflake {
+            id: MsgID::default(),
+            entries: Vec::default(),
+            data_size: 0,
+            num_refcnted: 0,
+            num_filled: 0,
+        }
+    }
 }
 
 impl<'a, D> RcCornflake<'a, D>
@@ -464,6 +485,11 @@ where
         }
         ret
     }
+
+    fn replace(&mut self, index: usize, entry: RcCornPtr<'a, D>) {
+        assert!(index <= self.num_filled);
+        self.entries[index] = entry;
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -499,20 +525,18 @@ where
     }
 
     pub fn clone_with_bounds(&self, offset: usize, len: usize) -> Result<CfBuf<D>> {
-        if offset < self.offset {
-            bail!(
-                "Offset arg: {} cannot be less than current offset: {}",
-                offset,
-                self.offset
-            );
-        }
-        if len > (self.len - (self.offset - offset)) {
-            bail!(
-                "Invalid length: {}; length must be <= {}",
-                len,
-                (self.len - (self.offset - offset)),
-            );
-        }
+        ensure!(
+            offset < self.offset,
+            "Offset arg: {} cannot be less than current offset: {}",
+            offset,
+            self.offset
+        );
+        ensure!(
+            len > (self.len - (self.offset - offset)),
+            "Invalid length: {}; length must be <= {}",
+            len,
+            (self.len - (self.offset - offset))
+        );
         let mut buf = self.clone();
         buf.set_len(len);
         buf.set_offset(offset);
@@ -706,6 +730,18 @@ where
             "Passed in offset larger than data_len"
         );
         unreachable!();
+    }
+
+    /// Returns a contiguous slice in the packet.
+    /// Returns an error if the given offset and length cannot create a contiguous slice (e.g.,
+    /// would span two segments).
+    pub fn contiguous_slice(&self, offset: usize, len: usize) -> Result<&[u8]> {
+        let (seg, seg_off) = self.index_at_offset(offset);
+        ensure!(
+            (self.index(seg).buf_size() - seg_off) >= len,
+            "Given params cannot create a contiguous slice, would span two boundaries."
+        );
+        Ok(&(self.index(seg).as_ref()[seg_off..(seg_off + len)]))
     }
 }
 

@@ -1,19 +1,22 @@
 use color_eyre::eyre::{bail, Result, WrapErr};
 pub mod hardcoded_cf;
 
-pub mod kv_messages {
+/*pub mod kv_messages {
     include!(concat!(env!("OUT_DIR"), "/kv_cf_dynamic.rs"));
-}
+}*/
 
 use super::{ycsb_parser::YCSBRequest, KVSerializer, SerializedRequestGenerator};
+use cornflakes_codegen::utils::rc_dynamic_hdr::HeaderRepr;
 use cornflakes_libos::{
-    dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, Cornflake, ReceivedPacket, ScatterGather,
+    dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, CfBuf, Datapath, RcCornPtr, RcCornflake,
+    ReceivedPkt, ScatterGather,
 };
+use hashbrown::HashMap;
 
 // empty object
 pub struct CornflakesDynamicSerializer;
 
-impl KVSerializer<D> for CornflakesDynamicSerializer
+impl<D> KVSerializer<D> for CornflakesDynamicSerializer
 where
     D: Datapath,
 {
@@ -26,35 +29,42 @@ where
         Ok(CornflakesDynamicSerializer {})
     }
 
-    fn handle_get(
+    fn handle_get<'a>(
         &self,
         pkt: ReceivedPkt<D>,
-        map: &HashMap<String, CfBuf<D>>,
+        _map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
-    ) -> Result<(Self::HeaderCtx, Cornflake)> {
-        /*match num_values {
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
+        match num_values {
             0 => {
                 bail!("Number of get values cannot be 0");
             }
             1 => {
-                let mut get_request = kv_messages: GetReq::new();
-                get_request.deserialize(&pkt.get_pkt_buffer());
+                let mut get_request = hardcoded_cf::GetReq::<D>::new();
+                get_request.deserialize(&pkt)?;
+                let value = match map.get(
 
-                let mut response = kv_messages::GetResp::new();
+                let mut response = hardcoded_cf::GetResp::<D>::new();
                 response.set_id(get_request.get_id());
-            }
-            x => {}
-        }*/
 
-        Ok((Vec::default(), Cornflake::default()))
+                // serialize the request
+                let (header_vec, cf) = response.serialize(rte_memcpy)?;
+                return Ok((header_vec, cf));
+            }
+            _x => {
+                bail!("Not implemented");
+            }
+        }
+
+        //Ok((Vec::default(), RcCornflake::default()))
     }
 
-    fn handle_put(
+    fn handle_put<'a>(
         &self,
-        pkt: ReceivedPkt<D>,
-        map: &mut HashMap<String, CfBuf<D>>,
-        num_values: usize,
-    ) -> Result<(Self::HeaderCtx, Cornflake)> {
+    _pkt: ReceivedPkt<D>,
+        _map: &mut HashMap<String, CfBuf<D>>,
+    _num_values: usize,
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
         // for the "copy-out" deserialization/insert:
         //      - just need to allocate the buffer from the networking stack
         //      - and copy the get_value() value into this buffer
@@ -75,6 +85,15 @@ where
         //      }
         //      but then how is an individual element in that struct also a CfBuf???? not clear
         //
-        Ok((Vec::default(), Cornflake::default()))
+        Ok((Vec::default(), RcCornflake::default()))
+    }
+
+    fn process_header<'a>(
+        &self,
+        ctx: &'a Self::HeaderCtx,
+        cornflake: &mut RcCornflake<'a, D>,
+    ) -> Result<()> {
+        cornflake.replace(0, RcCornPtr::RawRef(ctx.as_slice()));
+        Ok(())
     }
 }

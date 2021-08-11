@@ -24,7 +24,7 @@ fn main() {
     //println!("cargo:rerun-if-changed=src/flatbuffers/echo_fb.fbs");
 
     // store all compiled proto files in out_dir
-    let out_dir = env::var("OUT_DIR").unwrap();
+    /*let out_dir = env::var("OUT_DIR").unwrap();
     let _out_dir_path = Path::new(&out_dir);
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let cargo_dir = Path::new(&cargo_manifest_dir);
@@ -45,5 +45,5 @@ fn main() {
         Err(e) => {
             panic!("Cornflakes codegen failed: {:?}", e);
         }
-    }
+    }*/
 }
