@@ -71,9 +71,11 @@ where
         let reader = BufReader::new(file);
 
         let mut cur_thread_id = 0;
+        let mut cur_idx = 0;
         for line_res in reader.lines() {
             let line = line_res?;
-            let req = YCSBRequest::new(&line, num_values, value_size)?;
+            let req = YCSBRequest::new(&line, num_values, value_size, cur_idx)?;
+            cur_idx += 1;
 
             if req.client_id != client_id {
                 continue;
@@ -154,6 +156,7 @@ where
             &self.requests[self.last_sent_id - 1],
             self.num_values,
             self.value_size,
+            (self.last_sent_id - 1) as MsgID,
         )?;
         let size = self.serializer.write_next_framed_request(
             self.last_sent_id - 1,
@@ -161,7 +164,7 @@ where
             &mut req,
         )?;
         Ok((
-            self.last_sent_id as u32,
+            self.last_sent_id as u32 - 1,
             &self.request_data.as_slice()[CF_ID_SIZE..size],
         ))
     }
@@ -192,6 +195,7 @@ where
             &self.requests[self.last_sent_id - 1],
             self.num_values,
             self.value_size,
+            id,
         )?;
         let size = self.serializer.write_next_framed_request(
             self.last_sent_id - 1,
@@ -310,10 +314,12 @@ where
         // do something with the trace file here
         let file = File::open(trace_file)?;
         let reader = BufReader::new(file);
+        let mut cur_idx = 0;
 
         for line_res in reader.lines() {
             let line = line_res?;
-            let mut req = YCSBRequest::new(&line, num_values, value_size)?;
+            let mut req = YCSBRequest::new(&line, num_values, value_size, cur_idx)?;
+            cur_idx += 1;
             match req.get_type() {
                 MsgType::Get(_) => {
                     bail!("Loading trace file cannot have a get!");

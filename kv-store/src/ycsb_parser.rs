@@ -1,5 +1,6 @@
 use super::MsgType;
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{bail, ensure, Result};
+use cornflakes_libos::MsgID;
 
 const ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";
 
@@ -11,11 +12,17 @@ pub struct YCSBRequest<'a> {
     pub client_id: usize,
     cur_idx: usize, // in generating the (Get-M) or (Put-M) request from this, where are we ?
     pub num_keys: usize,
+    pub req_id: MsgID,
 }
 
 impl<'a> YCSBRequest<'a> {
     // derive YCSB request from line of the file
-    pub fn new(line: &'a str, num_keys: usize, value_size: usize) -> Result<YCSBRequest<'a>> {
+    pub fn new(
+        line: &'a str,
+        num_keys: usize,
+        value_size: usize,
+        req_id: MsgID,
+    ) -> Result<YCSBRequest<'a>> {
         let mut split: std::str::Split<&'a str> = line.split(" ");
         let id = match &split.next().unwrap().parse::<usize>() {
             Ok(x) => *x,
@@ -34,6 +41,7 @@ impl<'a> YCSBRequest<'a> {
                 client_id: id,
                 num_keys: num_keys,
                 cur_idx: 0,
+                req_id: req_id,
             }),
             "UPDATE" => Ok(YCSBRequest {
                 key: key,
@@ -42,6 +50,7 @@ impl<'a> YCSBRequest<'a> {
                 client_id: id,
                 num_keys: num_keys,
                 cur_idx: 0,
+                req_id: req_id,
             }),
             x => {
                 bail!("Unknown request time: {:?}", x);
@@ -49,8 +58,21 @@ impl<'a> YCSBRequest<'a> {
         }
     }
 
+    pub fn get_val(&self) -> &'a str {
+        self.val
+    }
+
     pub fn get_type(&self) -> MsgType {
-        return self.req_type;
+        self.req_type
+    }
+
+    pub fn get_id(&self) -> MsgID {
+        self.req_id
+    }
+
+    pub fn get_next_kv(&mut self) -> Result<(String, &'a str)> {
+        ensure!(self.cur_idx < self.num_keys, "No more keys in iterator");
+        Ok((replace_key_field(self.key, self.cur_idx - 1), self.val))
     }
 }
 

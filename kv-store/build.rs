@@ -1,15 +1,15 @@
 //use capnpc;
-use cornflakes_codegen::{compile, CompileOptions, HeaderType, Language};
+//use cornflakes_codegen::{compile, CompileOptions, HeaderType, Language};
 //use cxx_build;
 //use protoc_rust;
-use std::{
+/*use std::{
     env,
     //fs::{canonicalize, read_to_string, File},
     fs::canonicalize,
     //io::{BufWriter, Write},
     path::Path,
     //process::Command,
-};
+};*/
 
 fn main() {
     // rerun-if-changed

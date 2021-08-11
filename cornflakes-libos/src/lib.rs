@@ -492,7 +492,6 @@ where
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
 pub struct CfBuf<D>
 where
     D: Datapath,
@@ -501,6 +500,18 @@ where
     offset: usize,
     len: usize,
 }
+
+impl<D> PartialEq for CfBuf<D>
+where
+    D: Datapath,
+{
+    fn eq(&self, other: &CfBuf<D>) -> bool {
+        self.buf == other.get_buf()
+            && self.offset == other.get_offset()
+            && self.len == other.get_len()
+    }
+}
+impl<D> Eq for CfBuf<D> where D: Datapath {}
 
 impl<D> CfBuf<D>
 where
@@ -541,6 +552,18 @@ where
         buf.set_len(len);
         buf.set_offset(offset);
         Ok(buf)
+    }
+
+    pub fn get_offset(&self) -> usize {
+        self.offset
+    }
+
+    pub fn get_len(&self) -> usize {
+        self.len
+    }
+
+    pub fn get_buf(&self) -> D::DatapathPkt {
+        self.buf.clone()
     }
 
     /// Assumes len is valid
@@ -626,6 +649,19 @@ where
 {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.buf.as_mut()[self.offset..(self.offset + self.len)]
+    }
+}
+
+impl<D> std::fmt::Debug for CfBuf<D>
+where
+    D: Datapath,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "pkt: {:?}, off: {}, len: {}",
+            self.buf, self.offset, self.len
+        )
     }
 }
 

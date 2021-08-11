@@ -1,8 +1,8 @@
 use super::ObjectRef;
 use bytes::{BufMut, BytesMut};
-use color_eyre::eyre::{ensure, Result, WrapErr};
+use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_libos::{
-    CfBuf, CornType, Datapath, PtrAttributes, RcCornPtr, RcCornflake, ReceivedPkt,
+    CfBuf, CornType, Datapath, PtrAttributes, RcCornPtr, RcCornflake, ReceivedPkt, ScatterGather,
 };
 use std::{
     cmp::Ordering, default::Default, fmt::Debug, marker::PhantomData, mem::size_of, ops::Index,
@@ -70,6 +70,38 @@ where
 
     fn init_header_buffer_with_padding(&self) -> Vec<u8> {
         vec![0u8; align_up(self.dynamic_header_size(), 64)]
+    }
+
+    /// Serializes cornflake into the given buffer.
+    fn serialize_into_buffer(
+        &self,
+        buf: &mut [u8],
+        copy_func: unsafe fn(
+            dst: *mut ::std::os::raw::c_void,
+            src: *const ::std::os::raw::c_void,
+            len: usize,
+        ),
+    ) -> Result<usize> {
+        ensure!(
+            buf.len() >= self.dynamic_header_size(),
+            "Not enough space in buffer for entire object"
+        );
+
+        let cf = self.serialize_with_context(buf, copy_func)?;
+        let mut buf_offset = self.dynamic_header_size();
+        for i in 1..cf.num_segments() {
+            let entry = cf.index(i);
+            unsafe {
+                copy_func(
+                    buf.as_mut_ptr().offset(buf_offset as isize) as _,
+                    entry.as_ref().as_ptr() as _,
+                    entry.buf_size(),
+                );
+            }
+            buf_offset += entry.buf_size();
+        }
+
+        Ok(buf_offset)
     }
 
     fn serialize(
@@ -142,13 +174,33 @@ where
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Copy)]
+#[derive(Copy)]
 pub struct CFString<'a, D>
 where
     D: Datapath,
 {
     pub ptr: &'a [u8],
     _marker: PhantomData<D>,
+}
+
+impl<'a, D> std::cmp::PartialEq for CFString<'a, D>
+where
+    D: Datapath,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr == other.ptr
+    }
+}
+
+impl<'a, D> std::cmp::Eq for CFString<'a, D> where D: Datapath {}
+
+impl<'a, D> std::fmt::Debug for CFString<'a, D>
+where
+    D: Datapath,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", self.ptr)
+    }
 }
 
 impl<'a, D> Clone for CFString<'a, D>
@@ -185,9 +237,15 @@ where
         self.ptr.len()
     }
 
+    pub fn to_str(&self) -> Result<&'a str> {
+        let s = str::from_utf8(self.ptr).wrap_err("Could not turn CFString into str")?;
+        Ok(s)
+    }
+
     /// Assumes that the string is utf8-encoded.
-    pub fn to_string(&self) -> String {
-        str::from_utf8(self.ptr).unwrap().to_string()
+    pub fn to_string(&self) -> Result<String> {
+        let s = self.to_str()?;
+        Ok(s.to_string())
     }
 }
 
@@ -248,56 +306,135 @@ where
 }
 
 /// Ref counted bytes buffer.
-#[derive(Debug, PartialEq, Eq)]
-pub struct RcBytes<D>
+pub enum CFBytes<'a, D>
 where
     D: Datapath,
 {
-    ptr: CfBuf<D>,
+    Rc(CfBuf<D>),
+    Raw(&'a [u8]),
 }
 
-impl<D> Clone for RcBytes<D>
+impl<'a, D> std::fmt::Debug for CFBytes<'a, D>
 where
     D: Datapath,
 {
-    fn clone(&self) -> RcBytes<D> {
-        RcBytes {
-            ptr: self.ptr.clone(),
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            CFBytes::Rc(ptr) => write!(f, "Ref counted: {:?}", ptr),
+            CFBytes::Raw(ptr) => write!(f, "Raw: {:?}", ptr),
         }
     }
 }
 
-impl<D> RcBytes<D>
+impl<'a, D> PartialEq for CFBytes<'a, D>
 where
     D: Datapath,
 {
-    pub fn new(ptr: CfBuf<D>) -> Self {
-        RcBytes { ptr: ptr }
-    }
-
-    pub fn len(&self) -> usize {
-        self.ptr.len()
-    }
-
-    pub fn to_bytes_vec(&self) -> Vec<u8> {
-        let mut vec: Vec<u8> = Vec::with_capacity(self.ptr.len());
-        vec.extend_from_slice(self.ptr.as_ref());
-        vec
+    fn eq(&self, other: &Self) -> bool {
+        if let Some(rc_ref) = other.get_rc() {
+            if let Some(our_rc_ref) = self.get_rc() {
+                return rc_ref == our_rc_ref;
+            }
+        }
+        if let Some(raw) = other.get_raw() {
+            if let Some(our_raw) = self.get_raw() {
+                return raw == our_raw;
+            }
+        }
+        return false;
     }
 }
 
-impl<D> Default for RcBytes<D>
+impl<'a, D> Eq for CFBytes<'a, D> where D: Datapath {}
+
+impl<'a, D> Clone for CFBytes<'a, D>
+where
+    D: Datapath,
+{
+    fn clone(&self) -> Self {
+        match self {
+            CFBytes::Rc(cfbuf) => CFBytes::Rc(cfbuf.clone()),
+            CFBytes::Raw(bytes) => CFBytes::Raw(bytes),
+        }
+    }
+}
+
+impl<'a, D> CFBytes<'a, D>
+where
+    D: Datapath,
+{
+    pub fn new_rc(ptr: CfBuf<D>) -> Self {
+        CFBytes::Rc(ptr)
+    }
+
+    pub fn new_raw(buf: &'a [u8]) -> Self {
+        CFBytes::Raw(buf)
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            CFBytes::Rc(ptr) => ptr.len(),
+            CFBytes::Raw(buf) => buf.len(),
+        }
+    }
+
+    pub fn get_rc(&self) -> Option<CfBuf<D>> {
+        match self {
+            CFBytes::Rc(ptr) => Some(ptr.clone()),
+            CFBytes::Raw(_) => None,
+        }
+    }
+
+    pub fn get_raw(&self) -> Option<&'a [u8]> {
+        match self {
+            CFBytes::Rc(_) => None,
+            CFBytes::Raw(buf) => Some(buf),
+        }
+    }
+
+    pub fn get_inner(&self) -> Result<&'a [u8]> {
+        match self {
+            CFBytes::Raw(ptr) => Ok(ptr),
+            CFBytes::Rc(_) => {
+                bail!("Cannot return raw ref from Rc variant of CFBytes.")
+            }
+        }
+    }
+
+    pub fn get_inner_rc(&self) -> Result<CfBuf<D>> {
+        match self {
+            CFBytes::Rc(ptr) => Ok(ptr.clone()),
+            CFBytes::Raw(_) => {
+                bail!("Cannot return Rc variant from raw buf variant of CFBytes.")
+            }
+        }
+    }
+    pub fn to_bytes_vec(&self) -> Vec<u8> {
+        match self {
+            CFBytes::Rc(ptr) => {
+                let mut vec: Vec<u8> = Vec::with_capacity(ptr.len());
+                vec.extend_from_slice(ptr.as_ref());
+                vec
+            }
+            CFBytes::Raw(buf) => {
+                let mut vec: Vec<u8> = Vec::with_capacity(buf.len());
+                vec.extend_from_slice(buf);
+                vec
+            }
+        }
+    }
+}
+
+impl<'a, D> Default for CFBytes<'a, D>
 where
     D: Datapath,
 {
     fn default() -> Self {
-        RcBytes {
-            ptr: CfBuf::default(),
-        }
+        CFBytes::Raw(&[])
     }
 }
 
-impl<'a, D> HeaderRepr<'a, D> for RcBytes<D>
+impl<'a, D> HeaderRepr<'a, D> for CFBytes<'a, D>
 where
     D: Datapath,
 {
@@ -322,8 +459,16 @@ where
         _offset: usize,
     ) -> Result<Vec<(RcCornPtr<'a, D>, *mut u8)>> {
         let mut obj_ref = ObjectRef(header_ptr as _);
-        obj_ref.write_size(self.ptr.len());
-        Ok(vec![(RcCornPtr::RefCounted(self.ptr.clone()), header_ptr)])
+        match self {
+            CFBytes::Rc(ptr) => {
+                obj_ref.write_size(ptr.len());
+                Ok(vec![(RcCornPtr::RefCounted(ptr.clone()), header_ptr)])
+            }
+            CFBytes::Raw(bytes) => {
+                obj_ref.write_size(bytes.len());
+                Ok(vec![(RcCornPtr::RawRef(bytes), header_ptr)])
+            }
+        }
     }
 
     /// Remember that the packet could be a scatter-gather array, so the offset into the buffer
@@ -343,12 +488,14 @@ where
         let payload_segment = pkt.index(payload_seg);
         ensure!(
             (payload_segment.buf_size() - off_within_payload_seg) >= payload_size,
-            "Not enough space in payload segment for RcBytes payload."
+            "Not enough space in payload segment for CfBuf payload."
         );
         // create reference to underlying DatapathPkt that increments the reference count
         let payload_buf =
             CfBuf::new_with_bounds(payload_segment, off_within_payload_seg, payload_size);
-        self.ptr = payload_buf;
+
+        // assume underlying packet is in REGISTERED MEMORY
+        *self = CFBytes::Rc(payload_buf);
         Ok(())
     }
 }
