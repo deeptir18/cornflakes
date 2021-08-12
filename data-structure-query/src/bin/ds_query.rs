@@ -1,4 +1,4 @@
-use color_eyre::eyre::{bail, Result, WrapErr};
+use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
     dpdk_bindings,
     dpdk_libos::connection::{DPDKConnection, DPDKMode},
@@ -9,17 +9,11 @@ use cornflakes_utils::{
     global_debug_init, NetworkDatapath, SerializationType, SimpleMessageType, TraceLevel,
 };
 use data_structure_query::{
-    //capnproto::{CapnprotoEchoClient, CapnprotoSerializer},
     client::EchoClient,
     cornflakes_dynamic::{CornflakesDynamicEchoClient, CornflakesDynamicSerializer},
-    //cornflakes_fixed::{CornflakesFixedEchoClient, CornflakesFixedSerializer},
-    //flatbuffers::{FlatbuffersEchoClient, FlatbuffersSerializer},
     get_equal_fields,
-    //protobuf::{ProtobufEchoClient, ProtobufSerializer},
     server::EchoServer,
-    CerealizeClient,
-    CerealizeMessage,
-    EchoMode,
+    CerealizeClient, CerealizeMessage, EchoMode,
 };
 use std::{net::Ipv4Addr, process::exit, time::Instant};
 use structopt::StructOpt;
@@ -102,28 +96,10 @@ struct Opt {
         default_value = "cornflakes-dynamic"
     )]
     serialization: SerializationType,
-    #[structopt(
-        short = "z",
-        long = "zero_copy_recv",
-        help = "Enable zero-copy on receive side"
-    )]
-    zero_copy_recv: bool,
-    #[structopt(
-        long = "copy_to_dma_memory",
-        help = "Enable copying out to registered memory"
-    )]
-    copy_to_dmable_memory: bool,
     #[structopt(long = "no_retries", help = "Disable client retries.")]
     no_retries: bool,
     #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
     logfile: Option<String>,
-    #[structopt(
-        long = "use_native_buffers",
-        help = "For debugging, when allocating payloads, use natively allocated mbufs."
-    )]
-    use_native_buffers: bool,
-    #[structopt(long = "prepend_header", help = "Prepend header to first mbuf region")]
-    prepend_header: bool,
     #[structopt(
         long = "deserialize",
         help = "Whether the server should deserialize the received buffer."
@@ -133,15 +109,6 @@ struct Opt {
 
 fn main() -> Result<()> {
     let opt = Opt::from_args();
-    if (opt.prepend_header || opt.use_native_buffers)
-        && (opt.serialization != SerializationType::CornflakesDynamic
-            && opt.serialization != SerializationType::CornflakesFixed)
-    {
-        tracing::warn!(prepend_header=opt.prepend_header, native_buffers = opt.use_native_buffers,
-            serialization =? opt.serialization, "Flags prepend_header and native_buffers should only be true when using cornflakes serialization.");
-        bail!("Invalid options.");
-    }
-
     global_debug_init(opt.trace_level)?;
     let mode = match &opt.mode {
         EchoMode::Server => DPDKMode::Server,
@@ -150,14 +117,8 @@ fn main() -> Result<()> {
 
     let dpdk_datapath = |use_scatter_gather: bool| -> Result<DPDKConnection> {
         dpdk_bindings::load_mlx5_driver();
-        let connection = DPDKConnection::new(
-            &opt.config_file,
-            mode,
-            use_scatter_gather,
-            !opt.use_native_buffers,
-            opt.prepend_header,
-        )
-        .wrap_err("Failed to initialize DPDK server connection.")?;
+        let connection = DPDKConnection::new(&opt.config_file, mode, use_scatter_gather)
+            .wrap_err("Failed to initialize DPDK server connection.")?;
         Ok(connection)
     };
 
@@ -166,102 +127,20 @@ fn main() -> Result<()> {
             (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
                 let mut connection = dpdk_datapath(true)?;
                 let mut echo_server: EchoServer<CornflakesDynamicSerializer, DPDKConnection> =
-                    EchoServer::new(
-                        opt.message,
-                        opt.size,
-                        opt.deserialize_received,
-                        opt.use_native_buffers,
-                        opt.prepend_header,
-                    )?;
+                    EchoServer::new(opt.message, opt.size, opt.deserialize_received)?;
                 set_ctrlc_handler(&echo_server)?;
                 echo_server.init(&mut connection)?;
                 echo_server.run_state_machine(&mut connection)?;
-            }
-            (NetworkDatapath::DPDK, SerializationType::CornflakesFixed) => {
-                /* let mut connection =
-                    dpdk_datapath(  true)?;
-                let mut echo_server: EchoServer<CornflakesFixedSerializer, DPDKConnection> =
-                    EchoServer::new(
-                        opt.message,
-                        opt.size,
-                        opt.deserialize_received,
-                        opt.use_native_buffers,
-                        opt.prepend_header,
-                    )?;
-                set_ctrlc_handler(&echo_server)?;
-                echo_server.init(&mut connection)?;
-                echo_server.run_state_machine(&mut connection)?;*/
             }
             (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyDynamic) => {
                 let mut connection = dpdk_datapath(false)?;
                 let mut echo_server: EchoServer<CornflakesDynamicSerializer, DPDKConnection> =
-                    EchoServer::new(
-                        opt.message,
-                        opt.size,
-                        opt.deserialize_received,
-                        opt.use_native_buffers,
-                        opt.prepend_header,
-                    )?;
+                    EchoServer::new(opt.message, opt.size, opt.deserialize_received)?;
                 set_ctrlc_handler(&echo_server)?;
                 echo_server.init(&mut connection)?;
                 echo_server.run_state_machine(&mut connection)?;
             }
-            (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyFixed) => {
-                /*let mut connection =
-                    dpdk_datapath(  false)?;
-                let mut echo_server: EchoServer<CornflakesFixedSerializer, DPDKConnection> =
-                    EchoServer::new(
-                        opt.message,
-                        opt.size,
-                        opt.deserialize_received,
-                        opt.use_native_buffers,
-                        opt.prepend_header,
-                    )?;
-                let mut echo_server = EchoServer::new(serializer);
-                set_ctrlc_handler(&echo_server)?;
-                echo_server.init(&mut connection)?;
-                echo_server.run_state_machine(&mut connection)?;*/
-            }
-            (NetworkDatapath::DPDK, SerializationType::Protobuf) => {
-                /*let mut connection =
-                    dpdk_datapath(  false)?;
-                let serializer = ProtobufSerializer::new(opt.message, opt.size,
-                    opt.deserialize_received,
-                    opt.use_native_buffers,
-                    opt.prepend_header,
-                );
-                let mut echo_server = EchoServer::new(serializer);
-                set_ctrlc_handler(&echo_server)?;
-                echo_server.init(&mut connection)?;
-                echo_server.run_state_machine(&mut connection)?;*/
-            }
-            (NetworkDatapath::DPDK, SerializationType::Flatbuffers) => {
-                /*let mut connection =
-                    dpdk_datapath(  false)?;
-                let serializer = FlatbuffersSerializer::new(opt.message, opt.size,
-                    opt.deserialize_received,
-                    opt.use_native_buffers,
-                    opt.prepend_header,
-                );
-                let mut echo_server = EchoServer::new(serializer);
-                set_ctrlc_handler(&echo_server)?;
-                echo_server.init(&mut connection)?;
-                echo_server.run_state_machine(&mut connection)?;*/
-            }
-            (NetworkDatapath::DPDK, SerializationType::Capnproto) => {
-                /*let mut connection =
-                    dpdk_datapath(  false)?;
-                let serializer = CapnprotoSerializer::new(opt.message, opt.size,
-                    opt.deserialize_received,
-                    opt.use_native_buffers,
-                    opt.prepend_header,
-                );
-                let mut echo_server = EchoServer::new(serializer);
-                set_ctrlc_handler(&echo_server)?;
-                echo_server.init(&mut connection)?;
-                echo_server.run_state_machine(&mut connection)?;*/
-            }
-            (NetworkDatapath::DPDK, SerializationType::Cereal) => {
+            _ => {
                 unimplemented!();
             }
         },
@@ -285,22 +164,6 @@ fn main() -> Result<()> {
                     echo_client.init_state(&mut ctx, &mut connection)?;
                     run_client(&mut echo_client, &mut connection, &opt)?;
                 }
-                (NetworkDatapath::DPDK, SerializationType::CornflakesFixed) => {
-                    /*let mut connection =
-                        dpdk_datapath(  true)?;
-                    let mut echo_client: EchoClient<CornflakesFixedEchoClient, DPDKConnection> =
-                        EchoClient::new(
-                            opt.server_ip,
-                            opt.message,
-                            opt.server_message,
-                            sizes,
-                            server_sizes,
-                            hist,
-                        )?;
-                    let mut ctx = echo_client.new_context();
-                    echo_client.init_state(&mut ctx, &mut connection)?;
-                    run_client(&mut echo_client, &mut connection, &opt)?;*/
-                }
                 (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyDynamic) => {
                     let mut connection = dpdk_datapath(false)?;
                     let mut echo_client: EchoClient<CornflakesDynamicEchoClient, DPDKConnection> =
@@ -317,71 +180,7 @@ fn main() -> Result<()> {
                     echo_client.init_state(&mut ctx, &mut connection)?;
                     run_client(&mut echo_client, &mut connection, &opt)?;
                 }
-                (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyFixed) => {
-                    /*let mut connection =
-                        dpdk_datapath(  false)?;
-                    let mut echo_client: EchoClient<CornflakesFixedEchoClient, DPDKConnection> =
-                        EchoClient::new(
-                            opt.server_ip,
-                            opt.message,
-                            opt.server_message,
-                            sizes,
-                            server_sizes,
-                            hist,
-                        )?;
-                    let mut ctx = echo_client.new_context();
-                    echo_client.init_state(&mut ctx, &mut connection)?;
-                    run_client(&mut echo_client, &mut connection, &opt)?;*/
-                }
-                (NetworkDatapath::DPDK, SerializationType::Protobuf) => {
-                    /*let mut connection =
-                        dpdk_datapath(  false)?;
-                    let mut echo_client: EchoClient<ProtobufEchoClient, DPDKConnection> =
-                        EchoClient::new(
-                            opt.server_ip,
-                            opt.message,
-                            opt.server_message,
-                            sizes,
-                            server_sizes,
-                            hist,
-                        )?;
-                    let mut ctx = echo_client.new_context();
-                    echo_client.init_state(&mut ctx, &mut connection)?;
-                    run_client(&mut echo_client, &mut connection, &opt)?;*/
-                }
-                (NetworkDatapath::DPDK, SerializationType::Flatbuffers) => {
-                    /*let mut connection =
-                        dpdk_datapath(  false)?;
-                    let mut echo_client: EchoClient<FlatbuffersEchoClient, DPDKConnection> =
-                        EchoClient::new(
-                            opt.server_ip,
-                            opt.message,
-                            opt.server_message,
-                            sizes,
-                            server_sizes,
-                            hist,
-                        )?;
-                    let mut ctx = echo_client.new_context();
-                    echo_client.init_state(&mut ctx, &mut connection)?;
-                    run_client(&mut echo_client, &mut connection, &opt)?;*/
-                }
-                (NetworkDatapath::DPDK, SerializationType::Capnproto) => {
-                    /*let mut connection =
-                        dpdk_datapath(  false)?;
-                    let mut echo_client: EchoClient<CapnprotoEchoClient, DPDKConnection> =
-                        EchoClient::new(
-                            opt.server_ip,
-                            opt.message,
-                            opt.server_message,
-                            sizes,
-                            server_sizes,
-                            hist,
-                        )?;
-                    let mut ctx = echo_client.new_context();
-                    echo_client.init_state(&mut ctx, &mut connection)?;
-                    run_client(&mut echo_client, &mut connection, &opt)?;*/
-                }
-                (NetworkDatapath::DPDK, SerializationType::Cereal) => {
+                _ => {
                     unimplemented!();
                 }
             }

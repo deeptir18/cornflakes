@@ -2,14 +2,13 @@ pub mod ds_query_messages {
     include!(concat!(env!("OUT_DIR"), "/ds_query_cf_dynamic.rs"));
 }
 use super::{
-    get_equal_fields, init_payload, init_payloads, init_payloads_as_vec, CerealizeClient,
-    CerealizeMessage,
+    get_equal_fields, init_payloads, init_payloads_as_vec, CerealizeClient, CerealizeMessage,
 };
-use color_eyre::eyre::{Result, WrapErr};
+use color_eyre::eyre::Result;
 use cornflakes_codegen::utils::dynamic_hdr::*;
 use cornflakes_libos::{
     dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, mem::MmapMetadata, Cornflake, Datapath,
-    DatapathMempoolOptions, PtrAttributes, ReceivedPkt, ScatterGather,
+    PtrAttributes, ReceivedPkt, ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use std::slice;
@@ -19,8 +18,6 @@ pub struct CornflakesDynamicSerializer {
     context_size: usize,
     payload_ptrs: Vec<(*const u8, usize)>,
     deserialize_received: bool,
-    use_native_buffers: bool,
-    prepend_header: bool,
 }
 
 fn check_tree5l<'a>(
@@ -204,15 +201,13 @@ impl<D> CerealizeMessage<D> for CornflakesDynamicSerializer
 where
     D: Datapath,
 {
-    type Ctx = (Vec<u8>, Vec<D::DatapathPkt>);
+    type Ctx = Vec<u8>;
 
     fn new(
         message_type: SimpleMessageType,
         field_sizes: Vec<usize>,
         mmap_metadata: MmapMetadata,
         deserialize_received: bool,
-        use_native_buffers: bool,
-        prepend_header: bool,
     ) -> Result<CornflakesDynamicSerializer> {
         let payload_ptrs = init_payloads(&field_sizes, &mmap_metadata)?;
         let total_size = field_sizes.iter().sum();
@@ -221,8 +216,6 @@ where
             context_size: context_size(message_type, total_size),
             payload_ptrs: payload_ptrs,
             deserialize_received: deserialize_received,
-            use_native_buffers: use_native_buffers,
-            prepend_header: prepend_header,
         })
     }
 
@@ -234,80 +227,15 @@ where
         &self,
         recved_msg: &'registered ReceivedPkt<D>,
         ctx: &'normal mut Self::Ctx,
-        transport_header: usize,
     ) -> Result<Cornflake<'registered, 'normal>> {
-        // first problem: the context pointer, which we derive in this function (not passed into this
-        // function) gets referenced in the resulting cornflake
-        // We need to somehow pass the explicit mutable buffer pointer for serialization
-        // Second problem: immutable borrow (of the payload) and mutable borrow (of the context,
-        // which is earlier in the same buffer) at the same time
-        // Cornflakes will
-        let payloads: Vec<&[u8]> = match (self.use_native_buffers, self.prepend_header) {
-            (true, true) => {
-                tracing::debug!("Use native buffers true, self prepend header true");
-                // all payload in datapath pkts, context vector empty
-                // header coalesced into first payload vector
-                assert!(ctx.1.len() == (self.payload_ptrs.len()));
-                let ptrs: Vec<&[u8]> = ctx
-                    .1
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, buf)| {
-                        let size = self.payload_ptrs[idx].1;
-                        match idx == 0 {
-                            true => &buf.as_ref()[(transport_header + self.context_size)
-                                ..(transport_header + self.context_size + size)],
-                            false => &buf.as_ref()[0..size],
-                        }
-                    })
-                    .collect();
-                ptrs
-            }
-            (true, false) => {
-                // all payloads in datapath pkts
-                // context vector still holds header
-                tracing::debug!("Use native buffers true, prepend_headers false");
-                assert!(ctx.1.len() == self.payload_ptrs.len() && ctx.0.len() == self.context_size);
-                let ptrs: Vec<&[u8]> = ctx
-                    .1
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, buf)| {
-                        let size = self.payload_ptrs[idx].1;
-                        &buf.as_ref()[0..size]
-                    })
-                    .collect();
-                ptrs
-            }
-            (false, true) => {
-                // first payload comes from datapath pkt
-                // further payloads comes from externally registered data
-                tracing::debug!("Not using native buffers, prepend header true");
-                assert!(ctx.1.len() == 1);
-                let first_payload_ptr = &ctx.1[0].as_ref()[(transport_header + self.context_size)
-                    ..(transport_header + self.context_size + self.payload_ptrs[0].1)];
-                let mut ptrs: Vec<&[u8]> = self
-                    .payload_ptrs
-                    .clone()
-                    .iter()
-                    .enumerate()
-                    .map(|(_, (ptr, size))| unsafe { slice::from_raw_parts(*ptr, *size) })
-                    .collect();
-                ptrs[0] = first_payload_ptr;
-                ptrs
-            }
-            (false, false) => {
-                tracing::debug!("Not using native buffers, not prepending header");
-                // allocate from externally registered data
-                assert!(ctx.1.len() == 0 && ctx.0.len() == self.context_size);
-                self.payload_ptrs
-                    .clone()
-                    .iter()
-                    .map(|(ptr, size)| unsafe { slice::from_raw_parts(*ptr, *size) })
-                    .collect()
-            }
+        let payloads: Vec<&[u8]> = {
+            self.payload_ptrs
+                .clone()
+                .iter()
+                .map(|(ptr, size)| unsafe { slice::from_raw_parts(*ptr, *size) })
+                .collect()
         };
-        let ctx_ptr = ctx.0.as_mut_slice();
+        let ctx_ptr = ctx.as_mut_slice();
         match self.message_type {
             SimpleMessageType::Single => {
                 if self.deserialize_received {
@@ -386,102 +314,8 @@ where
         }
     }
 
-    /// If using native buffers or prepending header,
-    /// need to allocate packets from the datapath to serve as the serialization context.
-    /// Once these packets are sent, they will be freed.
-    fn new_context(&self, conn: &D) -> Result<Self::Ctx> {
-        match (self.use_native_buffers, self.prepend_header) {
-            (true, true) => {
-                let pkts_res: Result<Vec<D::DatapathPkt>> = (0..self.payload_ptrs.len())
-                    .map(|idx| {
-                        let mempool = match idx == 0 {
-                            true => 1,
-                            false => 2,
-                        };
-                        let pkt = conn.alloc_datapath_pkt(mempool).wrap_err(
-                            "Failed to initialize context: failed to init datapath pkt.",
-                        )?;
-                        Ok(pkt)
-                    })
-                    .collect();
-                let pkts = pkts_res?;
-                Ok((vec![0u8; self.context_size], pkts))
-            }
-            (true, false) => {
-                let pkts_res: Result<Vec<D::DatapathPkt>> = (0..self.payload_ptrs.len())
-                    .map(|_idx| {
-                        let pkt = conn.alloc_datapath_pkt(1).wrap_err(
-                            "Failed to initialize context: failed to init datapath pkt.",
-                        )?;
-                        Ok(pkt)
-                    })
-                    .collect();
-                let pkts = pkts_res?;
-                Ok((vec![0u8; self.context_size], pkts))
-            }
-            (false, true) => {
-                // allocate 1 buffer from the 1st mempool to put the first payload
-                let datapath_buf = conn
-                    .alloc_datapath_pkt(1)
-                    .wrap_err("Failed to initialize context: failed to init datapath pkt.")?;
-                Ok((vec![0u8; self.context_size], vec![datapath_buf]))
-            }
-            (false, false) => Ok((vec![0u8; self.context_size], Vec::default())),
-        }
-    }
-
-    fn init_datapath(&self, conn: &mut D) -> Result<()> {
-        let native_buf_size = conn.native_buf_size();
-        let mut payload_with_header = vec![0u8; self.context_size + conn.get_header_size()];
-        payload_with_header.append(&mut init_payload(
-            native_buf_size - (self.context_size + conn.get_header_size()),
-        ));
-        let payload_without_header = init_payload(native_buf_size);
-        let mempool_ids = match (self.use_native_buffers, self.prepend_header) {
-            (true, true) => {
-                // initialize two new mempools: one where the header will go,
-                // and one with the payload (in all other fields)
-                let options = vec![
-                    DatapathMempoolOptions::new(payload_with_header.clone(), 1),
-                    DatapathMempoolOptions::new(payload_without_header.clone(), 2),
-                ];
-                conn.init_native_mempools(&options)
-                    .wrap_err("Not able to init native mempools")?;
-                vec![1, 1]
-            }
-            (true, false) => {
-                let options = vec![DatapathMempoolOptions::new(
-                    payload_without_header.clone(),
-                    1,
-                )];
-                conn.init_native_mempools(&options)
-                    .wrap_err("Not able to init native mempools.")?;
-                vec![1]
-            }
-            (false, true) => {
-                let options = vec![DatapathMempoolOptions::new(payload_with_header.clone(), 1)];
-                conn.init_native_mempools(&options)
-                    .wrap_err("Not able to init native mempools.")?;
-                vec![1]
-            }
-            (false, false) => Vec::default(),
-        };
-
-        // allocate and free some packets from these mempools
-        for mempool_id in mempool_ids.iter() {
-            let pkts: Result<Vec<D::DatapathPkt>> = (0..250)
-                .map(|_| {
-                    Ok(conn.alloc_datapath_pkt(*mempool_id).wrap_err(format!(
-                        "Not able to allocate datapath packet from mempool {}",
-                        *mempool_id
-                    ))?)
-                })
-                .collect();
-            for pkt in pkts?.into_iter() {
-                conn.free_datapath_pkt(pkt)?;
-            }
-        }
-        Ok(())
+    fn new_context(&self) -> Result<Self::Ctx> {
+        Ok(vec![0u8; self.context_size])
     }
 }
 

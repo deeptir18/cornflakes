@@ -1,9 +1,5 @@
-//pub mod capnproto;
 pub mod client;
 pub mod cornflakes_dynamic;
-//pub mod cornflakes_fixed;
-//pub mod flatbuffers;
-//pub mod protobuf;
 pub mod server;
 
 // TODO: though capnpc 0.14^ supports generating nested namespace files
@@ -55,8 +51,6 @@ where
         field_sizes: Vec<usize>,
         mmap_metadata: MmapMetadata,
         deserialize_received: bool, // whether the server should deserialize the incoming message
-        use_native_buffers: bool,   // whether to allocate external memory or not
-        prepend_header: bool, // whether the header (and packet header) should be prepended to the first segment in the data structure
     ) -> Result<Self>
     where
         Self: Sized;
@@ -67,13 +61,9 @@ where
         &self,
         recved_msg: &'registered ReceivedPkt<DatapathImpl>,
         ctx: &'normal mut Self::Ctx,
-        transport_header: usize,
     ) -> Result<Cornflake<'registered, 'normal>>;
 
-    fn new_context(&self, conn: &DatapathImpl) -> Result<Self::Ctx>;
-
-    // if necessary, initialize any datapath-specific data for this serialization method
-    fn init_datapath(&self, conn: &mut DatapathImpl) -> Result<()>;
+    fn new_context(&self) -> Result<Self::Ctx>;
 }
 
 /// the client eventually ALSO needs to be able to transmit complex data structures.
@@ -152,18 +142,6 @@ fn init_payload(size: usize) -> Vec<u8> {
 fn init_payloads_as_vec(sizes: &Vec<usize>) -> Vec<Vec<u8>> {
     sizes.iter().map(|size| init_payload(*size)).collect()
 }
-
-/*fn get_payloads_as_vec(payloads: &Vec<(*const u8, usize)>) -> Vec<Vec<u8>> {
-    let ret: Vec<Vec<u8>> = payloads
-        .iter()
-        .map(|(ptr, size)| {
-            let mut vec: Vec<u8> = Vec::with_capacity(*size);
-            vec.extend_from_slice(unsafe { slice::from_raw_parts(*ptr, *size) });
-            vec
-        })
-        .collect();
-    ret
-}*/
 
 // Initialize payloads in this mmap data.
 fn init_payloads(

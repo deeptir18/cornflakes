@@ -104,17 +104,9 @@ fn main() -> Result<()> {
     };
 
     let dpdk_datapath = |use_scatter_gather: bool| -> Result<DPDKConnection> {
-        let use_ext_buffers = true;
-        let prepend_header = false;
         dpdk_bindings::load_mlx5_driver();
-        let connection = DPDKConnection::new(
-            &opt.config_file,
-            mode,
-            use_scatter_gather,
-            use_ext_buffers,
-            prepend_header,
-        )
-        .wrap_err("Failed to initialize DPDK server connection.")?;
+        let connection = DPDKConnection::new(&opt.config_file, mode, use_scatter_gather)
+            .wrap_err("Failed to initialize DPDK server connection.")?;
         Ok(connection)
     };
 

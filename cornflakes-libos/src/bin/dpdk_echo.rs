@@ -81,9 +81,9 @@ fn main() -> Result<()> {
     let payload = vec![b'a'; opt.size];
 
     let mut connection = match opt.mode {
-        DPDKMode::Server => DPDKConnection::new(&opt.config_file, opt.mode, true, true, false)
+        DPDKMode::Server => DPDKConnection::new(&opt.config_file, opt.mode, true)
             .wrap_err("Failed to initialize DPDK server connection.")?,
-        DPDKMode::Client => DPDKConnection::new(&opt.config_file, opt.mode, true, true, false)
+        DPDKMode::Client => DPDKConnection::new(&opt.config_file, opt.mode, true)
             .wrap_err("Failed to initialize DPDK server connection.")?,
     };
     match opt.mode {

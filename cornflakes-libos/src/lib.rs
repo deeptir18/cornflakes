@@ -273,21 +273,6 @@ impl<'registered, 'normal> Cornflake<'registered, 'normal> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct DatapathMempoolOptions {
-    pub payload: Vec<u8>,
-    pub idx: usize, // cannot be 0
-}
-
-impl DatapathMempoolOptions {
-    pub fn new(payload: Vec<u8>, idx: usize) -> Self {
-        DatapathMempoolOptions {
-            payload: payload,
-            idx: idx,
-        }
-    }
-}
-
 // how do we make it such that the programmer DOESN'T need to know what is registered and what is
 #[derive(Debug, PartialEq, Eq)]
 pub enum RcCornPtr<'a, D>
@@ -858,18 +843,7 @@ pub trait Datapath {
     /// What is the transport header size for this datapath
     fn get_header_size(&self) -> usize;
 
-    /// Init mempools
-    fn init_native_mempools(&mut self, mempools: &Vec<DatapathMempoolOptions>) -> Result<()>;
-
-    /// Get a packet from one of the mempools.
-    fn alloc_datapath_pkt(&self, mempool_id: usize) -> Result<Self::DatapathPkt>;
-
-    /// Free a packet from the mempool
-    fn free_datapath_pkt(&self, pkt: Self::DatapathPkt) -> Result<()>;
-
-    /// For natively allocated mbufs: what is the buffer size?
-    fn native_buf_size(&self) -> usize;
-
+    /// Allocate a datapath buffer (registered) with this size and alignment.
     fn allocate(&self, size: usize, alignment: usize) -> Result<Self::DatapathPkt>;
 }
 
