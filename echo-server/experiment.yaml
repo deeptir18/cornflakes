@@ -3,7 +3,7 @@
 time: 20
 programs:
     start_server:
-        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu nice -n -19 taskset 0x10 {cornflakes_dir}/target/release/ds_echo --config_file {config_file} --mode server --size {size} --serialization {library} --message {message} {zero_copy_recv} {copy_to_dma_memory} --debug_level info
+        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu nice -n -19 taskset 0x10 {cornflakes_dir}/target/release/ds_echo --config_file {config_file} --mode server --size {size} --serialization {library} --message {message} --debug_level info
         hosts: [server]
         perf: sudo perf stat -e task-clock,cycles,instructions,cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses,L1-dcache-stores,dTLB-loads,dTLB-load-misses,dTLB-prefetch-misses,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses -o {folder}/server.perf.log
         log: 
@@ -12,7 +12,7 @@ programs:
             record: "{folder}/server.record.log"
         stop: sudo kill -SIGINT `ps aux | grep {cornflakes_dir}/target/release/ds_echo | grep -v grep | awk '{{print $2}}'`
     start_client:
-            start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/ds_echo --config_file {config_file} --mode client --server_ip {server_ip} --time {time} --rate {rate} --serialization {client-library} --size {size} --message {message} {zero_copy_recv} --logfile {folder}/{host}.latency.log --debug_level info
+            start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/ds_echo --config_file {config_file} --mode client --server_ip {server_ip} --time {time} --rate {rate} --serialization {client-library} --size {size} --message {message} --logfile {folder}/{host}.latency.log --debug_level info
             hosts: [client1, client2, client3, client4, client5, client6, client7, client8, client9, client10, client11]
             log:
                 out: "{folder}/{host}.log"

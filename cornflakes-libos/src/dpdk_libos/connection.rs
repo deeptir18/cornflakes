@@ -157,8 +157,6 @@ pub struct DPDKConnection {
     dpdk_port: u16,
     /// Maps ip addresses to corresponding mac addresses.
     ip_to_mac: HashMap<Ipv4Addr, MacAddress>,
-    /// Maps mac addresses to corresponding ip address.
-    //mac_to_ip: HashMap<MacAddress, Ipv4Addr>,
     /// Current window of outgoing packets mapped to start time.
     outgoing_window: HashMap<MsgID, Instant>,
     /// mempools for allocating mbufs.
@@ -172,12 +170,6 @@ pub struct DPDKConnection {
     addr_info: utils::AddressInfo,
     /// Registered memory regions for externally allocated memory
     external_memory_regions: Vec<mem::MmapMetadata>,
-    /// shinfo: TODO: it is unclear how to ``properly'' use the shinfo.
-    /// There might be one shinfo per external memory region.
-    /// Here, so far, we're assuming one memory region.
-    /// Theoretically should be like HashMap<metadata, shinfo>
-    /// And whenever we have a reference -- check which shinfo is the relevant one.
-    //shared_info: HashMap<mem::MmapMetadata, MaybeUninit<rte_mbuf_ext_shared_info>>,
     /// Debugging timers.
     timers: HashMap<String, Arc<Mutex<HistogramWrapper>>>,
     /// Mbufs used tx_burst.

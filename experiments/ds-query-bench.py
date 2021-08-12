@@ -15,7 +15,6 @@ MESSAGE_TYPES = ["single"]
 MESSAGE_TYPES.extend(["list-2", "list-4", "list-6", "list-8"])
 #MESSAGE_TYPES.extend(["list-{}".format(i) for i in range(1, 5)])
 #MESSAGE_TYPES.extend(["tree-{}".format(i) for i in range(1, 4)])
-RECV_TYPES = ["zero_copy_recv"]  # , "copy_to_dma_memory", "copy_out_recv"]
 SERIALIZATION_LIBRARIES = ["cornflakes-dynamic",  # "cornflakes-fixed",
                            "cornflakes1c-dynamic"]  # "cornflakes1c-fixed"]  # "cornflakes1c-fixed", "protobuf", "capnproto",
 # "flatbuffers"]
@@ -54,7 +53,6 @@ class DsQueryIteration(runner.Iteration):
                  serialization,
                  server_message_type,
                  message_type,
-                 recv_type,
                  trial=None):
         """
         Arguments:
@@ -69,7 +67,6 @@ class DsQueryIteration(runner.Iteration):
         * message_type: Type of data structure to echo.
         * server_message: Type of data structure server will serialize and send
         back.
-        * recv_type: [zero_copy_recv, copy_to_dma_memory, copy_out_recv] - What receive
         mode is used. For cornflakes, one of first two must be enabled.
         zero-copy send from zero-copy receive.
         """
@@ -79,7 +76,6 @@ class DsQueryIteration(runner.Iteration):
         self.serialization = serialization
         self.message_type = message_type
         self.server_message = server_message_type
-        self.recv_mode = recv_type
         self.trial = trial
 
     def get_size(self):
@@ -96,9 +92,6 @@ class DsQueryIteration(runner.Iteration):
 
     def get_server_message_type(self):
         return self.server_message
-
-    def get_recv_type(self):
-        return self.recv_mode
 
     def get_trial(self):
         return self.trial
@@ -148,9 +141,6 @@ class DsQueryIteration(runner.Iteration):
                         client_options))
             exit(1)
 
-    def get_recv_string(self):
-        return self.recv_mode
-
     def get_size_string(self):
         return "client_size_{}".format(self.size)
 
@@ -176,14 +166,12 @@ class DsQueryIteration(runner.Iteration):
             "serialization: {}, " \
             "client message_type: {}, " \
             "server message_type: {}, " \
-            "recv: {}, " \
             "trial: {}".format(self.get_client_rate_string(),
                                self.get_size_string(),
                                self.get_server_size_string(),
                                self.serialization,
                                self.message_type,
                                self.server_message,
-                               self.get_recv_string(),
                                self.get_trial_string())
 
     def get_serialization_folder(self, high_level_folder):
@@ -197,7 +185,6 @@ class DsQueryIteration(runner.Iteration):
             self.get_server_size_string() / \
             self.get_message_string() / \
             self.get_size_string() / \
-            self.get_recv_string() / \
             self.get_client_rate_string()
 
     def get_folder_name(self, high_level_folder):
@@ -232,15 +219,8 @@ class DsQueryIteration(runner.Iteration):
         ret["server_size"] = self.server_size
         ret["size"] = self.size
         if program == "start_server":
-            ret["zero_copy_recv"] = ""
-            ret["copy_to_dma_memory"] = ""
-            if self.recv_mode == "zero_copy_recv":
-                ret["zero_copy_recv"] = " -z"
-            elif self.recv_mode == "copy_to_dma_memory":
-                ret["copy_to_dma_memory"] = "--copy_to_dma_memory"
+            pass
         elif program == "start_client":
-            ret["zero_copy_recv"] = " -z"  # always have zero_copy_recv on
-            ret["copy_to_dma_memory"] = ""
             # calculate client rate
             host_options = self.get_iteration_clients(
                 programs_metadata[program]["hosts"])
@@ -286,8 +266,7 @@ class DsQuery(runner.Experiment):
                                   total_args.size,
                                   total_args.serialization,
                                   total_args.server_message_type,
-                                  total_args.message_type,
-                                  total_args.recv_mode)
+                                  total_args.message_type)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             if total_args.analysis_only or total_args.graph_only:
@@ -303,7 +282,7 @@ class DsQuery(runner.Experiment):
         else:
             # loop over the options
             ret = []
-            for trial in range(3):
+            for trial in range(utils.NUM_TRIALS):
                 for server_message_type in MESSAGE_TYPES:
                     for client_message_type in ["single"]:
                         for server_size in SIZES_TO_LOOP:
@@ -316,31 +295,25 @@ class DsQuery(runner.Experiment):
                                         and (serialization == "cornflakes-dynamic"
                                              or serialization == "cornflakes-1cdynamic"):
                                         continue
-                                    recv_modes = ["zero_copy_recv"]
-                                    for recv_mode in recv_modes:
-                                        # for client rates:
+                                    # for client rates:
                                         # do some testing to determine optimal rates
-                                        client_rates = [[(24000, 1)],
-                                                        [(48000, 1)],
-                                                        [(72000, 1)],
-                                                        [(96000, 1)]]
-                                        for i in range(2, int(self.config_yaml["max_clients"])):
-                                            client_rates.append([(100000, i)])
-                                        for i in range(1, int(self.config_yaml["max_clients"])):
-                                            client_rates.append([(120000, i)])
-                                        # TODO: how do we get "mid range"
-                                        # e.g.: points that exactly determine
-                                        # where the knee is
-                                        for rate in client_rates:
-                                            it = DsQueryIteration(rate,
-                                                                  server_size,
-                                                                  client_size,
-                                                                  serialization,
-                                                                  server_message_type,
-                                                                  client_message_type,
-                                                                  recv_mode,
-                                                                  trial=trial)
-                                            ret.append(it)
+                                    client_rates = [[(24000, 1)],
+                                                    [(48000, 1)],
+                                                    [(72000, 1)],
+                                                    [(96000, 1)]]
+                                    for i in range(2, int(self.config_yaml["max_clients"])):
+                                        client_rates.append([(100000, i)])
+                                    for i in range(1, int(self.config_yaml["max_clients"])):
+                                        client_rates.append([(120000, i)])
+                                    for rate in client_rates:
+                                        it = DsQueryIteration(rate,
+                                                              server_size,
+                                                              client_size,
+                                                              serialization,
+                                                              server_message_type,
+                                                              client_message_type,
+                                                              trial=trial)
+                                        ret.append(it)
             return ret
 
     def add_specific_args(self, parser, namespace):
@@ -377,10 +350,6 @@ class DsQuery(runner.Experiment):
                                 dest="serialization",
                                 choices=SERIALIZATION_LIBRARIES,
                                 required=True)
-            parser.add_argument("-z", "--recv_mode",
-                                dest="recv_mode",
-                                choices=RECV_TYPES,
-                                required=True)
         args = parser.parse_args(namespace=namespace)
         return args
 
@@ -392,7 +361,7 @@ class DsQuery(runner.Experiment):
 
     def get_logfile_header(self):
         return
-    "serialization,server_message_type,client_message_type,server_size,client_size,recv_mode,"\
+    "serialization,server_message_type,client_message_type,server_size,client_size,"\
         "offered_load_pps,offered_load_gbps,"\
         "achieved_load_pps,achieved_load_gbps,"\
         "percent_acheived_rate,total_retries"\
@@ -497,12 +466,11 @@ class DsQuery(runner.Experiment):
             utils.info("Total Stats: ", total_stats)
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)
-        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
+        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
                                                                             iteration.get_server_message_type(),
                                                                             iteration.get_message_type(),
                                                                             iteration.get_server_size(),
                                                                             iteration.get_size(),
-                                                                            iteration.get_recv_string(),
                                                                             total_offered_load_pps,
                                                                             total_offered_load_gbps,
                                                                             total_achieved_load_pps,

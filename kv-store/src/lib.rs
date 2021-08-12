@@ -327,8 +327,10 @@ where
                 MsgType::Put(_) => {
                     while let Some((key, val)) = req.next() {
                         // allocate a CfBuf from the datapath.
-                        let mut buffer = CfBuf::allocate(connection, value_size, ALIGN_SIZE)
-                            .wrap_err("Failed to allocate CfBuf")?;
+                        let mut buffer =
+                            CfBuf::allocate(connection, value_size, ALIGN_SIZE).wrap_err(
+                                format!("Failed to allocate CfBuf for req # {}", req.get_id()),
+                            )?;
                         // write in the value to the buffer
                         if buffer
                             .write(val.as_bytes())
