@@ -105,10 +105,10 @@ where
         self.recved
     }
 
-    fn get_next_msg(&mut self) -> Result<(MsgID, &[u8])> {
+    fn get_next_msg(&mut self) -> Result<Option<(MsgID, &[u8])>> {
         self.last_sent_id += 1;
         self.sent += 1;
-        Ok((self.last_sent_id, &self.buffer.as_slice()))
+        Ok(Some((self.last_sent_id, &self.buffer.as_slice())))
     }
 
     fn process_received_msg(

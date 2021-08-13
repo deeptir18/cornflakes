@@ -2,12 +2,12 @@ use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
     dpdk_bindings,
     dpdk_libos::{
-        connection::{DPDKConnection, DPDKMode},
+        connection::DPDKConnection,
         echo::{EchoClient, EchoServer},
     },
     ClientSM, Datapath, ServerSM,
 };
-use cornflakes_utils::{global_debug_init, TraceLevel};
+use cornflakes_utils::{global_debug_init, AppMode, TraceLevel};
 use std::{net::Ipv4Addr, process::exit, time::Instant};
 use structopt::StructOpt;
 
@@ -42,7 +42,7 @@ struct Opt {
     )]
     iterations: u64,
     #[structopt(short = "m", long = "mode", help = "DPDK server or client mode.")]
-    mode: DPDKMode,
+    mode: AppMode,
     #[structopt(
         short = "s",
         long = "size",
@@ -81,13 +81,13 @@ fn main() -> Result<()> {
     let payload = vec![b'a'; opt.size];
 
     let mut connection = match opt.mode {
-        DPDKMode::Server => DPDKConnection::new(&opt.config_file, opt.mode, true)
+        AppMode::Server => DPDKConnection::new(&opt.config_file, opt.mode, true)
             .wrap_err("Failed to initialize DPDK server connection.")?,
-        DPDKMode::Client => DPDKConnection::new(&opt.config_file, opt.mode, true)
+        AppMode::Client => DPDKConnection::new(&opt.config_file, opt.mode, true)
             .wrap_err("Failed to initialize DPDK server connection.")?,
     };
     match opt.mode {
-        DPDKMode::Server => {
+        AppMode::Server => {
             let mut server = EchoServer::new()?;
             let histograms = connection.get_timers();
             let echo_histograms = server.get_histograms();
@@ -111,7 +111,7 @@ fn main() -> Result<()> {
             server.init(&mut connection)?;
             server.run_state_machine(&mut connection)?;
         }
-        DPDKMode::Client => {
+        AppMode::Client => {
             let mut client =
                 EchoClient::new(opt.size, opt.server_ip, opt.zero_copy, &payload.as_ref())?;
             client.init(&mut connection)?;

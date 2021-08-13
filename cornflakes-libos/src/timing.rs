@@ -49,6 +49,14 @@ pub struct ManualHistogram {
 }
 
 impl ManualHistogram {
+    pub fn new(num_values: usize) -> Self {
+        ManualHistogram {
+            current_count: 0,
+            latencies: vec![0u64; num_values as usize],
+            sorted_latencies: Vec::default(),
+        }
+    }
+
     pub fn init(rate_pps: u64, total_time_sec: u64) -> Self {
         // ten percent over
         let num_values = ((rate_pps * total_time_sec) as f64 * 1.10) as usize;

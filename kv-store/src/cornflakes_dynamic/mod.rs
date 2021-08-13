@@ -28,7 +28,7 @@ where
 {
     type HeaderCtx = Vec<u8>;
 
-    fn new(_serialize_to_native_buffers: bool) -> Result<Self>
+    fn new_server(_serialize_to_native_buffers: bool) -> Result<Self>
     where
         Self: Sized,
     {
@@ -154,7 +154,7 @@ impl<D> SerializedRequestGenerator for CornflakesDynamicSerializer<D>
 where
     D: Datapath,
 {
-    fn new() -> Self {
+    fn new_request_generator() -> Self {
         CornflakesDynamicSerializer {
             _marker: PhantomData,
         }

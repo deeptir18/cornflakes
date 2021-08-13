@@ -868,7 +868,7 @@ pub trait ClientSM {
     fn server_ip(&self) -> Ipv4Addr;
 
     /// Generate next request to be sent and send it with the provided callback.
-    fn get_next_msg(&mut self) -> Result<(MsgID, &[u8])>;
+    fn get_next_msg(&mut self) -> Result<Option<(MsgID, &[u8])>>;
 
     /// What to do with a received request.
     fn process_received_msg(
@@ -898,8 +898,11 @@ pub trait ClientSM {
         let server_ip = self.server_ip();
         let addr_info = datapath.get_outgoing_addr_from_ip(server_ip)?;
 
-        while recved < num_pkts {
-            datapath.push_buf(self.get_next_msg()?, addr_info.clone())?;
+        while let Some(msg) = self.get_next_msg()? {
+            if recved >= num_pkts {
+                break;
+            }
+            datapath.push_buf(msg, addr_info.clone())?;
             let recved_pkts = loop {
                 let pkts = datapath.pop()?;
                 if pkts.len() > 0 {
@@ -939,10 +942,13 @@ pub trait ClientSM {
         //let mut last_called_pop = Instant::now();
 
         let start = datapath.current_cycles();
-        while datapath.current_cycles() < (total_time * freq + start) {
+        while let Some(msg) = self.get_next_msg()? {
+            if datapath.current_cycles() < (total_time * freq + start) {
+                break;
+            }
             // Send the next message
             tracing::debug!(time = ?time_start.elapsed(), "About to send next packet");
-            datapath.push_buf(self.get_next_msg()?, addr_info.clone())?;
+            datapath.push_buf(msg, addr_info.clone())?;
             let last_sent = datapath.current_cycles();
 
             while datapath.current_cycles() <= last_sent + cycle_wait {

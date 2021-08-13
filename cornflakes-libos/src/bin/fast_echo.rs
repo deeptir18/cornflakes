@@ -1,12 +1,9 @@
 use color_eyre::eyre::Result;
 use cornflakes_libos::{
     dpdk_bindings,
-    dpdk_libos::{
-        connection::DPDKMode,
-        fast_echo::{do_client, do_server, MemoryMode},
-    },
+    dpdk_libos::fast_echo::{do_client, do_server, MemoryMode},
 };
-use cornflakes_utils::{global_debug_init, TraceLevel};
+use cornflakes_utils::{global_debug_init, AppMode, TraceLevel};
 use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
@@ -30,7 +27,7 @@ struct Opt {
     )]
     config_file: String,
     #[structopt(long = "mode", help = "DPDK server or client mode.")]
-    mode: DPDKMode,
+    mode: AppMode,
     #[structopt(
         long = "size",
         help = "Size of message to be sent.",
@@ -78,7 +75,7 @@ fn main() -> Result<()> {
     }
 
     match opt.mode {
-        DPDKMode::Server => {
+        AppMode::Server => {
             do_server(
                 &opt.config_file,
                 opt.zero_copy,
@@ -88,7 +85,7 @@ fn main() -> Result<()> {
                 opt.use_c,
             )?;
         }
-        DPDKMode::Client => {
+        AppMode::Client => {
             do_client(
                 opt.rate,
                 opt.total_time,

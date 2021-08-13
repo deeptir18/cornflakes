@@ -90,7 +90,7 @@ where
         }
 
         Ok(YCSBClient {
-            serializer: S::new(),
+            serializer: S::new_request_generator(),
             value_size: value_size,
             num_values: num_values,
             client_id: client_id,
@@ -150,7 +150,10 @@ where
         self.recved
     }
 
-    fn get_next_msg(&mut self) -> Result<(MsgID, &[u8])> {
+    fn get_next_msg(&mut self) -> Result<Option<(MsgID, &[u8])>> {
+        if self.requests.len() == self.last_sent_id {
+            return Ok(None); // no more requests
+        }
         self.last_sent_id += 1;
         let mut req = YCSBRequest::new(
             &self.requests[self.last_sent_id - 1],
@@ -163,10 +166,10 @@ where
             &mut self.request_data.as_mut_slice(),
             &mut req,
         )?;
-        Ok((
+        Ok(Some((
             self.last_sent_id as u32 - 1,
             &self.request_data.as_slice()[CF_ID_SIZE..size],
-        ))
+        )))
     }
 
     fn process_received_msg(
@@ -210,7 +213,7 @@ where
 // to parse.
 pub trait SerializedRequestGenerator {
     /// New serializer
-    fn new() -> Self
+    fn new_request_generator() -> Self
     where
         Self: Sized;
 
@@ -254,7 +257,7 @@ where
 {
     type HeaderCtx;
 
-    fn new(serialize_to_native_buffers: bool) -> Result<Self>
+    fn new_server(serialize_to_native_buffers: bool) -> Result<Self>
     where
         Self: Sized;
 
@@ -296,7 +299,7 @@ where
     S: KVSerializer<D>,
 {
     pub fn new(serialize_to_native_buffers: bool) -> Result<Self> {
-        let serializer = S::new(serialize_to_native_buffers)
+        let serializer = S::new_server(serialize_to_native_buffers)
             .wrap_err("Could not initialize server serializer.")?;
         Ok(KVServer {
             map: HashMap::default(),

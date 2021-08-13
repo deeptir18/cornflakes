@@ -8,6 +8,7 @@ use super::{
     dpdk_utils, wrapper,
 };
 use color_eyre::eyre::{bail, Result, WrapErr};
+use cornflakes_utils::AppMode;
 use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
@@ -131,28 +132,11 @@ impl PtrAttributes for DPDKBuffer {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Copy)]
-pub enum DPDKMode {
-    Server,
-    Client,
-}
-
-impl std::str::FromStr for DPDKMode {
-    type Err = color_eyre::eyre::Error;
-    fn from_str(s: &str) -> Result<Self> {
-        Ok(match s {
-            "client" => DPDKMode::Client,
-            "server" => DPDKMode::Server,
-            x => bail!("Unknown DPDKMode: {:?}", x),
-        })
-    }
-}
-
 pub struct DPDKConnection {
     /// Whether to use scatter-gather on send.
     use_scatter_gather: bool,
     /// Server or client mode.
-    mode: DPDKMode,
+    mode: AppMode,
     /// dpdk_port
     dpdk_port: u16,
     /// Maps ip addresses to corresponding mac addresses.
@@ -192,7 +176,7 @@ impl DPDKConnection {
     /// (3) UDP port information for UDP packet headers.
     pub fn new(
         config_file: &str,
-        mode: DPDKMode,
+        mode: AppMode,
         use_scatter_gather: bool,
     ) -> Result<DPDKConnection> {
         let (ip_to_mac, mac_to_ip, udp_port) = dpdk_utils::parse_yaml_map(config_file).wrap_err(
@@ -222,7 +206,7 @@ impl DPDKConnection {
         // process::exit,
         let mut timers: HashMap<String, Arc<Mutex<HistogramWrapper>>> = HashMap::default();
         if cfg!(feature = "timers") {
-            if mode == DPDKMode::Server {
+            if mode == AppMode::Server {
                 timers.insert(
                     PROCESSING_TIMER.to_string(),
                     Arc::new(Mutex::new(HistogramWrapper::new(PROCESSING_TIMER)?)),
@@ -315,23 +299,15 @@ impl DPDKConnection {
         Ok(())
     }
 
-    /*fn add_entry(&mut self, timer_name: &str, val: u64) -> Result<()> {
-        let mut hist = match self.timers.contains_key(timer_name) {
-            true => match self.timers.get(timer_name).unwrap().lock() {
-                Ok(h) => h,
-                Err(e) => bail!("Failed to unlock hist: {}", e),
-            },
-            false => {
-                bail!("Entry not in timer map: {}", timer_name);
-            }
-        };
-        hist.record(val)?;
-        Ok(())
-    }*/
-
     fn get_outgoing_header(&self, dst_addr: &utils::AddressInfo) -> utils::HeaderInfo {
         self.addr_info
             .get_outgoing(dst_addr.ipv4_addr, dst_addr.ether_addr)
+    }
+
+    pub fn add_mempool(&mut self, value_size: usize, min_num_values: usize) -> Result<()> {
+        // Adds a mempool to the mempool allocator of this size.
+        // Mainly for the KV implementation.
+        unimplemented!();
     }
 }
 
@@ -346,12 +322,12 @@ impl Datapath for DPDKConnection {
         // if client, add start time for packet
         // if server, end packet processing counter
         match self.mode {
-            DPDKMode::Server => {
+            AppMode::Server => {
                 if cfg!(feature = "timers") {
                     self.end_entry(PROCESSING_TIMER, buf.0, addr.ipv4_addr)?;
                 }
             }
-            DPDKMode::Client => {
+            AppMode::Client => {
                 // only insert new time IF this packet has not already been sent
                 if !self.outgoing_window.contains_key(&buf.0) {
                     let _ = self.outgoing_window.insert(buf.0, Instant::now());
@@ -446,14 +422,14 @@ impl Datapath for DPDKConnection {
         // if client, add start time for packet
         // if server, end packet processing counter
         match self.mode {
-            DPDKMode::Server => {
+            AppMode::Server => {
                 if cfg!(feature = "timers") {
                     for (sga, addr) in sgas.iter() {
                         self.end_entry(PROCESSING_TIMER, sga.get_id(), addr.ipv4_addr)?;
                     }
                 }
             }
-            DPDKMode::Client => {
+            AppMode::Client => {
                 for (sga, _) in sgas.iter() {
                     // only insert new time IF this packet has not already been sent
                     if !self.outgoing_window.contains_key(&sga.get_id()) {
@@ -493,7 +469,7 @@ impl Datapath for DPDKConnection {
         let mut ret: Vec<(ReceivedPkt<Self>, Duration)> = Vec::new();
 
         // Debugging end to end processing time
-        if cfg!(feature = "timers") && self.mode == DPDKMode::Server {
+        if cfg!(feature = "timers") && self.mode == AppMode::Server {
             for (_, (msg_id, addr_info)) in received.iter() {
                 self.start_entry(PROCESSING_TIMER, *msg_id, addr_info.ipv4_addr.clone())?;
             }
@@ -503,7 +479,7 @@ impl Datapath for DPDKConnection {
             tracing::debug!("Received some packs");
             let pop_processing_timer = self.get_timer(
                 POP_PROCESSING_TIMER,
-                cfg!(feature = "timers") && self.mode == DPDKMode::Server,
+                cfg!(feature = "timers") && self.mode == AppMode::Server,
             )?;
             let start = Instant::now();
             for (idx, (msg_id, addr_info)) in received.into_iter() {
@@ -522,14 +498,14 @@ impl Datapath for DPDKConnection {
                 let received_pkt = ReceivedPkt::new(received_buffer, msg_id, addr_info);
 
                 let duration = match self.mode {
-                    DPDKMode::Client => match self.outgoing_window.remove(&msg_id) {
+                    AppMode::Client => match self.outgoing_window.remove(&msg_id) {
                         Some(start) => start.elapsed(),
                         None => {
                             warn!("Received packet for an old msg_id: {}", msg_id);
                             continue;
                         }
                     },
-                    DPDKMode::Server => Duration::new(0, 0),
+                    AppMode::Server => Duration::new(0, 0),
                 };
                 ret.push((received_pkt, duration));
             }

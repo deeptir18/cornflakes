@@ -107,10 +107,10 @@ where
         self.server_ip
     }
 
-    fn get_next_msg(&mut self) -> Result<(MsgID, &[u8])> {
+    fn get_next_msg(&mut self) -> Result<Option<(MsgID, &[u8])>> {
         self.last_sent_id += 1;
         self.sent += 1;
-        Ok((self.last_sent_id, &self.buffer.as_slice()))
+        Ok(Some((self.last_sent_id, &self.buffer.as_slice())))
     }
 
     fn received_so_far(&self) -> usize {

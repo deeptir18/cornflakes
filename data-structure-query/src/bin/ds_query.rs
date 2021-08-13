@@ -1,12 +1,10 @@
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
-    dpdk_bindings,
-    dpdk_libos::connection::{DPDKConnection, DPDKMode},
-    timing::ManualHistogram,
-    ClientSM, Datapath, ServerSM,
+    dpdk_bindings, dpdk_libos::connection::DPDKConnection, timing::ManualHistogram, ClientSM,
+    Datapath, ServerSM,
 };
 use cornflakes_utils::{
-    global_debug_init, NetworkDatapath, SerializationType, SimpleMessageType, TraceLevel,
+    global_debug_init, AppMode, NetworkDatapath, SerializationType, SimpleMessageType, TraceLevel,
 };
 use data_structure_query::{
     client::EchoClient,
@@ -107,12 +105,43 @@ struct Opt {
     deserialize_received: bool,
 }
 
+macro_rules! init_ds_query_server(
+    ($serializer: ty, $datapath: ty, $datapath_init: expr, $opt: ident) => {
+        let mut connection = $datapath_init?;
+        let mut echo_server: EchoServer<$serializer, $datapath> =
+            EchoServer::new($opt.message, $opt.size, $opt.deserialize_received)?;
+        set_ctrlc_handler(&echo_server)?;
+        echo_server.init(&mut connection)?;
+        echo_server.run_state_machine(&mut connection)?;
+    }
+);
+
+macro_rules! init_ds_query_client(
+    ($serializer: ty, $datapath: ty, $datapath_init: expr, $opt: ident) => {
+        let server_sizes = get_equal_fields($opt.server_message, $opt.server_size);
+        let sizes = get_equal_fields($opt.message, $opt.size);
+        let hist = ManualHistogram::init($opt.rate, $opt.total_time);
+        let mut connection = $datapath_init?;
+        let mut echo_client: EchoClient<$serializer, $datapath> =
+        EchoClient::new(
+            $opt.server_ip,
+            $opt.message,
+            $opt.server_message,
+            sizes,
+            server_sizes,
+            hist,
+        )?;
+        let mut ctx = echo_client.new_context();
+        echo_client.init_state(&mut ctx, &mut connection)?;
+        run_client(&mut echo_client, &mut connection, &$opt)?;
+    }
+);
 fn main() -> Result<()> {
     let opt = Opt::from_args();
     global_debug_init(opt.trace_level)?;
     let mode = match &opt.mode {
-        EchoMode::Server => DPDKMode::Server,
-        EchoMode::Client => DPDKMode::Client,
+        EchoMode::Server => AppMode::Server,
+        EchoMode::Client => AppMode::Client,
     };
 
     let dpdk_datapath = |use_scatter_gather: bool| -> Result<DPDKConnection> {
@@ -125,66 +154,46 @@ fn main() -> Result<()> {
     match opt.mode {
         EchoMode::Server => match (opt.datapath, opt.serialization) {
             (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
-                let mut connection = dpdk_datapath(true)?;
-                let mut echo_server: EchoServer<CornflakesDynamicSerializer, DPDKConnection> =
-                    EchoServer::new(opt.message, opt.size, opt.deserialize_received)?;
-                set_ctrlc_handler(&echo_server)?;
-                echo_server.init(&mut connection)?;
-                echo_server.run_state_machine(&mut connection)?;
+                init_ds_query_server!(
+                    CornflakesDynamicSerializer,
+                    DPDKConnection,
+                    dpdk_datapath(true),
+                    opt
+                );
             }
             (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyDynamic) => {
-                let mut connection = dpdk_datapath(false)?;
-                let mut echo_server: EchoServer<CornflakesDynamicSerializer, DPDKConnection> =
-                    EchoServer::new(opt.message, opt.size, opt.deserialize_received)?;
-                set_ctrlc_handler(&echo_server)?;
-                echo_server.init(&mut connection)?;
-                echo_server.run_state_machine(&mut connection)?;
+                init_ds_query_server!(
+                    CornflakesDynamicSerializer,
+                    DPDKConnection,
+                    dpdk_datapath(false),
+                    opt
+                );
             }
             _ => {
                 unimplemented!();
             }
         },
-        EchoMode::Client => {
-            let sizes = get_equal_fields(opt.message, opt.size);
-            let server_sizes = get_equal_fields(opt.server_message, opt.server_size);
-            let hist = ManualHistogram::init(opt.rate, opt.total_time);
-            match (opt.datapath, opt.serialization) {
-                (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
-                    let mut connection = dpdk_datapath(true)?;
-                    let mut echo_client: EchoClient<CornflakesDynamicEchoClient, DPDKConnection> =
-                        EchoClient::new(
-                            opt.server_ip,
-                            opt.message,
-                            opt.server_message,
-                            sizes,
-                            server_sizes,
-                            hist,
-                        )?;
-                    let mut ctx = echo_client.new_context();
-                    echo_client.init_state(&mut ctx, &mut connection)?;
-                    run_client(&mut echo_client, &mut connection, &opt)?;
-                }
-                (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyDynamic) => {
-                    let mut connection = dpdk_datapath(false)?;
-                    let mut echo_client: EchoClient<CornflakesDynamicEchoClient, DPDKConnection> =
-                        EchoClient::new(
-                            opt.server_ip,
-                            opt.message,
-                            opt.server_message,
-                            sizes,
-                            server_sizes,
-                            hist,
-                        )?;
-
-                    let mut ctx = echo_client.new_context();
-                    echo_client.init_state(&mut ctx, &mut connection)?;
-                    run_client(&mut echo_client, &mut connection, &opt)?;
-                }
-                _ => {
-                    unimplemented!();
-                }
+        EchoMode::Client => match (opt.datapath, opt.serialization) {
+            (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
+                init_ds_query_client!(
+                    CornflakesDynamicEchoClient,
+                    DPDKConnection,
+                    dpdk_datapath(true),
+                    opt
+                );
             }
-        }
+            (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyDynamic) => {
+                init_ds_query_client!(
+                    CornflakesDynamicEchoClient,
+                    DPDKConnection,
+                    dpdk_datapath(false),
+                    opt
+                );
+            }
+            _ => {
+                unimplemented!();
+            }
+        },
     }
 
     Ok(())

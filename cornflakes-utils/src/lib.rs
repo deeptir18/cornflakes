@@ -16,8 +16,26 @@ macro_rules! test_init(
     );
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum AppMode {
+    Client,
+    Server,
+}
+
+impl std::str::FromStr for AppMode {
+    type Err = color_eyre::eyre::Error;
+    fn from_str(s: &str) -> Result<AppMode> {
+        Ok(match s {
+            "server" | "Server" | "SERVER" => AppMode::Server,
+            "client" | "Client" | "CLIENT" => AppMode::Client,
+            x => bail!("{} app mode unknown.", x),
+        })
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum NetworkDatapath {
     DPDK,
+    OFED,
 }
 
 impl std::str::FromStr for NetworkDatapath {
@@ -25,6 +43,7 @@ impl std::str::FromStr for NetworkDatapath {
     fn from_str(s: &str) -> Result<NetworkDatapath> {
         Ok(match s {
             "dpdk" | "DPDK" => NetworkDatapath::DPDK,
+            "ofed" | "Ofed" | "OFED" => NetworkDatapath::OFED,
             x => bail!("{} datapath unknown.", x),
         })
     }
