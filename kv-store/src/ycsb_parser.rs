@@ -45,7 +45,7 @@ impl<'a> YCSBRequest<'a> {
             }),
             "UPDATE" => Ok(YCSBRequest {
                 key: key,
-                val: &split.next().unwrap()[0..value_size],
+                val: &split.next().unwrap()[0..value_size], // assumes the MAX value size we are testing is what is inside generated trace
                 req_type: MsgType::Put(num_keys),
                 client_id: id,
                 num_keys: num_keys,

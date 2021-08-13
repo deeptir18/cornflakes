@@ -1,4 +1,4 @@
-use color_eyre::eyre::{Result, WrapErr};
+use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::{
     dpdk_bindings, dpdk_libos::connection::DPDKConnection, timing::ManualHistogram, ClientSM,
     Datapath, ServerSM,
@@ -118,10 +118,19 @@ fn lines_in_file(path: &str) -> Result<usize> {
         .output()
         .wrap_err(format!("Failed to run wc on path: {:?}", path))?;
     let stdout = String::from_utf8(output.stdout).wrap_err("Not able to get string from stdout")?;
-    let ret = stdout
-        .parse::<usize>()
-        .wrap_err(format!("Could not turn wc output into usize: {:?}", stdout))?;
-    Ok(ret)
+    let mut stdout_split = stdout.split(" ");
+    let num = match stdout_split.next() {
+        Some(x) => {
+            let num = x
+                .parse::<usize>()
+                .wrap_err(format!("Could not turn wc output into usize: {:?}", stdout))?;
+            num
+        }
+        None => {
+            bail!("No string found in stdout of wc command");
+        }
+    };
+    Ok(num)
 }
 
 #[macro_export]
