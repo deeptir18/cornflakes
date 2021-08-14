@@ -5,14 +5,15 @@ use super::{
         dpdk_call, dpdk_check_not_failed, dpdk_ok, mbuf_slice, mem, utils, CornType, MsgID,
         PtrAttributes, ScatterGather,
     },
+    allocator::MempoolAllocator,
     dpdk_bindings::*,
     dpdk_check, dpdk_error, dpdk_utils,
 };
-use color_eyre::eyre::{bail, Result, WrapErr};
+use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use hashbrown::HashMap;
 use std::{
     ffi::CString,
-    mem::{size_of, zeroed, MaybeUninit},
+    mem::{size_of, MaybeUninit},
     ptr, slice,
     time::Duration,
 };
@@ -31,17 +32,17 @@ pub const RX_PACKET_LEN: u32 = 9216;
 pub const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
 // pub const MBUF_BUF_SIZE: u32 = RX_PACKET_LEN + RTE_PKTMBUF_HEADROOM;
 
-pub const RTE_PKTMBUF_TAILROOM: u32 = 120; // with priv size of 8, this is padding
-pub const MBUF_POOL_HDR_SIZE: usize = 64;
+//pub const RTE_PKTMBUF_TAILROOM: u32 = 120; // with priv size of 8, this is padding
+//pub const MBUF_POOL_HDR_SIZE: usize = 64;
 pub const MBUF_PRIV_SIZE: usize = 8;
-pub const MBUF_MEMPOOL_PADDING: usize = 128;
+/*pub const MBUF_MEMPOOL_PADDING: usize = 128;
 pub const TOTAL_MEMPOOL_MBUF_SIZE: usize = MBUF_POOL_HDR_SIZE
     + MBUF_BUF_SIZE as usize
     + MBUF_PRIV_SIZE
     + RTE_PKTMBUF_TAILROOM as usize
     + MBUF_MEMPOOL_PADDING;
 pub const MEMHDR_OFFSET: usize = 64; // offset to first mbuf from the beginning of the mempool
-pub const MEMHDR_ALIGNED_OFFSET: usize = 64; // offset to first mbuf on a new page
+pub const MEMHDR_ALIGNED_OFFSET: usize = 64; // offset to first mbuf on a new page*/
 /// RX and TX Prefetch, Host, and Write-back threshold values should be
 /// carefully set for optimal performance. Consult the network
 /// controller's datasheet and supporting DPDK documentation for guidance
@@ -146,7 +147,7 @@ impl Pkt {
         header_mempool: *mut rte_mempool,
         extbuf_mempool: *mut rte_mempool,
         header_info: &utils::HeaderInfo,
-        memzones: &Vec<(usize, (usize, usize))>,
+        allocator: &MempoolAllocator,
         external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
         // TODO: change this back
@@ -174,7 +175,7 @@ impl Pkt {
         }
 
         // 3: copy the payloads from the sga into the mbufs
-        self.set_sga_payloads(mbufs, pkt_id, sga, memzones, external_regions)
+        self.set_sga_payloads(mbufs, pkt_id, sga, allocator, external_regions)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
 
         tracing::debug!(header_mempool_avail =? dpdk_call!(rte_mempool_count(header_mempool)), extbuf_mempool_avail =? dpdk_call!(rte_mempool_count(extbuf_mempool)), "Number available in header_mempool, in extbuf_mempool");
@@ -192,7 +193,7 @@ impl Pkt {
     /// allocated from an actual mempool.
     /// * header_info - Header information to fill in at the front of the first mbuf, for the
     /// entire packet (currently ethernet, ipv4 and udp packet headers).
-    /// * memzones: Vector of memzones for native mbuf allocations.
+    /// * allocator: Mempool allocator with information about the mempools.
     /// * external_regions: Vector of information about externally registered memory regions.
     #[cfg(test)]
     pub fn construct_from_test_sga(
@@ -200,7 +201,7 @@ impl Pkt {
         sga: &impl ScatterGather,
         mbufs: &mut [[*mut rte_mbuf; RECEIVE_BURST_SIZE as usize]; MAX_SCATTERS],
         header_info: &utils::HeaderInfo,
-        memzones: &Vec<(usize, (usize, usize))>,
+        allocator: &MempoolAllocator,
         external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
         self.add_header_mbuf(
@@ -223,7 +224,7 @@ impl Pkt {
         }
 
         // 3: copy the payloads from the sga into the mbufs
-        self.set_sga_payloads(mbufs, 0, sga, memzones, external_regions)
+        self.set_sga_payloads(mbufs, 0, sga, allocator, external_regions)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
 
         Ok(())
@@ -267,14 +268,14 @@ impl Pkt {
     ///
     /// Arguments:
     /// * sga - Object that implements the scatter-gather trait to copy payloads from.
-    /// * memzones: Vector of memzones for native mbuf allocations.
+    /// * allocator - Mempool allocator that has information about the packet mempools.
     /// * external_regions: Vector of information about externally registered memory regions.
     fn set_sga_payloads(
         &mut self,
         mbufs: &mut [[*mut rte_mbuf; RECEIVE_BURST_SIZE as usize]; MAX_SCATTERS],
         pkt_id: usize,
         sga: &impl ScatterGather,
-        memzones: &Vec<(usize, (usize, usize))>,
+        allocator: &MempoolAllocator,
         external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
         let mut current_attached_idx = 0;
@@ -290,7 +291,7 @@ impl Pkt {
                         pkt_id,
                         current_attached_idx,
                         cornptr.as_ref(),
-                        memzones,
+                        allocator,
                         external_regions,
                     )
                     .wrap_err("Failed to set external payload into pkt list.")?;
@@ -336,58 +337,6 @@ impl Pkt {
         Ok(())
     }
 
-    /// Recover the original mbuf ptr within memzone region given buffer address.
-    /// Returns mbuf address, and `data_off` field pointing to that buffer within the mbuf.
-    /// Assumes buffer pointer is WITHIN start <= buf.as_ptr() as usize < (start +
-    /// size)
-    fn recover_original_mbuf_ptr(
-        buf: &[u8],
-        start: usize,
-        _size: usize,
-    ) -> Result<(*mut rte_mbuf, usize)> {
-        // Note: this is how I *think* the mempool layout works
-        // Could be different for a different page size, as well as a different mbuf size
-        // Base mbuf either starts 64 bytes after the nearest page, or 24 bytes after the
-        // beginning of the mempool
-        let pg2mb = mem::closest_2mb_page(buf.as_ptr());
-        let base_mbuf = match pg2mb <= start {
-            true => start + MEMHDR_OFFSET,
-            false => pg2mb + MEMHDR_ALIGNED_OFFSET,
-        };
-        let ptr_int = buf.as_ptr() as usize;
-        let ptr_offset = (ptr_int) - base_mbuf;
-        let offset_within_alloc = ptr_offset % TOTAL_MEMPOOL_MBUF_SIZE;
-
-        tracing::debug!("Pointer offset: {:?}", ptr_offset);
-        if offset_within_alloc
-            < (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE)
-        {
-            bail!(
-                "Data pointer within allocation header: {:?} in {:?}",
-                offset_within_alloc,
-                (MBUF_POOL_HDR_SIZE + RTE_PKTMBUF_HEADROOM as usize + MBUF_PRIV_SIZE)
-            );
-        }
-
-        if offset_within_alloc > (MBUF_POOL_HDR_SIZE + MBUF_BUF_SIZE as usize + MBUF_PRIV_SIZE) {
-            bail!(
-                "Data pointer within allocation tailroom: {:?} in {:?}",
-                offset_within_alloc,
-                MBUF_POOL_HDR_SIZE + MBUF_BUF_SIZE as usize + MBUF_PRIV_SIZE
-            );
-        }
-
-        let original_mbuf_ptr = (ptr_int - offset_within_alloc) as *mut rte_mbuf;
-        let data_off = (ptr_int - unsafe { (*original_mbuf_ptr).buf_addr as usize }) as u16;
-
-        debug!(
-            "Original ptr: {}, original_ptr address: {:?}, offset within alloc: {}, resulting data off: {}",
-            ptr_int, original_mbuf_ptr, offset_within_alloc, data_off,
-        );
-
-        Ok((original_mbuf_ptr, data_off as usize))
-    }
-
     /// Set external payload in packet list.
     fn set_external_payload(
         &mut self,
@@ -395,7 +344,7 @@ impl Pkt {
         pkt_id: usize,
         idx: usize,
         buf: &[u8],
-        memzones: &Vec<(usize, (usize, usize))>,
+        allocator: &MempoolAllocator,
         external_regions: &Vec<mem::MmapMetadata>,
     ) -> Result<()> {
         debug!("The mbuf idx we're changing: {}", idx);
@@ -407,38 +356,29 @@ impl Pkt {
 
         let mut in_native_mempool = false;
         let mut in_external_pool = false;
-        for (_, (start, size)) in memzones.iter() {
-            if (buf.as_ptr() as usize) > *start && (buf.as_ptr() as usize) < (*start + *size) {
-                tracing::debug!("Default memzone: {:?}", (*start, *size));
-                debug!("Within memzone check");
-                let (original_mbuf_ptr, data_off) =
-                    Pkt::recover_original_mbuf_ptr(buf, *start, *size)?;
-
-                tracing::debug!(
-                    "Pointer to current extbuf: {:?}, Pointer to original mbuf ptr: {:?}",
-                    mbufs[idx][pkt_id],
-                    original_mbuf_ptr
-                );
-                unsafe {
-                    (*mbufs[idx][pkt_id]).buf_iova = (*original_mbuf_ptr).buf_iova;
-                    (*mbufs[idx][pkt_id]).buf_addr =
-                        buf.as_ptr().offset(-1 * data_off as isize) as _;
-                    (*mbufs[idx][pkt_id]).buf_len = buf.len() as _;
-                    (*mbufs[idx][pkt_id]).data_off = data_off as u16;
-                }
-                // set lkey of packet to be -1
-                dpdk_call!(set_lkey_not_present(mbufs[idx][pkt_id]));
-
-                // only set reference for last mbuf in the list.
-                if unsafe { (*mbufs[idx][pkt_id]).next == ptr::null_mut() } {
-                    dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 1));
-                    dpdk_call!(rte_pktmbuf_refcnt_update(original_mbuf_ptr, 1));
-                } else {
-                    dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 0));
-                }
-                in_native_mempool = true;
-                break;
+        if let Some((original_mbuf_ptr, data_off)) = allocator.recover_mbuf_ptr(buf)? {
+            tracing::debug!(
+                "Pointer to current extbuf: {:?}, Pointer to original mbuf ptr: {:?}",
+                mbufs[idx][pkt_id],
+                original_mbuf_ptr
+            );
+            unsafe {
+                (*mbufs[idx][pkt_id]).buf_iova = (*original_mbuf_ptr).buf_iova;
+                //(*mbufs[idx][pkt_id]).buf_addr = buf.as_ptr().offset(-1 * data_off as isize) as _;
+                (*mbufs[idx][pkt_id]).buf_len = buf.len() as _;
+                (*mbufs[idx][pkt_id]).data_off = data_off as u16;
             }
+            // set lkey of packet to be -1
+            dpdk_call!(set_lkey_not_present(mbufs[idx][pkt_id]));
+
+            // only set reference for last mbuf in the list.
+            if unsafe { (*mbufs[idx][pkt_id]).next == ptr::null_mut() } {
+                dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 1));
+                dpdk_call!(rte_pktmbuf_refcnt_update(original_mbuf_ptr, 1));
+            } else {
+                dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 0));
+            }
+            in_native_mempool = true;
         }
         if !in_native_mempool {
             for region in external_regions.iter() {
@@ -626,7 +566,6 @@ fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
     let mut mbp_priv_uninit: MaybeUninit<rte_pktmbuf_pool_private> = MaybeUninit::zeroed();
     unsafe {
         (*mbp_priv_uninit.as_mut_ptr()).mbuf_data_room_size = 0;
-        // TODO: should the priv size be more?
         (*mbp_priv_uninit.as_mut_ptr()).mbuf_priv_size = MBUF_PRIV_SIZE as _;
     }
 
@@ -694,6 +633,83 @@ pub fn free_mempool(mempool: *mut rte_mempool) {
     dpdk_call!(rte_mempool_free(mempool));
 }
 
+/// Creates a mempool with the given value size, and number of values.
+pub fn create_mempool(
+    name: &str,
+    nb_ports: u16,
+    data_size: usize,
+    num_values: usize,
+) -> Result<*mut rte_mempool> {
+    let name = CString::new(name)?;
+
+    let mut mbp_priv_uninit: MaybeUninit<rte_pktmbuf_pool_private> = MaybeUninit::zeroed();
+    unsafe {
+        (*mbp_priv_uninit.as_mut_ptr()).mbuf_data_room_size = data_size as u16;
+        (*mbp_priv_uninit.as_mut_ptr()).mbuf_priv_size = MBUF_PRIV_SIZE as _;
+    }
+
+    // actual data size is empty (just mbuf and priv data)
+    let elt_size: u32 = size_of::<rte_mbuf>() as u32 + MBUF_PRIV_SIZE as u32 + data_size as u32;
+
+    tracing::debug!(elt_size, "Trying to init extbuf mempool with elt_size");
+    let mbuf_pool = dpdk_call!(rte_mempool_create_empty(
+        name.as_ptr(),
+        (num_values * nb_ports as usize) as u32,
+        elt_size,
+        MBUF_CACHE_SIZE.into(),
+        MBUF_PRIV_SIZE as u32,
+        rte_socket_id() as i32,
+        0,
+    ));
+
+    ensure!(
+        !mbuf_pool.is_null(),
+        "Mempool {:?} created with rte_mempool_create_empty is null.",
+        name
+    );
+
+    // initialize the private data space
+    dpdk_call!(rte_pktmbuf_pool_init(
+        mbuf_pool,
+        mbp_priv_uninit.as_mut_ptr() as _
+    ));
+
+    // populate
+    if dpdk_call!(rte_mempool_populate_default(mbuf_pool))
+        != (num_values * nb_ports as usize) as i32
+    {
+        dpdk_call!(rte_mempool_free(mbuf_pool));
+        bail!(
+            "Not able to initialize mempool {:?}: Failed on rte_mempool_populate_default.",
+            name
+        );
+    }
+
+    // initialize each mbuf
+    if dpdk_call!(rte_mempool_obj_iter(
+        mbuf_pool,
+        Some(rte_pktmbuf_init),
+        ptr::null_mut()
+    )) != (num_values as u16 * nb_ports) as u32
+    {
+        dpdk_call!(rte_mempool_free(mbuf_pool));
+        bail!("Not able to initialize mempool {:?}: failed at rte_pktmbuf_init");
+    }
+
+    // initialize private data
+    if dpdk_call!(rte_mempool_obj_iter(
+        mbuf_pool,
+        Some(custom_init_priv()),
+        ptr::null_mut()
+    )) != (num_values as u16 * nb_ports) as u32
+    {
+        dpdk_call!(rte_mempool_free(mbuf_pool));
+        bail!("Not able to initialize private data in extbuf pool: failed on custom_init_priv.");
+    }
+
+    Ok(mbuf_pool)
+}
+
 pub fn create_native_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
     let name_str = CString::new(name)?;
     let mbuf_pool = dpdk_call!(rte_pktmbuf_pool_create(
@@ -757,7 +773,7 @@ fn dpdk_init_helper() -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
     Ok((mbuf_pool, extbuf_mempool, nb_ports))
 }
 
-pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, usize)> {
+/*pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, usize)> {
     let mut ret: Vec<(usize, usize)> = vec![];
     extern "C" fn mz_cb(
         _mp: *mut rte_mempool,
@@ -893,7 +909,7 @@ pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, u
            RTE_PKTMBUF_TAILROOM + MBUF_PRIV_SIZE as u32
        );*/
     Ok((base_addr, total_len))
-}
+}*/
 
 /// Initializes DPDK EAL and ports, and memory pools given a yaml-config file.
 /// Returns two mempools:

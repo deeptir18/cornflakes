@@ -5,7 +5,7 @@ use super::{
         timing::{record, timefunc, HistogramWrapper},
         utils, CornType, Datapath, MsgID, PtrAttributes, ReceivedPkt, RefCnt, ScatterGather,
     },
-    dpdk_utils, wrapper,
+    allocator, dpdk_utils, wrapper,
 };
 use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_utils::AppMode;
@@ -31,17 +31,14 @@ const PUSH_PROCESSING_TIMER: &str = "PUSH_PROCESSING_TIMER";
 pub struct DPDKBuffer {
     /// Pointer to allocated mbuf.
     pub mbuf: *mut rte_mbuf,
-    /// Id of originating mempool (application and datapath context).
-    pub mempool_id: usize,
     /// Actual application data offset (header could be in front)
     pub offset: usize,
 }
 
 impl DPDKBuffer {
-    fn new(mbuf: *mut rte_mbuf, mempool_id: usize, data_offset: usize) -> Self {
+    fn new(mbuf: *mut rte_mbuf, data_offset: usize) -> Self {
         DPDKBuffer {
             mbuf: mbuf,
-            mempool_id: mempool_id,
             offset: data_offset,
         }
     }
@@ -52,7 +49,6 @@ impl Default for DPDKBuffer {
         DPDKBuffer {
             // TODO: might be safest to NOT have this function
             mbuf: ptr::null_mut(),
-            mempool_id: 0,
             offset: 0,
         }
     }
@@ -70,7 +66,6 @@ impl Clone for DPDKBuffer {
         dpdk_call!(rte_pktmbuf_refcnt_update(self.mbuf, 1));
         DPDKBuffer {
             mbuf: self.mbuf,
-            mempool_id: self.mempool_id,
             offset: self.offset,
         }
     }
@@ -143,13 +138,12 @@ pub struct DPDKConnection {
     ip_to_mac: HashMap<Ipv4Addr, MacAddress>,
     /// Current window of outgoing packets mapped to start time.
     outgoing_window: HashMap<MsgID, Instant>,
-    /// mempools for allocating mbufs.
-    /// The default mempool (also used for RX) sits at idx 0.
-    mempools: Vec<(usize, *mut rte_mempool)>,
-    /// Vector of mempool information.
-    memzones: Vec<(usize, (usize, usize))>,
     /// Empty mempool for allocating external buffers.
     extbuf_mempool: *mut rte_mempool,
+    /// Mempool to copy packets into.
+    default_mempool: *mut rte_mempool,
+    /// Index of information about mempools
+    mempool_allocator: allocator::MempoolAllocator,
     /// Header information
     addr_info: utils::AddressInfo,
     /// Registered memory regions for externally allocated memory
@@ -234,22 +228,22 @@ impl DPDKConnection {
             );
         }
 
-        let mempools = vec![(0, mempool)];
-        let memzones = vec![(0, wrapper::get_mempool_memzone_area(mempool)?)];
+        let mut mempool_allocator = allocator::MempoolAllocator::default();
+        mempool_allocator
+            .add_mempool(mempool, wrapper::MBUF_BUF_SIZE as _)
+            .wrap_err("Failed to add DPDK default mempool to mempool allocator")?;
 
         Ok(DPDKConnection {
             use_scatter_gather: use_scatter_gather,
             mode: mode,
             dpdk_port: nb_ports - 1,
             ip_to_mac: ip_to_mac,
-            //mac_to_ip: mac_to_ip,
             outgoing_window: outgoing_window,
-            mempools: mempools,
-            memzones: memzones,
             external_memory_regions: Vec::default(),
             extbuf_mempool: ext_mempool,
+            default_mempool: mempool,
+            mempool_allocator: mempool_allocator,
             addr_info: addr_info,
-            //shared_info: HashMap::new(),
             timers: timers,
             send_mbufs: [[ptr::null_mut(); wrapper::RECEIVE_BURST_SIZE as usize];
                 wrapper::MAX_SCATTERS],
@@ -304,10 +298,21 @@ impl DPDKConnection {
             .get_outgoing(dst_addr.ipv4_addr, dst_addr.ether_addr)
     }
 
-    pub fn add_mempool(&mut self, value_size: usize, min_num_values: usize) -> Result<()> {
-        // Adds a mempool to the mempool allocator of this size.
-        // Mainly for the KV implementation.
-        unimplemented!();
+    pub fn add_mempool(
+        &mut self,
+        name: &str,
+        value_size: usize,
+        min_num_values: usize,
+    ) -> Result<()> {
+        let num_values = (min_num_values as f64 * 1.50) as usize;
+        let mempool = wrapper::create_mempool(name, 1, value_size, num_values)?;
+        self.mempool_allocator
+            .add_mempool(mempool, value_size)
+            .wrap_err(format!(
+                "Unable to add mempool {:?} to mempool allocator",
+                name
+            ))?;
+        Ok(())
     }
 }
 
@@ -317,7 +322,7 @@ impl Datapath for DPDKConnection {
     fn push_buf(&mut self, buf: (MsgID, &[u8]), addr: utils::AddressInfo) -> Result<()> {
         let header = self.get_outgoing_header(&addr);
         self.send_mbufs[0][0] =
-            wrapper::get_mbuf_with_memcpy(self.mempools[0].1, &header, buf.1, buf.0)?;
+            wrapper::get_mbuf_with_memcpy(self.default_mempool, &header, buf.1, buf.0)?;
 
         // if client, add start time for packet
         // if server, end packet processing counter
@@ -388,10 +393,10 @@ impl Datapath for DPDKConnection {
                             &mut self.send_mbufs,
                             i,
                             sga,
-                            self.mempools[0].1,
+                            self.default_mempool,
                             self.extbuf_mempool,
                             header,
-                            &self.memzones,
+                            &self.mempool_allocator,
                             &self.external_memory_regions,
                         )
                         .wrap_err(format!(
@@ -403,7 +408,7 @@ impl Datapath for DPDKConnection {
                             &mut self.send_mbufs,
                             i,
                             sga,
-                            self.mempools[0].1,
+                            self.default_mempool,
                             header,
                         )
                         .wrap_err(format!(
@@ -491,7 +496,6 @@ impl Datapath for DPDKConnection {
                 // for now, this datapath just returns single packets without split receive
                 let received_buffer = vec![DPDKBuffer::new(
                     self.recv_mbufs[idx],
-                    0,
                     utils::TOTAL_HEADER_SIZE,
                 )];
 
@@ -610,22 +614,16 @@ impl Datapath for DPDKConnection {
         utils::TOTAL_HEADER_SIZE
     }
 
-    fn allocate(&self, size: usize, _align: usize) -> Result<Self::DatapathPkt> {
-        // TODO: actually have this allocate from different mempools based on size.
-        if size > wrapper::MBUF_BUF_SIZE as usize {
-            bail!("Cannot allocate request with size: {:?}", size);
-        }
-        let mempool = self.mempools[0].1;
-        let mbuf = wrapper::alloc_mbuf(mempool)
-            .wrap_err(format!("Unable to alloc mbuf from mempool # {}", 0))?;
-        tracing::debug!(
-            "Allocating DPDK buffer at address {:?} from mempool {:?}",
-            mbuf,
-            0
-        );
+    fn allocate(&self, size: usize, align: usize) -> Result<Self::DatapathPkt> {
+        let mbuf = self
+            .mempool_allocator
+            .allocate(size, align)
+            .wrap_err(format!(
+                "Not able to allocate packet of size {:?} and alignment {:?} from allocator",
+                size, align
+            ))?;
         return Ok(DPDKBuffer {
             mbuf: mbuf,
-            mempool_id: 0,
             offset: 0,
         });
     }
@@ -644,9 +642,7 @@ impl Drop for DPDKConnection {
                 }
             }
         }
+        // rest of mempools are freed when the Mempool allocator is dropped
         wrapper::free_mempool(self.extbuf_mempool);
-        for (_, mempool) in self.mempools.iter() {
-            wrapper::free_mempool(*mempool);
-        }
     }
 }
