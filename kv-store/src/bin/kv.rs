@@ -139,7 +139,9 @@ macro_rules! init_kv_server(
         let mut connection = $datapath_init?;
         let mut kv_server: KVServer<$serializer,$datapath> = KVServer::new($opt.use_native_buffers)?;
         set_ctrlc_handler(&kv_server)?;
+        // load values into kv store
         kv_server.init(&mut connection)?;
+        kv_server.load(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;
         kv_server.run_state_machine(&mut connection)?;
     }
 );

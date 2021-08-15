@@ -4,10 +4,11 @@ use super::{
     wrapper,
 };
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
-
+use hashbrown::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MempoolInfo {
     handle: *mut rte_mempool,
+    hugepage_size: usize, // how big are the huge pages used in this mempool
     start: usize,
     size: usize,
     object_size: usize,      // includes padding
@@ -33,8 +34,11 @@ impl MempoolInfo {
                 handle
             ))?;
 
+        let hugepage_size = unsafe { (*(*handle).mz).hugepage_sz as usize };
+
         Ok(MempoolInfo {
             handle: handle,
+            hugepage_size: hugepage_size,
             start: start,
             size: size,
             object_size: object_size,
@@ -122,43 +126,67 @@ impl Drop for MempoolInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MempoolAllocator {
-    mempools: Vec<(usize, MempoolInfo)>,
+    mempools: HashMap<usize, Vec<MempoolInfo>>,
 }
 
 impl MempoolAllocator {
     pub fn add_mempool(&mut self, mempool: *mut rte_mempool, obj_size: usize) -> Result<()> {
         let mempool_info = MempoolInfo::new(mempool)?;
-        self.mempools.push((obj_size, mempool_info));
+        if self.mempools.contains_key(&obj_size) {
+            let info_vec = self.mempools.get_mut(&obj_size).unwrap();
+            info_vec.push(mempool_info);
+        } else {
+            let info_vec = vec![mempool_info];
+            self.mempools.insert(obj_size, info_vec);
+        }
         Ok(())
     }
 
     // Right now: iterate through the mempools, and allocate from the smallest one fitting the
     // given size
+    // There could be multiple of the same size: for now, just iterate until we find one which has
+    // available space
     pub fn allocate(&self, alloc_size: usize, _alignment: usize) -> Result<*mut rte_mbuf> {
         let mut min_size = std::f64::INFINITY;
-        let mut idx = 0;
-        for (i, (size, _pool)) in self.mempools.iter().enumerate() {
+        for size in self.mempools.keys() {
             if alloc_size <= *size {
                 if *size as f64 <= min_size {
                     min_size = *size as f64;
-                    idx = i;
                 }
             }
         }
+
         ensure!(
             min_size != std::f64::INFINITY,
-            "Mempool to alloc from is still null"
+            "No suitable size mempool to alloc from found"
         );
-        // alloc from the mempool
-        let mbuf = wrapper::alloc_mbuf(self.mempools[idx].1.get_mempool())?;
-        Ok(mbuf)
+
+        let mempools = self.mempools.get(&(min_size as usize)).unwrap();
+        for mempool in mempools.iter() {
+            let mbuf = dpdk_call!(rte_pktmbuf_alloc(mempool.get_mempool()));
+            if !mbuf.is_null() {
+                tracing::debug!(
+                    "Allocating object of size {:?} from mempool of size {}",
+                    alloc_size,
+                    min_size
+                );
+                return Ok(mbuf);
+            }
+        }
+
+        bail!(
+            "No space in mempools to allocate buffer of size {}",
+            alloc_size
+        );
     }
 
     pub fn recover_mbuf_ptr(&self, buf: &[u8]) -> Result<Option<(*mut rte_mbuf, u16)>> {
-        for (_, mempool) in self.mempools.iter() {
-            if mempool.is_within_bounds(buf) {
-                let res = mempool.get_mbuf_ptr(buf)?;
-                return Ok(Some(res));
+        for mempools in self.mempools.values() {
+            for mempool in mempools.iter() {
+                if mempool.is_within_bounds(buf) {
+                    let res = mempool.get_mbuf_ptr(buf)?;
+                    return Ok(Some(res));
+                }
             }
         }
         Ok(None)
@@ -173,18 +201,30 @@ fn get_mempool_memzone_area(
     mbuf_pool: *mut rte_mempool,
 ) -> Result<(usize, usize, usize, usize, usize, usize)> {
     let mut mbuf_addrs: Vec<usize> = vec![];
-    let mut memzones: Vec<(usize, usize)> = vec![];
+    // separate, per page log: (page, memzone_id, memzone_start, memzone_len)
+    let mut memzones: Vec<(usize, usize, usize, usize)> = vec![];
 
     // callback to iterate over the memory regions
     extern "C" fn memzone_callback(
-        _mp: *mut rte_mempool,
+        mp: *mut rte_mempool,
         opaque: *mut ::std::os::raw::c_void,
         memhdr: *mut rte_mempool_memhdr,
-        _idx: ::std::os::raw::c_uint,
+        idx: ::std::os::raw::c_uint,
     ) {
-        let mr = unsafe { &mut *(opaque as *mut Vec<(usize, usize)>) };
+        let mr = unsafe { &mut *(opaque as *mut Vec<(usize, usize, usize, usize)>) };
         let (addr, len) = unsafe { ((*memhdr).addr, (*memhdr).len) };
-        mr.push((addr as usize, len as usize));
+        let hugepage_size = unsafe { (*(*mp).mz).hugepage_sz as usize };
+        let num_pages = (len as f64 / hugepage_size as f64).ceil() as usize;
+        let mut page_addr = closest_2mb_page(addr as *const u8);
+        for _i in 0..num_pages {
+            mr.push((
+                page_addr as usize,
+                idx as usize,
+                addr as usize,
+                len as usize,
+            ));
+            page_addr += hugepage_size;
+        }
     }
 
     // callback to iterate over the mbuf pool itself
@@ -212,26 +252,35 @@ fn get_mempool_memzone_area(
     ));
 
     let mut space_between_mbufs = 0;
-    let beginning_page_offset = mbuf_addrs[0] - memzones[0].0;
+    let beginning_page_offset = mbuf_addrs[0] - memzones[0].2;
+    tracing::debug!("Beginning page offset: {:?}", beginning_page_offset);
     let mut page_offset = 0;
     let mut cur_memzone = 0;
     let mut ct = 0;
     let mut first_on_page = true;
     // first, calculate space between each mbuf
+    let pagesize = unsafe { (*(*mbuf_pool).mz).hugepage_sz as usize };
     for mbuf in mbuf_addrs.iter() {
-        let mut memzone_addr = memzones[cur_memzone].0;
-        let mut memzone_len = memzones[cur_memzone].1;
-        if *mbuf >= (memzone_addr + memzone_len) {
+        let mut closest_page = memzones[cur_memzone].0;
+        //let memzone_id;
+        let mut memzone_addr = memzones[cur_memzone].2;
+        let mut memzone_len = memzones[cur_memzone].3;
+        //tracing::debug!(ct = ct, mbuf =? mbuf, closest_page = closest_page, memzone_id = memzone_id, memzone_addr = memzone_addr, memzone_len=memzone_len, cur_memzone = cur_memzone);
+
+        if *mbuf >= (memzone_addr + memzone_len) || (*mbuf >= (closest_page + pagesize)) {
             first_on_page = true;
             cur_memzone += 1;
-            memzone_addr = memzones[cur_memzone].0;
-            memzone_len = memzones[cur_memzone].1;
+            closest_page = memzones[cur_memzone].0;
+            //memzone_id = memzones[cur_memzone].1;
+            memzone_addr = memzones[cur_memzone].2;
+            memzone_len = memzones[cur_memzone].3;
+            //tracing::info!(mbuf =? mbuf, memzone_addr = memzone_addr, memzone_len=memzone_len, cur_memzone = cur_memzone, "first on page true");
             ensure!(
                 *mbuf >= memzone_addr && *mbuf <= (memzone_addr + memzone_len),
                 "Something is off about address calculation."
             );
 
-            let this_page_offset = mbuf - memzone_addr;
+            let this_page_offset = mbuf - closest_page;
             if page_offset != 0 && this_page_offset != page_offset {
                 tracing::debug!(
                     "For mbuf # {}, this current page offset {}, not equal to previous {}",
@@ -244,16 +293,20 @@ fn get_mempool_memzone_area(
         }
         if !first_on_page {
             // check the last - first
-            let last_addr = mbuf_addrs[ct];
+            let last_addr = mbuf_addrs[ct - 1];
             let space = mbuf - last_addr;
+            //tracing::debug!(ct = ct, space = space, last =? last_addr, this =? mbuf, cur_memzone = cur_memzone, boundaries =? (memzone_addr, memzone_addr + memzone_len),"Checking space");
 
-            if ct != 0 {
+            if ct > 1 {
                 if space != space_between_mbufs {
-                    tracing::debug!("For mbuf # {}, space_between_mbufs is not the same as previous: space: {}, previous: {}", ct, space, space_between_mbufs);
+                    tracing::warn!("For mbuf # {}, space_between_mbufs is not the same as previous: space: {}, previous: {}", ct, space, space_between_mbufs);
                     bail!("Something is not right about the counts");
                 }
             }
-            space_between_mbufs = space;
+
+            if ct > 0 {
+                space_between_mbufs = space;
+            }
         }
         ct += 1;
         first_on_page = false;
@@ -285,7 +338,9 @@ fn get_mempool_memzone_area(
     };
     tracing::debug!(
         calc_headroom = headroom,
-        buf_offset = unsafe { (*(start as *mut rte_mbuf)).data_off },
+        cur_data_off = unsafe { (*(start as *mut rte_mbuf)).data_off as usize },
+        offset_of_buffer_from_start =
+            unsafe { (*(start as *mut rte_mbuf)).buf_addr as usize - start },
         "mbuf offsets"
     );
 

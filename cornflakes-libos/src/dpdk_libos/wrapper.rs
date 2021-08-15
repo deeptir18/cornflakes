@@ -12,11 +12,20 @@ use super::{
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use hashbrown::HashMap;
 use std::{
-    ffi::CString,
+    ffi::{CStr, CString},
     mem::{size_of, MaybeUninit},
     ptr, slice,
     time::Duration,
 };
+
+fn print_error() -> String {
+    let errno = dpdk_call!(rte_errno());
+    let c_buf = dpdk_call!(rte_strerror(errno));
+    let c_str: &CStr = unsafe { CStr::from_ptr(c_buf) };
+    let str_slice: &str = c_str.to_str().unwrap();
+    format!("Error {}: {:?}", errno, str_slice)
+}
+
 use tracing::{debug, info, warn};
 
 /// Constants related to DPDK
@@ -26,6 +35,7 @@ const RX_RING_SIZE: u16 = 2048;
 const TX_RING_SIZE: u16 = 2048;
 pub const MAX_SCATTERS: usize = 33;
 pub const RECEIVE_BURST_SIZE: u16 = 32;
+pub const MEMPOOL_MAX_SIZE: usize = 65536;
 
 // TODO: figure out how to turn jumbo frames on and of
 pub const RX_PACKET_LEN: u32 = 9216;
@@ -640,9 +650,9 @@ pub fn create_mempool(
     data_size: usize,
     num_values: usize,
 ) -> Result<*mut rte_mempool> {
-    let name = CString::new(name)?;
+    let name_str = CString::new(name)?;
 
-    let mut mbp_priv_uninit: MaybeUninit<rte_pktmbuf_pool_private> = MaybeUninit::zeroed();
+    /*let mut mbp_priv_uninit: MaybeUninit<rte_pktmbuf_pool_private> = MaybeUninit::zeroed();
     unsafe {
         (*mbp_priv_uninit.as_mut_ptr()).mbuf_data_room_size = data_size as u16;
         (*mbp_priv_uninit.as_mut_ptr()).mbuf_priv_size = MBUF_PRIV_SIZE as _;
@@ -680,8 +690,9 @@ pub fn create_mempool(
     {
         dpdk_call!(rte_mempool_free(mbuf_pool));
         bail!(
-            "Not able to initialize mempool {:?}: Failed on rte_mempool_populate_default.",
-            name
+            "Not able to initialize mempool {:?}: Failed on rte_mempool_populate_default; ERR: {:?}",
+            name,
+            print_error(),
         );
     }
 
@@ -693,8 +704,25 @@ pub fn create_mempool(
     )) != (num_values as u16 * nb_ports) as u32
     {
         dpdk_call!(rte_mempool_free(mbuf_pool));
-        bail!("Not able to initialize mempool {:?}: failed at rte_pktmbuf_init");
+        bail!(
+            "Not able to initialize mempool {:?}: failed at rte_pktmbuf_init; ERR: {:?}",
+            name,
+            print_error()
+        );
+    }*/
+
+    let mbuf_pool = dpdk_call!(rte_pktmbuf_pool_create(
+        name_str.as_ptr(),
+        (num_values as u16 * nb_ports) as u32,
+        MBUF_CACHE_SIZE as u32,
+        MBUF_PRIV_SIZE as u16,
+        data_size as u16, // TODO: add headroom?
+        rte_socket_id() as i32,
+    ));
+    if mbuf_pool.is_null() {
+        tracing::warn!(error =? print_error(), "mbuf pool is null.");
     }
+    ensure!(!mbuf_pool.is_null(), "mbuf pool null");
 
     // initialize private data
     if dpdk_call!(rte_mempool_obj_iter(

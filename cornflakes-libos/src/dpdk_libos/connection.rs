@@ -36,7 +36,17 @@ pub struct DPDKBuffer {
 }
 
 impl DPDKBuffer {
-    fn new(mbuf: *mut rte_mbuf, data_offset: usize) -> Self {
+    fn new(mbuf: *mut rte_mbuf, data_offset: usize, data_len: Option<usize>) -> Self {
+        match data_len {
+            Some(x) => unsafe {
+                (*mbuf).data_len = x as u16;
+            },
+            None => unsafe {
+                (*mbuf).data_len = (*mbuf).buf_len - (*mbuf).data_off;
+                tracing::debug!("setting data_len of mbuf to be: {:?}", (*mbuf).data_len);
+                (*mbuf).data_len = (*mbuf).buf_len - (*mbuf).data_off
+            },
+        }
         DPDKBuffer {
             mbuf: mbuf,
             offset: data_offset,
@@ -304,14 +314,45 @@ impl DPDKConnection {
         value_size: usize,
         min_num_values: usize,
     ) -> Result<()> {
-        let num_values = (min_num_values as f64 * 1.50) as usize;
-        let mempool = wrapper::create_mempool(name, 1, value_size, num_values)?;
-        self.mempool_allocator
-            .add_mempool(mempool, value_size)
+        //let num_values = (min_num_values as f64 * 1.20) as usize;
+        // find optimal number of values above this
+        let (num_values, num_mempools) = {
+            let log2 = (min_num_values as f64).log2().ceil() as u32;
+            let num_elts = usize::pow(2, log2) as usize;
+            let num_mempools = {
+                if num_elts < wrapper::MEMPOOL_MAX_SIZE {
+                    1
+                } else {
+                    num_elts / wrapper::MEMPOOL_MAX_SIZE
+                }
+            };
+            (num_elts / num_mempools, num_mempools)
+        };
+        tracing::debug!("Creating {} mempools of size {}", num_mempools, num_values);
+        for i in 0..num_mempools {
+            let mempool_name = format!("{}_{}", name, i);
+            let mempool = wrapper::create_mempool(
+                &mempool_name,
+                1,
+                value_size + super::dpdk_bindings::RTE_PKTMBUF_HEADROOM as usize,
+                num_values - 1,
+            )
             .wrap_err(format!(
-                "Unable to add mempool {:?} to mempool allocator",
-                name
+                "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}",
+                name, value_size, num_values
             ))?;
+            tracing::debug!(
+                "Created mempool avail count: {}, in_use count: {}",
+                dpdk_call!(rte_mempool_avail_count(mempool)),
+                dpdk_call!(rte_mempool_in_use_count(mempool)),
+            );
+            self.mempool_allocator
+                .add_mempool(mempool, value_size)
+                .wrap_err(format!(
+                    "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}",
+                    name, value_size, num_values
+                ))?;
+        }
         Ok(())
     }
 }
@@ -493,10 +534,12 @@ impl Datapath for DPDKConnection {
                     bail!("Mbuf for index {} in returned array is null.", idx);
                 }
 
+                let data_len = unsafe { (*(self.recv_mbufs[idx])).data_len as usize };
                 // for now, this datapath just returns single packets without split receive
                 let received_buffer = vec![DPDKBuffer::new(
                     self.recv_mbufs[idx],
                     utils::TOTAL_HEADER_SIZE,
+                    Some(data_len),
                 )];
 
                 let received_pkt = ReceivedPkt::new(received_buffer, msg_id, addr_info);
@@ -622,10 +665,7 @@ impl Datapath for DPDKConnection {
                 "Not able to allocate packet of size {:?} and alignment {:?} from allocator",
                 size, align
             ))?;
-        return Ok(DPDKBuffer {
-            mbuf: mbuf,
-            offset: 0,
-        });
+        return Ok(DPDKBuffer::new(mbuf, 0, None));
     }
 }
 
