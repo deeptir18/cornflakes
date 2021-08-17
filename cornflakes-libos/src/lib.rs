@@ -596,6 +596,7 @@ where
     D: Datapath,
 {
     fn clone(&self) -> CfBuf<D> {
+        //tracing::debug!("Cloning cfbuf with datapath pkt: {:?}", self.buf);
         CfBuf {
             buf: self.buf.clone(),
             offset: self.offset,
@@ -739,13 +740,18 @@ where
     pub fn index_at_offset(&self, offset: usize) -> (usize, usize) {
         let mut cur_idx_size = 0;
         for idx in 0..self.num_segments() {
+            tracing::debug!(
+                current_idx = idx,
+                idx_len = self.index(idx).buf_size(),
+                offset_to_find = offset
+            );
             if (cur_idx_size + self.index(idx).buf_size()) > offset {
                 return (idx, (offset - cur_idx_size));
             }
             cur_idx_size += self.index(idx).buf_size();
         }
         // TODO: possibly use results for better error handling
-        tracing::warn!(
+        tracing::error!(
             data_len = self.data_len(),
             offset = offset,
             "Passed in offset larger than data_len"
@@ -757,7 +763,13 @@ where
     /// Returns an error if the given offset and length cannot create a contiguous slice (e.g.,
     /// would span two segments).
     pub fn contiguous_slice(&self, offset: usize, len: usize) -> Result<&[u8]> {
+        tracing::debug!(
+            "Trying to find contiguous slice with offset and length: ({},{})",
+            offset,
+            len
+        );
         let (seg, seg_off) = self.index_at_offset(offset);
+        tracing::debug!(seg = seg, seg_off = seg_off, "Found segment and seg off");
         ensure!(
             (self.index(seg).buf_size() - seg_off) >= len,
             "Given params cannot create a contiguous slice, would span two boundaries."
@@ -943,7 +955,8 @@ pub trait ClientSM {
 
         let start = datapath.current_cycles();
         while let Some(msg) = self.get_next_msg()? {
-            if datapath.current_cycles() < (total_time * freq + start) {
+            if datapath.current_cycles() > (total_time * freq + start) {
+                tracing::debug!("Total time done");
                 break;
             }
             // Send the next message
@@ -971,6 +984,7 @@ pub trait ClientSM {
             }
         }
 
+        tracing::debug!("Finished sending");
         Ok(())
     }
 }

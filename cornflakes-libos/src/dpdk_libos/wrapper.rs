@@ -75,11 +75,16 @@ pub fn get_mbuf_with_memcpy(
     buf: &[u8],
     id: MsgID,
 ) -> Result<*mut rte_mbuf> {
+    tracing::debug!(len = buf.len(), "Copying single buffer into mbuf");
     let header_mbuf =
         alloc_mbuf(header_mempool).wrap_err("Unable to allocate mbuf from mempool.")?;
     let data_offset = fill_in_header(header_mbuf, header_info, buf.len(), id)
         .wrap_err("unable to fill header info.")?;
     unsafe {
+        tracing::debug!(
+            len = data_offset + buf.len(),
+            "Full length of packet being sent"
+        );
         (*header_mbuf).data_len = (data_offset + buf.len()) as u16;
         (*header_mbuf).pkt_len = (data_offset + buf.len()) as u32;
         (*header_mbuf).next = ptr::null_mut();
@@ -374,7 +379,7 @@ impl Pkt {
             );
             unsafe {
                 (*mbufs[idx][pkt_id]).buf_iova = (*original_mbuf_ptr).buf_iova;
-                //(*mbufs[idx][pkt_id]).buf_addr = buf.as_ptr().offset(-1 * data_off as isize) as _;
+                (*mbufs[idx][pkt_id]).buf_addr = (*original_mbuf_ptr).buf_addr;
                 (*mbufs[idx][pkt_id]).buf_len = buf.len() as _;
                 (*mbufs[idx][pkt_id]).data_off = data_off as u16;
             }
@@ -1149,14 +1154,14 @@ fn check_valid_packet(
 #[inline]
 pub fn free_mbuf(pkt: *mut rte_mbuf) {
     let refcnt = dpdk_call!(rte_pktmbuf_refcnt_read(pkt));
-    tracing::debug!("Refcnt: {}", refcnt);
+    tracing::debug!(packet =? pkt, cur_refcnt = refcnt, "Called free_mbuf on packet");
     if refcnt == 1 || refcnt == 0 {
-        tracing::debug!("Free packet");
+        //tracing::debug!(packet =? pkt, "Actually freeing pkt: refcnt was 1 or 0");
         dpdk_call!(rte_pktmbuf_free(pkt));
     } else {
-        tracing::debug!(refcnt =? refcnt, "Decrementing refcnt");
+        //tracing::debug!(pkt =? pkt, refcnt =? refcnt, "Decrementing refcnt");
         dpdk_call!(rte_pktmbuf_refcnt_set(pkt, refcnt - 1));
-        tracing::debug!(refcnt =? dpdk_call!(rte_pktmbuf_refcnt_read(pkt)), "New refcnt");
+        //tracing::debug!(pkt =? pkt, refcnt =? dpdk_call!(rte_pktmbuf_refcnt_read(pkt)), "New refcnt");
     }
 }
 

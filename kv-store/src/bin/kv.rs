@@ -51,6 +51,8 @@ struct Opt {
         default_value = "1"
     )]
     num_values: usize,
+    #[structopt(long = "time", help = "max time to run exp for", default_value = "30")]
+    time: usize,
     #[structopt(
         short = "t",
         long = "trace",
@@ -148,11 +150,12 @@ macro_rules! init_kv_server(
 
 macro_rules! init_kv_client(
     ($serializer: ty, $datapath: ty, $datapath_init: expr, $opt: ident) => {
-        let num_values = lines_in_file(&$opt.queries)? / ($opt.num_clients * $opt.num_threads);
-        let hist = ManualHistogram::new(num_values);
+        let num_rtts = lines_in_file(&$opt.queries)? / ($opt.num_clients * $opt.num_threads);
+        let hist = ManualHistogram::new(num_rtts);
         let mut connection = $datapath_init?;
+
         let mut loadgen: YCSBClient<$serializer, $datapath> =
-            YCSBClient::new($opt.client_id, $opt.value_size, num_values, &$opt.queries, 0, $opt.num_threads, $opt.server_ip, hist)?;
+            YCSBClient::new($opt.client_id, $opt.value_size, $opt.num_values, &$opt.queries, 0, $opt.num_threads, $opt.server_ip, hist, !$opt.no_retries)?;
         run_client(&mut loadgen, &mut connection, &$opt)?;
     }
 );
@@ -253,12 +256,11 @@ where
         false => cornflakes_libos::high_timeout_at_start,
         true => cornflakes_libos::no_retries_timeout,
     };
-    let total_time: u64 = 30; // run for thirty seconds or until the trace ends
 
     loadgen.run_open_loop(
         connection,
         (1e9 / opt.rate as f64) as u64,
-        total_time,
+        opt.time as u64,
         timeout,
         opt.no_retries,
     )?;

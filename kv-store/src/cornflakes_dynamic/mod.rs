@@ -42,6 +42,7 @@ where
         pkt: ReceivedPkt<D>,
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
+        offset: usize,
     ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
         match num_values {
             0 => {
@@ -50,7 +51,11 @@ where
             1 => {
                 // deserialize request
                 let mut get_request = hardcoded_cf::GetReq::<D>::new();
-                get_request.deserialize(&pkt)?;
+                get_request.deserialize(&pkt, offset)?;
+                tracing::debug!(
+                    "Received get request for key: {:?}",
+                    get_request.get_key().to_str()?
+                );
                 let key = get_request.get_key();
                 let value = match map.get(key.to_str()?) {
                     Some(v) => v,
@@ -58,6 +63,7 @@ where
                         bail!("Cannot find value for key in KV store: {:?}", key);
                     }
                 };
+                tracing::debug!("Found val for key {:?}: value {:?}", key.to_str()?, value);
 
                 // construct response
                 let mut response = hardcoded_cf::GetResp::<D>::new();
@@ -70,8 +76,9 @@ where
             }
             x => {
                 let mut getm_request = hardcoded_cf::GetMReq::<D>::new();
-                getm_request.deserialize(&pkt)?;
+                getm_request.deserialize(&pkt, offset)?;
                 let keys = getm_request.get_keys();
+                tracing::debug!("Handling getm request with {} values", x);
 
                 let mut getm_response = hardcoded_cf::GetMResp::<D>::new();
                 getm_response.init_vals(x);
@@ -98,6 +105,7 @@ where
         pkt: ReceivedPkt<D>,
         map: &mut HashMap<String, CfBuf<D>>,
         num_values: usize,
+        offset: usize,
     ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
         match num_values {
             0 => {
@@ -106,7 +114,12 @@ where
             1 => {
                 // deserialize request
                 let mut put_request = hardcoded_cf::PutReq::<D>::new();
-                put_request.deserialize(&pkt)?;
+                put_request.deserialize(&pkt, offset)?;
+                tracing::debug!(
+                    "Put request key: {:?}; val: {:?}",
+                    put_request.get_key().to_str()?,
+                    put_request.get_val()
+                );
                 map.insert(
                     put_request.get_key().to_string()?,
                     put_request.get_val().get_inner_rc()?,
@@ -122,7 +135,7 @@ where
             }
             x => {
                 let mut putm_request = hardcoded_cf::PutMReq::<D>::new();
-                putm_request.deserialize(&pkt)?;
+                putm_request.deserialize(&pkt, offset)?;
                 let keys = putm_request.get_keys();
                 let vals = putm_request.get_vals();
                 for i in 0..x {
@@ -217,6 +230,15 @@ where
                     let (key, val) = req.get_next_kv()?;
                     put_req.set_key(&key);
                     put_req.set_val(val.as_bytes());
+                    // serialize the data into the buffer
+                    let written =
+                        put_req
+                            .serialize_into_buffer(buf, rte_memcpy)
+                            .wrap_err(format!(
+                                "Unable to serialize req # {} into buffer",
+                                req.get_id()
+                            ))?;
+                    return Ok(written);
                 }
                 x => {
                     let mut request_keys: Vec<String> = Vec::with_capacity(x);
@@ -227,6 +249,7 @@ where
                     let mut putm_req = hardcoded_cf::PutMReq::<D>::new();
                     putm_req.set_id(req.get_id());
                     putm_req.init_keys(x);
+                    putm_req.init_vals(x);
                     let keys = putm_req.get_mut_keys();
                     for i in 0..x {
                         keys.append(CFString::new(&request_keys[i]));
@@ -249,6 +272,5 @@ where
                 }
             },
         }
-        Ok(0)
     }
 }

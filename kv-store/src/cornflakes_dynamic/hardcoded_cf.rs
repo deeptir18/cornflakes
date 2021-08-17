@@ -68,6 +68,7 @@ where
     }
 
     pub fn set_key(&mut self, field: &'a str) {
+        tracing::debug!("Setting key as {}, len: {}", field, field.len());
         self.bitmap[Self::KEY_BITMAP_IDX] = 1;
         self.key = CFString::new(field);
     }
@@ -130,6 +131,7 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
@@ -137,21 +139,26 @@ where
             size >= GETREQ_BITMAP_SIZE,
             "Buffer size passed to inner_deserialize not large enough for bitmap"
         );
-        let bitmap_slice = pkt.contiguous_slice(relative_offset, GETREQ_BITMAP_SIZE)?;
-
+        let bitmap_slice =
+            pkt.contiguous_slice(relative_offset + buffer_offset, GETREQ_BITMAP_SIZE)?;
+        tracing::debug!(relative_offset = relative_offset, bitmap_slice =? bitmap_slice, "Bitmap slice in inner deserialize of getreq");
         let mut cur_header_offset = GETREQ_BITMAP_SIZE;
 
         if bitmap_slice[Self::ID_BITMAP_IDX] == 1 {
+            tracing::debug!("Id: {}", self.id);
             self.bitmap[Self::ID_BITMAP_IDX] = 1;
-            self.id = LittleEndian::read_u32(
-                pkt.contiguous_slice(relative_offset + cur_header_offset, Self::ID_HEADER_SIZE)?,
-            );
+            self.id = LittleEndian::read_u32(pkt.contiguous_slice(
+                relative_offset + cur_header_offset + buffer_offset,
+                Self::ID_HEADER_SIZE,
+            )?);
             cur_header_offset += Self::ID_HEADER_SIZE;
         }
         if bitmap_slice[Self::KEY_BITMAP_IDX] == 1 {
+            tracing::debug!("Is key is 1");
             self.bitmap[Self::KEY_BITMAP_IDX] = 1;
             self.key.inner_deserialize(
                 pkt,
+                buffer_offset,
                 relative_offset + cur_header_offset,
                 CFString::<D>::CONSTANT_HEADER_SIZE,
             )?;
@@ -296,6 +303,7 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
@@ -311,15 +319,17 @@ where
 
         if bitmap_slice[Self::ID_BITMAP_IDX] == 1 {
             self.bitmap[Self::ID_BITMAP_IDX] = 1;
-            self.id = LittleEndian::read_u32(
-                pkt.contiguous_slice(relative_offset + cur_header_offset, Self::ID_HEADER_SIZE)?,
-            );
+            self.id = LittleEndian::read_u32(pkt.contiguous_slice(
+                relative_offset + cur_header_offset + buffer_offset,
+                Self::ID_HEADER_SIZE,
+            )?);
             cur_header_offset += Self::ID_HEADER_SIZE;
         }
         if bitmap_slice[Self::VAL_BITMAP_IDX] == 1 {
             self.bitmap[Self::VAL_BITMAP_IDX] = 1;
             self.val.inner_deserialize(
                 pkt,
+                buffer_offset,
                 relative_offset + cur_header_offset,
                 CFBytes::<D>::CONSTANT_HEADER_SIZE,
             )?;
@@ -458,6 +468,7 @@ where
                 GETRESP_BITMAP_SIZE,
             );
         }
+        tracing::debug!("Copied in bitmap {:?}", self.bitmap);
         let mut cur_header_ptr = unsafe { header_ptr.offset(GETRESP_BITMAP_SIZE as isize) };
 
         if self.has_id() {
@@ -494,6 +505,7 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
@@ -503,21 +515,26 @@ where
             size,
             PUTREQ_BITMAP_SIZE
         );
-        let bitmap_slice = pkt.contiguous_slice(relative_offset, PUTREQ_BITMAP_SIZE)?;
+        let bitmap_slice =
+            pkt.contiguous_slice(relative_offset + buffer_offset, PUTREQ_BITMAP_SIZE)?;
+        tracing::debug!("Bitmap for put: {:?}", bitmap_slice);
 
         let mut cur_header_offset = PUTREQ_BITMAP_SIZE;
 
         if bitmap_slice[Self::ID_BITMAP_IDX] == 1 {
             self.bitmap[Self::ID_BITMAP_IDX] = 1;
-            self.id = LittleEndian::read_u32(
-                pkt.contiguous_slice(relative_offset + cur_header_offset, Self::ID_HEADER_SIZE)?,
-            );
+            self.id = LittleEndian::read_u32(pkt.contiguous_slice(
+                relative_offset + cur_header_offset + buffer_offset,
+                Self::ID_HEADER_SIZE,
+            )?);
             cur_header_offset += Self::ID_HEADER_SIZE;
         }
         if bitmap_slice[Self::KEY_BITMAP_IDX] == 1 {
             self.bitmap[Self::KEY_BITMAP_IDX] = 1;
+            tracing::debug!("Deserializing put key");
             self.key.inner_deserialize(
                 pkt,
+                buffer_offset,
                 relative_offset + cur_header_offset,
                 CFString::<D>::CONSTANT_HEADER_SIZE,
             )?;
@@ -525,8 +542,10 @@ where
         }
         if bitmap_slice[Self::VAL_BITMAP_IDX] == 1 {
             self.bitmap[Self::VAL_BITMAP_IDX] = 1;
+            tracing::debug!("Deserializing value");
             self.val.inner_deserialize(
                 pkt,
+                buffer_offset,
                 relative_offset + cur_header_offset,
                 CFBytes::<D>::CONSTANT_HEADER_SIZE,
             )?;
@@ -635,6 +654,7 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
@@ -644,15 +664,17 @@ where
             size,
             PUTRESP_BITMAP_SIZE
         );
-        let bitmap_slice = pkt.contiguous_slice(relative_offset, PUTRESP_BITMAP_SIZE)?;
+        let bitmap_slice =
+            pkt.contiguous_slice(relative_offset + buffer_offset, PUTRESP_BITMAP_SIZE)?;
 
         let cur_header_offset = PUTRESP_BITMAP_SIZE;
 
         if bitmap_slice[Self::ID_BITMAP_IDX] == 1 {
             self.bitmap[Self::ID_BITMAP_IDX] = 1;
-            self.id = LittleEndian::read_u32(
-                pkt.contiguous_slice(relative_offset + cur_header_offset, Self::ID_HEADER_SIZE)?,
-            );
+            self.id = LittleEndian::read_u32(pkt.contiguous_slice(
+                relative_offset + cur_header_offset + buffer_offset,
+                Self::ID_HEADER_SIZE,
+            )?);
         }
         Ok(())
     }
@@ -803,6 +825,7 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
@@ -810,26 +833,38 @@ where
             size >= GETMREQ_BITMAP_SIZE,
             "Not enough space to deserialize bitmap"
         );
-        let bitmap_slice = pkt.contiguous_slice(relative_offset, GETMREQ_BITMAP_SIZE)?;
+        let bitmap_slice =
+            pkt.contiguous_slice(relative_offset + buffer_offset, GETMREQ_BITMAP_SIZE)?;
         let mut cur_header_offset = GETMREQ_BITMAP_SIZE;
 
         if bitmap_slice[Self::ID_BITMAP_IDX] == 1 {
             self.bitmap[Self::ID_BITMAP_IDX] = 1;
-            self.id = LittleEndian::read_u32(
-                pkt.contiguous_slice(relative_offset + cur_header_offset, Self::ID_HEADER_SIZE)?,
-            );
+            self.id = LittleEndian::read_u32(pkt.contiguous_slice(
+                relative_offset + cur_header_offset + buffer_offset,
+                Self::ID_HEADER_SIZE,
+            )?);
             cur_header_offset += Self::ID_HEADER_SIZE;
+            tracing::debug!("Getm req has id {}", self.id);
         }
 
         if bitmap_slice[Self::KEYS_BITMAP_IDX] == 1 {
             self.bitmap[Self::KEYS_BITMAP_IDX] = 1;
+            tracing::debug!(
+                "Parsing list information at {}",
+                relative_offset + cur_header_offset + buffer_offset
+            );
             let list_header_slice = pkt.contiguous_slice(
-                relative_offset + cur_header_offset,
+                relative_offset + cur_header_offset + buffer_offset,
                 VariableList::<CFString<D>, D>::CONSTANT_HEADER_SIZE,
             )?;
             let list_ref = ObjectRef(list_header_slice.as_ptr());
-            self.keys
-                .inner_deserialize(pkt, list_ref.get_offset(), list_ref.get_size())?;
+            tracing::debug!("Deserializing keys for getm");
+            self.keys.inner_deserialize(
+                pkt,
+                buffer_offset,
+                list_ref.get_offset(),
+                list_ref.get_size(),
+            )?;
         }
 
         Ok(())
@@ -979,6 +1014,7 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
@@ -986,26 +1022,32 @@ where
             size >= GETMRESP_BITMAP_SIZE,
             "Not enough space to deserialize bitmap"
         );
-        let bitmap_slice = pkt.contiguous_slice(relative_offset, GETMRESP_BITMAP_SIZE)?;
+        let bitmap_slice =
+            pkt.contiguous_slice(relative_offset + buffer_offset, GETMRESP_BITMAP_SIZE)?;
         let mut cur_header_offset = GETMRESP_BITMAP_SIZE;
 
         if bitmap_slice[Self::ID_BITMAP_IDX] == 1 {
             self.bitmap[Self::ID_BITMAP_IDX] = 1;
-            self.id = LittleEndian::read_u32(
-                pkt.contiguous_slice(relative_offset + cur_header_offset, Self::ID_HEADER_SIZE)?,
-            );
+            self.id = LittleEndian::read_u32(pkt.contiguous_slice(
+                relative_offset + cur_header_offset + buffer_offset,
+                Self::ID_HEADER_SIZE,
+            )?);
             cur_header_offset += Self::ID_HEADER_SIZE;
         }
 
         if bitmap_slice[Self::VALUES_BITMAP_IDX] == 1 {
             self.bitmap[Self::VALUES_BITMAP_IDX] = 1;
             let list_slice = pkt.contiguous_slice(
-                relative_offset + cur_header_offset,
+                relative_offset + cur_header_offset + buffer_offset,
                 VariableList::<CFString<D>, D>::CONSTANT_HEADER_SIZE,
             )?;
             let list_ref = ObjectRef(list_slice.as_ptr());
-            self.vals
-                .inner_deserialize(pkt, list_ref.get_offset(), list_ref.get_size())?;
+            self.vals.inner_deserialize(
+                pkt,
+                buffer_offset,
+                list_ref.get_offset(),
+                list_ref.get_size(),
+            )?;
         }
 
         Ok(())
@@ -1109,7 +1151,7 @@ where
     pub fn get_mut_vals(&mut self) -> &mut VariableList<'a, CFBytes<'a, D>, D> {
         &mut self.vals
     }
-    pub fn init_val(&mut self, num: usize) {
+    pub fn init_vals(&mut self, num: usize) {
         self.vals = VariableList::init(num);
         self.bitmap[Self::VALS_BITMAP_IDX] = 1;
     }
@@ -1204,6 +1246,7 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
@@ -1211,36 +1254,46 @@ where
             size >= PUTMREQ_BITMAP_SIZE,
             "Not enough space to deserialize bitmap"
         );
-        let bitmap_slice = pkt.contiguous_slice(relative_offset, PUTMREQ_BITMAP_SIZE)?;
+        let bitmap_slice =
+            pkt.contiguous_slice(relative_offset + buffer_offset, PUTMREQ_BITMAP_SIZE)?;
         let mut cur_header_offset = PUTMREQ_BITMAP_SIZE;
 
         if bitmap_slice[Self::ID_BITMAP_IDX] == 1 {
             self.bitmap[Self::ID_BITMAP_IDX] = 1;
-            self.id = LittleEndian::read_u32(
-                pkt.contiguous_slice(relative_offset + cur_header_offset, Self::ID_HEADER_SIZE)?,
-            );
+            self.id = LittleEndian::read_u32(pkt.contiguous_slice(
+                relative_offset + cur_header_offset + buffer_offset,
+                Self::ID_HEADER_SIZE,
+            )?);
             cur_header_offset += Self::ID_HEADER_SIZE;
         }
         if bitmap_slice[Self::KEYS_BITMAP_IDX] == 1 {
             self.bitmap[Self::KEYS_BITMAP_IDX] = 1;
             let list_slice = pkt.contiguous_slice(
-                relative_offset + cur_header_offset,
+                relative_offset + cur_header_offset + buffer_offset,
                 VariableList::<CFString<D>, D>::CONSTANT_HEADER_SIZE,
             )?;
             let list_ref = ObjectRef(list_slice.as_ptr());
-            self.keys
-                .inner_deserialize(pkt, list_ref.get_offset(), list_ref.get_size())?;
+            self.keys.inner_deserialize(
+                pkt,
+                buffer_offset,
+                list_ref.get_offset(),
+                list_ref.get_size(),
+            )?;
             cur_header_offset += VariableList::<CFString<D>, D>::CONSTANT_HEADER_SIZE;
         }
         if bitmap_slice[Self::VALS_BITMAP_IDX] == 1 {
             self.bitmap[Self::VALS_BITMAP_IDX] = 1;
             let list_slice = pkt.contiguous_slice(
-                relative_offset + cur_header_offset,
+                relative_offset + cur_header_offset + buffer_offset,
                 VariableList::<CFBytes<D>, D>::CONSTANT_HEADER_SIZE,
             )?;
             let list_ref = ObjectRef(list_slice.as_ptr());
-            self.vals
-                .inner_deserialize(pkt, list_ref.get_offset(), list_ref.get_size())?;
+            self.vals.inner_deserialize(
+                pkt,
+                buffer_offset,
+                list_ref.get_offset(),
+                list_ref.get_size(),
+            )?;
         }
 
         Ok(())

@@ -4,6 +4,17 @@ use cornflakes_libos::MsgID;
 
 const ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";
 
+pub fn get_client_id(line: &str) -> Result<usize> {
+    let mut split: std::str::Split<&str> = line.split(" ");
+    let id = match &split.next().unwrap().parse::<usize>() {
+        Ok(x) => *x,
+        Err(e) => {
+            bail!("Could not parse string request: {:?}", e);
+        }
+    };
+    Ok(id)
+}
+
 #[derive(Clone, PartialEq, Eq, Copy, Debug)]
 pub struct YCSBRequest<'a> {
     pub key: &'a str,
@@ -72,12 +83,19 @@ impl<'a> YCSBRequest<'a> {
 
     pub fn get_next_kv(&mut self) -> Result<(String, &'a str)> {
         ensure!(self.cur_idx < self.num_keys, "No more keys in iterator");
+        self.cur_idx += 1;
         Ok((replace_key_field(self.key, self.cur_idx - 1), self.val))
     }
 }
 
 fn replace_key_field(key: &str, idx: usize) -> String {
     let mut ret = key.to_string();
+    tracing::debug!(
+        "RET: {}, idx: {}, alphabet len: {}",
+        ret,
+        idx,
+        ALPHABET.len()
+    );
     ret.replace_range(
         (key.len() - 1)..key.len(),
         ALPHABET.get(idx..(idx + 1)).unwrap(),
@@ -89,7 +107,9 @@ impl<'a> Iterator for YCSBRequest<'a> {
     type Item = (String, &'a str);
 
     fn next(&mut self) -> Option<Self::Item> {
+        tracing::debug!("cur_idx: {}", self.cur_idx);
         if self.cur_idx == self.num_keys {
+            tracing::debug!("Ending iterator");
             return None;
         }
 

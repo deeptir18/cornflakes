@@ -43,7 +43,7 @@ impl DPDKBuffer {
             },
             None => unsafe {
                 (*mbuf).data_len = (*mbuf).buf_len - (*mbuf).data_off;
-                tracing::debug!("setting data_len of mbuf to be: {:?}", (*mbuf).data_len);
+                //tracing::debug!("setting data_len of mbuf to be: {:?}", (*mbuf).data_len);
                 (*mbuf).data_len = (*mbuf).buf_len - (*mbuf).data_off
             },
         }
@@ -67,6 +67,7 @@ impl Default for DPDKBuffer {
 impl Drop for DPDKBuffer {
     fn drop(&mut self) {
         // decrement the reference count of the mbuf, or if at 1 or 0, free it
+        tracing::debug!(pkt =? self.mbuf, "Calling drop on dpdk buffer object");
         wrapper::free_mbuf(self.mbuf);
     }
 }
@@ -535,7 +536,7 @@ impl Datapath for DPDKConnection {
                 }
 
                 let data_len = unsafe { (*(self.recv_mbufs[idx])).data_len as usize };
-                // for now, this datapath just returns single packets without split receive
+                tracing::debug!(data_len = data_len, id = msg_id, "Received pkt");
                 let received_buffer = vec![DPDKBuffer::new(
                     self.recv_mbufs[idx],
                     utils::TOTAL_HEADER_SIZE,

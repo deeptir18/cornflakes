@@ -165,11 +165,11 @@ impl MempoolAllocator {
         for mempool in mempools.iter() {
             let mbuf = dpdk_call!(rte_pktmbuf_alloc(mempool.get_mempool()));
             if !mbuf.is_null() {
-                tracing::debug!(
+                /*tracing::debug!(
                     "Allocating object of size {:?} from mempool of size {}",
                     alloc_size,
                     min_size
-                );
+                );*/
                 return Ok(mbuf);
             }
         }

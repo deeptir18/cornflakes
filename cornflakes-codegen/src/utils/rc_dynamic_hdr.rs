@@ -59,6 +59,7 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()>;
@@ -138,6 +139,7 @@ where
         let mut rc_cornptrs = self
             .inner_serialize(header_ptr, copy_func, 0)
             .wrap_err("Failed to call inner_serialize on top-level object.")?;
+        tracing::debug!("# of cornptrs: {}", rc_cornptrs.len());
 
         // sorting heuristic
         // if both are in normal memory, they anyway need to be copied
@@ -167,8 +169,8 @@ where
 
     /// Deserializes the packet into this object.
     /// Received packet could be a scatter-gather array.
-    fn deserialize(&mut self, pkt: &'a ReceivedPkt<D>) -> Result<()> {
-        self.inner_deserialize(pkt, 0, pkt.data_len())
+    fn deserialize(&mut self, pkt: &'a ReceivedPkt<D>, buffer_offset: usize) -> Result<()> {
+        self.inner_deserialize(pkt, buffer_offset, 0, pkt.data_len())
             .wrap_err("Failed to call inner_deserialize on top level object")?;
         Ok(())
     }
@@ -287,6 +289,7 @@ where
     ) -> Result<Vec<(RcCornPtr<'a, D>, *mut u8)>> {
         let mut obj_ref = ObjectRef(header_ptr as _);
         obj_ref.write_size(self.ptr.len());
+        tracing::debug!("Returning cornptr of len {}", self.ptr.len());
         Ok(vec![(RcCornPtr::RawRef(self.ptr), header_ptr)])
     }
 
@@ -295,12 +298,22 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
-        let header_slice = pkt.contiguous_slice(relative_offset, size)?;
+        tracing::debug!(
+            relative_offset = relative_offset,
+            buffer_offset = buffer_offset,
+            size = size,
+            "In inner deserialize for string"
+        );
+        let header_slice = pkt.contiguous_slice(relative_offset + buffer_offset, size)?;
         let object_ref = ObjectRef(header_slice.as_ptr());
-        self.ptr = pkt.contiguous_slice(object_ref.get_offset(), object_ref.get_size())?;
+        self.ptr = pkt.contiguous_slice(
+            object_ref.get_offset() + buffer_offset,
+            object_ref.get_size(),
+        )?;
         Ok(())
     }
 }
@@ -476,15 +489,27 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
-        let header_slice = pkt.contiguous_slice(relative_offset, size)?;
+        tracing::debug!(
+            buffer_offset,
+            relative_offset,
+            size,
+            "Deserializing cf bytes"
+        );
+        let header_slice = pkt.contiguous_slice(relative_offset + buffer_offset, size)?;
         let object_ref = ObjectRef(header_slice.as_ptr());
-        let payload_offset = object_ref.get_offset();
+        let payload_offset = object_ref.get_offset() + buffer_offset;
         let payload_size = object_ref.get_size();
 
         let (payload_seg, off_within_payload_seg) = pkt.index_at_offset(payload_offset);
+        tracing::debug!(
+            "Payload seg: {}, off: {}",
+            payload_seg,
+            off_within_payload_seg
+        );
         let payload_segment = pkt.index(payload_seg);
         ensure!(
             (payload_segment.buf_size() - off_within_payload_seg) >= payload_size,
@@ -495,6 +520,10 @@ where
             CfBuf::new_with_bounds(payload_segment, off_within_payload_seg, payload_size);
 
         // assume underlying packet is in REGISTERED MEMORY
+        tracing::debug!(
+            "Switching from raw ref to rc version of CFBytes for payload: {}",
+            payload_size
+        );
         *self = CFBytes::Rc(payload_buf);
         Ok(())
     }
@@ -609,12 +638,17 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
         match self {
-            List::Owned(owned_list) => owned_list.inner_deserialize(pkt, relative_offset, size),
-            List::Ref(ref_list) => ref_list.inner_deserialize(pkt, relative_offset, size),
+            List::Owned(owned_list) => {
+                owned_list.inner_deserialize(pkt, buffer_offset, relative_offset, size)
+            }
+            List::Ref(ref_list) => {
+                ref_list.inner_deserialize(pkt, buffer_offset, relative_offset, size)
+            }
         }
     }
 }
@@ -740,13 +774,15 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
         self.num_set = size;
         self.num_space = size;
         self.list_ptr = BytesMut::with_capacity(size * size_of::<T>());
-        let payload_slice = pkt.contiguous_slice(relative_offset, size * size_of::<T>())?;
+        let payload_slice =
+            pkt.contiguous_slice(relative_offset + buffer_offset, size * size_of::<T>())?;
         self.list_ptr.chunk_mut().copy_from_slice(payload_slice);
 
         Ok(())
@@ -854,11 +890,13 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
         self.num_space = size;
-        let payload_slice = pkt.contiguous_slice(relative_offset, size * (size_of::<T>()))?;
+        let payload_slice =
+            pkt.contiguous_slice(relative_offset + buffer_offset, size * (size_of::<T>()))?;
         self.list_ptr = payload_slice.as_ptr() as _;
         Ok(())
     }
@@ -993,9 +1031,16 @@ where
     fn inner_deserialize(
         &mut self,
         pkt: &'a ReceivedPkt<D>,
+        buffer_offset: usize,
         relative_offset: usize,
         size: usize,
     ) -> Result<()> {
+        tracing::debug!(
+            buffer_offset = buffer_offset,
+            relative_offset = relative_offset,
+            size = size,
+            "Inner deserialize for Variable List"
+        );
         let mut elts: Vec<T> = Vec::with_capacity(size);
         let mut cur_header_offset = relative_offset;
 
@@ -1003,15 +1048,26 @@ where
         for _i in 0..size {
             let mut elt = T::default();
             if elt.dynamic_header_size() == 0 {
-                elt.inner_deserialize(pkt, T::CONSTANT_HEADER_SIZE, cur_header_offset)?;
+                tracing::debug!("Calling inner serialize with off {}", cur_header_offset);
+                elt.inner_deserialize(
+                    pkt,
+                    buffer_offset,
+                    cur_header_offset,
+                    T::CONSTANT_HEADER_SIZE,
+                )?;
                 elts.push(elt);
             } else {
-                let header_slice =
-                    pkt.contiguous_slice(cur_header_offset, T::CONSTANT_HEADER_SIZE)?;
+                let header_slice = pkt
+                    .contiguous_slice(cur_header_offset + buffer_offset, T::CONSTANT_HEADER_SIZE)?;
                 let object_ref = ObjectRef(header_slice.as_ptr());
 
                 let mut elt = T::default();
-                elt.inner_deserialize(pkt, object_ref.get_size(), object_ref.get_offset())?;
+                elt.inner_deserialize(
+                    pkt,
+                    buffer_offset,
+                    object_ref.get_offset(),
+                    object_ref.get_size(),
+                )?;
                 elts.push(elt);
             }
             cur_header_offset += T::CONSTANT_HEADER_SIZE;
