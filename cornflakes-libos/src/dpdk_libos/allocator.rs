@@ -76,14 +76,13 @@ impl MempoolInfo {
         // If the mbuf is within bounds, return the mbuf this is pointing to
         let pg2mb = closest_2mb_page(buf.as_ptr());
         let base_mbuf = match pg2mb <= self.start {
-            true => self.start + self.beginning_offset,
+            true => self.start,
             false => pg2mb + self.page_offset,
         };
         let ptr_int = buf.as_ptr() as usize;
         let ptr_offset = (ptr_int) - base_mbuf;
         let offset_within_alloc = ptr_offset % self.object_size;
 
-        tracing::debug!("Pointer offset within mbuf: {:?}", ptr_offset);
         ensure!(
             offset_within_alloc >= self.get_front_padding(),
             "Data pointer within header of mbuf: {:?} in {:?}",
@@ -94,6 +93,20 @@ impl MempoolInfo {
         let original_mbuf_ptr = (ptr_int - offset_within_alloc) as *mut rte_mbuf;
         // don't need to change the "offset" of the mbuf
         let data_off = (ptr_int - unsafe { (*original_mbuf_ptr).buf_addr as usize }) as u16;
+        if data_off as usize > self.object_size {
+            tracing::warn!(
+                "For buffer {:?}, calculated data_off as {:?}, ptr_int: {}, off within alloc: {}; START of region: {:?}, base_mbuf: {}, ptr_offset: {}, off within alloc: {}",
+                buf.as_ptr(),
+                data_off,
+                ptr_int,
+                offset_within_alloc,
+                self.start,
+                base_mbuf as usize,
+                ptr_offset,
+                offset_within_alloc,
+
+            );
+        }
 
         ensure!(
             offset_within_alloc < (self.elt_size() + self.get_front_padding()),

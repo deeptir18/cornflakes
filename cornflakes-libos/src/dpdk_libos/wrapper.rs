@@ -308,6 +308,7 @@ impl Pkt {
                         cornptr.as_ref(),
                         allocator,
                         external_regions,
+                        sga.get_id(),
                     )
                     .wrap_err("Failed to set external payload into pkt list.")?;
                 }
@@ -361,6 +362,7 @@ impl Pkt {
         buf: &[u8],
         allocator: &MempoolAllocator,
         external_regions: &Vec<mem::MmapMetadata>,
+        sga_id: MsgID,
     ) -> Result<()> {
         debug!("The mbuf idx we're changing: {}", idx);
         // check whether the payload is in one of the memzones, or an external region
@@ -378,6 +380,14 @@ impl Pkt {
                 original_mbuf_ptr
             );
             unsafe {
+                if ((*original_mbuf_ptr).buf_addr == std::ptr::null_mut()) {
+                    tracing::warn!(
+                        "Calculated incorrect ptr: {:?}, for buf: {:?} req id {}",
+                        original_mbuf_ptr,
+                        buf.as_ptr(),
+                        sga_id,
+                    );
+                }
                 (*mbufs[idx][pkt_id]).buf_iova = (*original_mbuf_ptr).buf_iova;
                 (*mbufs[idx][pkt_id]).buf_addr = (*original_mbuf_ptr).buf_addr;
                 (*mbufs[idx][pkt_id]).buf_len = buf.len() as _;
