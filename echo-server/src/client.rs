@@ -65,7 +65,7 @@ where
     }
 
     pub fn dump(&mut self, path: Option<String>, total_time: Duration) -> Result<()> {
-        self.rtts.sort();
+        self.rtts.sort()?;
         tracing::info!(
             sent = self.sent,
             received = self.recved,

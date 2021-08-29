@@ -5,7 +5,7 @@ pub mod hardcoded_cf;
 }*/
 
 use super::{ycsb_parser::YCSBRequest, KVSerializer, MsgType, SerializedRequestGenerator};
-use color_eyre::eyre::{bail, Result, WrapErr};
+use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_codegen::utils::rc_dynamic_hdr::{CFBytes, CFString, HeaderRepr};
 use cornflakes_libos::{
     dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, CfBuf, Datapath, RcCornPtr, RcCornflake,
@@ -81,6 +81,7 @@ where
                 tracing::debug!("Handling getm request with {} values", x);
 
                 let mut getm_response = hardcoded_cf::GetMResp::<D>::new();
+                getm_response.set_id(getm_request.get_id());
                 getm_response.init_vals(x);
                 let values = getm_response.get_mut_vals();
                 for i in 0..x {
@@ -163,7 +164,7 @@ where
     }
 }
 
-impl<D> SerializedRequestGenerator for CornflakesDynamicSerializer<D>
+impl<D> SerializedRequestGenerator<D> for CornflakesDynamicSerializer<D>
 where
     D: Datapath,
 {
@@ -171,6 +172,84 @@ where
         CornflakesDynamicSerializer {
             _marker: PhantomData,
         }
+    }
+
+    fn check_recved_msg(
+        &self,
+        pkt: &ReceivedPkt<D>,
+        msg_type: MsgType,
+        value_size: usize,
+    ) -> Result<bool> {
+        let id = pkt.get_id();
+        match msg_type {
+            MsgType::Get(num_values) => {
+                match num_values {
+                    0 => {
+                        bail!("Msg type cannot have {} values", num_values);
+                    }
+                    1 => {
+                        // deserialize into GetResp
+                        let mut get_resp = hardcoded_cf::GetResp::<D>::new();
+                        get_resp.deserialize(&pkt, 0)?;
+                        ensure!(
+                        get_resp.get_id() == id,
+                        format!("Id in  deserialized message does not match: expected: {}, actual: {}", id, get_resp.get_id())
+                    );
+                        ensure!(
+                            get_resp.has_val(),
+                            "Deserialized get response does not have value"
+                        );
+                        ensure!(
+                        get_resp.get_val().len() == value_size,
+                        format!("Deserialized value does not have the correct size, expected: {}, actual: {}", value_size, get_resp.get_val().len())
+                    );
+                    }
+                    _ => {
+                        let mut getm_resp = hardcoded_cf::GetMResp::<D>::new();
+                        getm_resp.deserialize(&pkt, 0)?;
+                        ensure!(
+                            getm_resp.get_id() == id,
+                        format!("Id in  deserialized message does not match: expected: {}, actual: {}", id, getm_resp.get_id())
+                        );
+
+                        ensure!(
+                            getm_resp.has_vals(),
+                            "Deserialized getm resp does not have values"
+                        );
+
+                        let vals = getm_resp.get_vals();
+                        ensure!(vals.len() == num_values, format!("Deserialized getm response does not have enough values, expected: {}, actual: {}", num_values, vals.len()));
+
+                        for i in 0..num_values {
+                            let val = &vals[i];
+                            ensure!(
+                                val.len() == value_size,
+                                format!(
+                                    "Value {} not correct size, expected: {}, actual: {}",
+                                    i,
+                                    value_size,
+                                    val.len()
+                                )
+                            );
+                        }
+                    }
+                }
+            }
+            MsgType::Put(_) => {
+                let mut put_resp = hardcoded_cf::PutResp::<D>::new();
+                put_resp.deserialize(&pkt, 0)?;
+                ensure!(put_resp.has_id(), "Received put response doesn't have id");
+                ensure!(
+                    put_resp.get_id() == id,
+                    format!(
+                        "Put resp id doesn't match, expected: {}, actual: {}",
+                        id,
+                        put_resp.get_id()
+                    )
+                );
+            }
+        }
+        Ok(true)
     }
 
     fn write_next_request<'a>(&self, buf: &mut [u8], req: &mut YCSBRequest<'a>) -> Result<usize> {

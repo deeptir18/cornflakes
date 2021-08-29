@@ -56,13 +56,15 @@ struct Opt {
     #[structopt(
         short = "t",
         long = "trace",
-        help = "Trace file to load server side values from."
+        help = "Trace file to load server side values from.",
+        default_value = ""
     )]
     trace_file: String,
     #[structopt(
         short = "q",
         long = "queries",
-        help = "Query file to load queries from."
+        help = "Query file to load queries from.",
+        default_value = ""
     )]
     queries: String,
     #[structopt(
@@ -86,8 +88,8 @@ struct Opt {
         default_value = "cornflakes-dynamic"
     )]
     serialization: SerializationType,
-    #[structopt(long = "no_retries", help = "Disable client retries.")]
-    no_retries: bool,
+    #[structopt(long = "retries", help = "Disable client retries.")]
+    retries: bool,
     #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
     logfile: Option<String>,
     #[structopt(
@@ -107,8 +109,10 @@ struct Opt {
         default_value = "1"
     )]
     num_clients: usize,
-    #[structopt(long = "client_id", short = "cid", default_value = "0")]
+    #[structopt(long = "client_id", default_value = "0")]
     client_id: usize,
+    #[structopt(long = "start_cutoff", default_value = "0")]
+    start_cutoff: usize,
 }
 
 /// Given a path, calculates the number of lines in the file.
@@ -155,7 +159,7 @@ macro_rules! init_kv_client(
         let mut connection = $datapath_init?;
 
         let mut loadgen: YCSBClient<$serializer, $datapath> =
-            YCSBClient::new($opt.client_id, $opt.value_size, $opt.num_values, &$opt.queries, 0, $opt.num_threads, $opt.server_ip, hist, !$opt.no_retries)?;
+            YCSBClient::new($opt.client_id, $opt.value_size, $opt.num_values, &$opt.queries, 0, $opt.num_threads, $opt.num_clients, $opt.server_ip, hist, $opt.retries)?;
         run_client(&mut loadgen, &mut connection, &$opt)?;
     }
 );
@@ -247,31 +251,38 @@ fn main() -> Result<()> {
 
 fn run_client<S, D>(loadgen: &mut YCSBClient<S, D>, connection: &mut D, opt: &Opt) -> Result<()>
 where
-    S: SerializedRequestGenerator,
+    S: SerializedRequestGenerator<D>,
     D: Datapath,
 {
     loadgen.init(connection)?;
-    let start_run = Instant::now();
-    let timeout = match opt.no_retries {
-        false => cornflakes_libos::high_timeout_at_start,
-        true => cornflakes_libos::no_retries_timeout,
+    let timeout = match opt.retries {
+        true => cornflakes_libos::high_timeout_at_start,
+        false => cornflakes_libos::no_retries_timeout,
     };
+
+    // if start cutoff is > 0, run_closed_loop for that many packets
+    loadgen
+        .run_closed_loop(connection, opt.start_cutoff as u64, timeout)
+        .wrap_err("Failed to run warm up closed loop")?;
+
+    let start_run = Instant::now();
 
     loadgen.run_open_loop(
         connection,
         (1e9 / opt.rate as f64) as u64,
         opt.time as u64,
         timeout,
-        opt.no_retries,
+        !opt.retries,
     )?;
 
     let exp_duration = start_run.elapsed();
-    loadgen.dump(opt.logfile.clone(), exp_duration)?;
+    loadgen.dump(opt.logfile.clone(), exp_duration, opt.start_cutoff)?;
     let exp_time = exp_duration.as_nanos() as f64 / 1000000000.0;
-    let achieved_load_pps = (loadgen.get_num_recved() as f64) / exp_time as f64;
+    let achieved_load_pps = (loadgen.get_num_recved(opt.start_cutoff) as f64) / exp_time as f64;
     let achieved_load_gbps =
-        (opt.value_size as f64 * achieved_load_pps as f64) / (125000000 as f64);
-    let load_gbps = ((opt.value_size as f64) * (opt.rate) as f64) / (125000000 as f64);
+        ((opt.value_size * opt.num_values) as f64 * achieved_load_pps as f64) / (125000000 as f64);
+    let load_gbps =
+        (((opt.value_size * opt.num_values) as f64) * (opt.rate) as f64) / (125000000 as f64);
     tracing::info!(
         load_gbps =? load_gbps,
         achieved_load_gbps =? achieved_load_gbps,

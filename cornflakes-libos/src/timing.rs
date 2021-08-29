@@ -1,5 +1,5 @@
 use super::MsgID;
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{bail, ensure, Result};
 use hashbrown::HashMap;
 use hdrhistogram::Histogram;
 use std::{
@@ -76,18 +76,27 @@ impl ManualHistogram {
         self.current_count += 1;
     }
 
-    pub fn sort(&mut self) {
-        self.sorted_latencies = self.latencies.as_slice()[0..self.current_count].to_vec();
+    pub fn sort(&mut self) -> Result<()> {
+        self.sort_and_truncate(0)
+    }
+
+    pub fn sort_and_truncate(&mut self, start: usize) -> Result<()> {
+        ensure!(
+            start < self.current_count,
+            format!(
+                "Cannot truncate entire array: start: {}, count: {}",
+                start, self.current_count
+            )
+        );
+
+        self.sorted_latencies = self.latencies.as_slice()[start..self.current_count].to_vec();
         self.sorted_latencies.sort();
+        Ok(())
     }
 
     pub fn value_at_quantile(&self, quantile: f64) -> Result<u64> {
         if self.sorted_latencies.len() == 0 {
             bail!("Cannot run value_at_quantile until sort() has been called.");
-        }
-
-        if self.sorted_latencies.len() != self.current_count {
-            bail!("Sorted latencies vec does not have the same length as current count. Call sort again.");
         }
         let index = (self.sorted_latencies.len() as f64 * quantile) as usize;
         Ok(self.sorted_latencies[index])
@@ -95,8 +104,12 @@ impl ManualHistogram {
 
     /// Logs all the latencies to a file
     pub fn log_to_file(&self, path: &str) -> Result<()> {
+        self.log_truncated_to_file(path, 0)
+    }
+
+    pub fn log_truncated_to_file(&self, path: &str, start: usize) -> Result<()> {
         let mut file = File::create(path)?;
-        for idx in 0..self.current_count {
+        for idx in start..self.current_count {
             writeln!(file, "{}", self.latencies[idx])?;
         }
         Ok(())
@@ -107,10 +120,7 @@ impl ManualHistogram {
             bail!("Cannot run value_at_quantile until sort() has been called.");
         }
 
-        if self.sorted_latencies.len() != self.current_count {
-            bail!("Sorted latencies vec does not have the same length as current count. Call sort again.");
-        }
-
+        // TODO: use iterative algorithm that won't overflow
         let sum: u64 = self.sorted_latencies.iter().sum();
         Ok(sum as f64 / (self.sorted_latencies.len() as f64))
     }
@@ -120,20 +130,12 @@ impl ManualHistogram {
             bail!("Cannot run value_at_quantile until sort() has been called.");
         }
 
-        if self.sorted_latencies.len() != self.current_count {
-            bail!("Sorted latencies vec does not have the same length as current count. Call sort again.");
-        }
-
         Ok(self.sorted_latencies[self.sorted_latencies.len() - 1])
     }
 
     fn min(&self) -> Result<u64> {
         if self.sorted_latencies.len() == 0 {
             bail!("Cannot run value_at_quantile until sort() has been called.");
-        }
-
-        if self.sorted_latencies.len() != self.current_count {
-            bail!("Sorted latencies vec does not have the same length as current count. Call sort again.");
         }
 
         Ok(self.sorted_latencies[0])
@@ -218,6 +220,15 @@ impl HistogramWrapper {
             pkt_map: HashMap::default(),
             name: name.to_string(),
         })
+    }
+
+    pub fn get_hist(&self) -> Histogram<u64> {
+        self.hist.clone()
+    }
+
+    pub fn combine(&mut self, other: &HistogramWrapper) -> Result<()> {
+        self.hist.add(other.get_hist())?;
+        Ok(())
     }
 
     pub fn dump_stats(&self) {

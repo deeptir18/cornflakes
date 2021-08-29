@@ -19,7 +19,10 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <rte_mempool.h>
+#include <rte_flow.h>
 #include <custom_mempool.h>
+#include <rte_thash.h>
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 typedef unsigned long physaddr_t;
 typedef unsigned long virtaddr_t;
@@ -32,6 +35,25 @@ typedef unsigned long virtaddr_t;
 #define MBUF_HEADER_SIZE 64
 #define MBUF_PRIV_SIZE 8
 #define PGSIZE_2MB (1 <<  21)
+#define MAX_CORES 6
+
+static uint8_t sym_rss_key[] = {
+    0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+    0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+    0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+    0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+    0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+};
+
+static struct rte_flow_attr attr = { .ingress = 1 };
+static struct rte_flow_item patterns[MAX_CORES][4];
+static struct rte_flow_action actions[MAX_CORES][2];
+static struct rte_flow_item_eth eths[MAX_CORES];
+static struct rte_flow_item_ipv4 ipv4s[MAX_CORES];
+static struct rte_flow_item_udp udps[MAX_CORES];
+static struct rte_flow_action_queue queues[MAX_CORES];
+static struct rte_flow *flows[MAX_CORES];
+static struct rte_flow_error errors[MAX_CORES];
 
 inline void free_referred_mbuf(void *buf) {
     struct rte_mbuf *mbuf = (struct rte_mbuf *)(buf);
@@ -264,24 +286,36 @@ struct rte_mbuf* rte_pktmbuf_alloc_(struct rte_mempool *mp) {
     return rte_pktmbuf_alloc(mp);
 }
 
+/* Sets ipv4 and udp checksums in the packet */
+void set_checksums_(struct rte_mbuf *pkt) {
+    struct rte_ipv4_hdr *ipv4 = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+    ipv4->hdr_checksum = 0;
+    ipv4->hdr_checksum = rte_ipv4_cksum(ipv4);
+    struct rte_udp_hdr *udp = rte_pktmbuf_mtod_offset(pkt, struct rte_udp_hdr *,
+                                                        sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+    udp->dgram_cksum = rte_cpu_to_be_16(rte_raw_cksum((void *)udp, sizeof(struct rte_udp_hdr)));
+    printf("Set ipv4 checksum as %u, udp as %u\n", ipv4->hdr_checksum, udp->dgram_cksum);
+}
+
 uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **tx_pkts, uint16_t nb_pkts) {
     /*for (uint16_t i = 0; i < nb_pkts; i++) {
         struct rte_mbuf *first_mbuf = tx_pkts[i];
-        printf("First packet addr: %p\n", first_mbuf);
-        printf("[rte_eth_tx_burst_] first mbuf num segs: %u\n", first_mbuf->nb_segs);
-        printf("[rte_eth_tx_burst_] first mbuf data_len: %u, pkt_len: %u\n", first_mbuf->data_len, first_mbuf->pkt_len);
-        printf("[rte_eth_tx_burst_] first mbuf next is null: %d\n", (first_mbuf->next == NULL));
+        //printf("First packet addr: %p\n", first_mbuf);
+        //printf("[rte_eth_tx_burst_] first mbuf num segs: %u\n", first_mbuf->nb_segs);
+        //printf("[rte_eth_tx_burst_] first mbuf data_len: %u, pkt_len: %u\n", first_mbuf->data_len, first_mbuf->pkt_len);
+        //printf("[rte_eth_tx_burst_] first mbuf next is null: %d\n", (first_mbuf->next == NULL));
         struct rte_mbuf *cur_pkt = first_mbuf;
         for (uint16_t j = 1; j < first_mbuf->nb_segs; j++) {
             cur_pkt = cur_pkt->next;
-            printf("[rte_eth_tx_burst_] mbuf # %u, addr: %p\n", (unsigned)j, cur_pkt);
-            printf("[rte_eth_tx_burst_]  mbuf # %u data_len: %u, pkt_len: %u\n", (unsigned)j, cur_pkt->data_len, cur_pkt->pkt_len);
-            printf("[rte_eth_tx_burst_] mbuf # %u next is null: %d\n", (unsigned)j, (cur_pkt->next == NULL));
+            //printf("[rte_eth_tx_burst_] mbuf # %u, addr: %p\n", (unsigned)j, cur_pkt);
+            //printf("[rte_eth_tx_burst_]  mbuf # %u data_len: %u, pkt_len: %u\n", (unsigned)j, cur_pkt->data_len, cur_pkt->pkt_len);
+            //printf("[rte_eth_tx_burst_] mbuf # %u next is null: %d\n", (unsigned)j, (cur_pkt->next == NULL));
         }
         uint8_t *p = rte_pktmbuf_mtod(first_mbuf, uint8_t *);
         struct rte_ether_hdr * const eth_hdr = (struct rte_ether_hdr *)(p);
+        struct rte_ipv4_hdr *const ipv4 = (struct rte_ipv4_hdr *)(p + sizeof(struct rte_ether_hdr));
         if (eth_hdr->ether_type != ntohs(RTE_ETHER_TYPE_IPV4)) {
-        printf("[rte_eth_tx_burst_] Ether type is not RTE_ETHER_TYPE_IPV4\n");
+            printf("[rte_eth_tx_burst_] Ether type is not RTE_ETHER_TYPE_IPV4\n");
         }
         printf("[rte_eth_tx_burst_] Src MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
             " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
@@ -293,6 +327,7 @@ uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf 
             eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
             eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
             eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
+        printf("[rte_eth_tx_burst_] Queue: %u, Scp IP: %u, dst IP: %u, checksum: %u\n", queue_id, ipv4->src_addr, ipv4->dst_addr, ipv4->hdr_checksum);
     }*/
     return rte_eth_tx_burst(port_id, queue_id, tx_pkts, nb_pkts);
 }
@@ -372,7 +407,7 @@ uint32_t make_ip_(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
 	 ((uint32_t) c << 8) | (uint32_t) d);
 }
 
-size_t fill_in_packet_header_(struct rte_mbuf *mbuf, struct rte_ether_addr *my_eth, struct rte_ether_addr *dst_eth, uint32_t my_ip, uint32_t dst_ip, uint16_t udp_port, size_t message_size) {
+size_t fill_in_packet_header_(struct rte_mbuf *mbuf, struct rte_ether_addr *my_eth, struct rte_ether_addr *dst_eth, uint32_t my_ip, uint32_t dst_ip, uint16_t client_port, uint16_t server_port, size_t message_size) {
     size_t header_size = 0;
     uint8_t *ptr = rte_pktmbuf_mtod(mbuf, uint8_t *);
     struct rte_ether_hdr *eth_hdr = (struct rte_ether_hdr *)ptr;
@@ -401,8 +436,8 @@ size_t fill_in_packet_header_(struct rte_mbuf *mbuf, struct rte_ether_addr *my_e
 
     /* add in udp header */
     struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)ptr;
-    udp_hdr->src_port = rte_cpu_to_be_16(udp_port);
-    udp_hdr->dst_port = rte_cpu_to_be_16(udp_port);
+    udp_hdr->src_port = rte_cpu_to_be_16(client_port);
+    udp_hdr->dst_port = rte_cpu_to_be_16(server_port);
     udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + message_size);
     udp_hdr->dgram_cksum = 0;
     ptr += sizeof(*udp_hdr);
@@ -424,6 +459,16 @@ bool parse_packet_(struct rte_mbuf *mbuf, size_t *payload_len, const struct rte_
     
     ptr += sizeof(*eth_hdr);
     header_size += sizeof(*eth_hdr);
+    struct rte_ipv4_hdr *const ip_hdr = (struct rte_ipv4_hdr *)(ptr);
+    ptr += sizeof(*ip_hdr);
+    header_size += sizeof(*ip_hdr);
+    struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)(ptr);
+    ptr += sizeof(*udp_hdr);
+    header_size += sizeof(*udp_hdr);
+
+    //printf("[parse_packet__] Received packet: ip cksum: %u; udp checksum, %u\n", ip_hdr->hdr_checksum, udp_hdr->dgram_cksum);
+    
+
     uint16_t eth_type = ntohs(eth_hdr->ether_type);
     if (!rte_is_same_ether_addr(our_eth, &eth_hdr->d_addr) && !rte_is_same_ether_addr(&ether_broadcast, &eth_hdr->d_addr)) {
         printf("Bad MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
@@ -434,18 +479,13 @@ bool parse_packet_(struct rte_mbuf *mbuf, size_t *payload_len, const struct rte_
         return false;
     }
     if (RTE_ETHER_TYPE_IPV4 != eth_type) {
-        printf("Bad ether type");
+        //printf("Bad ether type");
         return false;
     }
 
-    // check the IP header
-    struct rte_ipv4_hdr *const ip_hdr = (struct rte_ipv4_hdr *)(ptr);
-    ptr += sizeof(*ip_hdr);
-    header_size += sizeof(*ip_hdr);
-
     // In network byte order.
     if (ip_hdr->dst_addr != rte_cpu_to_be_32(our_ip)) {
-        printf("Bad dst ip addr; expected: %u, got: %u, our_ip: %u\n", (unsigned)(ip_hdr->dst_addr), (unsigned)(rte_cpu_to_be_32(our_ip)), (unsigned)(our_ip));
+        //printf("Bad dst ip addr; got: %u, expected: %u, our_ip in lE: %u\n", (unsigned)(ip_hdr->dst_addr), (unsigned)(rte_cpu_to_be_32(our_ip)), (unsigned)(our_ip));
         return false;    
     }
 
@@ -453,10 +493,6 @@ bool parse_packet_(struct rte_mbuf *mbuf, size_t *payload_len, const struct rte_
         printf("Bad next proto_id\n");
         return false;
     }
-    
-    struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)(ptr);
-    ptr += sizeof(*udp_hdr);
-    header_size += sizeof(*udp_hdr);
 
     *payload_len = mbuf->pkt_len - header_size;
     // printf("[parse_packet_] Received packet with %u pkt_len, %u data_Len, %u header_size, set payload_len to %u\n", (unsigned)mbuf->pkt_len, (unsigned)mbuf->data_len, (unsigned)header_size, (unsigned)*payload_len);
@@ -486,7 +522,7 @@ void switch_headers_(struct rte_mbuf *rx_buf, struct rte_mbuf *tx_buf, size_t pa
     tx_ptr_ipv4_hdr->time_to_live = IP_DEFTTL;
     tx_ptr_ipv4_hdr->next_proto_id = IPPROTO_UDP;
     /* offload checksum computation in hardware */
-    tx_ptr_ipv4_hdr->hdr_checksum = 0;
+    //tx_ptr_ipv4_hdr->hdr_checksum = rx_ptr_ipv4_hdr->hdr_checksum;
 
     /* Swap UDP ports */
     struct rte_udp_hdr *rx_rte_udp_hdr = rte_pktmbuf_mtod_offset(rx_buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
@@ -494,7 +530,7 @@ void switch_headers_(struct rte_mbuf *rx_buf, struct rte_mbuf *tx_buf, size_t pa
     tx_rte_udp_hdr->src_port = rx_rte_udp_hdr->dst_port;
     tx_rte_udp_hdr->dst_port = rx_rte_udp_hdr->src_port;
     tx_rte_udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + payload_length);
-    tx_rte_udp_hdr->dgram_cksum = 0;
+    //tx_rte_udp_hdr->dgram_cksum = rx_rte_udp_hdr->dgram_cksum;
 
     /* Set packet metadata */
     tx_buf->l2_len = RTE_ETHER_HDR_LEN;
@@ -504,6 +540,77 @@ void switch_headers_(struct rte_mbuf *rx_buf, struct rte_mbuf *tx_buf, size_t pa
 
 struct rte_mbuf_ext_shared_info *shinfo_init_(void *addr, uint16_t *buf_len) {
     return rte_pktmbuf_ext_shinfo_init_helper(addr, buf_len, general_free_cb_, NULL);
+}
+
+void destroy_flow_rules_(uint16_t dpdk_port) {
+    rte_flow_flush(dpdk_port, &errors[0]);
+}
+
+void add_flow_rule_(uint16_t dpdk_port,
+                        struct rte_ether_addr *dest_eth,
+                        uint32_t dst_ip, 
+                        uint16_t dst_udp_port, 
+                        uint16_t queue_id) {
+    printf("Adding flow rule for queue %u udp port %u\n", queue_id, dst_udp_port);
+    // set the queue
+    queues[queue_id].index = queue_id;
+    /* setting the eth to pass only packets to this eth addr */
+    //rte_memcpy(&eths[queue_id].dst, dest_eth, RTE_ETHER_HDR_LEN);
+    patterns[queue_id][0].type = RTE_FLOW_ITEM_TYPE_ETH;
+    patterns[queue_id][0].spec = &eths[queue_id];
+
+    /* set the dst ipv4 packet to the required value */
+    ipv4s[queue_id].hdr.dst_addr = htonl(dst_ip);
+    patterns[queue_id][1].type = RTE_FLOW_ITEM_TYPE_IPV4;
+    patterns[queue_id][1].spec = &ipv4s[queue_id];
+
+    udps[queue_id].hdr.dst_port = htonl(dst_udp_port);
+    patterns[queue_id][2].type = RTE_FLOW_ITEM_TYPE_UDP;
+    patterns[queue_id][2].spec = &udps[queue_id];
+
+    /* end the pattern array */
+    patterns[queue_id][3].type = RTE_FLOW_ITEM_TYPE_END;
+
+    /* create the queue action */
+    actions[queue_id][0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+    actions[queue_id][0].conf = &queues[queue_id];
+    actions[queue_id][1].type = RTE_FLOW_ACTION_TYPE_END;
+
+    /* validate and create the flow rule */
+    if (!rte_flow_validate(dpdk_port, &attr, patterns[queue_id], actions[queue_id], &errors[queue_id])) {
+        flows[queue_id] = rte_flow_create(dpdk_port, &attr, patterns[queue_id], actions[queue_id], &errors[queue_id]);
+    } else {
+        printf("Flow rule for queue %u not validated: %s\n", queue_id, strerror(rte_errno_()));
+    }
+}
+
+/**
+ * compute_flow_affinity - compute rss hash for incoming packets
+ * @local_port: the local port number
+ * @remote_port: the remote port
+ * @local_ip: local ip (in host-order)
+ * @remote_ip: remote ip (in host-order)
+ * @num_queues: total number of queues
+ *
+ * Returns the 32 bit hash mod maxks
+ *
+ * copied from dpdk/lib/librte_hash/rte_thash.h
+ */
+uint32_t compute_flow_affinity_(uint32_t local_ip, 
+                                        uint32_t remote_ip, 
+                                        uint16_t local_port, 
+                                        uint16_t remote_port, 
+                                        size_t num_queues)
+{
+	const uint8_t *rss_key = (uint8_t *)sym_rss_key;
+
+	uint32_t input_tuple[] = {
+        remote_ip, local_ip, local_port | remote_port << 16
+	};
+    
+    uint32_t ret = rte_softrss((uint32_t *)&input_tuple, ARRAY_SIZE(input_tuple),
+         (const uint8_t *)rss_key);
+	return ret % (uint32_t)num_queues;
 }
 
 void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) {
@@ -516,10 +623,15 @@ void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) 
     struct rte_eth_conf port_conf = {};
     port_conf.rxmode.max_rx_pkt_len = RX_PACKET_LEN;
 
-    port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_TIMESTAMP;
+    port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_TIMESTAMP | DEV_RX_OFFLOAD_IPV4_CKSUM;
+    port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS | ETH_MQ_RX_RSS_FLAG;
+    port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
+    port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
+    port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_UDP | ETH_RSS_IP;
     port_conf.txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS | DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM;
     port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
 
+    printf("port_id: %u, rx_rings; %u, tx_rings: %u\n", port_id, rx_rings, tx_rings);
     rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);
 }
 

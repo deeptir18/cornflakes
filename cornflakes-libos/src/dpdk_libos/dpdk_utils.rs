@@ -11,6 +11,7 @@ pub fn parse_yaml_map(
     HashMap<Ipv4Addr, MacAddress>,
     HashMap<MacAddress, Ipv4Addr>,
     u16,
+    u16,
 )> {
     let file_str = read_to_string(Path::new(&config_file))?;
     let yamls = match YamlLoader::load_from_str(&file_str) {
@@ -54,7 +55,17 @@ pub fn parse_yaml_map(
         }
     };
 
-    Ok((ip_to_mac, mac_to_ip, udp_port))
+    let client_port = match yaml.as_hash().unwrap().get(&Yaml::from_str("client_port")) {
+        Some(port_str) => {
+            let val = port_str.as_i64().unwrap() as u16;
+            val
+        }
+        None => {
+            bail!("Yaml config has no port entry.");
+        }
+    };
+
+    Ok((ip_to_mac, mac_to_ip, udp_port, client_port))
 }
 
 pub fn parse_eal_init(config_path: &str) -> Result<Vec<String>> {

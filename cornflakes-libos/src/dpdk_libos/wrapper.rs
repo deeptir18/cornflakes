@@ -18,6 +18,10 @@ use std::{
     time::Duration,
 };
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct MempoolPtr(pub *mut rte_mempool);
+unsafe impl Send for MempoolPtr {}
+
 fn print_error() -> String {
     let errno = dpdk_call!(rte_errno());
     let c_buf = dpdk_call!(rte_strerror(errno));
@@ -26,7 +30,7 @@ fn print_error() -> String {
     format!("Error {}: {:?}", errno, str_slice)
 }
 
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Constants related to DPDK
 pub const NUM_MBUFS: u16 = 8191;
@@ -37,22 +41,9 @@ pub const MAX_SCATTERS: usize = 33;
 pub const RECEIVE_BURST_SIZE: u16 = 32;
 pub const MEMPOOL_MAX_SIZE: usize = 65536;
 
-// TODO: figure out how to turn jumbo frames on and of
 pub const RX_PACKET_LEN: u32 = 9216;
 pub const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
-// pub const MBUF_BUF_SIZE: u32 = RX_PACKET_LEN + RTE_PKTMBUF_HEADROOM;
-
-//pub const RTE_PKTMBUF_TAILROOM: u32 = 120; // with priv size of 8, this is padding
-//pub const MBUF_POOL_HDR_SIZE: usize = 64;
 pub const MBUF_PRIV_SIZE: usize = 8;
-/*pub const MBUF_MEMPOOL_PADDING: usize = 128;
-pub const TOTAL_MEMPOOL_MBUF_SIZE: usize = MBUF_POOL_HDR_SIZE
-    + MBUF_BUF_SIZE as usize
-    + MBUF_PRIV_SIZE
-    + RTE_PKTMBUF_TAILROOM as usize
-    + MBUF_MEMPOOL_PADDING;
-pub const MEMHDR_OFFSET: usize = 64; // offset to first mbuf from the beginning of the mempool
-pub const MEMHDR_ALIGNED_OFFSET: usize = 64; // offset to first mbuf on a new page*/
 /// RX and TX Prefetch, Host, and Write-back threshold values should be
 /// carefully set for optimal performance. Consult the network
 /// controller's datasheet and supporting DPDK documentation for guidance
@@ -380,7 +371,7 @@ impl Pkt {
                 original_mbuf_ptr
             );
             unsafe {
-                if ((*original_mbuf_ptr).buf_addr == std::ptr::null_mut()) {
+                if (*original_mbuf_ptr).buf_addr == std::ptr::null_mut() {
                     tracing::warn!(
                         "Calculated incorrect ptr: {:?}, for buf: {:?} req id {}",
                         original_mbuf_ptr,
@@ -482,30 +473,24 @@ fn wait_for_link_status_up(port_id: u16) -> Result<()> {
     bail!("Link never came up");
 }
 
-fn initialize_dpdk_port(port_id: u16, mbuf_pool: *mut rte_mempool) -> Result<()> {
+fn initialize_dpdk_port(
+    port_id: u16,
+    num_queues: u16,
+    rx_mbuf_pools: &Vec<*mut rte_mempool>,
+) -> Result<()> {
+    ensure!(
+        num_queues as usize == rx_mbuf_pools.len(),
+        format!(
+            "Mbuf pool list length {} not the same as num_queues {}",
+            rx_mbuf_pools.len(),
+            num_queues
+        )
+    );
     assert!(dpdk_call!(rte_eth_dev_is_valid_port(port_id)) == 1);
-    let rx_rings: u16 = 1;
-    let tx_rings: u16 = 1;
+    let rx_rings: u16 = num_queues;
+    let tx_rings: u16 = num_queues;
     let nb_rxd = RX_RING_SIZE;
     let nb_txd = TX_RING_SIZE;
-
-    /*let mut mtu: u16 = 0;
-    let mut dev_info: MaybeUninit<rte_eth_dev_info> = MaybeUninit::zeroed();
-    dpdk_ok!(rte_eth_dev_info_get(port_id, dev_info.as_mut_ptr()));
-    dpdk_ok!(rte_eth_dev_set_mtu(port_id, RX_PACKET_LEN as u16));
-    dpdk_ok!(rte_eth_dev_get_mtu(port_id, &mut mtu));
-    info!("Dev info MTU: {}", mtu);*/
-
-    /*let mut port_conf: MaybeUninit<rte_eth_conf> = MaybeUninit::zeroed();
-    unsafe {
-        (*port_conf.as_mut_ptr()).rxmode.max_rx_pkt_len = RX_PACKET_LEN;
-        (*port_conf.as_mut_ptr()).rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME as u64;
-        //(*port_conf.as_mut_ptr()).rxmode.mq_mode = rte_eth_rx_mq_mode_ETH_MQ_RX_RSS;
-        //(*port_conf.as_mut_ptr()).rx_adv_conf.rss_conf.rss_hf =
-        //    ETH_RSS_IP as u64 | (*dev_info.as_mut_ptr()).flow_type_rss_offloads;
-        (*port_conf.as_mut_ptr()).txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS as u64;
-        (*port_conf.as_mut_ptr()).txmode.mq_mode = rte_eth_rx_mq_mode_ETH_MQ_RX_NONE;
-    }*/
 
     let mut rx_conf: MaybeUninit<rte_eth_rxconf> = MaybeUninit::zeroed();
     unsafe {
@@ -522,30 +507,21 @@ fn initialize_dpdk_port(port_id: u16, mbuf_pool: *mut rte_mempool) -> Result<()>
         (*tx_conf.as_mut_ptr()).tx_thresh.wthresh = TX_WTHRESH;
     }
 
-    // configure the ethernet device
-    /*dpdk_ok!(rte_eth_dev_configure(
-        port_id,
-        rx_rings,
-        tx_rings,
-        port_conf.as_mut_ptr()
-    ));*/
     dpdk_call!(eth_dev_configure(port_id, rx_rings, tx_rings));
-
-    // TODO: from demikernel code: what does this do?
-    // dpdk_ok!(rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd));
 
     let socket_id =
         dpdk_check_not_failed!(rte_eth_dev_socket_id(port_id), "Port id is out of range") as u32;
 
     // allocate and set up 1 RX queue per Ethernet port
     for i in 0..rx_rings {
+        tracing::debug!("Initializing ring {}", i);
         dpdk_ok!(rte_eth_rx_queue_setup(
             port_id,
             i,
             nb_rxd,
             socket_id,
             rx_conf.as_mut_ptr(),
-            mbuf_pool
+            rx_mbuf_pools[i as usize]
         ));
     }
 
@@ -561,8 +537,6 @@ fn initialize_dpdk_port(port_id: u16, mbuf_pool: *mut rte_mempool) -> Result<()>
 
     // start the ethernet port
     dpdk_ok!(rte_eth_dev_start(port_id));
-
-    // dpdk_ok!(rte_eth_promiscuous_enable(port_id));
 
     // disable rx/tx flow control
     // TODO: why?
@@ -585,7 +559,7 @@ fn initialize_dpdk_port(port_id: u16, mbuf_pool: *mut rte_mempool) -> Result<()>
 /// Arguments
 /// * name - A string slice with the intended name of the mempool.
 /// * nb_ports - A u16 with the number of valid DPDK ports.
-fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
+pub fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
     let name = CString::new(name)?;
 
     let mut mbp_priv_uninit: MaybeUninit<rte_pktmbuf_pool_private> = MaybeUninit::zeroed();
@@ -783,10 +757,10 @@ pub fn create_native_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempo
 }
 
 /// Initializes DPDK ports, and memory pools.
-/// Returns two mempools:
+/// Returns two mempool types:
 /// (1) One that allocates mbufs with `MBUF_BUF_SIZE` of buffer space.
 /// (2) One that allocates empty mbuf structs, meant for attaching external data buffers.
-fn dpdk_init_helper() -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
+fn dpdk_init_helper(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
     let nb_ports = dpdk_call!(rte_eth_dev_count_avail());
     if nb_ports <= 0 {
         bail!("DPDK INIT: No ports available.");
@@ -796,163 +770,25 @@ fn dpdk_init_helper() -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
         nb_ports
     );
 
-    let mbuf_pool = create_native_mempool("default_mbuf_pool", nb_ports)
-        .wrap_err("Not able to create default mbuf_pool in dpdk init.")?;
+    let mut default_pools: Vec<*mut rte_mempool> = Vec::new();
+    for i in 0..num_cores {
+        let name = format!("default_mbuf_pool_{}", i);
+        let mbuf_pool = create_native_mempool(&name, nb_ports).wrap_err(format!(
+            "Not able to create mbuf pool {} in dpdk_init.",
+            nb_ports
+        ))?;
+        default_pools.push(mbuf_pool);
+    }
 
     let owner = RTE_ETH_DEV_NO_OWNER as u64;
     let mut p = dpdk_call!(rte_eth_find_next_owned_by(0, owner)) as u16;
     while p < RTE_MAX_ETHPORTS as u16 {
-        initialize_dpdk_port(p, mbuf_pool)?;
+        initialize_dpdk_port(p, num_cores as u16, &default_pools)?;
         p = dpdk_call!(rte_eth_find_next_owned_by(p + 1, owner)) as u16;
     }
 
-    if dpdk_call!(rte_lcore_count()) > 1 {
-        warn!("Too many lcores enabled. Only 1 used.");
-    }
-
-    let extbuf_mempool = init_extbuf_mempool("extbuf_pool", nb_ports)
-        .wrap_err("Unable to init mempool for attaching external buffers")?;
-
-    Ok((mbuf_pool, extbuf_mempool, nb_ports))
+    Ok((default_pools, nb_ports))
 }
-
-/*pub fn get_mempool_memzone_area(mbuf_pool: *mut rte_mempool) -> Result<(usize, usize)> {
-    let mut ret: Vec<(usize, usize)> = vec![];
-    extern "C" fn mz_cb(
-        _mp: *mut rte_mempool,
-        opaque: *mut ::std::os::raw::c_void,
-        memhdr: *mut rte_mempool_memhdr,
-        idx: ::std::os::raw::c_uint,
-    ) {
-        let mr = unsafe { &mut *(opaque as *mut Vec<(usize, usize)>) };
-        let (addr, len) = unsafe { ((*memhdr).addr, (*memhdr).len) };
-        let op = match idx > 0 {
-            true => {
-                let len = mr.len();
-                mr[len - 1]
-            }
-            false => (0, 0),
-        };
-        let dif = match idx > 0 {
-            true => (addr as usize - op.0 as usize),
-            false => 0,
-        };
-        if idx < 40 {
-            tracing::debug!(
-                current =? (addr,len),
-                idx = idx,
-                last = ? op,
-                diff = dif,
-                "In mempool hdr iteration",
-            );
-        }
-
-        mr.push((addr as usize, len as usize));
-    }
-
-    let mut op: Vec<usize> = vec![];
-
-    unsafe extern "C" fn check_each_mbuf(
-        _mp: *mut rte_mempool,
-        opaque: *mut ::std::os::raw::c_void,
-        m: *mut ::std::os::raw::c_void,
-        idx: u32,
-    ) {
-        let mbuf = m as *mut rte_mbuf;
-        let mr = &mut *(opaque as *mut Vec<usize>);
-        let op = match idx > 0 {
-            true => {
-                let len = mr.len();
-                mr[len - 1]
-            }
-            false => 0,
-        };
-        if idx < 10 || idx > 8180 || idx == 379 {
-            tracing::debug!(
-                "idx: {}, mbuf addr: {:?} ({:?}), opaque (last): {:?}, dif: {:?}",
-                idx,
-                mbuf as usize,
-                mbuf,
-                op,
-                (mbuf as usize - op)
-            );
-        }
-        mr.push(mbuf as usize);
-    }
-    dpdk_call!(rte_mempool_obj_iter(
-        mbuf_pool,
-        Some(check_each_mbuf),
-        &mut op as *mut _ as *mut ::std::os::raw::c_void
-    ));
-
-    dpdk_call!(rte_mempool_mem_iter(
-        mbuf_pool,
-        Some(mz_cb),
-        &mut ret as *mut _ as *mut ::std::os::raw::c_void
-    ));
-
-    ret.sort();
-    if ret.is_empty() {
-        bail!("Allocated mbuf pool has no memory regions");
-    }
-
-    let (base_addr, base_len) = ret[0];
-    let mut cur_addr = base_addr + base_len;
-    tracing::debug!(
-        "Base addr: {:?}, len: {}",
-        base_addr as *mut rte_mbuf,
-        ret[0].1
-    );
-    tracing::debug!(
-        "Second addr: {:?}, len: {}",
-        ret[1].0 as *mut rte_mbuf,
-        ret[1].1
-    );
-    tracing::debug!(
-        "Final addr: {:?}, len: {}",
-        ret[ret.len() - 1].0 as *mut rte_mbuf,
-        ret[ret.len() - 1].1
-    );
-
-    for &(addr, len) in &ret[1..] {
-        if addr != cur_addr {
-            bail!("Non-contiguous memory regions {} vs. {}", cur_addr, addr);
-        }
-        cur_addr += len;
-    }
-    let total_len = cur_addr - base_addr;
-
-    // check assumptions about memory layout for the mbufs (needed later for pointer arithmetic)
-    let mut sz: rte_mempool_objsz = unsafe { zeroed() };
-    let elt_size = size_of::<rte_mbuf>() as usize
-        + RTE_ETHER_MAX_JUMBO_FRAME_LEN as usize
-        + MBUF_PRIV_SIZE as usize;
-    let flags = 0;
-    dpdk_call!(rte_mempool_calc_obj_size(
-        elt_size as u32,
-        flags,
-        &mut sz as *mut _
-    ));
-    tracing::debug!(
-        total_size = sz.total_size,
-        elt_size = sz.elt_size,
-        header = sz.header_size,
-        trailer = sz.trailer_size,
-        "size of mbuf in mempool"
-    );
-    assert_eq!(sz.header_size, 64); // size of actual mbuf struct
-    assert_eq!(
-        sz.elt_size as usize,
-        RTE_ETHER_MAX_JUMBO_FRAME_LEN as usize
-            + RTE_PKTMBUF_HEADROOM as usize
-            + MBUF_PRIV_SIZE as usize,
-    ); // private data size and data buffer size (with headroom)
-       /*assert_eq!(
-           sz.trailer_size,
-           RTE_PKTMBUF_TAILROOM + MBUF_PRIV_SIZE as u32
-       );*/
-    Ok((base_addr, total_len))
-}*/
 
 /// Initializes DPDK EAL and ports, and memory pools given a yaml-config file.
 /// Returns two mempools:
@@ -962,13 +798,13 @@ fn dpdk_init_helper() -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
 /// Arguments:
 /// * config_path: - A string slice that holds the path to a config file with DPDK initialization.
 /// information.
-pub fn dpdk_init(config_path: &str) -> Result<(*mut rte_mempool, *mut rte_mempool, u16)> {
+pub fn dpdk_init(config_path: &str, num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
     // EAL initialization
     let eal_init = dpdk_utils::parse_eal_init(config_path)?;
     dpdk_eal_init(eal_init).wrap_err("EAL initialization failed.")?;
 
-    // init ports, mempools
-    dpdk_init_helper()
+    // init ports, mempools on the rx side
+    dpdk_init_helper(num_cores)
 }
 
 /// Returns the result of a mutable ptr to an rte_mbuf allocated from a particular mempool.
@@ -1060,6 +896,7 @@ pub fn tx_burst(
 ) -> Result<()> {
     let mut num_sent: u16 = 0;
     while num_sent < nb_pkts {
+        tracing::debug!("Burst back packet");
         // TODO: should this be in a tight loop?
         num_sent = dpdk_call!(rte_eth_tx_burst(port_id, queue_id, tx_pkts, nb_pkts));
     }

@@ -4,23 +4,11 @@ use cornflakes_libos::MsgID;
 
 const ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";
 
-pub fn get_client_id(line: &str) -> Result<usize> {
-    let mut split: std::str::Split<&str> = line.split(" ");
-    let id = match &split.next().unwrap().parse::<usize>() {
-        Ok(x) => *x,
-        Err(e) => {
-            bail!("Could not parse string request: {:?}", e);
-        }
-    };
-    Ok(id)
-}
-
 #[derive(Clone, PartialEq, Eq, Copy, Debug)]
 pub struct YCSBRequest<'a> {
     pub key: &'a str,
     pub val: &'a str,
     pub req_type: MsgType,
-    pub client_id: usize,
     cur_idx: usize, // in generating the (Get-M) or (Put-M) request from this, where are we ?
     pub num_keys: usize,
     pub req_id: MsgID,
@@ -35,7 +23,7 @@ impl<'a> YCSBRequest<'a> {
         req_id: MsgID,
     ) -> Result<YCSBRequest<'a>> {
         let mut split: std::str::Split<&'a str> = line.split(" ");
-        let id = match &split.next().unwrap().parse::<usize>() {
+        let _ = match &split.next().unwrap().parse::<usize>() {
             Ok(x) => *x,
             Err(e) => {
                 bail!("Could not parse string request: {:?}", e);
@@ -49,7 +37,6 @@ impl<'a> YCSBRequest<'a> {
                 key: key,
                 val: "",
                 req_type: MsgType::Get(num_keys),
-                client_id: id,
                 num_keys: num_keys,
                 cur_idx: 0,
                 req_id: req_id,
@@ -58,7 +45,6 @@ impl<'a> YCSBRequest<'a> {
                 key: key,
                 val: &split.next().unwrap()[0..value_size], // assumes the MAX value size we are testing is what is inside generated trace
                 req_type: MsgType::Put(num_keys),
-                client_id: id,
                 num_keys: num_keys,
                 cur_idx: 0,
                 req_id: req_id,

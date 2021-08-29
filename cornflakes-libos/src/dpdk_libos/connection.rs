@@ -184,13 +184,18 @@ impl DPDKConnection {
         mode: AppMode,
         use_scatter_gather: bool,
     ) -> Result<DPDKConnection> {
-        let (ip_to_mac, mac_to_ip, udp_port) = dpdk_utils::parse_yaml_map(config_file).wrap_err(
+        let (ip_to_mac, mac_to_ip, udp_port, _client_port) = dpdk_utils::parse_yaml_map(
+            config_file,
+        )
+        .wrap_err(
             "Failed to get ip to mac address mapping, or udp port information from yaml config.",
         )?;
         let outgoing_window: HashMap<MsgID, Instant> = HashMap::new();
-        let (mempool, ext_mempool, nb_ports) =
-            wrapper::dpdk_init(config_file).wrap_err("Failed to dpdk initialization.")?;
+        let (mempools, nb_ports) =
+            wrapper::dpdk_init(config_file, 1).wrap_err("Failed to dpdk initialization.")?;
 
+        let ext_mempool = wrapper::init_extbuf_mempool("extbuf_mempool", nb_ports)
+            .wrap_err("Failed to intialize extbuf mempool")?;
         // TODO: figure out a way to have a "proper" port_id arg
         let my_ether_addr =
             wrapper::get_my_macaddr(nb_ports - 1).wrap_err("Failed to get my own mac address")?;
@@ -240,9 +245,11 @@ impl DPDKConnection {
         }
 
         let mut mempool_allocator = allocator::MempoolAllocator::default();
-        mempool_allocator
-            .add_mempool(mempool, wrapper::MBUF_BUF_SIZE as _)
-            .wrap_err("Failed to add DPDK default mempool to mempool allocator")?;
+        for mempool in mempools.iter() {
+            mempool_allocator
+                .add_mempool(*mempool, wrapper::MBUF_BUF_SIZE as _)
+                .wrap_err("Failed to add DPDK default mempool to mempool allocator")?;
+        }
 
         Ok(DPDKConnection {
             use_scatter_gather: use_scatter_gather,
@@ -252,7 +259,7 @@ impl DPDKConnection {
             outgoing_window: outgoing_window,
             external_memory_regions: Vec::default(),
             extbuf_mempool: ext_mempool,
-            default_mempool: mempool,
+            default_mempool: mempools[0],
             mempool_allocator: mempool_allocator,
             addr_info: addr_info,
             timers: timers,
@@ -317,6 +324,7 @@ impl DPDKConnection {
     ) -> Result<()> {
         //let num_values = (min_num_values as f64 * 1.20) as usize;
         // find optimal number of values above this
+        tracing::info!(name, value_size, min_num_values, "Adding mempool");
         let (num_values, num_mempools) = {
             let log2 = (min_num_values as f64).log2().ceil() as u32;
             let num_elts = usize::pow(2, log2) as usize;
@@ -329,9 +337,10 @@ impl DPDKConnection {
             };
             (num_elts / num_mempools, num_mempools)
         };
-        tracing::debug!("Creating {} mempools of size {}", num_mempools, num_values);
+        tracing::info!("Creating {} mempools of size {}", num_mempools, num_values);
         for i in 0..num_mempools {
             let mempool_name = format!("{}_{}", name, i);
+            tracing::info!("Trying to add mempool {} to thingy", mempool_name);
             let mempool = wrapper::create_mempool(
                 &mempool_name,
                 1,

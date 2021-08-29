@@ -64,6 +64,12 @@ struct Opt {
     split_payload: usize,
     #[structopt(long = "use_c", help = "do everything in c for debugging")]
     use_c: bool,
+    #[structopt(
+        long = "num_threads",
+        help = "Number of client threads",
+        default_value = "1"
+    )]
+    num_threads: usize,
 }
 
 fn main() -> Result<()> {
@@ -92,6 +98,7 @@ fn main() -> Result<()> {
                 opt.size,
                 &opt.config_file,
                 &opt.server_ip,
+                opt.num_threads,
             )?;
         }
     }

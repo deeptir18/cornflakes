@@ -22,13 +22,34 @@ pub const REQ_TYPE_SIZE: usize = 4;
 pub const MAX_REQ_SIZE: usize = 9216;
 pub const ALIGN_SIZE: usize = 256;
 
+fn read_msg_framing<D>(in_sga: &ReceivedPkt<D>) -> Result<MsgType>
+where
+    D: Datapath,
+{
+    // read the first byte of the packet to determine the request type
+    let msg_type_buf = &in_sga.index(0).as_ref()[0..2];
+    let msg_size_buf = &in_sga.index(0).as_ref()[2..4];
+    match (
+        BigEndian::read_u16(msg_type_buf),
+        BigEndian::read_u16(msg_size_buf),
+    ) {
+        (0, size) => Ok(MsgType::Get(size as usize)),
+        (1, size) => Ok(MsgType::Put(size as usize)),
+        _ => {
+            bail!("unrecognized message type for kv store app.");
+        }
+    }
+}
+
 /// Iterator over query file.
 /// Ensures that the queries are
 pub struct QueryIterator {
     client_id: usize,
     thread_id: usize,
     total_num_threads: usize,
+    total_num_clients: usize,
     cur_thread_id: usize,
+    cur_client_id: usize,
     lines: Lines<BufReader<File>>,
 }
 
@@ -37,6 +58,7 @@ impl QueryIterator {
         client_id: usize,
         thread_id: usize,
         total_num_threads: usize,
+        total_num_clients: usize,
         trace_file: &str,
     ) -> Result<Self> {
         let file = File::open(trace_file)?;
@@ -46,7 +68,9 @@ impl QueryIterator {
             client_id: client_id,
             thread_id: thread_id,
             total_num_threads: total_num_threads,
+            total_num_clients: total_num_clients,
             cur_thread_id: 0,
+            cur_client_id: 0,
             lines: reader.lines(),
         })
     }
@@ -58,51 +82,60 @@ impl QueryIterator {
     fn get_thread_id(&self) -> usize {
         self.thread_id
     }
+
+    fn increment(&mut self) {
+        self.increment_client_id_counter();
+        if self.client_id == 0 {
+            // increment thread when we reach the next client
+            self.increment_thread_id_counter();
+        }
+    }
+
+    fn increment_client_id_counter(&mut self) {
+        self.cur_client_id = (self.cur_client_id + 1) % self.total_num_clients;
+    }
+
+    fn increment_thread_id_counter(&mut self) {
+        self.cur_thread_id = (self.cur_thread_id + 1) % self.total_num_threads;
+    }
 }
 
 impl Iterator for QueryIterator {
     type Item = Result<String>;
     fn next(&mut self) -> Option<Self::Item> {
-        // iterate over the lines until:
-        // we reach next line with our client ID AND it is our thread id
-        let mut next_line: Option<Result<String>> = None;
         loop {
-            if let Some(parsed_line_res) = self.lines.next() {
-                let parsed_line: String = match parsed_line_res {
-                    Ok(s) => s,
-                    Err(e) => {
-                        return Some(Err(eyre!(format!(
-                            "Could not get next line in iterator: {}",
-                            e
-                        ))));
+            // find the next request with our client and thread id
+            if self.cur_client_id == self.client_id && self.cur_thread_id == self.thread_id {
+                if let Some(parsed_line_res) = self.lines.next() {
+                    match parsed_line_res {
+                        Ok(s) => {
+                            self.increment();
+                            return Some(Ok(s));
+                        }
+                        Err(e) => {
+                            return Some(Err(eyre!(format!(
+                                "Could not get next line in iterator: {}",
+                                e
+                            ))));
+                        }
                     }
-                };
-                let line_id: usize = match ycsb_parser::get_client_id(&parsed_line) {
-                    Ok(id) => id,
-                    Err(e) => {
-                        return Some(Err(eyre!(format!("Could not get next line id: {}", e))));
-                    }
-                };
-                if line_id == self.client_id {
-                    if self.cur_thread_id == self.thread_id {
-                        next_line = Some(Ok(parsed_line));
-                        break;
-                    }
-                    self.cur_thread_id = (self.cur_thread_id + 1) % self.total_num_threads;
+                } else {
+                    return None;
                 }
             } else {
-                break;
+                if let Some(_) = self.lines.next() {
+                    self.increment();
+                } else {
+                    return None;
+                }
             }
         }
-
-        // could be None, a line, or an error
-        return next_line;
     }
 }
 
 pub struct YCSBClient<S, D>
 where
-    S: SerializedRequestGenerator,
+    S: SerializedRequestGenerator<D>,
     D: Datapath,
 {
     /// Actual serializer.
@@ -132,12 +165,14 @@ where
     request_data: Vec<u8>,
     /// Using retries or not.
     using_retries: bool,
+    /// If in debug, keep track of MsgID -> MsgType
+    message_info: HashMap<MsgID, MsgType>,
     _marker: PhantomData<D>,
 }
 
 impl<S, D> YCSBClient<S, D>
 where
-    S: SerializedRequestGenerator,
+    S: SerializedRequestGenerator<D>,
     D: Datapath,
 {
     pub fn new(
@@ -147,6 +182,7 @@ where
         trace_file: &str,
         thread_id: usize,
         total_threads: usize,
+        total_clients: usize,
         server_ip: Ipv4Addr,
         rtts: ManualHistogram,
         using_retries: bool,
@@ -157,34 +193,17 @@ where
             num_values = num_values,
             thread_id = thread_id,
             total_threads = total_threads,
+            total_clients = total_clients,
             "Initializing YCSB client"
         );
 
-        let query_iterator = QueryIterator::new(client_id, thread_id, total_threads, trace_file)?;
-
-        /*for line_res in reader.lines() {
-            let line = line_res?;
-            let req = YCSBRequest::new(&line, num_values, value_size, cur_idx)?;
-            cur_idx += 1;
-
-            tracing::debug!("Adding req {}", cur_idx - 1);
-            if req.client_id != client_id {
-                continue;
-            }
-
-            if cur_thread_id != thread_id {
-                continue;
-            }
-
-            cur_thread_id = (cur_thread_id + 1) % total_threads;
-            req_lines.push(line.to_string());
-        }
-
-        tracing::info!(
-            "Read queries from trace file {:?}, num requests: {}",
+        let query_iterator = QueryIterator::new(
+            client_id,
+            thread_id,
+            total_threads,
+            total_clients,
             trace_file,
-            req_lines.len()
-        );*/
+        )?;
 
         Ok(YCSBClient {
             serializer: S::new_request_generator(),
@@ -200,19 +219,25 @@ where
             request_data: vec![0u8; 9216],
             in_flight: HashMap::default(),
             using_retries: using_retries,
+            message_info: HashMap::default(),
             _marker: PhantomData,
         })
     }
 
-    pub fn dump(&mut self, path: Option<String>, total_time: Duration) -> Result<()> {
-        self.rtts.sort();
+    pub fn dump(
+        &mut self,
+        path: Option<String>,
+        total_time: Duration,
+        start_cutoff: usize,
+    ) -> Result<()> {
+        self.rtts.sort_and_truncate(start_cutoff)?;
         tracing::info!(
             thread = self.queries.get_thread_id(),
             client_id = self.queries.get_client_id(),
             sent = self.sent,
-            received = self.recved,
+            received = self.recved - start_cutoff,
             retries = self.retries,
-            unique_sent = self.last_sent_id - 1,
+            unique_sent = self.last_sent_id - 1 - start_cutoff,
             total_time = ?total_time.as_secs_f64(),
             "High level sending stats",
         );
@@ -220,21 +245,21 @@ where
 
         match path {
             Some(p) => {
-                self.rtts.log_to_file(&p)?;
+                self.rtts.log_truncated_to_file(&p, start_cutoff)?;
             }
             None => {}
         }
         Ok(())
     }
 
-    pub fn get_num_recved(&self) -> usize {
-        self.recved
+    pub fn get_num_recved(&self, start_cutoff: usize) -> usize {
+        self.recved - start_cutoff
     }
 }
 
 impl<S, D> ClientSM for YCSBClient<S, D>
 where
-    S: SerializedRequestGenerator,
+    S: SerializedRequestGenerator<D>,
     D: Datapath,
 {
     type Datapath = D;
@@ -263,9 +288,22 @@ where
                 .write_next_framed_request(&mut self.request_data.as_mut_slice(), &mut req)?;
             if self.using_retries {
                 // insert into in flight map
-                self.in_flight
-                    .insert(self.last_sent_id as u32 - 1, next_line.to_string());
+                if !(self.in_flight.contains_key(&(self.last_sent_id as u32 - 1))) {
+                    self.in_flight
+                        .insert(self.last_sent_id as u32 - 1, next_line.to_string());
+                }
             }
+
+            if cfg!(debug_assertions) {
+                if !(self
+                    .message_info
+                    .contains_key(&(self.last_sent_id as u32 - 1)))
+                {
+                    self.message_info
+                        .insert(self.last_sent_id as u32 - 1, req.get_type());
+                }
+            }
+
             tracing::debug!("Returning msg to send");
             Ok(Some((
                 self.last_sent_id as u32 - 1,
@@ -283,6 +321,23 @@ where
     ) -> Result<()> {
         self.recved += 1;
         tracing::debug!("Receiving {}th packet", self.recved);
+
+        // if debug, deserialize and check the message has the right dimensions
+        if cfg!(debug_assertions) {
+            if let Some(msg_type) = self.message_info.remove(&sga.get_id()) {
+                // run some kind of ``check''
+                if !self
+                    .serializer
+                    .check_recved_msg(&sga, msg_type, self.value_size)?
+                {
+                    bail!("Msg check failed");
+                } else {
+                    tracing::debug!("PASSED THE RECV MESSAGE CHECK");
+                }
+            } else {
+                bail!("Received ID not in message map: {}", sga.get_id());
+            }
+        }
         if self.using_retries {
             if let Some(_) = self.in_flight.remove(&sga.get_id()) {
             } else {
@@ -318,11 +373,22 @@ where
 
 // Each client serialization library must implement this to generate framed requests for the server
 // to parse.
-pub trait SerializedRequestGenerator {
+pub trait SerializedRequestGenerator<D>
+where
+    D: Datapath,
+{
     /// New serializer
     fn new_request_generator() -> Self
     where
         Self: Sized;
+
+    /// Check the received message
+    fn check_recved_msg(
+        &self,
+        pkt: &ReceivedPkt<D>,
+        msg_type: MsgType,
+        value_size: usize,
+    ) -> Result<bool>;
 
     /// Get the next request, in bytes.
     /// Buf starts ahead of whatever message framing is required.
@@ -483,21 +549,7 @@ where
         let mut contexts: Vec<S::HeaderCtx> = Vec::default();
         for (in_sga, _) in sgas.into_iter() {
             // process the framing in the msg
-            let msg_type = {
-                // read the first byte of the packet to determine the request type
-                let msg_type_buf = &in_sga.index(0).as_ref()[0..2];
-                let msg_size_buf = &in_sga.index(0).as_ref()[2..4];
-                match (
-                    BigEndian::read_u16(msg_type_buf),
-                    BigEndian::read_u16(msg_size_buf),
-                ) {
-                    (0, size) => MsgType::Get(size as usize),
-                    (1, size) => MsgType::Put(size as usize),
-                    _ => {
-                        bail!("unrecognized message type for kv store app.");
-                    }
-                }
-            };
+            let msg_type = read_msg_framing(&in_sga)?;
             tracing::debug!("Parsed {:?} request", msg_type);
             let id = in_sga.get_id();
             let addr = in_sga.get_addr().clone();
