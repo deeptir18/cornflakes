@@ -1,4 +1,4 @@
-use super::timing::ManualHistogram;
+use super::super::timing::ManualHistogram;
 use color_eyre::eyre::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::to_writer;
@@ -154,7 +154,7 @@ impl ThreadStats {
             offered_gbps = ?self.offered_load_gbps,
             achieved_pps = ?self.achieved_load_pps,
             achieved_gbps = ?self.achieved_load_gbps,
-            percent_achieved = ?(self.achieved_load_pps / self.achieved_load_pps),
+            percent_achieved = ?(self.achieved_load_gbps / self.offered_load_gbps),
             "thread {} summary stats", self.thread_id
         );
         self.latencies.dump(self.thread_id);

@@ -1,9 +1,12 @@
 use affinity::*;
 use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::{
-    client_threads::{dump_thread_stats, ThreadStats},
     dpdk_bindings,
     dpdk_libos::connection::DPDKConnection,
+    loadgen::{
+        client_threads::{dump_thread_stats, ThreadStats},
+        request_schedule::{generate_schedules, DistributionType, PacketSchedule},
+    },
     timing::ManualHistogram,
     utils::AddressInfo,
     ClientSM, Datapath, ServerSM,
@@ -127,6 +130,8 @@ struct Opt {
     client_id: usize,
     #[structopt(long = "start_cutoff", default_value = "0")]
     start_cutoff: usize,
+    #[structopt(long = "distribution", default_value = "exponential")]
+    distribution: DistributionType,
 }
 
 /// Given a path, calculates the number of lines in the file.
@@ -153,6 +158,12 @@ fn lines_in_file(path: &str) -> Result<usize> {
     Ok(num)
 }
 
+fn get_num_requests(opt: &Opt) -> Result<usize> {
+    let total = lines_in_file(&opt.queries)? / (opt.num_clients * opt.num_threads);
+    let minimum = (opt.rate as usize * opt.time as usize) * 2;
+    Ok(std::cmp::min(minimum, total))
+}
+
 #[macro_export]
 macro_rules! init_kv_server(
     ($serializer: ty, $datapath: ty, $datapath_init: expr, $opt: ident) => {
@@ -168,7 +179,8 @@ macro_rules! init_kv_server(
 
 macro_rules! run_kv_client(
     ($serializer: ty, $datapath: ty, $datapath_global_init: expr, $datapath_init: ident, $opt: ident) => {
-        let num_rtts = lines_in_file(&$opt.queries)? / ($opt.num_clients * $opt.num_threads);
+        let num_rtts = get_num_requests(&$opt)?;
+        let schedules = generate_schedules(num_rtts, $opt.rate, $opt.distribution, $opt.num_threads)?;
         // do global init
         let (port, per_thread_info) = $datapath_global_init?;
         let mut threads: Vec<JoinHandle<Result<ThreadStats>>> = vec![];
@@ -179,6 +191,7 @@ macro_rules! run_kv_client(
             let (rx_packet_allocator, addr) = per_thread_info[i].clone();
             let per_thread_options = $opt.clone();
             let hist = ManualHistogram::new(num_rtts);
+            let schedule = schedules[i].clone();
             threads.push(spawn(move || {
                 match set_thread_affinity(&vec![i+1]) {
                     Ok(_) => {}
@@ -189,7 +202,7 @@ macro_rules! run_kv_client(
                 let mut connection = $datapath_init(physical_port, i, rx_packet_allocator, addr, &per_thread_options)?;
                 let mut loadgen: YCSBClient<$serializer, $datapath> =
                     YCSBClient::new(per_thread_options.client_id, per_thread_options.value_size, per_thread_options.num_values, &per_thread_options.queries, i, per_thread_options.num_threads, per_thread_options.num_clients, per_thread_options.server_ip, hist, per_thread_options.retries).wrap_err("Failed to initialize loadgen")?;
-                run_client(i, &mut loadgen, &mut connection, &per_thread_options).wrap_err("Failed to run client")
+                run_client(i, &mut loadgen, &mut connection, &per_thread_options, schedule).wrap_err("Failed to run client")
             }));
         }
 
@@ -355,6 +368,7 @@ fn run_client<S, D>(
     loadgen: &mut YCSBClient<S, D>,
     connection: &mut D,
     opt: &Opt,
+    schedule: PacketSchedule,
 ) -> Result<ThreadStats>
 where
     S: SerializedRequestGenerator<D>,
@@ -384,7 +398,7 @@ where
 
     loadgen.run_open_loop(
         connection,
-        (1e9 / opt.rate as f64) as u64,
+        &schedule,
         opt.time as u64,
         timeout,
         !opt.retries,

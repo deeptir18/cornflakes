@@ -1,7 +1,10 @@
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
-    dpdk_bindings, dpdk_libos::connection::DPDKConnection, timing::ManualHistogram, ClientSM,
-    Datapath, ServerSM,
+    dpdk_bindings,
+    dpdk_libos::connection::DPDKConnection,
+    loadgen::request_schedule::{DistributionType, PacketSchedule},
+    timing::ManualHistogram,
+    ClientSM, Datapath, ServerSM,
 };
 use cornflakes_utils::{
     global_debug_init, parse_server_port, AppMode, NetworkDatapath, SerializationType,
@@ -92,6 +95,12 @@ struct Opt {
     no_retries: bool,
     #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
     logfile: Option<String>,
+    #[structopt(
+        long = "distribution",
+        help = "Arrival distribution",
+        default_value = "exponential"
+    )]
+    distribution: DistributionType,
 }
 
 macro_rules! init_echo_server(
@@ -114,7 +123,8 @@ macro_rules! init_echo_client(
             EchoClient::new($opt.server_ip, $opt.message, sizes, hist)?;
         let mut ctx = echo_client.new_context();
         echo_client.init_state(&mut ctx, &mut connection)?;
-        run_client(&mut echo_client, &mut connection, &$opt)?;
+        let schedule = PacketSchedule::new(($opt.total_time * $opt.rate * 2) as _, $opt.rate, $opt.distribution)?;
+        run_client(&mut echo_client, &mut connection, &$opt, &schedule)?;
     }
 );
 
@@ -237,6 +247,7 @@ fn run_client<'normal, S, D>(
     client: &mut EchoClient<'normal, S, D>,
     connection: &mut D,
     opt: &Opt,
+    schedule: &PacketSchedule,
 ) -> Result<()>
 where
     S: CerealizeClient<'normal, D>,
@@ -252,7 +263,7 @@ where
     };
     client.run_open_loop(
         connection,
-        (1e9 / opt.rate as f64) as u64,
+        schedule,
         opt.total_time,
         timeout,
         opt.no_retries,

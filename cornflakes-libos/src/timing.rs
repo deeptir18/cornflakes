@@ -1,4 +1,4 @@
-use super::{client_threads::ThreadLatencies, MsgID};
+use super::{loadgen::client_threads::ThreadLatencies, MsgID};
 use color_eyre::eyre::{bail, ensure, Result};
 use hashbrown::HashMap;
 use hdrhistogram::Histogram;

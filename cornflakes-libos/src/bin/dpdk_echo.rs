@@ -5,6 +5,7 @@ use cornflakes_libos::{
         connection::DPDKConnection,
         echo::{EchoClient, EchoServer},
     },
+    loadgen::request_schedule::{DistributionType, PacketSchedule},
     ClientSM, Datapath, ServerSM,
 };
 use cornflakes_utils::{global_debug_init, parse_server_port, AppMode, TraceLevel};
@@ -71,6 +72,12 @@ struct Opt {
         default_value = "127.0.0.1"
     )]
     server_ip: Ipv4Addr,
+    #[structopt(
+        long = "distribution",
+        help = "arrival distribution",
+        default_value = "exponential"
+    )]
+    distribution: DistributionType,
 }
 
 fn main() -> Result<()> {
@@ -128,9 +135,12 @@ fn main() -> Result<()> {
                     server_port,
                 )?;
             } else {
+                let num_requests = opt.rate * opt.total_time * 2;
+                let schedule =
+                    PacketSchedule::new(num_requests as usize, opt.rate, opt.distribution)?;
                 client.run_open_loop(
                     &mut connection,
-                    (1e9 / opt.rate as f64) as u64,
+                    &schedule,
                     opt.total_time,
                     cornflakes_libos::high_timeout_at_start,
                     true, // no retries

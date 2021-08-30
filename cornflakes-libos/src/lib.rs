@@ -5,15 +5,17 @@
 //!  1. An interface for datapaths to implement.
 //!  2. DPDK bindings, which are used to implement the DPDK datapath.
 //!  3. A DPDK based datapath.
-pub mod client_threads;
 pub mod dpdk_bindings;
 pub mod dpdk_libos;
+pub mod loadgen;
 pub mod mem;
+pub mod request_schedule;
 pub mod timing;
 pub mod utils;
 
 use color_eyre::eyre::{ensure, Result, WrapErr};
 use cornflakes_utils::AppMode;
+use loadgen::request_schedule::PacketSchedule;
 use mem::MmapMetadata;
 use std::{
     io::Write,
@@ -972,18 +974,17 @@ pub trait ClientSM {
     fn run_open_loop(
         &mut self,
         datapath: &mut Self::Datapath,
-        intersend_rate: u64,
+        schedule: &PacketSchedule,
         total_time: u64,
         time_out: impl Fn(usize) -> Duration,
         no_retries: bool,
         server_ip: &Ipv4Addr,
         port: u16,
     ) -> Result<()> {
-        let freq = datapath.timer_hz();
-        let cycle_wait = (((intersend_rate * freq) as f64) / 1e9) as u64;
+        let freq = datapath.timer_hz(); // cycles per second
         let addr_info = datapath.get_outgoing_addr_from_ip(server_ip, port)?;
         let time_start = Instant::now();
-        //let mut last_called_pop = Instant::now();
+        let mut idx = 0;
 
         let start = datapath.current_cycles();
         while let Some(msg) = self.get_next_msg()? {
@@ -994,11 +995,11 @@ pub trait ClientSM {
             // Send the next message
             tracing::debug!(time = ?time_start.elapsed(), "About to send next packet");
             datapath.push_buf(msg, addr_info.clone())?;
+            idx += 1;
             let last_sent = datapath.current_cycles();
+            let next = schedule.get_next_in_cycles(idx, last_sent, freq);
 
-            while datapath.current_cycles() <= last_sent + cycle_wait {
-                //tracing::debug!(last_called = ?last_called_pop.elapsed(), "Calling pop on client");
-                //last_called_pop = Instant::now();
+            while datapath.current_cycles() <= next {
                 let recved_pkts = datapath.pop()?;
                 for (pkt, rtt) in recved_pkts.into_iter() {
                     let msg_id = pkt.get_id();
