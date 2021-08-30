@@ -92,10 +92,19 @@ impl PacketSchedule {
         self.packets[idx].time_since_last
     }
 
-    pub fn get_next_in_cycles(&self, idx: usize, last_cycle: u64, hz: u64) -> u64 {
+    pub fn get_next_in_cycles(
+        &self,
+        idx: usize,
+        last_cycle: u64,
+        hz: u64,
+        deficit_cycles: u64,
+    ) -> u64 {
         let intersend = self.get(idx);
         let add = nanos_to_hz(hz, intersend);
-        last_cycle + add
+        if deficit_cycles > add {
+            return last_cycle;
+        }
+        last_cycle + (add - deficit_cycles)
     }
 }
 

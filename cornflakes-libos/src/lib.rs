@@ -986,6 +986,8 @@ pub trait ClientSM {
         let mut idx = 0;
 
         let start = datapath.current_cycles();
+        let mut deficit;
+        let mut next = start;
         while let Some(msg) = self.get_next_msg()? {
             if datapath.current_cycles() > (total_time * freq + start) {
                 tracing::debug!("Total time done");
@@ -996,7 +998,8 @@ pub trait ClientSM {
             datapath.push_buf(msg, addr_info.clone())?;
             idx += 1;
             let last_sent = datapath.current_cycles();
-            let next = schedule.get_next_in_cycles(idx, last_sent, freq);
+            deficit = last_sent - next;
+            next = schedule.get_next_in_cycles(idx, last_sent, freq, deficit);
 
             while datapath.current_cycles() <= next {
                 let recved_pkts = datapath.pop()?;

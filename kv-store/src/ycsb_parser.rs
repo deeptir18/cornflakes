@@ -2,11 +2,11 @@ use super::MsgType;
 use color_eyre::eyre::{bail, ensure, Result};
 use cornflakes_libos::MsgID;
 
-const ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";
+const MAX_BATCHES: usize = 8;
 
-#[derive(Clone, PartialEq, Eq, Copy, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct YCSBRequest<'a> {
-    pub key: &'a str,
+    pub keys: Vec<&'a str>,
     pub val: &'a str,
     pub req_type: MsgType,
     cur_idx: usize, // in generating the (Get-M) or (Put-M) request from this, where are we ?
@@ -30,11 +30,17 @@ impl<'a> YCSBRequest<'a> {
             }
         };
         let req = split.next().unwrap();
-        let key = &split.next().unwrap();
+        let mut keys: Vec<&str> = Vec::default();
+        for i in 0..MAX_BATCHES {
+            let key = &split.next().unwrap();
+            if i < num_keys {
+                keys.push(key)
+            }
+        }
 
         match req {
             "GET" => Ok(YCSBRequest {
-                key: key,
+                keys: keys,
                 val: "",
                 req_type: MsgType::Get(num_keys),
                 num_keys: num_keys,
@@ -42,7 +48,7 @@ impl<'a> YCSBRequest<'a> {
                 req_id: req_id,
             }),
             "UPDATE" => Ok(YCSBRequest {
-                key: key,
+                keys: keys,
                 val: &split.next().unwrap()[0..value_size], // assumes the MAX value size we are testing is what is inside generated trace
                 req_type: MsgType::Put(num_keys),
                 num_keys: num_keys,
@@ -70,23 +76,8 @@ impl<'a> YCSBRequest<'a> {
     pub fn get_next_kv(&mut self) -> Result<(String, &'a str)> {
         ensure!(self.cur_idx < self.num_keys, "No more keys in iterator");
         self.cur_idx += 1;
-        Ok((replace_key_field(self.key, self.cur_idx - 1), self.val))
+        Ok((self.keys[self.cur_idx - 1].to_string(), self.val))
     }
-}
-
-fn replace_key_field(key: &str, idx: usize) -> String {
-    let mut ret = key.to_string();
-    tracing::debug!(
-        "RET: {}, idx: {}, alphabet len: {}",
-        ret,
-        idx,
-        ALPHABET.len()
-    );
-    ret.replace_range(
-        (key.len() - 1)..key.len(),
-        ALPHABET.get(idx..(idx + 1)).unwrap(),
-    );
-    ret
 }
 
 impl<'a> Iterator for YCSBRequest<'a> {
@@ -100,6 +91,6 @@ impl<'a> Iterator for YCSBRequest<'a> {
         }
 
         self.cur_idx += 1;
-        return Some((replace_key_field(self.key, self.cur_idx - 1), self.val));
+        return Some((self.keys[self.cur_idx - 1].to_string(), self.val));
     }
 }
