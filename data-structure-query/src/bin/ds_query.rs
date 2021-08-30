@@ -4,7 +4,8 @@ use cornflakes_libos::{
     Datapath, ServerSM,
 };
 use cornflakes_utils::{
-    global_debug_init, AppMode, NetworkDatapath, SerializationType, SimpleMessageType, TraceLevel,
+    global_debug_init, parse_server_port, AppMode, NetworkDatapath, SerializationType,
+    SimpleMessageType, TraceLevel,
 };
 use data_structure_query::{
     client::EchoClient,
@@ -208,6 +209,8 @@ where
     S: CerealizeClient<'normal, D>,
     D: Datapath,
 {
+    let server_port =
+        parse_server_port(&opt.config_file).wrap_err("Failed to parse server port")?;
     client.init(connection)?;
     let start_run = Instant::now();
     let timeout = match opt.no_retries {
@@ -220,6 +223,8 @@ where
         opt.total_time,
         timeout,
         opt.no_retries,
+        &opt.server_ip,
+        server_port,
     )?;
     let exp_duration = start_run.elapsed();
     client.dump(opt.logfile.clone(), exp_duration)?;

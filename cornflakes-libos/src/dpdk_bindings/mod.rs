@@ -353,6 +353,11 @@ pub unsafe fn set_refers_to_another(packet: *mut rte_mbuf, val: u16) {
 }
 
 #[inline]
+pub unsafe fn ip_from_octets(octets: &[u8; 4]) -> u32 {
+    make_ip(octets[0], octets[1], octets[2], octets[3])
+}
+
+#[inline]
 pub unsafe fn make_ip(a: u8, b: u8, c: u8, d: u8) -> u32 {
     make_ip_(a, b, c, d)
 }

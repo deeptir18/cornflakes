@@ -23,6 +23,8 @@ ctrlc = "3.1.7"
 bytes = "0.4.12"
 cornflakes-utils = { path = "../cornflakes-utils" }
 affinity = "0.1.1"
+serde_json = "1.0.*"
+serde = "1.0.*"
 
 [dev-dependencies]
 libc = "0.2.81"

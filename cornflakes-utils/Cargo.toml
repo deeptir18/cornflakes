@@ -11,4 +11,7 @@ color-eyre = "0.5"
 tracing = "*"
 tracing-subscriber = "0.2.17"
 tracing-error = "*"
+yaml-rust = "0.4.3"
+hashbrown = "0.11.*"
+eui48 = "1.0.1"
 

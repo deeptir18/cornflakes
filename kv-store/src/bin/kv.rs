@@ -1,20 +1,32 @@
+use affinity::*;
 use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::{
-    dpdk_bindings, dpdk_libos::connection::DPDKConnection, timing::ManualHistogram, ClientSM,
-    Datapath, ServerSM,
+    client_threads::{dump_thread_stats, ThreadStats},
+    dpdk_bindings,
+    dpdk_libos::connection::DPDKConnection,
+    timing::ManualHistogram,
+    utils::AddressInfo,
+    ClientSM, Datapath, ServerSM,
 };
 
 use cornflakes_utils::{
-    global_debug_init, AppMode, NetworkDatapath, SerializationType, TraceLevel,
+    global_debug_init, parse_server_port, AppMode, NetworkDatapath, SerializationType, TraceLevel,
 };
 use kv_store::{
     cornflakes_dynamic::CornflakesDynamicSerializer, KVSerializer, KVServer,
     SerializedRequestGenerator, YCSBClient,
 };
-use std::{net::Ipv4Addr, process::exit, process::Command, time::Instant};
+use std::{
+    net::Ipv4Addr,
+    path::Path,
+    process::exit,
+    process::Command,
+    thread::{spawn, JoinHandle},
+    time::Instant,
+};
 use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, StructOpt, Clone)]
 #[structopt(name = "KV Store App.", about = "KV store server and client.")]
 struct Opt {
     #[structopt(
@@ -92,6 +104,8 @@ struct Opt {
     retries: bool,
     #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
     logfile: Option<String>,
+    #[structopt(long = "threadlog", help = "Logfile to log per thread statistics")]
+    thread_log: Option<String>,
     #[structopt(
         long = "native_buffers",
         help = "Use Cornflakes, but serialize into a datapath native buffer."
@@ -152,16 +166,56 @@ macro_rules! init_kv_server(
     }
 );
 
-macro_rules! init_kv_client(
-    ($serializer: ty, $datapath: ty, $datapath_init: expr, $opt: ident) => {
+macro_rules! run_kv_client(
+    ($serializer: ty, $datapath: ty, $datapath_global_init: expr, $datapath_init: ident, $opt: ident) => {
         let num_rtts = lines_in_file(&$opt.queries)? / ($opt.num_clients * $opt.num_threads);
-        let hist = ManualHistogram::new(num_rtts);
-        let mut connection = $datapath_init?;
+        // do global init
+        let (port, per_thread_info) = $datapath_global_init?;
+        let mut threads: Vec<JoinHandle<Result<ThreadStats>>> = vec![];
 
-        let mut loadgen: YCSBClient<$serializer, $datapath> =
-            YCSBClient::new($opt.client_id, $opt.value_size, $opt.num_values, &$opt.queries, 0, $opt.num_threads, $opt.num_clients, $opt.server_ip, hist, $opt.retries)?;
-        run_client(&mut loadgen, &mut connection, &$opt)?;
+        // spawn n client threads
+        for i in 0..$opt.num_threads {
+            let physical_port = port;
+            let (rx_packet_allocator, addr) = per_thread_info[i].clone();
+            let per_thread_options = $opt.clone();
+            let hist = ManualHistogram::new(num_rtts);
+            threads.push(spawn(move || {
+                match set_thread_affinity(&vec![i+1]) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        bail!("Could not set thread affinity for thread {} on core {}: {:?}", i, i+1, e);
+                    }
+                }
+                let mut connection = $datapath_init(physical_port, i, rx_packet_allocator, addr, &per_thread_options)?;
+                let mut loadgen: YCSBClient<$serializer, $datapath> =
+                    YCSBClient::new(per_thread_options.client_id, per_thread_options.value_size, per_thread_options.num_values, &per_thread_options.queries, i, per_thread_options.num_threads, per_thread_options.num_clients, per_thread_options.server_ip, hist, per_thread_options.retries).wrap_err("Failed to initialize loadgen")?;
+                run_client(i, &mut loadgen, &mut connection, &per_thread_options).wrap_err("Failed to run client")
+            }));
+        }
+
+        let mut thread_results: Vec<ThreadStats> = Vec::default();
+        for child in threads {
+            let s = match child.join() {
+                Ok(res) => match res {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("Thread failed: {:?}", e);
+                        bail!("Failed thread");
+                    }
+                },
+                Err(e) => {
+                    tracing::debug!("Failed to join client thread: {:?}", e);
+                    bail!("Failed to join thread");
+                }
+            };
+            thread_results.push(s);
+        }
+
+        // in experiments, no need to dump per thread
+        let dump_per_thread = $opt.logfile == None;
+        dump_thread_stats(thread_results, $opt.thread_log, dump_per_thread)?;
     }
+
 );
 
 fn set_ctrlc_handler<S, D>(server: &KVServer<S, D>) -> Result<()>
@@ -188,8 +242,42 @@ fn main() -> Result<()> {
     let opt = Opt::from_args();
     global_debug_init(opt.trace_level)?;
 
-    let dpdk_datapath = |use_scatter_gather: bool| -> Result<DPDKConnection> {
+    let dpdk_global_init = || -> Result<(u16, Vec<(<DPDKConnection as Datapath>::RxPacketAllocator, AddressInfo)>)> {
         dpdk_bindings::load_mlx5_driver();
+        let remote_ip = match opt.mode {
+            AppMode::Client => {
+                Some(opt.server_ip.clone())
+            }
+            AppMode::Server => None,
+        };
+        <DPDKConnection as Datapath>::global_init(&opt.config_file, opt.num_threads, opt.mode, remote_ip)
+    };
+
+    let dpdk_per_thread_init = |physical_port: u16,
+                                thread_id: usize,
+                                rx_mempool: <DPDKConnection as Datapath>::RxPacketAllocator,
+                                addr_info: AddressInfo,
+                                options: &Opt|
+     -> Result<DPDKConnection> {
+        let use_scatter_gather = options.mode == AppMode::Server
+            && (options.serialization == SerializationType::CornflakesDynamic
+                || options.serialization == SerializationType::CornflakesFixed);
+        let connection = <DPDKConnection as Datapath>::per_thread_init(
+            physical_port,
+            &options.config_file,
+            options.mode,
+            use_scatter_gather,
+            thread_id,
+            rx_mempool,
+            addr_info,
+        )?;
+        Ok(connection)
+    };
+
+    let dpdk_datapath = || -> Result<DPDKConnection> {
+        let use_scatter_gather = opt.mode == AppMode::Server
+            && (opt.serialization == SerializationType::CornflakesDynamic
+                || opt.serialization == SerializationType::CornflakesFixed);
         let mut connection = DPDKConnection::new(&opt.config_file, opt.mode, use_scatter_gather)
             .wrap_err("Failed to initialize DPDK connection.")?;
         if opt.mode == AppMode::Server {
@@ -208,7 +296,7 @@ fn main() -> Result<()> {
                 init_kv_server!(
                     CornflakesDynamicSerializer<DPDKConnection>,
                     DPDKConnection,
-                    dpdk_datapath(true),
+                    dpdk_datapath(),
                     opt
                 );
             }
@@ -216,7 +304,7 @@ fn main() -> Result<()> {
                 init_kv_server!(
                     CornflakesDynamicSerializer<DPDKConnection>,
                     DPDKConnection,
-                    dpdk_datapath(false),
+                    dpdk_datapath(),
                     opt
                 );
             }
@@ -226,18 +314,20 @@ fn main() -> Result<()> {
         },
         AppMode::Client => match (opt.datapath, opt.serialization) {
             (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
-                init_kv_client!(
+                run_kv_client!(
                     CornflakesDynamicSerializer<DPDKConnection>,
                     DPDKConnection,
-                    dpdk_datapath(true),
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
                     opt
                 );
             }
             (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyDynamic) => {
-                init_kv_client!(
+                run_kv_client!(
                     CornflakesDynamicSerializer<DPDKConnection>,
                     DPDKConnection,
-                    dpdk_datapath(false),
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
                     opt
                 );
             }
@@ -249,11 +339,30 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_client<S, D>(loadgen: &mut YCSBClient<S, D>, connection: &mut D, opt: &Opt) -> Result<()>
+fn get_thread_latlog(name: &str, thread_id: usize) -> Result<String> {
+    let filename = Path::new(name);
+    let stem = match filename.file_stem() {
+        Some(s) => s,
+        None => {
+            bail!("Could not get filestem for: {}", name);
+        }
+    };
+    Ok(format!("{:?}-t{}.log", stem, thread_id))
+}
+
+fn run_client<S, D>(
+    thread_id: usize,
+    loadgen: &mut YCSBClient<S, D>,
+    connection: &mut D,
+    opt: &Opt,
+) -> Result<ThreadStats>
 where
     S: SerializedRequestGenerator<D>,
     D: Datapath,
 {
+    let server_port = parse_server_port(&opt.config_file)
+        .wrap_err("Failed to parse server port from config file")?;
+    tracing::debug!("Server port: {}", server_port);
     loadgen.init(connection)?;
     let timeout = match opt.retries {
         true => cornflakes_libos::high_timeout_at_start,
@@ -262,7 +371,13 @@ where
 
     // if start cutoff is > 0, run_closed_loop for that many packets
     loadgen
-        .run_closed_loop(connection, opt.start_cutoff as u64, timeout)
+        .run_closed_loop(
+            connection,
+            opt.start_cutoff as u64,
+            timeout,
+            &opt.server_ip,
+            server_port,
+        )
         .wrap_err("Failed to run warm up closed loop")?;
 
     let start_run = Instant::now();
@@ -273,27 +388,38 @@ where
         opt.time as u64,
         timeout,
         !opt.retries,
+        &opt.server_ip,
+        server_port,
     )?;
 
-    let exp_duration = start_run.elapsed();
-    loadgen.dump(opt.logfile.clone(), exp_duration, opt.start_cutoff)?;
-    let exp_time = exp_duration.as_nanos() as f64 / 1000000000.0;
-    let achieved_load_pps = (loadgen.get_num_recved(opt.start_cutoff) as f64) / exp_time as f64;
-    let achieved_load_gbps =
-        ((opt.value_size * opt.num_values) as f64 * achieved_load_pps as f64) / (125000000 as f64);
-    let load_gbps =
-        (((opt.value_size * opt.num_values) as f64) * (opt.rate) as f64) / (125000000 as f64);
-    tracing::info!(
-        load_gbps =? load_gbps,
-        achieved_load_gbps =? achieved_load_gbps,
-        opt.rate =? opt.rate,
-        achieved_load_pps =? achieved_load_pps,
-        percent_achieved =? (achieved_load_gbps / load_gbps),
-        "Load statistics:"
-    );
+    let exp_duration = start_run.elapsed().as_nanos();
+    loadgen.sort_rtts(opt.start_cutoff)?;
+    // log latencies for this thread to per thread latency log file
+    match &opt.logfile {
+        Some(x) => {
+            let path = get_thread_latlog(&x, thread_id)?;
+            loadgen.log_rtts(&path, opt.start_cutoff)?;
+        }
+        None => {}
+    }
+    // debugging timers for this thread
+    // todo: add thread info to these prints
     for timer_m in connection.get_timers().iter() {
         let timer = timer_m.lock().unwrap();
         timer.dump_stats();
     }
-    Ok(())
+
+    let stats = ThreadStats::new(
+        thread_id as u16,
+        loadgen.get_num_sent(opt.start_cutoff),
+        loadgen.get_num_recved(opt.start_cutoff),
+        loadgen.get_num_retries(),
+        exp_duration as _, // in nanos
+        opt.rate,
+        opt.value_size * opt.num_values,
+        loadgen.get_mut_rtts(),
+        opt.start_cutoff,
+    )?;
+
+    Ok(stats)
 }

@@ -67,11 +67,8 @@ impl AddressInfo {
         }
     }
 
-    pub fn get_outgoing(&self, dst_ip: Ipv4Addr, dst_mac: MacAddress) -> HeaderInfo {
-        HeaderInfo::new(
-            self.clone(),
-            AddressInfo::new(self.udp_port, dst_ip, dst_mac),
-        )
+    pub fn get_outgoing(&self, dst_addr: &AddressInfo) -> HeaderInfo {
+        HeaderInfo::new(self.clone(), dst_addr.clone())
     }
 }
 

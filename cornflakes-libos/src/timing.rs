@@ -1,4 +1,4 @@
-use super::MsgID;
+use super::{client_threads::ThreadLatencies, MsgID};
 use color_eyre::eyre::{bail, ensure, Result};
 use hashbrown::HashMap;
 use hdrhistogram::Histogram;
@@ -46,6 +46,7 @@ pub struct ManualHistogram {
     current_count: usize,
     latencies: Vec<u64>,
     sorted_latencies: Vec<u64>,
+    is_sorted: bool,
 }
 
 impl ManualHistogram {
@@ -54,6 +55,7 @@ impl ManualHistogram {
             current_count: 0,
             latencies: vec![0u64; num_values as usize],
             sorted_latencies: Vec::default(),
+            is_sorted: false,
         }
     }
 
@@ -64,7 +66,12 @@ impl ManualHistogram {
             current_count: 0,
             latencies: vec![0u64; num_values],
             sorted_latencies: Vec::default(),
+            is_sorted: false,
         }
+    }
+
+    pub fn is_sorted(&self) -> bool {
+        self.is_sorted
     }
 
     pub fn record(&mut self, val: u64) {
@@ -81,6 +88,9 @@ impl ManualHistogram {
     }
 
     pub fn sort_and_truncate(&mut self, start: usize) -> Result<()> {
+        if self.is_sorted {
+            return Ok(());
+        }
         ensure!(
             start < self.current_count,
             format!(
@@ -91,6 +101,7 @@ impl ManualHistogram {
 
         self.sorted_latencies = self.latencies.as_slice()[start..self.current_count].to_vec();
         self.sorted_latencies.sort();
+        self.is_sorted = true;
         Ok(())
     }
 
@@ -161,6 +172,22 @@ impl ManualHistogram {
             avg_ns = ?self.mean()?,
         );
         Ok(())
+    }
+
+    pub fn thread_latencies(&self) -> Result<ThreadLatencies> {
+        Ok(ThreadLatencies {
+            num_threads: 1,
+            avg: self.mean()? as _,
+            p5: self.value_at_quantile(0.05)? as _,
+            p25: self.value_at_quantile(0.25)? as _,
+            p50: self.value_at_quantile(0.50)? as _,
+            p75: self.value_at_quantile(0.75)? as _,
+            p95: self.value_at_quantile(0.95)? as _,
+            p99: self.value_at_quantile(0.99)? as _,
+            p999: self.value_at_quantile(0.999)? as _,
+            min: self.min()? as _,
+            max: self.max()? as _,
+        })
     }
 }
 

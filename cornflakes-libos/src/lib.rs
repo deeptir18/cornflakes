@@ -5,6 +5,7 @@
 //!  1. An interface for datapaths to implement.
 //!  2. DPDK bindings, which are used to implement the DPDK datapath.
 //!  3. A DPDK based datapath.
+pub mod client_threads;
 pub mod dpdk_bindings;
 pub mod dpdk_libos;
 pub mod mem;
@@ -12,6 +13,7 @@ pub mod timing;
 pub mod utils;
 
 use color_eyre::eyre::{ensure, Result, WrapErr};
+use cornflakes_utils::AppMode;
 use mem::MmapMetadata;
 use std::{
     io::Write,
@@ -805,6 +807,31 @@ pub trait Datapath {
         + Default
         + PtrAttributes;
 
+    type RxPacketAllocator: Send + Clone;
+
+    /// Global initialization necessary before any threads are spawned.
+    /// Args:
+    /// @config_file: Configuration information.
+    /// @num_cores: Number of cores being used.
+    fn global_init(
+        config_file: &str,
+        num_cores: usize,
+        app_mode: AppMode,
+        remote_ip: Option<Ipv4Addr>,
+    ) -> Result<(u16, Vec<(Self::RxPacketAllocator, utils::AddressInfo)>)>;
+
+    fn per_thread_init(
+        physical_port: u16,
+        config_file: &str,
+        app_mode: AppMode,
+        use_scatter_gather: bool,
+        queue_id: usize,
+        packet_allocator: Self::RxPacketAllocator,
+        addr_info: utils::AddressInfo,
+    ) -> Result<Self>
+    where
+        Self: Sized;
+
     /// Send a single buffer to the specified address.
     fn push_buf(&mut self, buf: (MsgID, &[u8]), addr: utils::AddressInfo) -> Result<()>;
 
@@ -850,7 +877,11 @@ pub trait Datapath {
     fn get_timers(&self) -> Vec<Arc<Mutex<HistogramWrapper>>>;
 
     /// Get destination address information from Ipv4 Address
-    fn get_outgoing_addr_from_ip(&self, dst_addr: Ipv4Addr) -> Result<utils::AddressInfo>;
+    fn get_outgoing_addr_from_ip(
+        &self,
+        dst_addr: &Ipv4Addr,
+        udp_port: u16,
+    ) -> Result<utils::AddressInfo>;
 
     /// What is the transport header size for this datapath
     fn get_header_size(&self) -> usize;
@@ -876,7 +907,6 @@ pub fn no_retries_timeout(_received: usize) -> Duration {
 pub trait ClientSM {
     type Datapath: Datapath;
 
-    /// Server ip.
     fn server_ip(&self) -> Ipv4Addr;
 
     /// Generate next request to be sent and send it with the provided callback.
@@ -905,10 +935,11 @@ pub trait ClientSM {
         datapath: &mut Self::Datapath,
         num_pkts: u64,
         time_out: impl Fn(usize) -> Duration,
+        server_ip: &Ipv4Addr,
+        port: u16,
     ) -> Result<()> {
         let mut recved = 0;
-        let server_ip = self.server_ip();
-        let addr_info = datapath.get_outgoing_addr_from_ip(server_ip)?;
+        let addr_info = datapath.get_outgoing_addr_from_ip(server_ip, port)?;
 
         while let Some(msg) = self.get_next_msg()? {
             if recved >= num_pkts {
@@ -945,11 +976,12 @@ pub trait ClientSM {
         total_time: u64,
         time_out: impl Fn(usize) -> Duration,
         no_retries: bool,
+        server_ip: &Ipv4Addr,
+        port: u16,
     ) -> Result<()> {
         let freq = datapath.timer_hz();
         let cycle_wait = (((intersend_rate * freq) as f64) / 1e9) as u64;
-        let server_ip = self.server_ip();
-        let addr_info = datapath.get_outgoing_addr_from_ip(server_ip)?;
+        let addr_info = datapath.get_outgoing_addr_from_ip(server_ip, port)?;
         let time_start = Instant::now();
         //let mut last_called_pop = Instant::now();
 

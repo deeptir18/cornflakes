@@ -5,10 +5,10 @@ use super::{
         timing::{record, timefunc, HistogramWrapper},
         utils, CornType, Datapath, MsgID, PtrAttributes, ReceivedPkt, RefCnt, ScatterGather,
     },
-    allocator, dpdk_utils, wrapper,
+    allocator, wrapper,
 };
-use color_eyre::eyre::{bail, Result, WrapErr};
-use cornflakes_utils::AppMode;
+use color_eyre::eyre::{bail, ensure, Result, WrapErr};
+use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
@@ -139,6 +139,8 @@ impl PtrAttributes for DPDKBuffer {
 }
 
 pub struct DPDKConnection {
+    /// Queue_id
+    queue_id: u16,
     /// Whether to use scatter-gather on send.
     use_scatter_gather: bool,
     /// Server or client mode.
@@ -184,10 +186,7 @@ impl DPDKConnection {
         mode: AppMode,
         use_scatter_gather: bool,
     ) -> Result<DPDKConnection> {
-        let (ip_to_mac, mac_to_ip, udp_port, _client_port) = dpdk_utils::parse_yaml_map(
-            config_file,
-        )
-        .wrap_err(
+        let (ip_to_mac, mac_to_ip, udp_port, _client_port) = parse_yaml_map(config_file).wrap_err(
             "Failed to get ip to mac address mapping, or udp port information from yaml config.",
         )?;
         let outgoing_window: HashMap<MsgID, Instant> = HashMap::new();
@@ -252,6 +251,7 @@ impl DPDKConnection {
         }
 
         Ok(DPDKConnection {
+            queue_id: 0,
             use_scatter_gather: use_scatter_gather,
             mode: mode,
             dpdk_port: nb_ports - 1,
@@ -312,8 +312,7 @@ impl DPDKConnection {
     }
 
     fn get_outgoing_header(&self, dst_addr: &utils::AddressInfo) -> utils::HeaderInfo {
-        self.addr_info
-            .get_outgoing(dst_addr.ipv4_addr, dst_addr.ether_addr)
+        self.addr_info.get_outgoing(dst_addr)
     }
 
     pub fn add_mempool(
@@ -367,8 +366,179 @@ impl DPDKConnection {
     }
 }
 
+fn init_timers(mode: AppMode) -> Result<HashMap<String, Arc<Mutex<HistogramWrapper>>>> {
+    let mut timers: HashMap<String, Arc<Mutex<HistogramWrapper>>> = HashMap::default();
+    if cfg!(feature = "timers") {
+        if mode == AppMode::Server {
+            timers.insert(
+                PROCESSING_TIMER.to_string(),
+                Arc::new(Mutex::new(HistogramWrapper::new(PROCESSING_TIMER)?)),
+            );
+            timers.insert(
+                POP_PROCESSING_TIMER.to_string(),
+                Arc::new(Mutex::new(HistogramWrapper::new(POP_PROCESSING_TIMER)?)),
+            );
+        }
+        timers.insert(
+            RX_BURST_TIMER.to_string(),
+            Arc::new(Mutex::new(HistogramWrapper::new(RX_BURST_TIMER)?)),
+        );
+        timers.insert(
+            PKT_CONSTRUCT_TIMER.to_string(),
+            Arc::new(Mutex::new(HistogramWrapper::new(PKT_CONSTRUCT_TIMER)?)),
+        );
+        timers.insert(
+            TX_BURST_TIMER.to_string(),
+            Arc::new(Mutex::new(HistogramWrapper::new(TX_BURST_TIMER)?)),
+        );
+        timers.insert(
+            PUSH_PROCESSING_TIMER.to_string(),
+            Arc::new(Mutex::new(HistogramWrapper::new(PUSH_PROCESSING_TIMER)?)),
+        );
+    }
+
+    Ok(timers)
+}
+
 impl Datapath for DPDKConnection {
     type DatapathPkt = DPDKBuffer;
+    type RxPacketAllocator = wrapper::MempoolPtr;
+
+    fn global_init(
+        config_path: &str,
+        num_cores: usize,
+        app_mode: AppMode,
+        remote_ip: Option<Ipv4Addr>,
+    ) -> Result<(u16, Vec<(Self::RxPacketAllocator, utils::AddressInfo)>)> {
+        let (mempools, nb_ports) =
+            wrapper::dpdk_init(config_path, num_cores).wrap_err("Failure in dpdk init.")?;
+        // TODO: only works when there is one physical queue
+        let dpdk_port = nb_ports - 1;
+
+        let (_ip_to_mac, mac_to_ip, server_port, client_port) = parse_yaml_map(config_path)
+            .wrap_err(
+            "Failed to get ip to mac address mapping, or udp port information from yaml config.",
+        )?;
+
+        // retrieve our own base IP address
+
+        // what is my ethernet address (rte_ether_addr struct)
+        let my_eth = wrapper::get_my_macaddr(dpdk_port)?;
+        let my_mac = MacAddress::from_bytes(&my_eth.addr_bytes)?;
+        let my_ip_addr = mac_to_ip.get(&my_mac).unwrap();
+
+        // on server side, just return single mempool and address info
+        if app_mode == AppMode::Server {
+            ensure!(
+                mempools.len() == 1,
+                "Currently cannot spawn server with more than one core"
+            );
+
+            let addr_info = utils::AddressInfo::new(server_port, *my_ip_addr, my_mac);
+            return Ok((
+                dpdk_port,
+                vec![(wrapper::MempoolPtr(mempools[0]), addr_info)],
+            ));
+        }
+
+        // on client side, the server ip MUST be specified
+        let server_ip = match remote_ip {
+            Some(s) => s,
+            None => {
+                bail!("For client app mode, remote server IP must be specified.");
+            }
+        };
+
+        let mut recv_addrs: Vec<utils::AddressInfo> = Vec::with_capacity(num_cores);
+        let in_recv_addrs = |ip: &[u8; 4], ref_addrs: &Vec<utils::AddressInfo>| -> bool {
+            for current_addr in ref_addrs.iter() {
+                if current_addr.ipv4_addr.octets() == *ip {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        for queue_id in 0..num_cores as u16 {
+            let mut cur_octets = my_ip_addr.octets();
+            let cur_port = client_port;
+            while dpdk_call!(compute_flow_affinity(
+                ip_from_octets(&cur_octets),
+                ip_from_octets(&server_ip.octets()),
+                cur_port,
+                server_port,
+                num_cores
+            )) != queue_id as u32
+                || (in_recv_addrs(&cur_octets, &recv_addrs))
+            {
+                cur_octets[3] += 1;
+            }
+            tracing::info!(queue_id = queue_id, octets = ?cur_octets, port = cur_port, "Chosen addr pair");
+            let queue_addr_info = utils::AddressInfo::new(
+                cur_port,
+                Ipv4Addr::new(cur_octets[0], cur_octets[1], cur_octets[2], cur_octets[3]),
+                my_mac,
+            );
+            recv_addrs.push(queue_addr_info);
+        }
+
+        let mut recv_pairs: Vec<(Self::RxPacketAllocator, utils::AddressInfo)> = Vec::default();
+        for i in 0..num_cores {
+            recv_pairs.push((wrapper::MempoolPtr(mempools[i]), recv_addrs[i].clone()));
+        }
+
+        Ok((dpdk_port, recv_pairs))
+    }
+
+    fn per_thread_init(
+        physical_port: u16,
+        config_file: &str,
+        app_mode: AppMode,
+        use_scatter_gather: bool,
+        queue_id: usize,
+        rx_allocator: Self::RxPacketAllocator,
+        addr_info: utils::AddressInfo,
+    ) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let (ip_to_mac, _mac_to_ip, _server_port, _client_port) = parse_yaml_map(config_file)
+            .wrap_err(
+            "Failed to get ip to mac address mapping, or udp port information from yaml config.",
+        )?;
+
+        let ext_mempool = match use_scatter_gather {
+            true => wrapper::init_extbuf_mempool(&format!("extbuf_mempool_{}", queue_id), 1)
+                .wrap_err("Failed to initialize extbuf mempool")?,
+            false => ptr::null_mut(),
+        };
+
+        let timers = init_timers(app_mode).wrap_err("Failed to initialize application timers")?;
+
+        let mut mempool_allocator = allocator::MempoolAllocator::default();
+        mempool_allocator
+            .add_mempool(rx_allocator.0, wrapper::MBUF_BUF_SIZE as _)
+            .wrap_err("Failed to add default mempool to mempool allocator.")?;
+
+        Ok(DPDKConnection {
+            queue_id: queue_id as u16,
+            use_scatter_gather: use_scatter_gather,
+            mode: app_mode,
+            dpdk_port: physical_port,
+            ip_to_mac: ip_to_mac,
+            outgoing_window: HashMap::default(),
+            external_memory_regions: Vec::default(),
+            extbuf_mempool: ext_mempool,
+            default_mempool: rx_allocator.0,
+            mempool_allocator: mempool_allocator,
+            addr_info: addr_info,
+            timers: timers,
+            send_mbufs: [[ptr::null_mut(); wrapper::RECEIVE_BURST_SIZE as usize];
+                wrapper::MAX_SCATTERS],
+            recv_mbufs: [ptr::null_mut(); wrapper::RECEIVE_BURST_SIZE as usize],
+        })
+    }
+
     /// Sends a single buffer to the given address.
     fn push_buf(&mut self, buf: (MsgID, &[u8]), addr: utils::AddressInfo) -> Result<()> {
         let header = self.get_outgoing_header(&addr);
@@ -395,7 +565,7 @@ impl Datapath for DPDKConnection {
         let mbuf_ptr = &mut self.send_mbufs[0][0] as _;
         timefunc(
             &mut || {
-                wrapper::tx_burst(self.dpdk_port, 0, mbuf_ptr, 1)
+                wrapper::tx_burst(self.dpdk_port, self.queue_id, mbuf_ptr, 1)
                     .wrap_err(format!("Failed to send SGAs."))
             },
             cfg!(feature = "timers"),
@@ -499,7 +669,7 @@ impl Datapath for DPDKConnection {
         let mbuf_ptr = &mut self.send_mbufs[0][0] as _;
         timefunc(
             &mut || {
-                wrapper::tx_burst(self.dpdk_port, 0, mbuf_ptr, sgas.len() as u16)
+                wrapper::tx_burst(self.dpdk_port, self.queue_id, mbuf_ptr, sgas.len() as u16)
                     .wrap_err(format!("Failed to send SGAs."))
             },
             cfg!(feature = "timers"),
@@ -516,7 +686,7 @@ impl Datapath for DPDKConnection {
     fn pop(&mut self) -> Result<Vec<(ReceivedPkt<Self>, Duration)>> {
         let received = wrapper::rx_burst(
             self.dpdk_port,
-            0,
+            self.queue_id,
             self.recv_mbufs.as_mut_ptr(),
             wrapper::RECEIVE_BURST_SIZE,
             &self.addr_info,
@@ -532,7 +702,7 @@ impl Datapath for DPDKConnection {
         }
 
         if received.len() > 0 {
-            tracing::debug!("Received some packs");
+            tracing::debug!(queue_id = self.queue_id, "Received some packs");
             let pop_processing_timer = self.get_timer(
                 POP_PROCESSING_TIMER,
                 cfg!(feature = "timers") && self.mode == AppMode::Server,
@@ -650,13 +820,13 @@ impl Datapath for DPDKConnection {
     ///
     /// Returns:
     ///  * AddressInfo - struct with destination mac, ip address and udp port
-    fn get_outgoing_addr_from_ip(&self, dst_addr: Ipv4Addr) -> Result<utils::AddressInfo> {
-        match self.ip_to_mac.get(&dst_addr) {
-            Some(mac) => Ok(utils::AddressInfo::new(
-                self.addr_info.udp_port,
-                dst_addr,
-                *mac,
-            )),
+    fn get_outgoing_addr_from_ip(
+        &self,
+        dst_addr: &Ipv4Addr,
+        port: u16,
+    ) -> Result<utils::AddressInfo> {
+        match self.ip_to_mac.get(dst_addr) {
+            Some(mac) => Ok(utils::AddressInfo::new(port, dst_addr.clone(), *mac)),
             None => {
                 bail!("Don't know ethernet address for Ip address: {:?}", dst_addr);
             }

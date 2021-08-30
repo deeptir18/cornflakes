@@ -5,5 +5,4 @@ members = ["cornflakes-codegen",
             "echo-server",
             "cornflakes-utils",
             "data-structure-query",
-            "kv-store",
-            "shenango-loadgen"]
+            "kv-store"]

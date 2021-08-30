@@ -145,14 +145,14 @@ where
     value_size: usize,
     /// Number of values in GetM or PutM request (required for framing).
     num_values: usize,
+    /// This thread's id
+    thread_id: usize,
     /// Iterator over queries.
     queries: QueryIterator,
     /// Which server to send to.
     server_ip: Ipv4Addr,
     /// Currently send window.
     in_flight: HashMap<MsgID, String>,
-    /// Sent so far
-    sent: usize,
     /// Received so far.
     recved: usize,
     /// Number of retries.
@@ -209,9 +209,9 @@ where
             serializer: S::new_request_generator(),
             value_size: value_size,
             num_values: num_values,
+            thread_id: thread_id,
             queries: query_iterator,
             server_ip: server_ip,
-            sent: 0,
             recved: 0,
             retries: 0,
             last_sent_id: 0,
@@ -224,6 +224,21 @@ where
         })
     }
 
+    pub fn sort_rtts(&mut self, start_cutoff: usize) -> Result<()> {
+        self.rtts.sort_and_truncate(start_cutoff)?;
+        Ok(())
+    }
+
+    pub fn log_rtts(&mut self, path: &str, start_cutoff: usize) -> Result<()> {
+        self.rtts.sort_and_truncate(start_cutoff)?;
+        self.rtts.log_truncated_to_file(path, start_cutoff)?;
+        Ok(())
+    }
+
+    pub fn get_mut_rtts(&mut self) -> &mut ManualHistogram {
+        &mut self.rtts
+    }
+
     pub fn dump(
         &mut self,
         path: Option<String>,
@@ -234,7 +249,6 @@ where
         tracing::info!(
             thread = self.queries.get_thread_id(),
             client_id = self.queries.get_client_id(),
-            sent = self.sent,
             received = self.recved - start_cutoff,
             retries = self.retries,
             unique_sent = self.last_sent_id - 1 - start_cutoff,
@@ -254,6 +268,14 @@ where
 
     pub fn get_num_recved(&self, start_cutoff: usize) -> usize {
         self.recved - start_cutoff
+    }
+
+    pub fn get_num_sent(&self, start_cutoff: usize) -> usize {
+        self.last_sent_id - 1 - start_cutoff
+    }
+
+    pub fn get_num_retries(&self) -> usize {
+        self.retries
     }
 }
 
@@ -320,7 +342,12 @@ where
         rtt: Duration,
     ) -> Result<()> {
         self.recved += 1;
-        tracing::debug!("Receiving {}th packet", self.recved);
+        tracing::debug!(
+            thread_id = self.thread_id,
+            "Receiving {}th packet with id {}",
+            self.recved,
+            sga.get_id(),
+        );
 
         // if debug, deserialize and check the message has the right dimensions
         if cfg!(debug_assertions) {

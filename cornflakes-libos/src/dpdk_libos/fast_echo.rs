@@ -3,10 +3,11 @@ use super::super::{
     dpdk_call, mbuf_slice, mem,
     timing::{record, timefunc, HistogramWrapper, RTTHistogram},
 };
-use super::{dpdk_utils, wrapper};
+use super::wrapper;
 use affinity::*;
 use bytes::{ByteOrder, LittleEndian};
 use color_eyre::eyre::{bail, Result, WrapErr};
+use cornflakes_utils::parse_yaml_map;
 use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
@@ -204,10 +205,9 @@ pub fn do_client(
     server_ip: &Ipv4Addr,
     num_cores: usize,
 ) -> Result<()> {
-    let (ip_to_mac, mac_to_ip, server_port, client_port) = dpdk_utils::parse_yaml_map(config_path)
-        .wrap_err(
-            "Failed to get ip to mac address mapping, or udp port information from yaml config.",
-        )?;
+    let (ip_to_mac, mac_to_ip, server_port, client_port) = parse_yaml_map(config_path).wrap_err(
+        "Failed to get ip to mac address mapping, or udp port information from yaml config.",
+    )?;
     // enable RSS by having more than one queue
     let (mbuf_pools, nb_ports) = wrapper::dpdk_init(config_path, num_cores)?;
     let mut mbuf_pool_wrappers: Vec<wrapper::MempoolPtr> = Vec::default();
@@ -384,10 +384,9 @@ pub fn do_server(
     split_payload: usize,
     use_c: bool, // do everything in C as a test
 ) -> Result<()> {
-    let (_ip_to_mac, mac_to_ip, _udp_port, _client_port) = dpdk_utils::parse_yaml_map(config_path)
-        .wrap_err(
-            "Failed to get ip to mac address mapping, or udp port information from yaml config.",
-        )?;
+    let (_ip_to_mac, mac_to_ip, _udp_port, _client_port) = parse_yaml_map(config_path).wrap_err(
+        "Failed to get ip to mac address mapping, or udp port information from yaml config.",
+    )?;
     let (mbuf_pools, nb_ports) = wrapper::dpdk_init(config_path, 1)?;
     let extbuf_mempool = wrapper::init_extbuf_mempool("extbuf_mempool", nb_ports)?;
     let mbuf_pool = mbuf_pools[0];

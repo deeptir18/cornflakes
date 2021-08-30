@@ -932,6 +932,7 @@ pub fn rx_burst(
                 valid_packets.insert(i as usize, (id, hdr));
             }
             None => {
+                tracing::debug!("Queue {} received invalid packet", queue_id);
                 dpdk_call!(rte_pktmbuf_free(pkt));
             }
         }
