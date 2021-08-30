@@ -9,7 +9,6 @@ pub mod dpdk_bindings;
 pub mod dpdk_libos;
 pub mod loadgen;
 pub mod mem;
-pub mod request_schedule;
 pub mod timing;
 pub mod utils;
 
