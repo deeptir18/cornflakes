@@ -64,6 +64,17 @@ where
         Ok(())
     }
 
+    pub fn sort_rtts(&mut self, start_cutoff: usize) -> Result<()> {
+        self.rtts.sort_and_truncate(start_cutoff)?;
+        Ok(())
+    }
+
+    pub fn log_rtts(&mut self, path: &str, start_cutoff: usize) -> Result<()> {
+        self.rtts.sort_and_truncate(start_cutoff)?;
+        self.rtts.log_truncated_to_file(path, start_cutoff)?;
+        Ok(())
+    }
+
     pub fn dump(&mut self, path: Option<String>, total_time: Duration) -> Result<()> {
         self.rtts.sort()?;
         tracing::info!(
@@ -85,8 +96,20 @@ where
         Ok(())
     }
 
-    pub fn get_num_recved(&self) -> usize {
-        self.recved
+    pub fn get_num_sent(&self, start_cutoff: usize) -> usize {
+        (self.last_sent_id - 1) as usize - start_cutoff
+    }
+
+    pub fn get_num_retries(&self) -> usize {
+        self.retries as _
+    }
+
+    pub fn get_mut_rtts(&mut self) -> &mut ManualHistogram {
+        &mut self.rtts
+    }
+
+    pub fn get_num_recved(&self, start_cutoff: usize) -> usize {
+        self.recved as usize - start_cutoff
     }
 }
 

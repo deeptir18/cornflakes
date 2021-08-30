@@ -1,9 +1,14 @@
-use color_eyre::eyre::{Result, WrapErr};
+use affinity::*;
+use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::{
     dpdk_bindings,
     dpdk_libos::connection::DPDKConnection,
-    loadgen::request_schedule::{DistributionType, PacketSchedule},
+    loadgen::{
+        client_threads::{dump_thread_stats, ThreadStats},
+        request_schedule::{generate_schedules, DistributionType, PacketSchedule},
+    },
     timing::ManualHistogram,
+    utils::AddressInfo,
     ClientSM, Datapath, ServerSM,
 };
 use cornflakes_utils::{
@@ -20,12 +25,18 @@ use echo_server::{
     get_equal_fields,
     protobuf::{ProtobufEchoClient, ProtobufSerializer},
     server::EchoServer,
-    CerealizeClient, CerealizeMessage, EchoMode,
+    CerealizeClient, CerealizeMessage,
 };
-use std::{net::Ipv4Addr, process::exit, time::Instant};
+use std::{
+    net::Ipv4Addr,
+    path::Path,
+    process::exit,
+    thread::{spawn, JoinHandle},
+    time::Instant,
+};
 use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, StructOpt, Clone)]
 #[structopt(name = "Echo Server app.", about = "Data structure echo benchmark.")]
 struct Opt {
     #[structopt(
@@ -42,7 +53,7 @@ struct Opt {
     )]
     config_file: String,
     #[structopt(long = "mode", help = "Echo server or client mode.")]
-    mode: EchoMode,
+    mode: AppMode,
     #[structopt(
         short = "nd",
         long = "datapath",
@@ -95,12 +106,20 @@ struct Opt {
     no_retries: bool,
     #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
     logfile: Option<String>,
+    #[structopt(long = "threadlog", help = "Logfile to log per thread statistics")]
+    thread_log: Option<String>,
     #[structopt(
         long = "distribution",
         help = "Arrival distribution",
         default_value = "exponential"
     )]
     distribution: DistributionType,
+    #[structopt(
+        long = "num_threads",
+        help = "Total number of threads",
+        default_value = "1"
+    )]
+    num_threads: usize,
 }
 
 macro_rules! init_echo_server(
@@ -115,36 +134,108 @@ macro_rules! init_echo_server(
 );
 
 macro_rules! init_echo_client(
-    ($serializer: ty, $datapath: ty, $datapath_init: expr, $opt: ident) => {
+    ($serializer: ty, $datapath: ty, $datapath_global_init: expr, $datapath_init: ident, $opt: ident) => {
         let sizes = get_equal_fields($opt.message, $opt.size);
-        let hist = ManualHistogram::init($opt.rate, $opt.total_time);
-        let mut connection = $datapath_init?;
-        let mut echo_client: EchoClient<$serializer, $datapath> =
-            EchoClient::new($opt.server_ip, $opt.message, sizes, hist)?;
-        let mut ctx = echo_client.new_context();
-        echo_client.init_state(&mut ctx, &mut connection)?;
-        let schedule = PacketSchedule::new(($opt.total_time * $opt.rate * 2) as _, $opt.rate, $opt.distribution)?;
-        run_client(&mut echo_client, &mut connection, &$opt, &schedule)?;
+        let num_rtts = ($opt.rate * $opt.total_time * 2) as usize;
+        let schedules = generate_schedules(num_rtts, $opt.rate, $opt.distribution, $opt.num_threads)?;
+        let (port, per_thread_info) = $datapath_global_init?;
+        let mut threads: Vec<JoinHandle<Result<ThreadStats>>> = vec![];
+
+        for i in 0..$opt.num_threads {
+            let physical_port = port;
+            let (rx_packet_allocator, addr) = per_thread_info[i].clone();
+            let per_thread_options = $opt.clone();
+            let hist = ManualHistogram::new(num_rtts);
+            let per_thread_sizes = sizes.clone();
+            let schedule = schedules[i].clone();
+            threads.push(spawn(move || {
+                match set_thread_affinity(&vec![i+1]) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        bail!("Could not set thread affinity for thread {} on core {}: {:?}", i, i+1, e);
+                    }
+                }
+
+                let mut connection = $datapath_init(physical_port, i, rx_packet_allocator, addr, &per_thread_options)?;
+                let mut echo_client: EchoClient<$serializer, $datapath> =
+                    EchoClient::new(per_thread_options.server_ip, per_thread_options.message, per_thread_sizes, hist)?;
+                let mut ctx = echo_client.new_context();
+                echo_client.init_state(&mut ctx, &mut connection)?;
+                run_client(i, &mut echo_client, &mut connection, &per_thread_options, &schedule).wrap_err("Failed to run client")
+            }));
+        }
+
+        let mut thread_results: Vec<ThreadStats> = Vec::default();
+        for child in threads {
+            let s = match child.join() {
+                Ok(res) => match res {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("Thread failed: {:?}", e);
+                        bail!("Failed thread");
+                    }
+                },
+                Err(e) => {
+                    tracing::debug!("Failed to join client thread: {:?}", e);
+                    bail!("Failed to join thread");
+                }
+            };
+            thread_results.push(s);
+        }
+
+        // in experiments, no need to dump per thread
+        let dump_per_thread = $opt.logfile == None;
+        dump_thread_stats(thread_results, $opt.thread_log, dump_per_thread)?;
+
+
     }
 );
 
 fn main() -> Result<()> {
     let opt = Opt::from_args();
     global_debug_init(opt.trace_level)?;
-    let mode = match &opt.mode {
-        EchoMode::Server => AppMode::Server,
-        EchoMode::Client => AppMode::Client,
+
+    let dpdk_global_init = || -> Result<(u16, Vec<(<DPDKConnection as Datapath>::RxPacketAllocator, AddressInfo)>)> {
+        dpdk_bindings::load_mlx5_driver();
+        let remote_ip = match opt.mode {
+            AppMode::Client => {
+                Some(opt.server_ip.clone())
+            }
+            AppMode::Server => None,
+        };
+        <DPDKConnection as Datapath>::global_init(&opt.config_file, opt.num_threads, opt.mode, remote_ip)
+    };
+
+    let dpdk_per_thread_init = |physical_port: u16,
+                                thread_id: usize,
+                                rx_mempool: <DPDKConnection as Datapath>::RxPacketAllocator,
+                                addr_info: AddressInfo,
+                                options: &Opt|
+     -> Result<DPDKConnection> {
+        let use_scatter_gather = options.mode == AppMode::Server
+            && (options.serialization == SerializationType::CornflakesDynamic
+                || options.serialization == SerializationType::CornflakesFixed);
+        let connection = <DPDKConnection as Datapath>::per_thread_init(
+            physical_port,
+            &options.config_file,
+            options.mode,
+            use_scatter_gather,
+            thread_id,
+            rx_mempool,
+            addr_info,
+        )?;
+        Ok(connection)
     };
 
     let dpdk_datapath = |use_scatter_gather: bool| -> Result<DPDKConnection> {
         dpdk_bindings::load_mlx5_driver();
-        let connection = DPDKConnection::new(&opt.config_file, mode, use_scatter_gather)
+        let connection = DPDKConnection::new(&opt.config_file, opt.mode, use_scatter_gather)
             .wrap_err("Failed to initialize DPDK server connection.")?;
         Ok(connection)
     };
 
     match opt.mode {
-        EchoMode::Server => match (opt.datapath, opt.serialization) {
+        AppMode::Server => match (opt.datapath, opt.serialization) {
             (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
                 init_echo_server!(CornflakesDynamicSerializer, dpdk_datapath(true), opt);
             }
@@ -173,12 +264,13 @@ fn main() -> Result<()> {
                 unimplemented!();
             }
         },
-        EchoMode::Client => match (opt.datapath, opt.serialization) {
+        AppMode::Client => match (opt.datapath, opt.serialization) {
             (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
                 init_echo_client!(
                     CornflakesDynamicEchoClient,
                     DPDKConnection,
-                    dpdk_datapath(true),
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
                     opt
                 );
             }
@@ -186,7 +278,8 @@ fn main() -> Result<()> {
                 init_echo_client!(
                     CornflakesFixedEchoClient,
                     DPDKConnection,
-                    dpdk_datapath(true),
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
                     opt
                 );
             }
@@ -194,7 +287,8 @@ fn main() -> Result<()> {
                 init_echo_client!(
                     CornflakesDynamicEchoClient,
                     DPDKConnection,
-                    dpdk_datapath(false),
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
                     opt
                 );
             }
@@ -202,7 +296,8 @@ fn main() -> Result<()> {
                 init_echo_client!(
                     CornflakesFixedEchoClient,
                     DPDKConnection,
-                    dpdk_datapath(false),
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
                     opt
                 );
             }
@@ -210,7 +305,8 @@ fn main() -> Result<()> {
                 init_echo_client!(
                     ProtobufEchoClient,
                     DPDKConnection,
-                    dpdk_datapath(false),
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
                     opt
                 );
             }
@@ -218,7 +314,8 @@ fn main() -> Result<()> {
                 init_echo_client!(
                     FlatbuffersEchoClient,
                     DPDKConnection,
-                    dpdk_datapath(false),
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
                     opt
                 );
             }
@@ -226,12 +323,19 @@ fn main() -> Result<()> {
                 init_echo_client!(
                     CapnprotoEchoClient,
                     DPDKConnection,
-                    dpdk_datapath(false),
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
                     opt
                 );
             }
             (NetworkDatapath::DPDK, SerializationType::Cereal) => {
-                init_echo_client!(CerealEchoClient, DPDKConnection, dpdk_datapath(false), opt);
+                init_echo_client!(
+                    CerealEchoClient,
+                    DPDKConnection,
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
+                    opt
+                );
             }
 
             _ => {
@@ -243,12 +347,24 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn get_thread_latlog(name: &str, thread_id: usize) -> Result<String> {
+    let filename = Path::new(name);
+    let stem = match filename.file_stem() {
+        Some(s) => s,
+        None => {
+            bail!("Could not get filestem for: {}", name);
+        }
+    };
+    Ok(format!("{:?}-t{}.log", stem, thread_id))
+}
+
 fn run_client<'normal, S, D>(
+    thread_id: usize,
     client: &mut EchoClient<'normal, S, D>,
     connection: &mut D,
     opt: &Opt,
     schedule: &PacketSchedule,
-) -> Result<()>
+) -> Result<ThreadStats>
 where
     S: CerealizeClient<'normal, D>,
     D: Datapath,
@@ -270,26 +386,39 @@ where
         &opt.server_ip,
         server_port,
     )?;
-    let exp_duration = start_run.elapsed();
-    client.dump(opt.logfile.clone(), exp_duration)?;
-    let exp_time = exp_duration.as_nanos() as f64 / 1000000000.0;
-    let achieved_load_pps = (client.get_num_recved() as f64) / exp_time as f64;
-    let achieved_load_gbps = (opt.size as f64 * achieved_load_pps as f64) / (125000000 as f64);
-    let load_gbps = ((opt.size as f64) * (opt.rate) as f64) / (125000000 as f64);
-    tracing::info!(
-        load_gbps =? load_gbps,
-        achieved_load_gbps =? achieved_load_gbps,
-        opt.rate =? opt.rate,
-        achieved_load_pps =? achieved_load_pps,
-        percent_achieved =? (achieved_load_gbps / load_gbps),
-        "Load statistics:"
-    );
+
+    let exp_duration = start_run.elapsed().as_nanos();
+    client.sort_rtts(0)?;
+
+    // per thread log latency
+    match &opt.logfile {
+        Some(x) => {
+            let path = get_thread_latlog(&x, thread_id)?;
+            client.log_rtts(&path, 0)?;
+        }
+        None => {}
+    }
+
+    // debugging timers for this thread
+    // todo: add thread info to these prints
     for timer_m in connection.get_timers().iter() {
         let timer = timer_m.lock().unwrap();
         timer.dump_stats();
     }
 
-    Ok(())
+    let stats = ThreadStats::new(
+        thread_id as u16,
+        client.get_num_sent(0),
+        client.get_num_recved(0),
+        client.get_num_retries(),
+        exp_duration as _,
+        opt.rate,
+        opt.size,
+        client.get_mut_rtts(),
+        0,
+    )?;
+
+    Ok(stats)
 }
 
 fn set_ctrlc_handler<S, D>(server: &EchoServer<S, D>) -> Result<()>
