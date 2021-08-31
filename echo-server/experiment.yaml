@@ -12,7 +12,7 @@ programs:
             record: "{folder}/server.record.log"
         stop: sudo kill -SIGINT `ps aux | grep {cornflakes_dir}/target/release/ds_echo | grep -v grep | awk '{{print $2}}'`
     start_client:
-            start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/ds_echo --config_file {config_file} --mode client --server_ip {server_ip} --time {time} --rate {rate} --serialization {client-library} --size {size} --message {message} --num_threads {num_threads} --logfile {folder}/{host}.latency.log --threadlog {folder}/{host}.threads.log --debug_level info
+            start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/ds_echo --config_file {config_file} --mode client --server_ip {server_ip} --time {time} --rate {rate} --serialization {client-library} --size {size} --message {message} --num_threads {num_threads} --num_clients {} --client_id {} --logfile {folder}/{host}.latency.log --threadlog {folder}/{host}.threads.log --debug_level info
             hosts: [client1, client2, client3, client4]
             log:
                 out: "{folder}/{host}.log"
