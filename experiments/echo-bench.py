@@ -282,7 +282,7 @@ class EchoBench(runner.Experiment):
                             # TODO: just figure out how to do this in a better
                             # way
                             machine_threads = [
-                                (1, 1), (2, 1), (2, 2), (3, 2), (2, 4)]
+                                (1, 1), (2, 1), (3, 1), (2, 2), (3, 2), (2, 4)]
                             rates = [rate for rate in range(
                                 50000, 110000, 10000)]
                             for (machine_thread, rate) in zip(machine_threads,

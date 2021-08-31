@@ -255,9 +255,11 @@ class KVBench(runner.Experiment):
                     for num_values in NUM_VALUES_TO_LOOP:
                         for serialization in SERIALIZATION_LIBRARIES:
                             machine_threads = [
-                                (1, 1), (2, 1), (2, 2), (3, 2), (2, 4)]
+                                (1, 1), (2, 1), (3, 1), (2, 2), (3, 2), (2, 4)]
                             rates = [rate for rate in range(
                                 50000, 80000, 5000)]  # lower highest rate (?)
+                            rates.append(90000)
+                            rates.append(100000)
                             for (machine_thread, rate) in zip(machine_threads,
                                                               rates):
                                 client_rate = [(rate, machine_thread[0])]
