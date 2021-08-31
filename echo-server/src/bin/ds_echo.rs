@@ -355,7 +355,10 @@ fn get_thread_latlog(name: &str, thread_id: usize) -> Result<String> {
             bail!("Could not get filestem for: {}", name);
         }
     };
-    Ok(format!("{:?}-t{}.log", stem, thread_id))
+    let mut file_parent = filename.to_path_buf();
+    assert!(file_parent.pop());
+    file_parent.push(&format!("{}-t{}.log", stem.to_str().unwrap(), thread_id));
+    Ok(file_parent.to_str().unwrap().to_string())
 }
 
 fn run_client<'normal, S, D>(
@@ -394,6 +397,7 @@ where
     match &opt.logfile {
         Some(x) => {
             let path = get_thread_latlog(&x, thread_id)?;
+            tracing::debug!("Going to log latencies into {}", path);
             client.log_rtts(&path, 0)?;
         }
         None => {}

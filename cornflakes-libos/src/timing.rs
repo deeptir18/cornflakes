@@ -120,6 +120,7 @@ impl ManualHistogram {
 
     pub fn log_truncated_to_file(&self, path: &str, start: usize) -> Result<()> {
         let mut file = File::create(path)?;
+        tracing::info!(len = self.current_count, "logging to {}", path);
         for idx in start..self.current_count {
             writeln!(file, "{}", self.latencies[idx])?;
         }

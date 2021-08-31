@@ -9,6 +9,7 @@ import copy
 STRIP_THRESHOLD = 0.03
 
 # SIZES_TO_LOOP = [1024, 2048, 4096, 8192]
+NUM_THREADS = [1, 2, 4, 8]
 SIZES_TO_LOOP = [2048, 4096, 8192]
 MESSAGE_TYPES = ["single"]
 MESSAGE_TYPES.extend(["list-2", "list-4", "list-8", "list-12", "list-16",
@@ -55,6 +56,7 @@ def parse_log_info(log):
 class EchoBenchIteration(runner.Iteration):
     def __init__(self, client_rates, size,
                  serialization, message_type,
+                 num_threads,
                  trial=None):
         """
         Arguments:
@@ -73,6 +75,10 @@ class EchoBenchIteration(runner.Iteration):
         self.serialization = serialization
         self.message_type = message_type
         self.trial = trial
+        self.num_threads = num_threads
+
+    def get_num_threads(self):
+        return self.num_threads
 
     def get_size(self):
         return self.size
@@ -88,6 +94,9 @@ class EchoBenchIteration(runner.Iteration):
 
     def set_trial(self, trial):
         self.trial = trial
+
+    def get_num_threads_string(self):
+        return "{}_threads".format(self.num_threads)
 
     def get_client_rate_string(self):
         # 2@300000,1@100000 implies 2 clients at 300000 pkts / sec and 1 at
@@ -145,10 +154,12 @@ class EchoBenchIteration(runner.Iteration):
             "size: {}, " \
             "serialization: {}, " \
             "message_type: {}, " \
+            "num_threads: {}, " \
             "trial: {}".format(self.get_client_rate_string(),
                                self.get_size_string(),
                                self.serialization,
                                self.message_type,
+                               self.num_threads,
                                self.get_trial_string())
 
     def get_serialization_folder(self, high_level_folder):
@@ -157,7 +168,7 @@ class EchoBenchIteration(runner.Iteration):
 
     def get_parent_folder(self, high_level_folder):
         path = Path(high_level_folder)
-        return path / self.serialization / self.message_type / self.get_size_string() / self.get_client_rate_string()
+        return path / self.serialization / self.message_type / self.get_size_string() / self.get_client_rate_string() / self.get_num_threads_string()
 
     def get_folder_name(self, high_level_folder):
         return self.get_parent_folder(high_level_folder) / self.get_trial_string()
@@ -203,6 +214,7 @@ class EchoBenchIteration(runner.Iteration):
                 programs_metadata[program]["hosts"])
             rate = self.find_rate(host_options, host)
             ret["rate"] = rate
+            ret["num_threads"] = self.num_threads
 
             # calculate server host
             server_host = programs_metadata["start_server"]["hosts"][0]
@@ -241,7 +253,8 @@ class EchoBench(runner.Experiment):
             it = EchoBenchIteration(client_rates,
                                     total_args.size,
                                     total_args.serialization,
-                                    total_args.message_type)
+                                    total_args.message_type,
+                                    total_args.num_threads)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             if total_args.analysis_only or total_args.graph_only:
@@ -266,24 +279,21 @@ class EchoBench(runner.Experiment):
                                 and (serialization == "cornflakes-dynamic"
                                      or serialization == "cornflakes-1cdynamic"):
                                 continue
-                            # for client rates:
-                            # for now loop over 2 rates and 1-2 machines
-                            # do some testing to determine optimal rates
-                            client_rates = [[(24000, 1)],
-                                            [(48000, 1)],
-                                            [(72000, 1)],
-                                            [(96000, 1)]]
-                            for i in range(2, int(self.config_yaml["max_clients"])):
-                                client_rates.append([(100000, i)])
-                            for i in range(1, int(self.config_yaml["max_clients"])):
-                                client_rates.append([(110000, i)])
-                            for i in range(1, int(self.config_yaml["max_clients"])):
-                                client_rates.append([(120000, i)])
-                            for rate in client_rates:
-                                it = EchoBenchIteration(rate,
+                            # TODO: just figure out how to do this in a better
+                            # way
+                            machine_threads = [
+                                (1, 1), (2, 1), (2, 2), (3, 2), (2, 4)]
+                            rates = [rate for rate in range(
+                                50000, 110000, 10000)]
+                            for (machine_thread, rate) in zip(machine_threads,
+                                                              rates):
+                                client_rate = [(rate, machine_thread[0])]
+                                num_threads = machine_thread[1]
+                                it = EchoBenchIteration(client_rate,
                                                         size,
                                                         serialization,
                                                         message_type,
+                                                        num_threads,
                                                         trial=trial)
                                 ret.append(it)
             return ret
@@ -293,6 +303,11 @@ class EchoBench(runner.Experiment):
                             help="logfile name",
                             default="latencies.log")
         if namespace.exp_type == "individual":
+            parser.add_argument("-nt", "--num_threads",
+                                dest="num_threads",
+                                type=int,
+                                default=1,
+                                help="Number of threads to run with")
             parser.add_argument("-r", "--rate",
                                 dest="rate",
                                 type=int,
@@ -347,66 +362,62 @@ class EchoBench(runner.Experiment):
         clients = iteration.get_iteration_clients(
             program_metadata["start_client"]["hosts"])
 
+        num_threads = iteration.get_num_threads()
+
         for host in clients:
             args = {"folder": str(exp_folder), "host": host}
-            stdout_log = program_metadata["start_client"]["log"]["out"].format(
-                **args)
-            stdout_info = parse_log_info(stdout_log)
-            if stdout_info == {}:
-                utils.warn("Error parsing stdout log {}".format(stdout_log))
-                return ""
-            run_metadata_log = program_metadata["start_client"]["log"]["record"].format(
-                **args)
-            run_info = utils.parse_command_line_args(run_metadata_log)
-            if run_info == {}:
-                utils.warn("Error parsing yaml run info for {}".format(
-                    run_metadata_log))
-                return ""
+            thread_file = "{folder}/{host}.threads.log".format(**args)
+            for thread in range(iteration.get_num_threads()):
+                args["thread"] = thread  # replace thread number
+                latency_log = "{folder}/{host}.latency-t{thread}.log".format(
+                    **args)
+                latencies = utils.parse_latency_log(
+                    latency_log, STRIP_THRESHOLD)
+                if latencies == []:
+                    utils.warn(
+                        "Error parsing latency log {}".format(latency_log))
+                    return ""
+                client_latency_lists.append(latencies)
 
-            latency_log = "{folder}/{host}.latency.log".format(**args)
-            latencies = utils.parse_latency_log(latency_log, STRIP_THRESHOLD)
-            if latencies == []:
-                utils.warn("Error parsing latency log {}".format(latency_log))
-                return ""
-            client_latency_lists.append(latencies)
+                thread_info = utils.read_threads_json(thread_file, thread)
 
-            host_offered_load = float(run_info["args"]["rate"])
-            total_offered_load_pps += host_offered_load
-            host_offered_load_gbps = float(utils.get_tput_gbps(host_offered_load,
-                                                               iteration.get_size()))
-            total_offered_load_gbps += host_offered_load_gbps
-            host_pkts_recved = stdout_info["recved"]
-            host_total_time = stdout_info["total_time"]
-            host_achieved_load = float(
-                host_pkts_recved) / float(host_total_time)
-            total_achieved_load_pps += host_achieved_load
-            host_achieved_load_gbps = float(utils.get_tput_gbps(host_achieved_load,
-                                                                iteration.get_size()))
-            total_achieved_load_gbps += host_achieved_load_gbps
+                host_offered_load_pps = float(thread_info["offered_load_pps"])
+                host_offered_load_gbps = float(
+                    thread_info["offered_load_gbps"])
+                total_offered_load_pps += host_offered_load_pps
+                total_offered_load_gbps += host_offered_load_gbps
 
-            # convert to microseconds
-            host_p99 = utils.p99_func(latencies) / 1000.0
-            host_p999 = utils.p999_func(latencies) / 1000.0
-            host_median = utils.median_func(latencies) / 1000.0
-            host_avg = utils.mean_func(latencies) / 1000.0
+                host_achieved_load_pps = float(
+                    thread_info["achieved_load_pps"])
+                host_achieved_load_gbps = float(
+                    thread_info["achieved_load_gbps"])
+                total_achieved_load_pps += host_achieved_load_pps
+                total_achieved_load_gbps += host_achieved_load_gbps
 
-            # add retries
-            retries = int(stdout_info["retries"])
-            total_retries += retries
+                # convert to microseconds
+                host_p99 = utils.p99_func(latencies) / 1000.0
+                host_p999 = utils.p999_func(latencies) / 1000.0
+                host_median = utils.median_func(latencies) / 1000.0
+                host_avg = utils.mean_func(latencies) / 1000.0
 
-            if print_stats:
-                utils.info("Client {}: "
-                           "offered load: {:.4f} req/s | {:.4f} Gbps, "
-                           "achieved load: {:.4f} req/s | {:.4f} Gbps, "
-                           "percentage achieved rate: {:.4f}, "
-                           "retries: {}, "
-                           "avg latency: {: .4f} \u03BCs, p99: {: .4f} \u03BCs, p999:"
-                           "{: .4f} \u03BCs, median: {: .4f} \u03BCs".format(
-                               host, host_offered_load, host_offered_load_gbps,
-                               host_achieved_load, host_achieved_load_gbps,
-                               float(host_achieved_load / host_offered_load),
-                               retries,
-                               host_avg, host_p99, host_p999, host_median))
+                # add retries
+                retries = int(thread_info["retries"])
+                total_retries += retries
+
+                if print_stats:
+                    utils.info("Client {}, Thread {}: "
+                               "offered load: {:.4f} req/s | {:.4f} Gbps, "
+                               "achieved load: {:.4f} req/s | {:.4f} Gbps, "
+                               "percentage achieved rate: {:.4f}, "
+                               "retries: {}, "
+                               "avg latency: {: .4f} \u03BCs, p99: {: .4f} \u03BCs, p999:"
+                               "{: .4f} \u03BCs, median: {: .4f} \u03BCs".format(
+                                   host, thread, host_offered_load_pps, host_offered_load_gbps,
+                                   host_achieved_load_pps, host_achieved_load_gbps,
+                                   float(host_achieved_load_pps /
+                                         host_offered_load_pps),
+                                   retries,
+                                   host_avg, host_p99, host_p999, host_median))
 
         sorted_latencies = list(heapq.merge(*client_latency_lists))
         median = utils.median_func(sorted_latencies) / float(1000)
@@ -430,18 +441,18 @@ class EchoBench(runner.Experiment):
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)
         csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
-                                                                      iteration.get_message_type(),
-                                                                      iteration.get_size(),
-                                                                      total_offered_load_pps,
-                                                                      total_offered_load_gbps,
-                                                                      total_achieved_load_pps,
-                                                                      total_achieved_load_gbps,
-                                                                      percent_acheived_load,
-                                                                      total_retries,
-                                                                      avg,
-                                                                      median,
-                                                                      p99,
-                                                                      p999)
+                                                                   iteration.get_message_type(),
+                                                                   iteration.get_size(),
+                                                                   total_offered_load_pps,
+                                                                   total_offered_load_gbps,
+                                                                   total_achieved_load_pps,
+                                                                   total_achieved_load_gbps,
+                                                                   percent_acheived_load,
+                                                                   total_retries,
+                                                                   avg,
+                                                                   median,
+                                                                   p99,
+                                                                   p999)
         return csv_line
 
     def graph_results(self, folder, logfile):

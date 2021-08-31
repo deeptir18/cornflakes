@@ -6,9 +6,17 @@ import colorama
 from colorama import Fore
 from colorama import Style
 from statistics import mean
+import json
 
 NUM_TRIALS = 3
 NUM_RETRIES = 0
+
+
+def read_threads_json(json_file, thread_id):
+    f = open(json_file)
+    data = json.load(f)
+    thread_map = data['{}'.format(thread_id)]
+    return thread_map
 
 
 def info(*args):

@@ -2,7 +2,7 @@ use super::super::timing::ManualHistogram;
 use color_eyre::eyre::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::to_writer;
-use std::fs::File;
+use std::{collections::HashMap, fs::File};
 
 const NANOS_IN_SEC: f64 = 1000000000.0;
 
@@ -179,6 +179,16 @@ impl std::ops::Add for ThreadStats {
         }
     }
 }
+
+fn vec_to_map(vec: Vec<ThreadStats>) -> HashMap<usize, ThreadStats> {
+    let mut map: HashMap<usize, ThreadStats> = HashMap::default();
+    for (i, stats) in vec.into_iter().enumerate() {
+        assert!(stats.thread_id == i);
+        map.insert(i, stats);
+    }
+    map
+}
+
 pub fn dump_thread_stats(
     info: Vec<ThreadStats>,
     thread_info_path: Option<String>,
@@ -186,7 +196,8 @@ pub fn dump_thread_stats(
 ) -> Result<()> {
     match thread_info_path {
         Some(p) => {
-            to_writer(&File::create(&p)?, &info)?;
+            let map = vec_to_map(info.clone());
+            to_writer(&File::create(&p)?, &map)?;
         }
         None => {}
     }
