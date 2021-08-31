@@ -6,6 +6,7 @@ import os
 import parse
 import subprocess as sh
 import copy
+import time
 STRIP_THRESHOLD = 0.03
 
 SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096]
@@ -260,19 +261,19 @@ class KVBench(runner.Experiment):
                                 50000, 80000, 5000)]  # lower highest rate (?)
                             rates.append(90000)
                             rates.append(100000)
-                            for (machine_thread, rate) in zip(machine_threads,
-                                                              rates):
-                                client_rate = [(rate, machine_thread[0])]
-                                num_threads = machine_thread[1]
-                                it = KVIteration(client_rate,
-                                                 size,
-                                                 num_values,
-                                                 serialization,
-                                                 total_args.load_trace,
-                                                 total_args.access_trace,
-                                                 num_threads,
-                                                 trial=trial)
-                                ret.append(it)
+                            for machine_thread in machine_threads:
+                                for rate in rates:
+                                    client_rate = [(rate, machine_thread[0])]
+                                    num_threads = machine_thread[1]
+                                    it = KVIteration(client_rate,
+                                                     size,
+                                                     num_values,
+                                                     serialization,
+                                                     total_args.load_trace,
+                                                     total_args.access_trace,
+                                                     num_threads,
+                                                     trial=trial)
+                                    ret.append(it)
             return ret
 
     def add_specific_args(self, parser, namespace):
@@ -335,6 +336,8 @@ class KVBench(runner.Experiment):
                                       iteration,
                                       print_stats=False):
         exp_folder = iteration.get_folder_name(higher_level_folder)
+        utils.debug("Running analysis on folder {}".format(exp_folder))
+        start = time.time()
 
         # parse stdout logs
         total_offered_load_pps = 0
@@ -357,7 +360,7 @@ class KVBench(runner.Experiment):
                     **args)
                 latencies = utils.parse_latency_log(
                     latency_log, STRIP_THRESHOLD)
-                if latencies == []:
+                if len(latencies) == 0:
                     utils.warn(
                         "Error parsing latency log {}".format(latency_log))
                     return ""
@@ -378,17 +381,16 @@ class KVBench(runner.Experiment):
                 total_achieved_load_pps += host_achieved_load_pps
                 total_achieved_load_gbps += host_achieved_load_gbps
 
-                # convert to microseconds
-                host_p99 = utils.p99_func(latencies) / 1000.0
-                host_p999 = utils.p999_func(latencies) / 1000.0
-                host_median = utils.median_func(latencies) / 1000.0
-                host_avg = utils.mean_func(latencies) / 1000.0
-
                 # add retries
                 retries = int(thread_info["retries"])
                 total_retries += retries
 
                 if print_stats:
+                    # convert to microseconds
+                    host_p99 = utils.p99_func(latencies) / 1000.0
+                    host_p999 = utils.p999_func(latencies) / 1000.0
+                    host_median = utils.median_func(latencies) / 1000.0
+                    host_avg = utils.mean_func(latencies) / 1000.0
                     utils.info("Client {}, Thread {}: "
                                "offered load: {:.4f} req/s | {:.4f} Gbps, "
                                "achieved load: {:.4f} req/s | {:.4f} Gbps, "
@@ -403,24 +405,24 @@ class KVBench(runner.Experiment):
                                    retries,
                                    host_avg, host_p99, host_p999, host_median))
 
-        sorted_latencies = list(heapq.merge(*client_latency_lists))
+        sorted_latencies = utils.sort_latency_lists(client_latency_lists)
         median = utils.median_func(sorted_latencies) / float(1000)
         p99 = utils.p99_func(sorted_latencies) / float(1000)
         p999 = utils.p999_func(sorted_latencies) / float(1000)
         avg = utils.mean_func(sorted_latencies) / float(1000)
 
         if print_stats:
-            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, "  \
-                "achieved load: {:.4f} req/s | {:.4f} Gbps, " \
-                "percentage achieved rate: {:.4f}," \
-                "retries: {}, " \
-                "avg latency: {:.4f} \u03BCs, p99: {:.4f} \u03BCs, p999: {:.4f}" \
-                "\u03BCs, median: {:.4f} \u03BCs".format(
-                    total_offered_load_pps, total_offered_load_gbps,
-                    total_achieved_load_pps, total_achieved_load_gbps,
-                    float(total_achieved_load_pps / total_offered_load_pps),
-                    total_retries,
-                    avg, p99, p999, median)
+            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, "
+            "achieved load: {:.4f} req/s | {:.4f} Gbps, "
+            "percentage achieved rate: {:.4f},"
+            "retries: {}, "
+            "avg latency: {:.4f} \u03BCs, p99: {:.4f} \u03BCs, p999: {:.4f}"
+            "\u03BCs, median: {:.4f} \u03BCs".format(
+                total_offered_load_pps, total_offered_load_gbps,
+                total_achieved_load_pps, total_achieved_load_gbps,
+                float(total_achieved_load_pps / total_offered_load_pps),
+                total_retries,
+                avg, p99, p999, median)
             utils.info("Total Stats: ", total_stats)
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)
@@ -437,10 +439,45 @@ class KVBench(runner.Experiment):
                                                                    median,
                                                                    p99,
                                                                    p999)
+        utils.debug("Returning csv line: {} in {}".format(csv_line, time.time()
+                    - start))
         return csv_line
 
-    def graph_results(self, folder, logfile):
-        utils.warn("Graphing not implemented yet")
+    def graph_results(self, args, folder, logfile):
+        cornflakes_repo = self.config_yaml["cornflakes_dir"]
+        plot_path = Path(folder) / "plots"
+        plot_path.mkdir(exist_ok=True)
+        full_log = Path(folder) / logfile
+        plotting_script = Path(cornflakes_repo) / \
+            "experiments" / "plotting_scripts" / "kv_bench.R"
+        base_args = [str(plotting_script), str(full_log)]
+        metrics = ["p99", "median"]
+
+        # make total plot
+        for metric in metrics:
+            utils.debug("Summary plot for ", metric)
+            total_pdf = plot_path / "summary_{}.pdf".format(metric)
+            total_plot_args = [str(plotting_script),
+                               str(full_log), str(total_pdf),
+                               metric, "full"]
+            sh.run(total_plot_args)
+        # make individual plots
+        for metric in metrics:
+            for value_size in SIZES_TO_LOOP:
+                for batch_size in NUM_VALUES_TO_LOOP:
+                    individual_plot_path = plot_path / \
+                        "size_{}".format(value_size) / \
+                        "batch_{}".format(batch_size)
+                    individual_plot_path.mkdir(parents=True, exist_ok=True)
+                    pdf = individual_plot_path / \
+                        "size_{}_batch_{}_{}.pdf".format(value_size, batch_size,
+                                                         metric)
+                    total_plot_args = [str(plotting_script),
+                                       str(full_log), str(pdf),
+                                       metric, "individual", str(value_size),
+                                       str(batch_size)]
+
+                    sh.run(total_plot_args)
 
 
 def main():

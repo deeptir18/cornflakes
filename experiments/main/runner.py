@@ -167,16 +167,25 @@ class Experiment(metaclass=abc.ABCMeta):
             f = open(logfile_path, "w")
             f.write(self.get_logfile_header() + os.linesep)
 
+        ct = 0
         for iteration in iterations:
-            pool_args.append([folder_path, program_metadata, iteration,
-                              print_stats])
-
-        utils.debug("Number of pool args: {}".format(len(pool_args)))
-        ret = pool.starmap(self.run_analysis_individual_trial, pool_args)
-        for line in ret:
-            if line != "":
+            # use torch (Which should parallelize within iterations)
+            utils.debug("Ct: {}".format(ct))
+            ct += 1
+            ret = self.run_analysis_individual_trial(folder_path,
+                                                     program_metadata,
+                                                     iteration, print_stats)
+            if ret != "":
                 if f is not None:
-                    f.write(line + os.linesep)
+                    f.write(ret + os.linesep)
+            # pool_args.append([folder_path, program_metadata, iteration,
+            #                  print_stats])
+
+        #ret = pool.starmap(self.run_analysis_individual_trial, pool_args)
+        # for line in ret:
+        #    if line != "":
+        #        if f is not None:
+        #            f.write(line + os.linesep)
         if f is not None:
             f.close()
 

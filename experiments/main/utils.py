@@ -7,6 +7,8 @@ from colorama import Fore
 from colorama import Style
 from statistics import mean
 import json
+import numpy as np
+import torch
 
 NUM_TRIALS = 3
 NUM_RETRIES = 0
@@ -40,19 +42,29 @@ def warn(*args):
 
 
 def mean_func(arr):
-    return mean(arr)
+    mean = torch.mean(arr)
+    return mean.item()
 
 
 def median_func(arr):
-    return arr[int(len(arr) * 0.50)]
+    median = arr[int(len(arr) * 0.50)]
+    return median.item()
 
 
 def p99_func(arr):
-    return arr[int(len(arr) * 0.99)]
+    p99 = arr[int(len(arr) * 0.99)]
+    return p99.item()
 
 
 def p999_func(arr):
-    return arr[int(len(arr) * 0.999)]
+    p999 = arr[int(len(arr) * 0.999)]
+    return p999.item()
+
+
+def sort_latency_lists(arrays):
+    c = torch.cat(arrays)
+    c_sorted, c_ind = c.sort()
+    return c_sorted
 
 
 def parse_latency_log(log, threshold):
@@ -61,11 +73,14 @@ def parse_latency_log(log, threshold):
         return []
     with open(log) as f:
         raw_lines = f.readlines()
-        lines = [int(line.strip()) for line in raw_lines]
-    front_cutoff = int(len(lines) * threshold)
-    end_cutoff = int(len(lines) * (1.0 - threshold))
-    lines = lines[front_cutoff:end_cutoff]
-    return sorted(lines)
+        lines = [float(line.strip()) for line in raw_lines]
+        front_cutoff = int(len(lines) * threshold)
+        end_cutoff = int(len(lines) * (1.0 - threshold))
+        lines = lines[front_cutoff:end_cutoff]
+        np_array = np.array(lines)
+        v = torch.from_numpy(np_array)
+        v_sorted, v_ind = v.sort()
+    return v_sorted
 
 
 def get_tput_gbps(pkts_per_sec, pkt_size):

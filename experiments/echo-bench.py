@@ -455,7 +455,7 @@ class EchoBench(runner.Experiment):
                                                                    p999)
         return csv_line
 
-    def graph_results(self, folder, logfile):
+    def graph_results(self, args, folder, logfile):
         utils.warn("Graphing not implemented yet")
 
 
