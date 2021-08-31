@@ -167,6 +167,8 @@ where
     using_retries: bool,
     /// If in debug, keep track of MsgID -> MsgType
     message_info: HashMap<MsgID, MsgType>,
+    /// How many retries to keep track of
+    start_cutoff: usize,
     _marker: PhantomData<D>,
 }
 
@@ -186,6 +188,7 @@ where
         server_ip: Ipv4Addr,
         rtts: ManualHistogram,
         using_retries: bool,
+        start_cutoff: usize,
     ) -> Result<Self> {
         tracing::info!(
             client_id = client_id,
@@ -220,6 +223,7 @@ where
             in_flight: HashMap::default(),
             using_retries: using_retries,
             message_info: HashMap::default(),
+            start_cutoff: start_cutoff,
             _marker: PhantomData,
         })
     }
@@ -308,7 +312,7 @@ where
             let size = self
                 .serializer
                 .write_next_framed_request(&mut self.request_data.as_mut_slice(), &mut req)?;
-            if self.using_retries {
+            if self.using_retries || (self.last_sent_id - 1 < self.start_cutoff) {
                 // insert into in flight map
                 if !(self.in_flight.contains_key(&(self.last_sent_id as u32 - 1))) {
                     self.in_flight
@@ -365,7 +369,7 @@ where
                 bail!("Received ID not in message map: {}", sga.get_id());
             }
         }
-        if self.using_retries {
+        if self.using_retries || (sga.get_id() < self.start_cutoff as u32) {
             if let Some(_) = self.in_flight.remove(&sga.get_id()) {
             } else {
                 bail!("Received ID not in in flight map: {}", sga.get_id());
