@@ -251,8 +251,11 @@ class KVBench(runner.Experiment):
         else:
             # loop over various options
             ret = []
-            for trial in range(utils.NUM_TRIALS):
+            for trial in range(utils.NUM_TRIALS + 1):
                 for size in SIZES_TO_LOOP:
+                    if size > 256 and trial == 2:
+                        # definitely do a third trial for all of 256
+                        continue
                     for num_values in NUM_VALUES_TO_LOOP:
                         for serialization in SERIALIZATION_LIBRARIES:
                             machine_threads = [
@@ -261,8 +264,20 @@ class KVBench(runner.Experiment):
                                 50000, 80000, 5000)]  # lower highest rate (?)
                             rates.append(90000)
                             rates.append(100000)
+                            rates.append(110000)
+                            rates.append(120000)
+                            rates.append(130000)
+                            rates.append(135000)
+                            rates.append(140000)
                             for machine_thread in machine_threads:
                                 for rate in rates:
+                                    total_clients = machine_thread[0] * \
+                                        machine_thread[1]
+                                    if rate > 100000:
+                                        if total_clients < 8:
+                                            # only run this for stuff greater
+                                            # than 100000
+                                            continue
                                     client_rate = [(rate, machine_thread[0])]
                                     num_threads = machine_thread[1]
                                     it = KVIteration(client_rate,
@@ -327,7 +342,7 @@ class KVBench(runner.Experiment):
         return "serialization,value_size,num_values,"\
             "offered_load_pps,offered_load_gbps,"\
             "achieved_load_pps,achieved_load_gbps,"\
-            "percent_acheived_rate,total_retries,"\
+            "percent_achieved_rate,total_retries,"\
             "avg,median,p99,p999"
 
     def run_analysis_individual_trial(self,
@@ -412,17 +427,17 @@ class KVBench(runner.Experiment):
         avg = utils.mean_func(sorted_latencies) / float(1000)
 
         if print_stats:
-            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, "
-            "achieved load: {:.4f} req/s | {:.4f} Gbps, "
-            "percentage achieved rate: {:.4f},"
-            "retries: {}, "
-            "avg latency: {:.4f} \u03BCs, p99: {:.4f} \u03BCs, p999: {:.4f}"
-            "\u03BCs, median: {:.4f} \u03BCs".format(
-                total_offered_load_pps, total_offered_load_gbps,
-                total_achieved_load_pps, total_achieved_load_gbps,
-                float(total_achieved_load_pps / total_offered_load_pps),
-                total_retries,
-                avg, p99, p999, median)
+            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, " \
+                "achieved load: {:.4f} req/s | {:.4f} Gbps, " \
+                "percentage achieved rate: {:.4f}," \
+                "retries: {}, " \
+                "avg latency: {:.4f} \u03BCs, p99: {:.4f} \u03BCs, p999: {:.4f}" \
+                "\u03BCs, median: {:.4f} \u03BCs".format(
+                    total_offered_load_pps, total_offered_load_gbps,
+                    total_achieved_load_pps, total_achieved_load_gbps,
+                    float(total_achieved_load_pps / total_offered_load_pps),
+                    total_retries,
+                    avg, p99, p999, median)
             utils.info("Total Stats: ", total_stats)
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)

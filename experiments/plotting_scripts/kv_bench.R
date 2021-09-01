@@ -21,6 +21,9 @@ plot_type <- args[4]
 # argument 5: if individual -- size
 # argument 6: if individual -- num_values
 
+# cut out all data where the percentachieved is less than .95
+# d <- subset(d, percent_achieved_rate > .95)
+
 labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cereal" = "Cereal", "cornflakes-dynamic" = "Cornflakes (Hardware SG)", "cornflakes1c-dynamic" = "Cornflakes (1 Software Copy)")
 
 shape_values <- c('protobuf' = 7, 'cereal' = 4, 'capnproto' = 18, 'flatbuffers' = 17, 'cornflakes1c-dynamic' = 15, 'cornflakes-dynamic' = 19)
@@ -33,12 +36,13 @@ color_values <- c('cornflakes-dynamic' = '#1b9e77',
                     'protobuf' = '#e6ab02')
 
 base_plot <- function(data, metric) {
+    data <- subset(data, sdp99 < 300)
     if (metric == "p99") {
-        base_plot <- base_p99_plot(data, 100.0)
+        base_plot <- base_p99_plot(data, 300.0)
         base_plot <- label_plot(base_plot)
         return(base_plot)
     } else if (metric == "median") {
-        base_plot <- base_median_plot(data, 50.0)
+        base_plot <- base_median_plot(data, 90.0)
         base_plot <- label_plot(base_plot)
         return(base_plot)
     }
@@ -91,6 +95,7 @@ label_plot <- function(plot) {
 
 individual_plot <- function(data, metric, size, values) {
     data <- subset(data, num_values == values & value_size == size)
+    print(data)
     plot <- base_plot(data, metric)
     print(plot)
     return(plot)
@@ -111,13 +116,19 @@ full_plot <- function(data, metric) {
     return(plot)
 }
 
-summarized <- ddply(d, c("serialization", "value_size", "num_values", "offered_load_pps", "offered_load_gbps"), summarise,
+summarized <- ddply(d, c("serialization", "value_size", "num_values", "offered_load_pps"), summarise,
                         mavg = mean(avg),
                         mp99 = mean(p99),
                         avgmedian = mean(median),
                         mp999 = mean(p999),
                         sdp99 = sd(p99),
-                        sdmedian = sd(median))
+                        sdmedian = sd(median),
+                        mprate = mean(percent_achieved_rate),
+                        maload = mean(achieved_load_pps))
+
+# cutoff points where the sd of the p99 is > 50 % of the p99?
+# summarized$sdp99_percent = summarized$sdp99 / summarized$mp99
+# summarized <- subset(summarized, summarized$sdp99_percent < .25)
 
 if (plot_type == "full") {
     plot <- full_plot(summarized, metric)
