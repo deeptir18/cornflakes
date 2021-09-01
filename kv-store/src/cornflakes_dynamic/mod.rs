@@ -107,6 +107,7 @@ where
         map: &mut HashMap<String, CfBuf<D>>,
         num_values: usize,
         offset: usize,
+        _connection: &mut D,
     ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
         match num_values {
             0 => {

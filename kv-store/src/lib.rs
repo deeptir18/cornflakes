@@ -1,3 +1,4 @@
+pub mod capnproto;
 pub mod cornflakes_dynamic;
 pub mod ycsb_parser;
 use byteorder::{BigEndian, ByteOrder};
@@ -18,6 +19,16 @@ use std::{
 };
 use ycsb_parser::YCSBRequest;
 
+// TODO: though capnpc 0.14^ supports generating nested namespace files
+// there seems to be a bug in the code generation, so must include it at crate root
+mod kv_capnp {
+    #![allow(non_upper_case_globals)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_snake_case)]
+    #![allow(dead_code)]
+    #![allow(improper_ctypes)]
+    include!(concat!(env!("OUT_DIR"), "/kv_capnp.rs"));
+}
 pub const REQ_TYPE_SIZE: usize = 4;
 pub const MAX_REQ_SIZE: usize = 9216;
 pub const ALIGN_SIZE: usize = 256;
@@ -477,6 +488,7 @@ where
         map: &mut HashMap<String, CfBuf<D>>,
         num_values: usize,
         offset: usize,
+        connection: &mut D,
     ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)>;
 
     // Integrates the header ctx object into the cornflake.
@@ -591,7 +603,7 @@ where
                 }
                 MsgType::Put(size) => {
                     self.serializer
-                        .handle_put(in_sga, &mut self.map, size, REQ_TYPE_SIZE)
+                        .handle_put(in_sga, &mut self.map, size, REQ_TYPE_SIZE, conn)
                 }
             }?;
             cf.set_id(id);
