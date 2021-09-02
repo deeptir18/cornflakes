@@ -38,11 +38,11 @@ color_values <- c('cornflakes-dynamic' = '#1b9e77',
 base_plot <- function(data, metric) {
     data <- subset(data, sdp99 < 300)
     if (metric == "p99") {
-        base_plot <- base_p99_plot(data, 300.0)
+        base_plot <- base_p99_plot(data, 100.0)
         base_plot <- label_plot(base_plot)
         return(base_plot)
     } else if (metric == "median") {
-        base_plot <- base_median_plot(data, 90.0)
+        base_plot <- base_median_plot(data, 50.0)
         base_plot <- label_plot(base_plot)
         return(base_plot)
     }
