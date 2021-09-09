@@ -396,11 +396,15 @@ where
 
     pub fn add_entry(&mut self, entry: RcCornPtr<'a, D>) {
         self.data_size += entry.buf_size();
-        self.num_filled += 1;
         if entry.buf_type() == CornType::Registered {
             self.num_refcnted += 1;
         }
-        self.entries.push(entry);
+        if self.num_filled == self.entries.len() {
+            self.entries.push(entry);
+        } else {
+            self.entries[self.num_filled] = entry;
+        }
+        self.num_filled += 1;
     }
 }
 
@@ -743,11 +747,6 @@ where
     pub fn index_at_offset(&self, offset: usize) -> (usize, usize) {
         let mut cur_idx_size = 0;
         for idx in 0..self.num_segments() {
-            tracing::debug!(
-                current_idx = idx,
-                idx_len = self.index(idx).buf_size(),
-                offset_to_find = offset
-            );
             if (cur_idx_size + self.index(idx).buf_size()) > offset {
                 return (idx, (offset - cur_idx_size));
             }
@@ -766,13 +765,7 @@ where
     /// Returns an error if the given offset and length cannot create a contiguous slice (e.g.,
     /// would span two segments).
     pub fn contiguous_slice(&self, offset: usize, len: usize) -> Result<&[u8]> {
-        tracing::debug!(
-            "Trying to find contiguous slice with offset and length: ({},{})",
-            offset,
-            len
-        );
         let (seg, seg_off) = self.index_at_offset(offset);
-        tracing::debug!(seg = seg, seg_off = seg_off, "Found segment and seg off");
         ensure!(
             (self.index(seg).buf_size() - seg_off) >= len,
             "Given params cannot create a contiguous slice, would span two boundaries."
@@ -941,6 +934,9 @@ pub trait ClientSM {
     ) -> Result<()> {
         let mut recved = 0;
         let addr_info = datapath.get_outgoing_addr_from_ip(server_ip, port)?;
+        if recved >= num_pkts {
+            return Ok(());
+        }
 
         while let Some(msg) = self.get_next_msg()? {
             if recved >= num_pkts {

@@ -16,8 +16,9 @@ use cornflakes_utils::{
     global_debug_init, parse_server_port, AppMode, NetworkDatapath, SerializationType, TraceLevel,
 };
 use kv_store::{
-    cornflakes_dynamic::CornflakesDynamicSerializer, KVSerializer, KVServer,
-    SerializedRequestGenerator, YCSBClient,
+    capnproto::CapnprotoSerializer, cornflakes_dynamic::CornflakesDynamicSerializer,
+    flatbuffers::FlatBufferSerializer, KVSerializer, KVServer, SerializedRequestGenerator,
+    YCSBClient,
 };
 use std::{
     net::Ipv4Addr,
@@ -321,6 +322,22 @@ fn main() -> Result<()> {
                     opt
                 );
             }
+            (NetworkDatapath::DPDK, SerializationType::Capnproto) => {
+                init_kv_server!(
+                    CapnprotoSerializer<DPDKConnection>,
+                    DPDKConnection,
+                    dpdk_datapath(),
+                    opt
+                );
+            }
+            (NetworkDatapath::DPDK, SerializationType::Flatbuffers) => {
+                init_kv_server!(
+                    FlatBufferSerializer<DPDKConnection>,
+                    DPDKConnection,
+                    dpdk_datapath(),
+                    opt
+                );
+            }
             _ => {
                 unimplemented!();
             }
@@ -338,6 +355,24 @@ fn main() -> Result<()> {
             (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyDynamic) => {
                 run_kv_client!(
                     CornflakesDynamicSerializer<DPDKConnection>,
+                    DPDKConnection,
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
+                    opt
+                );
+            }
+            (NetworkDatapath::DPDK, SerializationType::Capnproto) => {
+                run_kv_client!(
+                    CapnprotoSerializer<DPDKConnection>,
+                    DPDKConnection,
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
+                    opt
+                );
+            }
+            (NetworkDatapath::DPDK, SerializationType::Flatbuffers) => {
+                run_kv_client!(
+                    FlatBufferSerializer<DPDKConnection>,
                     DPDKConnection,
                     dpdk_global_init(),
                     dpdk_per_thread_init,

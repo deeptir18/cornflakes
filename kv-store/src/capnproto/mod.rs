@@ -1,16 +1,16 @@
 use super::{
     kv_capnp, ycsb_parser::YCSBRequest, KVSerializer, MsgType, SerializedRequestGenerator,
+    ALIGN_SIZE,
 };
 use byteorder::{ByteOrder, LittleEndian};
 use capnp::message::{
     Allocator, Builder, HeapAllocator, Reader, ReaderOptions, ReaderSegments, SegmentArray,
 };
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
-use cornflakes_libos::{CfBuf, Datapath, RcCornPtr, RcCornflake, ReceivedPkt};
+use cornflakes_libos::{CfBuf, Datapath, RcCornPtr, RcCornflake, ReceivedPkt, ScatterGather};
 use hashbrown::HashMap;
 use std::{io::Write, marker::PhantomData};
 const FRAMING_ENTRY_SIZE: usize = 8;
-const ALIGN_SIZE: usize = 256;
 
 pub struct CapnprotoSerializer<D>
 where
@@ -25,13 +25,22 @@ where
 {
     assert!(recved_msg.data_len() >= FRAMING_ENTRY_SIZE);
     let num_segments = LittleEndian::read_u32(recved_msg.contiguous_slice(offset, 4)?) as usize;
-    assert!(recved_msg.data_len() >= FRAMING_ENTRY_SIZE + num_segments * FRAMING_ENTRY_SIZE);
+    tracing::debug!(
+        num_segments = num_segments,
+        total_len = recved_msg.data_len(),
+        "read_context"
+    );
+    assert!(
+        (recved_msg.data_len() - offset)
+            >= (FRAMING_ENTRY_SIZE + num_segments * FRAMING_ENTRY_SIZE)
+    );
     let mut size_so_far = FRAMING_ENTRY_SIZE + num_segments * FRAMING_ENTRY_SIZE;
     let mut segments: Vec<&[u8]> = Vec::default();
     for i in 0..num_segments {
         let cur_idx = offset + FRAMING_ENTRY_SIZE + i * FRAMING_ENTRY_SIZE;
         let data_offset = LittleEndian::read_u32(recved_msg.contiguous_slice(cur_idx, 4)?) as usize;
         let size = LittleEndian::read_u32(recved_msg.contiguous_slice(cur_idx + 4, 4)?) as usize;
+        tracing::debug!("Segment {} size: {}", i, size);
         assert!(recved_msg.data_len() >= (size_so_far + size));
         segments.push(recved_msg.contiguous_slice(offset + data_offset, size)?);
         size_so_far += size;
@@ -55,7 +64,7 @@ where
     for seg in segments.iter() {
         // write updates the location of the buffer
         if buf.write(seg.as_ref())? != seg.len() {
-            bail!("Failed to copy in framing");
+            bail!("Failed to copy in data to buff");
         }
         offset += seg.len();
     }
@@ -70,9 +79,16 @@ where
     let mut framing: Vec<u8> = vec![0u8; FRAMING_ENTRY_SIZE * (segments.len() + 1)];
     let mut cur_idx = 0;
     LittleEndian::write_u32(&mut framing[cur_idx..(cur_idx + 4)], segments.len() as u32);
+    tracing::debug!("Writing in # segments as {}", segments.len());
     cur_idx += 8;
     let mut cur_offset = (segments.len() + 1) * FRAMING_ENTRY_SIZE;
     for seg in segments.iter() {
+        tracing::debug!(
+            cur_idx = cur_idx,
+            pos = cur_offset,
+            len = seg.len(),
+            "Segment statistics"
+        );
         LittleEndian::write_u32(&mut framing[cur_idx..(cur_idx + 4)], cur_offset as u32);
         cur_idx += 4;
         LittleEndian::write_u32(&mut framing[cur_idx..(cur_idx + 4)], seg.len() as u32);
@@ -116,7 +132,7 @@ where
                 let get_request = message_reader
                     .get_root::<kv_capnp::get_req::Reader>()
                     .wrap_err("Failed to deserialize GetReq.")?;
-                tracing::debug!("Received get reequest for key: {:?}", get_request.get_key());
+                tracing::debug!("Received get request for key: {:?}", get_request.get_key());
                 let key = get_request.get_key()?;
                 let value = match map.get(key) {
                     Some(v) => v,
@@ -216,7 +232,7 @@ where
             x => {
                 let putm_request = message_reader
                     .get_root::<kv_capnp::put_m_req::Reader>()
-                    .wrap_err("Failed to deserialize PutReq.")?;
+                    .wrap_err("Failed to deserialize PutMReq.")?;
                 let keys = putm_request.get_keys()?;
                 let vals = putm_request.get_vals()?;
                 for i in 0..x {
@@ -256,10 +272,17 @@ where
         cornflake: &mut RcCornflake<'a, D>,
     ) -> Result<()> {
         cornflake.add_entry(RcCornPtr::RawRef(&ctx.0.as_slice()));
+        tracing::debug!(len = ctx.0.as_slice().len(), addr=? &ctx.0.as_slice().as_ptr(), "Entry 1");
         let segments = ctx.1.get_segments_for_output();
         for seg in segments.iter() {
-            cornflake.add_entry(RcCornPtr::RawRef(seg));
+            tracing::debug!(len = seg.len(), addr =? &seg.as_ptr(), "Adding segment");
+            cornflake.add_entry(RcCornPtr::RawRef(&seg));
         }
+        tracing::debug!(
+            data_len = cornflake.data_len(),
+            num_segments = cornflake.num_segments(),
+            "Sending out cf"
+        );
         Ok(())
     }
 }
@@ -294,7 +317,7 @@ where
                         // deserialize into GetResp
                         let get_resp = message_reader
                             .get_root::<kv_capnp::get_resp::Reader>()
-                            .wrap_err("Failed to deserialize GetReq.")?;
+                            .wrap_err("Failed to deserialize GetResp.")?;
                         ensure!(
                         get_resp.get_id() == id,
                         format!("Id in  deserialized message does not match: expected: {}, actual: {}", id, get_resp.get_id())
@@ -363,6 +386,7 @@ where
                     let (key, _val) = req.get_next_kv()?;
                     let mut get_req = builder.init_root::<kv_capnp::get_req::Builder>();
                     get_req.set_key(&key);
+                    get_req.set_id(req.get_id());
                     let (context, _num_segments) = fill_in_context(&builder);
                     let written = copy_into_buf(buf, &context, &builder)?;
                     return Ok(written);

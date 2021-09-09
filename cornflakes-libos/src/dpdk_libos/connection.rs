@@ -102,13 +102,13 @@ impl AsRef<[u8]> for DPDKBuffer {
     fn as_ref(&self) -> &[u8] {
         let data_len = unsafe { (*self.mbuf).data_len } as usize;
         let slice = mbuf_slice!(self.mbuf, self.offset, data_len - self.offset);
-        tracing::debug!(
+        /*tracing::debug!(
             "Mbuf address: {:?}, slice address: {:?}, data off: {:?}, buf_addr: {:?}",
             self.mbuf,
             slice.as_ptr(),
             unsafe { (*self.mbuf).data_off },
             unsafe { (*self.mbuf).buf_addr }
-        );
+        );*/
         slice
     }
 }
@@ -117,13 +117,13 @@ impl AsMut<[u8]> for DPDKBuffer {
     fn as_mut(&mut self) -> &mut [u8] {
         let data_len = unsafe { (*self.mbuf).data_len } as usize;
         let slice = mbuf_slice!(self.mbuf, self.offset, data_len - self.offset);
-        tracing::debug!(
+        /*tracing::debug!(
             "Mbuf address: {:?}, slice address: {:?}, data off: {:?}, buf_addr: {:?}",
             self.mbuf,
             slice.as_ptr(),
             unsafe { (*self.mbuf).data_off },
             unsafe { (*self.mbuf).buf_addr }
-        );
+        );*/
         slice
     }
 }

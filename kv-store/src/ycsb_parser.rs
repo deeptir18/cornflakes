@@ -84,9 +84,7 @@ impl<'a> Iterator for YCSBRequest<'a> {
     type Item = (String, &'a str);
 
     fn next(&mut self) -> Option<Self::Item> {
-        tracing::debug!("cur_idx: {}", self.cur_idx);
         if self.cur_idx == self.num_keys {
-            tracing::debug!("Ending iterator");
             return None;
         }
 

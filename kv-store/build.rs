@@ -8,7 +8,7 @@ use std::{
     //fs::{canonicalize, read_to_string, File},
     //io::{BufWriter, Write},
     path::Path,
-    //process::Command,
+    process::Command,
 };
 
 fn main() {
@@ -58,5 +58,23 @@ fn main() {
         .expect(&format!(
             "Capnp compilation failed on {:?}.",
             input_capnp_file
+        ));
+
+    // compile flatbuffers
+    let input_fb_path = kv_src_path.clone().join("flatbuffers");
+    let input_fb_file = input_fb_path.clone().join("kv_fb.fbs");
+
+    // requires flatbuffers is installed as flatc in path
+    Command::new("flatc")
+        .args(&[
+            "--rust",
+            "-o",
+            out_dir_path.to_str().unwrap(),
+            input_fb_file.as_path().to_str().unwrap(),
+        ])
+        .output()
+        .expect(&format!(
+            "Failed to run flatc compiler on {:?}.",
+            input_fb_file
         ));
 }

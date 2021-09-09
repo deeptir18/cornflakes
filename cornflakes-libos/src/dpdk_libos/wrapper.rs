@@ -262,6 +262,7 @@ impl Pkt {
     ) -> Result<()> {
         for i in 0..sga.num_segments() {
             let cornptr = sga.index(i);
+            tracing::debug!(seg = i, len = cornptr.as_ref().len(), addr=? cornptr.as_ref().as_ptr(), "Copying cornptr into packet");
             // copy this payload into the head buffer
             self.copy_payload(mbufs, pkt_id, 0, cornptr.as_ref())
                 .wrap_err("Failed to copy sga owned entry {} into pkt list.")?;

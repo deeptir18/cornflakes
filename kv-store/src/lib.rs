@@ -1,5 +1,6 @@
 pub mod capnproto;
 pub mod cornflakes_dynamic;
+pub mod flatbuffers;
 pub mod ycsb_parser;
 use byteorder::{BigEndian, ByteOrder};
 use color_eyre::eyre::{bail, eyre, Result, WrapErr};

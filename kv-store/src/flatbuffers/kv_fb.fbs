@@ -1,0 +1,41 @@
+namespace kv_fb;
+
+table Value {
+    data:[ubyte];
+}
+
+table GetReq {
+    id:uint32;
+    key:string;
+}
+
+table GetMReq {
+    id:uint32;
+    keys:[string];
+}
+
+table GetResp {
+    id:uint32;
+    val:[ubyte];
+}
+
+table GetMResp {
+    id:uint32;
+    vals:[Value];
+}
+
+table PutReq {
+    id:uint32;
+    key:string;
+    val:[ubyte];
+}
+
+table PutMReq {
+    id:uint32;
+    keys:[string];
+    vals:[Value];
+}
+
+table PutResp {
+    id:uint32;
+}

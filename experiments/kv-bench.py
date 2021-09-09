@@ -8,9 +8,14 @@ import subprocess as sh
 import copy
 import time
 STRIP_THRESHOLD = 0.03
+NUM_CLIENTS = 2
+NUM_THREADS = 4
+rates = [6250, 10000, 12500, 18750, 25000, 30000, 35000, 45000, 50000, 55000,
+         60000, 65000, 75000, 85000, 95000, 105000, 115000, 125000, 130000,
+         135000]
 
-SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096]
-NUM_VALUES_TO_LOOP = [1, 2]
+SIZES_TO_LOOP = [128, 256, 512, 1024, 2048, 4096]
+NUM_VALUES_TO_LOOP = [1, 2, 4]
 SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cornflakes1c-dynamic"]
 
 
@@ -251,44 +256,22 @@ class KVBench(runner.Experiment):
         else:
             # loop over various options
             ret = []
-            for trial in range(utils.NUM_TRIALS + 1):
-                for size in SIZES_TO_LOOP:
-                    if size > 256 and trial == 2:
-                        # definitely do a third trial for all of 256
-                        continue
-                    for num_values in NUM_VALUES_TO_LOOP:
-                        for serialization in SERIALIZATION_LIBRARIES:
-                            machine_threads = [
-                                (1, 1), (2, 1), (3, 1), (2, 2), (3, 2), (2, 4)]
-                            rates = [rate for rate in range(
-                                50000, 80000, 5000)]  # lower highest rate (?)
-                            rates.append(90000)
-                            rates.append(100000)
-                            rates.append(110000)
-                            rates.append(120000)
-                            rates.append(130000)
-                            rates.append(135000)
-                            rates.append(140000)
-                            for machine_thread in machine_threads:
-                                for rate in rates:
-                                    total_clients = machine_thread[0] * \
-                                        machine_thread[1]
-                                    if rate > 100000:
-                                        if total_clients < 8:
-                                            # only run this for stuff greater
-                                            # than 100000
-                                            continue
-                                    client_rate = [(rate, machine_thread[0])]
-                                    num_threads = machine_thread[1]
-                                    it = KVIteration(client_rate,
-                                                     size,
-                                                     num_values,
-                                                     serialization,
-                                                     total_args.load_trace,
-                                                     total_args.access_trace,
-                                                     num_threads,
-                                                     trial=trial)
-                                    ret.append(it)
+            for trial in range(utils.NUM_TRIALS):
+                for serialization in SERIALIZATION_LIBRARIES:
+                    for rate in rates:
+                        client_rates = [(rate, NUM_CLIENTS)]
+                        num_threads = NUM_THREADS
+                        for size in SIZES_TO_LOOP:
+                            for num_values in NUM_VALUES_TO_LOOP:
+                                it = KVIteration(client_rates,
+                                                 size,
+                                                 num_values,
+                                                 serialization,
+                                                 total_args.load_trace,
+                                                 total_args.access_trace,
+                                                 num_threads,
+                                                 trial=trial)
+                                ret.append(it)
             return ret
 
     def add_specific_args(self, parser, namespace):

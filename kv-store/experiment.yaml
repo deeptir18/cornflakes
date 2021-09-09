@@ -1,6 +1,6 @@
 ### Experiment runner yaml for KV-server benchmark
 
-time: 10
+time: 15
 programs:
     start_server:
         start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu nice -n -19 taskset -c 1 {cornflakes_dir}/target/release/kv --config_file {config_file} --mode server --trace {trace} --debug_level info --size {size} --num_values {num_values} --serialization {library}
