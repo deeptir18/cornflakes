@@ -17,8 +17,8 @@ use cornflakes_utils::{
 };
 use kv_store::{
     capnproto::CapnprotoSerializer, cornflakes_dynamic::CornflakesDynamicSerializer,
-    flatbuffers::FlatBufferSerializer, KVSerializer, KVServer, SerializedRequestGenerator,
-    YCSBClient,
+    flatbuffers::FlatBufferSerializer, protobuf::ProtobufSerializer, KVSerializer, KVServer,
+    SerializedRequestGenerator, YCSBClient,
 };
 use std::{
     net::Ipv4Addr,
@@ -338,6 +338,14 @@ fn main() -> Result<()> {
                     opt
                 );
             }
+            (NetworkDatapath::DPDK, SerializationType::Protobuf) => {
+                init_kv_server!(
+                    ProtobufSerializer<DPDKConnection>,
+                    DPDKConnection,
+                    dpdk_datapath(),
+                    opt
+                );
+            }
             _ => {
                 unimplemented!();
             }
@@ -373,6 +381,15 @@ fn main() -> Result<()> {
             (NetworkDatapath::DPDK, SerializationType::Flatbuffers) => {
                 run_kv_client!(
                     FlatBufferSerializer<DPDKConnection>,
+                    DPDKConnection,
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
+                    opt
+                );
+            }
+            (NetworkDatapath::DPDK, SerializationType::Protobuf) => {
+                run_kv_client!(
+                    ProtobufSerializer<DPDKConnection>,
                     DPDKConnection,
                     dpdk_global_init(),
                     dpdk_per_thread_init,

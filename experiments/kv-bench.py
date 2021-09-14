@@ -14,9 +14,10 @@ rates = [6250, 10000, 12500, 18750, 25000, 30000, 35000, 45000, 50000, 55000,
          60000, 65000, 75000, 85000, 95000, 105000, 115000, 125000, 130000,
          135000]
 
-SIZES_TO_LOOP = [128, 256, 512, 1024, 2048, 4096]
+SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096]
 NUM_VALUES_TO_LOOP = [1, 2, 4]
-SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cornflakes1c-dynamic"]
+SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cornflakes1c-dynamic",
+                           "capnproto", "flatbuffers"]
 
 
 class KVIteration(runner.Iteration):
@@ -261,8 +262,9 @@ class KVBench(runner.Experiment):
                     for rate in rates:
                         client_rates = [(rate, NUM_CLIENTS)]
                         num_threads = NUM_THREADS
-                        for size in SIZES_TO_LOOP:
+                        for total_size in SIZES_TO_LOOP:
                             for num_values in NUM_VALUES_TO_LOOP:
+                                size = int(total_size / num_values)
                                 it = KVIteration(client_rates,
                                                  size,
                                                  num_values,

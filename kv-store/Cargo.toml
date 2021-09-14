@@ -28,7 +28,7 @@ hashbrown = "0.11.*"
 affinity = "0.1.1"
 
 [build-dependencies]
-protoc-rust = "2.*.*"
+protoc-rust = "2.23.*"
 capnpc = "0.13"
 cornflakes-codegen = { path = "../cornflakes-codegen" }
 

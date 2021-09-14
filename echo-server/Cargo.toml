@@ -27,7 +27,7 @@ affinity = "0.1.1"
 cxx = "1.0"
 
 [build-dependencies]
-protoc-rust = "2.*.*"
+protoc-rust = "2.23.0"
 capnpc = "0.13"
 cornflakes-codegen = { path = "../cornflakes-codegen" }
 cxx-build = "1.0"

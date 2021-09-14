@@ -1,6 +1,7 @@
 pub mod capnproto;
 pub mod cornflakes_dynamic;
 pub mod flatbuffers;
+pub mod protobuf;
 pub mod ycsb_parser;
 use byteorder::{BigEndian, ByteOrder};
 use color_eyre::eyre::{bail, eyre, Result, WrapErr};
@@ -360,9 +361,10 @@ where
         self.recved += 1;
         tracing::debug!(
             thread_id = self.thread_id,
-            "Receiving {}th packet with id {}",
+            "Receiving {}th packet with id {}, length {}",
             self.recved,
             sga.get_id(),
+            sga.data_len(),
         );
 
         // if debug, deserialize and check the message has the right dimensions

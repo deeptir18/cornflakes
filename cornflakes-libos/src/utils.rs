@@ -197,9 +197,10 @@ pub fn check_ipv4_hdr(hdr_buf: &mut [u8], my_ip: &Ipv4Addr) -> Result<(Ipv4Addr,
 }
 
 #[inline]
-pub fn check_udp_hdr(hdr_buf: &mut [u8], my_udp_port: u16) -> Result<(u16, u16)> {
+pub fn check_udp_hdr(hdr_buf: &mut [u8], my_udp_port: u16) -> Result<(u16, u16, usize)> {
     let src_port = NetworkEndian::read_u16(&hdr_buf[0..2]);
     let dst_port = NetworkEndian::read_u16(&hdr_buf[2..4]);
+    let data_len = NetworkEndian::read_u16(&hdr_buf[4..6]) as usize;
 
     if dst_port != my_udp_port {
         debug!(
@@ -213,7 +214,7 @@ pub fn check_udp_hdr(hdr_buf: &mut [u8], my_udp_port: u16) -> Result<(u16, u16)>
         );
     }
 
-    Ok((src_port, dst_port))
+    Ok((src_port, dst_port, data_len))
 }
 
 #[inline]

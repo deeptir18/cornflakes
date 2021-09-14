@@ -127,6 +127,11 @@ impl Pkt {
         // 3: copy the payloads from the sga into the mbufs
         self.copy_all_payloads(mbufs, pkt_id, sga)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
+        tracing::debug!(
+            "Final pkt len: {} and data len: {}",
+            unsafe { (*header_mbuf).pkt_len },
+            unsafe { (*header_mbuf).data_len }
+        );
 
         Ok(())
     }
@@ -923,14 +928,14 @@ pub fn rx_burst(
     rx_pkts: *mut *mut rte_mbuf,
     nb_pkts: u16,
     my_addr_info: &utils::AddressInfo,
-) -> Result<HashMap<usize, (MsgID, utils::AddressInfo)>> {
-    let mut valid_packets: HashMap<usize, (MsgID, utils::AddressInfo)> = HashMap::new();
+) -> Result<HashMap<usize, (MsgID, utils::AddressInfo, usize)>> {
+    let mut valid_packets: HashMap<usize, (MsgID, utils::AddressInfo, usize)> = HashMap::new();
     let num_received = dpdk_call!(rte_eth_rx_burst(port_id, queue_id, rx_pkts, nb_pkts));
     for i in 0..num_received {
         let pkt = unsafe { *rx_pkts.offset(i as isize) };
         match check_valid_packet(pkt, my_addr_info) {
-            Some((id, hdr)) => {
-                valid_packets.insert(i as usize, (id, hdr));
+            Some((id, hdr, size)) => {
+                valid_packets.insert(i as usize, (id, hdr, size));
             }
             None => {
                 tracing::debug!("Queue {} received invalid packet", queue_id);
@@ -955,7 +960,7 @@ pub fn rx_burst(
 fn check_valid_packet(
     pkt: *mut rte_mbuf,
     my_addr_info: &utils::AddressInfo,
-) -> Option<(MsgID, utils::AddressInfo)> {
+) -> Option<(MsgID, utils::AddressInfo, usize)> {
     let eth_hdr_slice = mbuf_slice!(pkt, 0, utils::ETHERNET2_HEADER2_SIZE);
     let src_eth = match utils::check_eth_hdr(eth_hdr_slice, &my_addr_info.ether_addr) {
         Ok((eth, _)) => eth,
@@ -979,8 +984,9 @@ fn check_valid_packet(
         utils::UDP_HEADER2_SIZE
     );
 
-    let src_port = match utils::check_udp_hdr(udp_hdr_slice, my_addr_info.udp_port) {
-        Ok((port, _)) => port,
+    let (src_port, udp_data_len) = match utils::check_udp_hdr(udp_hdr_slice, my_addr_info.udp_port)
+    {
+        Ok((port, _, size)) => (port, size),
         Err(_) => {
             return None;
         }
@@ -994,7 +1000,11 @@ fn check_valid_packet(
 
     let msg_id = utils::parse_msg_id(id_hdr_slice);
 
-    Some((msg_id, (utils::AddressInfo::new(src_port, src_ip, src_eth))))
+    Some((
+        msg_id,
+        (utils::AddressInfo::new(src_port, src_ip, src_eth)),
+        udp_data_len - 4,
+    ))
 }
 
 /// Frees the mbuf, returns it to it's original mempool.
@@ -1244,7 +1254,7 @@ mod tests {
         let msg_id = utils::parse_msg_id(id_hdr_slice);
         assert!(msg_id == 1);
 
-        let (msg_id, addr_info) = check_valid_packet(mbuf, &dst_info).unwrap();
+        let (msg_id, addr_info, _size) = check_valid_packet(mbuf, &dst_info).unwrap();
         assert!(msg_id == 1);
         assert!(addr_info == src_info);
     }
@@ -1465,7 +1475,7 @@ mod tests {
             assert!(((*(mbufs[1][0])).next).is_null());
         }
 
-        let (msg_id, addr_info) = check_valid_packet(mbufs[0][0], &dst_info).unwrap();
+        let (msg_id, addr_info, _size) = check_valid_packet(mbufs[0][0], &dst_info).unwrap();
         assert!(msg_id == 1);
         assert!(addr_info == src_info);
 
@@ -1530,7 +1540,7 @@ mod tests {
             assert!(((*(mbufs[1][0])).next).is_null());
         }
 
-        let (msg_id, addr_info) = check_valid_packet(mbufs[0][0], &dst_info).unwrap();
+        let (msg_id, addr_info, _size) = check_valid_packet(mbufs[0][0], &dst_info).unwrap();
         assert!(msg_id == 1);
         assert!(addr_info == src_info);
 
@@ -1609,7 +1619,7 @@ mod tests {
             assert!(((*(mbufs[2][0])).next).is_null());
         }
 
-        let (msg_id, addr_info) = check_valid_packet(mbufs[0][0], &dst_info).unwrap();
+        let (msg_id, addr_info, _size) = check_valid_packet(mbufs[0][0], &dst_info).unwrap();
         assert!(msg_id == 1);
         assert!(addr_info == src_info);
 
@@ -1677,7 +1687,7 @@ mod tests {
             assert!(((*(mbufs[1][0])).next).is_null());
         }
 
-        let (msg_id, addr_info) = check_valid_packet(mbufs[0][0], &dst_info).unwrap();
+        let (msg_id, addr_info, _size) = check_valid_packet(mbufs[0][0], &dst_info).unwrap();
         assert!(msg_id == 3);
         assert!(addr_info == src_info);
 

@@ -12,6 +12,7 @@ use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
+    mem::MaybeUninit,
     net::Ipv4Addr,
     ptr, slice,
     sync::{Arc, Mutex},
@@ -43,8 +44,6 @@ impl DPDKBuffer {
             },
             None => unsafe {
                 (*mbuf).data_len = (*mbuf).buf_len - (*mbuf).data_off;
-                //tracing::debug!("setting data_len of mbuf to be: {:?}", (*mbuf).data_len);
-                (*mbuf).data_len = (*mbuf).buf_len - (*mbuf).data_off
             },
         }
         DPDKBuffer {
@@ -250,6 +249,7 @@ impl DPDKConnection {
                 .wrap_err("Failed to add DPDK default mempool to mempool allocator")?;
         }
 
+        tracing::debug!("Use scatter_gather: {}", use_scatter_gather);
         Ok(DPDKConnection {
             queue_id: 0,
             use_scatter_gather: use_scatter_gather,
@@ -400,6 +400,17 @@ fn init_timers(mode: AppMode) -> Result<HashMap<String, Arc<Mutex<HistogramWrapp
     Ok(timers)
 }
 
+fn get_ether_addr(mac: &MacAddress) -> MaybeUninit<rte_ether_addr> {
+    let eth_array = mac.to_array();
+    let mut server_eth_uninit: MaybeUninit<rte_ether_addr> = MaybeUninit::zeroed();
+    unsafe {
+        for i in 0..eth_array.len() {
+            (*server_eth_uninit.as_mut_ptr()).addr_bytes[i] = eth_array[i];
+        }
+    }
+    server_eth_uninit
+}
+
 impl Datapath for DPDKConnection {
     type DatapathPkt = DPDKBuffer;
     type RxPacketAllocator = wrapper::MempoolPtr;
@@ -415,7 +426,7 @@ impl Datapath for DPDKConnection {
         // TODO: only works when there is one physical queue
         let dpdk_port = nb_ports - 1;
 
-        let (_ip_to_mac, mac_to_ip, server_port, client_port) = parse_yaml_map(config_path)
+        let (ip_to_mac, mac_to_ip, server_port, client_port) = parse_yaml_map(config_path)
             .wrap_err(
             "Failed to get ip to mac address mapping, or udp port information from yaml config.",
         )?;
@@ -435,6 +446,24 @@ impl Datapath for DPDKConnection {
             );
 
             let addr_info = utils::AddressInfo::new(server_port, *my_ip_addr, my_mac);
+
+            // add a flow control rule on the server side
+            // what is their ethernet_addr (should be an rte_ether_addr struct)
+            /*let mut server_eth = get_ether_addr(ip_to_mac.get(my_ip_addr).unwrap());
+            let server_ip = dpdk_call!(make_ip(
+                my_ip_addr.octets()[0],
+                my_ip_addr.octets()[1],
+                my_ip_addr.octets()[2],
+                my_ip_addr.octets()[3]
+            ));
+            dpdk_call!(add_flow_rule(
+                dpdk_port,
+                server_eth.as_mut_ptr(),
+                server_ip,
+                server_port,
+                0
+            ));*/
+
             return Ok((
                 dpdk_port,
                 vec![(wrapper::MempoolPtr(mempools[0]), addr_info)],
@@ -696,7 +725,7 @@ impl Datapath for DPDKConnection {
 
         // Debugging end to end processing time
         if cfg!(feature = "timers") && self.mode == AppMode::Server {
-            for (_, (msg_id, addr_info)) in received.iter() {
+            for (_, (msg_id, addr_info, _data_len)) in received.iter() {
                 self.start_entry(PROCESSING_TIMER, *msg_id, addr_info.ipv4_addr.clone())?;
             }
         }
@@ -708,18 +737,22 @@ impl Datapath for DPDKConnection {
                 cfg!(feature = "timers") && self.mode == AppMode::Server,
             )?;
             let start = Instant::now();
-            for (idx, (msg_id, addr_info)) in received.into_iter() {
+            for (idx, (msg_id, addr_info, _data_len)) in received.into_iter() {
                 let mbuf = self.recv_mbufs[idx];
                 if mbuf.is_null() {
                     bail!("Mbuf for index {} in returned array is null.", idx);
                 }
 
-                let data_len = unsafe { (*(self.recv_mbufs[idx])).data_len as usize };
-                tracing::debug!(data_len = data_len, id = msg_id, "Received pkt");
+                tracing::debug!(
+                    data_len = unsafe { (*(self.recv_mbufs[idx])).data_len as usize },
+                    id = msg_id,
+                    pkt_len = unsafe { (*(self.recv_mbufs[idx])).pkt_len as usize },
+                    "Received pkt"
+                );
                 let received_buffer = vec![DPDKBuffer::new(
                     self.recv_mbufs[idx],
                     utils::TOTAL_HEADER_SIZE,
-                    Some(data_len),
+                    Some(unsafe { (*(self.recv_mbufs[idx])).data_len as usize }),
                 )];
 
                 let received_pkt = ReceivedPkt::new(received_buffer, msg_id, addr_info);

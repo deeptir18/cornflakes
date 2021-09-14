@@ -1,0 +1,40 @@
+syntax = "proto3";
+package kv_proto;
+
+// TODO: do we actually need the IDs here?
+// Given we put them in the header for efficient access on the client side.
+message GetReq {
+    uint32 id = 1;
+    string key = 2;
+}
+
+message GetResp {
+    uint32 id = 1;
+    bytes val = 2;
+}
+
+message PutReq {
+    uint32 id = 1;
+    string key = 2;
+    bytes val = 3;
+}
+
+message PutResp {
+    uint32 id = 1;
+}
+
+message GetMReq {
+    uint32 id = 1;
+    repeated string keys = 2;
+}
+
+message GetMResp {
+    uint32 id = 1;
+    repeated bytes vals = 2;
+}
+
+message PutMReq {
+    uint32 id = 1;
+    repeated string keys = 2;
+    repeated bytes vals = 3;
+}
