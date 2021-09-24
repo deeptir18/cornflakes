@@ -94,7 +94,7 @@ label_plot <- function(plot) {
 }
 
 individual_plot <- function(data, metric, size, values) {
-    data <- subset(data, num_values == values & value_size == size)
+    data <- subset(data, num_values == values & total_size == size)
     print(data)
     plot <- base_plot(data, metric)
     print(plot)
@@ -103,7 +103,7 @@ individual_plot <- function(data, metric, size, values) {
 
 full_plot <- function(data, metric) {
     plot <- base_plot(data, metric) +
-        facet_grid(value_size ~ num_values, scales="free") +
+        facet_grid(total_size ~ num_values, scales="free") +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
                   legend.title = element_blank(),
@@ -116,7 +116,9 @@ full_plot <- function(data, metric) {
     return(plot)
 }
 
-summarized <- ddply(d, c("serialization", "value_size", "num_values", "offered_load_pps"), summarise,
+
+d$total_size = d$value_size * d$num_values;
+summarized <- ddply(d, c("serialization", "total_size", "value_size", "num_values", "offered_load_pps"), summarise,
                         mavg = mean(avg),
                         mp99 = mean(p99),
                         avgmedian = mean(median),
@@ -135,9 +137,9 @@ if (plot_type == "full") {
     ggsave("tmp.pdf", width=9, height=9)
     embed_fonts("tmp.pdf", outfile=plot_pdf)
 } else if (plot_type == "individual") {
-    value_size <- strtoi(args[5])
+    total_size <- strtoi(args[5])
     num_values <- strtoi(args[6])
-    plot <- individual_plot(summarized, metric, value_size, num_values)
+    plot <- individual_plot(summarized, metric, total_size, num_values)
     ggsave("tmp.pdf", width=9, height=6)
     embed_fonts("tmp.pdf", outfile=plot_pdf)
 }
