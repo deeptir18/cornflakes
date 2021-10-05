@@ -2,6 +2,7 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 #include "mem.h"
+#include "debug.h"
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
@@ -19,7 +20,6 @@
 #include "fcntl.h"
 #include <sys/types.h>
 #include <unistd.h>
-//#include <numaif.h>
 
 #include <rte_memory.h>
 #include <rte_launch.h>
@@ -69,14 +69,20 @@ struct tx_pktmbuf_priv
     int32_t field2; // needs to be atleast 8 bytes large
 };
 
-struct ClientRequest
+typedef struct OutgoingHeader
+{
+    struct rte_ether_hdr eth;
+    struct rte_ipv4_hdr ipv4;
+    struct rte_udp_hdr udp;
+} __attribute__((packed)) OutgoingHeader;
+
+
+typedef struct ClientRequest
 {
     uint64_t timestamp;
     uint64_t packet_id;
-    uint64_t segment_size;
-    uint64_t num_segments;
     uint64_t segment_offsets[32]; // maximum number of segments we'd be asking for (within array_size)
-};
+} __attribute__((packed)) ClientRequest;
 
 static void add_latency(Latency_Dist_t *dist, uint64_t latency) {
     dist->latencies[dist->total_count] = latency;
@@ -100,6 +106,30 @@ int cmpfunc(const void * a, const void *b) {
     const uint64_t *a_ptr = (const uint64_t *)a;
     const uint64_t *b_ptr = (const uint64_t *)b;
     return (int)(*a_ptr - *b_ptr);
+}
+
+static void dump_debug_latencies(Latency_Dist_t *dist) {
+    // sort the latencies
+    NETPERF_DEBUG("Dumping latencies: ct: %lu", dist->total_count);
+    uint64_t *arr = malloc(dist->total_count * sizeof(uint64_t));
+    NETPERF_DEBUG("Allocated array");
+    if (arr == NULL) {
+        printf("Not able to allocate array to sort latencies\n");
+        exit(1);
+    }
+    for (size_t i = 0; i < dist->total_count; i++) {
+        arr[i] = dist->latencies[i];
+    }
+    NETPERF_DEBUG("Filled array");
+    qsort(arr, dist->total_count, sizeof(uint64_t), cmpfunc);
+	uint64_t avg_latency = (dist->latency_sum) / (dist->total_count);
+    uint64_t median = arr[(size_t)((double)dist->total_count * 0.50)];
+    uint64_t p99 = arr[(size_t)((double)dist->total_count * 0.99)];
+    uint64_t p999 = arr[(size_t)((double)dist->total_count * 0.999)];
+
+    printf("Stats:\n\t- Min latency: %u ns\n\t- Max latency: %u ns\n\t- Avg latency: %" PRIu64 " ns", (unsigned)dist->min, (unsigned)dist->max, avg_latency);
+    printf("\n\t- Median latency: %u ns\n\t- p99 latency: %u ns\n\t- p999 latency: %u ns\n", (unsigned)median, (unsigned)p99, (unsigned)p999);
+    free(arr);
 }
 
 static void dump_latencies(Latency_Dist_t *dist, float total_time, size_t message_size, float rate_gbps) {
@@ -215,95 +245,19 @@ static void calculate_latencies(Packet_Map_t *map, Latency_Dist_t *dist, size_t 
     printf("\nNum fully received: %d, packets per bucket: %u, total_count: %u.\n", num_valid, (unsigned)num_per_bucket, (unsigned)map->total_count);
 }
 
-
-typedef void (*netperf_onfail_t)(int error_arg,
-      const char *expr_arg, const char *funcn_arg, const char *filen_arg,
-      int lineno_arg);
-
-static void default_onfail(int error_arg,
-      const char *expr_arg, const char *fnn_arg, const char *filen_arg,
-      int lineno_arg);
-
-static netperf_onfail_t current_onfail = &default_onfail;
-
-static void netperf_panic(const char *why_arg, const char *filen_arg, int lineno_arg) {
-    if (NULL == why_arg) {
-        why_arg = "*unspecified*";
-    }
-
-    if (NULL == filen_arg) {
-        filen_arg = "*unspecified*";
-    }
-
-    /* there's really no point in checking the return code of fprintf().
-     * if it fails, i don't have a backup plan for informing the
-     * operator. */
-    fprintf(stderr, "*** panic in line %d of `%s`: %s\n", lineno_arg, filen_arg, why_arg);
-    abort();
-}
-#define NETPERF_PANIC(Why) netperf_panic((Why), __FILE__, __LINE__)
-
-static void netperf_fail(int error_arg, const char *expr_arg,
-      const char *fnn_arg, const char *filen_arg, int lineno_arg) {
-   current_onfail(error_arg, expr_arg, fnn_arg, filen_arg,
-         lineno_arg);
-}
-
-static void default_onfail(int error_arg, const char *expr_arg,
-   const char *fnn_arg, const char *filen_arg, int lineno_arg) {
-    int n = -1;
-
-    if (0 == error_arg) {
-        NETPERF_PANIC("attempt to fail with a success code.");
-    }
-
-    /* to my knowledge, Windows doesn't support providing the function name,
-     * so i need to tolerate a NULL value for fnn_arg. */
-    const char *err_msg = NULL;
-    if (error_arg > 0) {
-        err_msg = strerror(error_arg);
-    } else {
-        err_msg = "error message is undefined";
-    }
-
-    if (NULL == fnn_arg) {
-        n = fprintf(stderr, "FAIL (%d => %s) at %s, line %d: %s\n", error_arg, err_msg,
-                filen_arg, lineno_arg, expr_arg);
-        if (n < 1) {
-            NETPERF_PANIC("fprintf() failed.");
-        }
-    } else {
-        n = fprintf(stderr, "FAIL (%d => %s) in %s, at %s, line %d: %s\n", error_arg, err_msg,
-                fnn_arg, filen_arg, lineno_arg, expr_arg);
-        if (n < 1) {
-            NETPERF_PANIC("fprintf() failed.");
-        }
-   }
-}
-
-#define NETPERF_UNLIKELY(Cond) __builtin_expect((Cond), 0)
-#define NETPERF_LIKELY(Cond) __builtin_expect((Cond), 1)
 #define MAKE_IP_ADDR(a, b, c, d)			\
 	(((uint32_t) a << 24) | ((uint32_t) b << 16) |	\
 	 ((uint32_t) c << 8) | (uint32_t) d)
 
-#define NETPERF_TRUE2(Error, Condition, ErrorCache) \
-    do { \
-        const int ErrorCache = (Error); \
-        if (NETPERF_UNLIKELY(!(Condition))) { \
-            netperf_fail(ErrorCache, #Condition, NULL, __FILE__, __LINE__);  \
-            return ErrorCache; \
-        } \
-   } while (0)
-
-#define NETPERF_TRUE(Error, Condition) \
-    NETPERF_TRUE2(Error, Condition, NETPERF_TRUE_errorCache)
-
-#define NETPERF_ZERO(Error, Value) NETPERF_TRUE((Error), 0 == (Value))
-#define NETPERF_NONZERO(Error, Value) NETPERF_TRUE((Error), 0 != (Value))
-#define NETPERF_NULL(Error, Value) NETPERF_TRUE((Error), NULL == (Value))
-#define NETPERF_NOTNULL(Error, Value) NETPERF_TRUE((Error), NULL != (Value
 /******************************************/
+// MACROS
+#define POINTER_SIZE (sizeof(uint64_t))
+#define get_next_ptr(mem, idx) \
+    *(get_client_ptr(mem, idx))
+#define get_client_ptr(mem, idx) ((uint64_t *)((char *)mem + ((idx) * POINTER_SIZE)))
+#define get_server_region(memory, idx, segment_size) ((void *)((char *)memory + ((idx) * (segment_size))))
+#define get_client_req(client_reqs, idx) (ClientRequest *)((char *)client_reqs + (size_t)(idx) * (sizeof(ClientRequest)))
+#define read_u64(ptr, offset) *((uint64_t *)((char *)ptr + (offset) * sizeof(uint64_t)))
 /******************************************/
 /* DPDK CONSTANTS */
 #define RX_RING_SIZE 2048
@@ -391,15 +345,113 @@ static void *payload_to_copy = NULL;
 static rte_iova_t payload_iova = 0;
 size_t array_size = 10000; // default array size
 static struct ClientRequest *client_requests = NULL; // array of client requests
-static void *client_request_payloads = NULL;
+static struct OutgoingHeader outgoing_header;
+
+#ifdef __TIMERS__
+static Latency_Dist_t server_processing_dist = { .min = LONG_MAX, .max = 0, .total_count = 0, .latency_sum = 0 };
+static Latency_Dist_t server_send_dist = { .min = LONG_MAX, .max = 0, .total_count = 0, .latency_sum = 0 };
+static Latency_Dist_t server_construction_dist = { .min = LONG_MAX, .max = 0, .total_count = 0, .latency_sum = 0 };
+#endif
 
 // static unsigned int num_queues = 1;
 /******************************************/
 /******************************************/
 
+static int initialize_pointer_chasing_at_client(uint64_t **pointer_segments,
+                                            size_t array_size, 
+                                            size_t segment_size) {
+    if (array_size % segment_size != 0) {
+        printf("Segment size %u not aligned to array size %u", (unsigned)segment_size, (unsigned)array_size);
+        return -EINVAL;
+    }
+
+    size_t len = (size_t)(array_size / segment_size);
+    uint64_t *indices = malloc(sizeof(uint64_t) * len);
+    if (indices == NULL) {
+        printf("Failed to allocate indices to initialize pointer chasing.");
+        return -ENOMEM;
+    }
+    
+    for (uint64_t i = 0; i < len; i++) {
+        indices[i] = i;
+    }
+
+    for (uint64_t i = 0; i < len -1; i++) {
+        uint64_t j = i + ((uint64_t)rand() % (len - i));
+        if (i != j) {
+            uint64_t tmp = indices[i];
+            indices[i] = indices[j];
+            indices[j] = tmp;
+        }
+    }
+
+    for (uint64_t i = 0; i < len; i++) {
+    }
+    void *pointers = malloc(sizeof(uint64_t) * len);
+    if (pointers == NULL) {
+        printf("Failed to allocate pointers to chase.");
+        return -ENOMEM;
+    }
+
+    for (size_t i = 1; i < len; i++) {
+        uint64_t *ptr = get_client_ptr(pointers, i - 1);
+        NETPERF_ASSERT(((char *)ptr - (char *)pointers) == POINTER_SIZE * (i - 1), "Ptr not in right place");
+        *ptr = indices[i];
+    }
+
+    *(get_client_ptr(pointers, len - 1)) = indices[0];
+    *pointer_segments = pointers;
+    free(indices);
+    return 0;
+}
+
+static void initialize_outgoing_header(OutgoingHeader *header,
+                                        struct rte_ether_addr *src_addr,
+                                        struct rte_ether_addr *dst_addr,
+                                        uint32_t src_ip,
+                                        uint32_t dst_ip,
+                                        uint16_t src_port,
+                                        uint16_t dst_port,
+                                        size_t payload_size) {
+
+    struct rte_ether_hdr *eth_hdr = &header->eth;
+    struct rte_ipv4_hdr *ipv4_hdr = &header->ipv4;
+    struct rte_udp_hdr *udp_hdr = &header->udp;
+
+    // fill in the header
+    rte_ether_addr_copy(src_addr, &eth_hdr->s_addr);
+    rte_ether_addr_copy(dst_addr, &eth_hdr->d_addr);
+    eth_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+
+    /* add in ipv4 header*/
+    ipv4_hdr->version_ihl = IP_VHL_DEF;
+    ipv4_hdr->type_of_service = 0;
+    ipv4_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + payload_size);
+    ipv4_hdr->packet_id = 0;
+    ipv4_hdr->fragment_offset = 0;
+    ipv4_hdr->time_to_live = IP_DEFTTL;
+    ipv4_hdr->next_proto_id = IPPROTO_UDP;
+    ipv4_hdr->src_addr = rte_cpu_to_be_32(my_ip);
+    ipv4_hdr->dst_addr = rte_cpu_to_be_32(server_ip);
+    /* offload checksum computation in hardware */
+    ipv4_hdr->hdr_checksum = 0;
+
+    /* add in UDP hdr*/
+    udp_hdr->src_port = rte_cpu_to_be_16(client_port);
+    udp_hdr->dst_port = rte_cpu_to_be_16(server_port);
+    udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + payload_size);
+    udp_hdr->dgram_cksum = 0;
+}
+
 // generates the client requests (which contain random offsets within array
 // size)
 static void initialize_client_requests() {
+	uint64_t *indices = NULL;
+	if (initialize_pointer_chasing_at_client(&indices, array_size, segment_size) != 0) {
+		printf("Failed to initialize pointer chasing at client\n");
+		exit(1);
+	}
+	
     // first: fill in the client requests
     size_t num_requests = (size_t)((float)seconds * rate * 1.20);
     //printf("Total num requests: %u\n", (unsigned)num_requests);
@@ -411,96 +463,31 @@ static void initialize_client_requests() {
         printf("Initialized client requests at %p\n", client_requests);
     }
     struct ClientRequest *current_req = (struct ClientRequest*)client_requests;
+    size_t client_payload_size = sizeof(uint64_t) * (2 + (size_t)num_mbufs);
     size_t num_segments_within_region = (array_size - segment_size) / 64;
+    uint64_t cur_region_idx = 0;
     for (size_t iter = 0; iter < num_requests; iter++) {
-        //printf("Iter: %u, current_req: %p\n", (unsigned)iter, current_req);
-        current_req->timestamp = 0;
+        current_req->timestamp = 0; // TODO: fill this in
         current_req->packet_id = (uint64_t)iter;
-        current_req->segment_size = segment_size;
-        current_req->num_segments = num_mbufs;
         for (size_t i = 0; i < (size_t)num_mbufs; i++) {
-            // make sure that the random offset region doesn't bleed outside the
-            // array
-            size_t random_segment = (size_t)(rand() % (num_segments_within_region));
-            uint64_t random_offset = (uint64_t)random_segment * 64; // always 64 bit aligned
-            current_req->segment_offsets[i] = random_offset;
-            //printf("For packet # %u, setting idx %u segment rando as %u\n", (unsigned)iter, (unsigned)i, (unsigned)random_offset);
+            current_req->segment_offsets[i] = cur_region_idx;
+            cur_region_idx = get_next_ptr(indices, cur_region_idx);
         }
         current_req++;
     }
 
-    
-    // second: fill in the client "payload" data (including the headers)
-    size_t payload_size = 32 + (8 * num_mbufs);
-    size_t full_payload_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + payload_size;
-    client_request_payloads = malloc(full_payload_size * num_requests);
-    if (client_request_payloads == NULL) {
-        printf("Failed to malloc client requests payload\n");
-        exit(1);
-    }
+    // free any temporary memory used here (indices)
+    free(indices);
 
-    char *payload = (char *)(client_request_payloads);
-    current_req = (struct ClientRequest *)client_requests;
-    for (size_t iter = 0; iter < num_requests; iter++) {
-        //printf("Iter: %u, Payload: %p, current_req: %p\n", (unsigned)iter, payload, current_req);
-        size_t header_size = 0;
-        struct rte_ether_hdr *eth_hdr = (struct rte_ether_hdr *)payload;
-        header_size += sizeof(struct rte_ether_hdr);
-
-        struct rte_ipv4_hdr *ipv4_hdr = (struct rte_ipv4_hdr *)(payload + header_size);
-        header_size += sizeof(struct rte_ipv4_hdr);
-
-        struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)(payload + header_size);
-        header_size += sizeof(struct rte_udp_hdr);
-
-        uint64_t *timestamp_ptr = (uint64_t *)(payload + header_size);
-        uint64_t *id_ptr = (uint64_t *)(payload + header_size + 8);
-        uint64_t *segment_size_ptr = (uint64_t *)(payload + header_size + 16);
-        uint64_t *num_segments_ptr = (uint64_t *)(payload + header_size + 24);
-
-        uint64_t *offsets_ptr = (uint64_t *)(payload + header_size + 32);
-
-        // fill in the header
-        rte_ether_addr_copy(&my_eth, &eth_hdr->s_addr);
-        rte_ether_addr_copy(&server_mac, &eth_hdr->d_addr);
-        eth_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
-
-        /* add in ipv4 header*/
-        ipv4_hdr->version_ihl = IP_VHL_DEF;
-        ipv4_hdr->type_of_service = 0;
-        ipv4_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + payload_size);
-        ipv4_hdr->packet_id = 0;
-        ipv4_hdr->fragment_offset = 0;
-        ipv4_hdr->time_to_live = IP_DEFTTL;
-        ipv4_hdr->next_proto_id = IPPROTO_UDP;
-        ipv4_hdr->src_addr = rte_cpu_to_be_32(my_ip);
-        ipv4_hdr->dst_addr = rte_cpu_to_be_32(server_ip);
-        /* offload checksum computation in hardware */
-        ipv4_hdr->hdr_checksum = 0;
-
-        /* add in UDP hdr*/
-        udp_hdr->src_port = rte_cpu_to_be_16(client_port);
-        udp_hdr->dst_port = rte_cpu_to_be_16(server_port);
-        udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + payload_size);
-        udp_hdr->dgram_cksum = 0;
-
-        // add request metadata
-        *timestamp_ptr =  current_req->timestamp;
-        *id_ptr =  current_req->packet_id;
-        *segment_size_ptr = current_req->segment_size;
-        *num_segments_ptr = current_req->num_segments;
-
-        // fill in offsets
-        for (uint64_t i = 0; i < current_req->num_segments; i++) {
-            offsets_ptr[i] = current_req->segment_offsets[i];
-        }
-
-        payload += full_payload_size;
-        current_req++;
-    }
-
-    free((void *)client_requests);
-
+    // fill in the outgoing header
+    initialize_outgoing_header(&outgoing_header,
+                                &my_eth,
+                                &server_mac,
+                                rte_cpu_to_be_32(my_ip),
+                                rte_cpu_to_be_32(server_ip),
+                                client_port,
+                                server_port,
+                                client_payload_size);
 }
 
 static int str_to_mac(const char *s, struct rte_ether_addr *mac_out) {
@@ -777,7 +764,7 @@ static int print_link_status(FILE *f, uint16_t port_id, const struct rte_eth_lin
 }
 
 static int wait_for_link_status_up(uint16_t port_id) {
-    NETPERF_TRUE(ERANGE, rte_eth_dev_is_valid_port(port_id));
+  	NETPERF_IS_ONE(rte_eth_dev_is_valid_port(port_id), "Invalid port num");
 
     const size_t sleep_duration_ms = 100;
     const size_t retry_count = 90;
@@ -800,7 +787,7 @@ static int wait_for_link_status_up(uint16_t port_id) {
 
 static int init_dpdk_port(uint16_t port_id, struct rte_mempool *mbuf_pool) {
     printf("Initializing port %u\n", (unsigned)(port_id));
-    NETPERF_TRUE(ERANGE, rte_eth_dev_is_valid_port(port_id)); 
+  	NETPERF_IS_ONE(rte_eth_dev_is_valid_port(port_id), "Invalid port num");
     const uint16_t rx_rings = 1;
     const uint16_t tx_rings = 1;
     const uint16_t nb_rxd = RX_RING_SIZE;
@@ -1090,22 +1077,20 @@ int calculate_total_pkts_required(uint32_t seg_size, uint32_t nb_segs) {
 }
 
 static int do_client(void) {
-    printf("Starting do client\n");
+    NETPERF_INFO("Starting do client.");
     // initialize all the packets
     initialize_client_requests();
     clock_offset = raw_time();
     uint64_t start_time, end_time;
     struct rte_mbuf *pkts[BURST_SIZE];
     struct rte_mbuf *pkt;
-    // char *buf_ptr;
-    struct rte_ether_hdr *eth_hdr;
-    struct rte_ipv4_hdr *ipv4_hdr;
-    struct rte_udp_hdr *udp_hdr;
     uint16_t nb_rx;
     uint64_t reqs = 0;
     uint64_t cycle_wait = intersend_time * rte_get_timer_hz() / (1e9);
     size_t payload_size = 32;
     float rate_gbps = (float)rate * (float)(segment_size * num_mbufs) * 8.0 / (float)1e9;
+
+    ClientRequest *current_request = client_requests;
     
     // TODO: add in scaffolding for timing/printing out quick statistics
     start_time = rte_get_timer_cycles();
@@ -1113,37 +1098,30 @@ static int do_client(void) {
     uint64_t id = 0;
     int total_pkts_required = calculate_total_pkts_required(segment_size, num_mbufs);
     size_t header_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr);
-    size_t full_payload_size = header_size + 32 + (8 * num_mbufs);
+    size_t client_payload_size = sizeof(uint64_t) * (2 + num_mbufs);
+    
     while (rte_get_timer_cycles_() < start_time + seconds * rte_get_timer_hz_()) {
-        // send a packet
+        // allocate packet
         pkt = rte_pktmbuf_alloc_(tx_mbuf_pool);
         if (pkt == NULL) {
-            printf("Error allocating tx mbuf\n");
+            NETPERF_WARN("Error allocating tx mbuf.");
             return -EINVAL;
         }
-        char *payload_ptr = (char *)(client_request_payloads) + reqs * full_payload_size;
-        //printf("Sending packet # %u, payload ptr being copied in: %p\n", (unsigned)reqs, payload_ptr);
-        size_t payload_length = 32;
-
         uint8_t *ptr = rte_pktmbuf_mtod(pkt, uint8_t *);
-        uint64_t *timestamp_ptr = rte_pktmbuf_mtod_offset(pkt, uint64_t *, header_size);
-        rte_memcpy((char *)ptr, (char *)payload_ptr, full_payload_size);
+        current_request->timestamp = time_now(clock_offset);
+        rte_memcpy((char *)ptr, (char *)&outgoing_header, sizeof(OutgoingHeader));
+        ptr += header_size;
+        rte_memcpy((char *)ptr, (char *)current_request, client_payload_size);
+        NETPERF_DEBUG("Sending pkt with timestamp %lu and id %lu", *(uint64_t *)ptr, *(uint64_t *)(ptr + 8));
         
-        /* record timestamp in the payload itself*/
-        uint64_t send_time = time_now(clock_offset);
-        *timestamp_ptr = send_time;
+        /* extra dpdk metadata */
 
         pkt->l2_len = RTE_ETHER_HDR_LEN;
         pkt->l3_len = sizeof(struct rte_ipv4_hdr);
         pkt->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
-        pkt->data_len = full_payload_size;
-        pkt->pkt_len = full_payload_size;
+        pkt->data_len = header_size + client_payload_size;
+        pkt->pkt_len = pkt->data_len;
         pkt->nb_segs = 1;
-
-        if (with_read_mode) {
-            pkt->data_len = num_mbufs * segment_size;
-            pkt->pkt_len = num_mbufs * segment_size;
-        }
 
         int pkts_sent = 0;
 
@@ -1152,7 +1130,9 @@ static int do_client(void) {
         }
         outstanding += total_pkts_required;
         uint64_t last_sent = rte_get_timer_cycles();
-        //printf("Sent packet at %u, %u send_time, %d is outstanding, intersend is %u\n", (unsigned)last_sent, (unsigned)send_time, outstanding, (unsigned)intersend_time);
+        NETPERF_DEBUG("Sent packet at %u, %u send_time, %d is outstanding, intersend is %u.", (unsigned)last_sent, (unsigned)time_now(clock_offset), outstanding, (unsigned)intersend_time);
+
+        current_request++;
 
         /* now poll on receiving packets */
         nb_rx = 0;
@@ -1176,7 +1156,7 @@ static int do_client(void) {
                     uint64_t now = (uint64_t)time_now(clock_offset);
                     uint64_t then = (*(uint64_t *)payload);
                     uint64_t id = (*(uint64_t *)(payload + 8));
-                    //printf("Got a packet at time now: %u from %u, with payload_length: %u (with header), id: %u\n", (unsigned)(now), (unsigned)then, (unsigned)payload_length + 42, (unsigned)id);
+                    NETPERF_DEBUG("Got a packet at time now: %u from %u, with payload_length: %u (with header), id: %u.", (unsigned)(now), (unsigned)then, (unsigned)payload_length + 42, (unsigned)id);
                     add_latency_to_map(&packet_map, now - then, id);
                     rte_pktmbuf_free_(pkts[i]);
                     outstanding--;
@@ -1196,9 +1176,8 @@ static int do_client(void) {
     calculate_latencies(&packet_map, &latency_dist, reqs, total_pkts_required);
     dump_latencies(&latency_dist, total_time, num_mbufs * segment_size, rate_gbps);
     free_pktmap(&packet_map);
-    printf("Freed packet map; about to free client requests payloads at %p\n", client_request_payloads);
-    free(client_request_payloads);
-    printf("Freed client request payloads\n");
+    free(client_requests);
+    NETPERF_INFO("Freed client request payloads\n");
     return 0;
 }
 
@@ -1248,14 +1227,17 @@ static void swap_headers(struct rte_mbuf *tx_buf, struct rte_mbuf *rx_buf, size_
    tx_buf_id_ptr = rte_pktmbuf_mtod_offset(tx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN);
    rx_buf_id_ptr = rte_pktmbuf_mtod_offset(rx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN);
    *tx_buf_id_ptr = *rx_buf_id_ptr;
+   NETPERF_DEBUG("Swapped header: %lu", *rx_buf_id_ptr);
 
    tx_buf_id_ptr = rte_pktmbuf_mtod_offset(tx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN + 8);
    rx_buf_id_ptr = rte_pktmbuf_mtod_offset(rx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN + 8);
    *tx_buf_id_ptr = *rx_buf_id_ptr;
+   NETPERF_DEBUG("Swapped header: %lu", *rx_buf_id_ptr);
 }
 
 void swap_headers_into_static_payload(struct rte_mbuf *rx_buf, size_t payload_length, size_t offset) {
-    void *payload_ptr = (void *)((char *)payload_to_copy + offset); // will be a 64 byte offset
+    void *payload_ptr = (void *)(get_server_region(payload_to_copy, offset, segment_size));
+    NETPERF_DEBUG("Start of payload to copy: %p", payload_ptr);
     struct rte_ether_hdr *rx_ptr_mac_hdr;
     struct rte_ipv4_hdr *rx_ptr_ipv4_hdr;
     struct rte_udp_hdr *rx_rte_udp_hdr;
@@ -1301,10 +1283,12 @@ void swap_headers_into_static_payload(struct rte_mbuf *rx_buf, size_t payload_le
    tx_buf_id_ptr = (uint64_t *)((char *)payload_ptr + RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
    rx_buf_id_ptr = rte_pktmbuf_mtod_offset(rx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN);
    *tx_buf_id_ptr = *rx_buf_id_ptr;
+   NETPERF_DEBUG("Timestamp: %lu", *rx_buf_id_ptr);
 
    tx_buf_id_ptr = (uint64_t *)((char *)payload_ptr + RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + 8);
    rx_buf_id_ptr = rte_pktmbuf_mtod_offset(rx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN + 8);
    *tx_buf_id_ptr = *rx_buf_id_ptr;
+   NETPERF_DEBUG("Packet id: %lu", *rx_buf_id_ptr);
 }
 
 
@@ -1319,6 +1303,7 @@ static int do_server(void) {
     struct rte_mbuf *tx_buf;
     uint64_t offsets[MAX_SCATTERS];
     uint8_t queue = 0; // our application only uses one queue
+    clock_offset = raw_time();
     
     uint16_t nb_rx, n_to_tx, nb_tx, i;
     size_t nb_req = 0;
@@ -1331,6 +1316,10 @@ static int do_server(void) {
         }
         n_to_tx = 0;
         for (i = 0; i < nb_rx; i++) {
+            // check processing loop for each packet
+#ifdef __TIMERS__
+            uint64_t start_processing = time_now(clock_offset);
+#endif
             struct sockaddr_in src, dst;
             void *payload = NULL;
             size_t payload_length = 0;
@@ -1338,21 +1327,23 @@ static int do_server(void) {
             struct rte_mbuf* secondary = NULL;
             
             if (valid == 0) {
-                //printf("Received a valid packet\n");
+                NETPERF_DEBUG("Received a valid packet.");
                 rx_buf = rx_bufs[i];
                 size_t header_size = rx_buf->pkt_len - payload_length;
-                uint32_t segment_length = (uint32_t)(*(uint64_t *)((char *)payload + 16));
-                uint16_t nb_segs = (uint16_t)(*(uint64_t *)((char *)payload + 24));
+                uint32_t segment_length = segment_size;
+                uint16_t nb_segs = num_mbufs;
+                char *payload_ptr = payload + sizeof(uint64_t) * 2;
                 // fill in the offsets
                 for (uint16_t seg = 0; seg < nb_segs; seg++) {
-                    offsets[(size_t)seg] = *((uint64_t *)((char *)payload + 32 + (8 * (size_t)seg)));
+                    offsets[(size_t)seg] = *((uint64_t *)(payload_ptr + (sizeof(uint64_t) * (size_t)seg)));
+                    NETPERF_DEBUG("Seg %u is %lu", seg, offsets[(size_t)seg]);
                 }
 
                 nb_req += 1;
 
                 int total_pkts_required = calculate_total_pkts_required(segment_length, (uint32_t)nb_segs);
                 uint32_t payload_left = segment_length * nb_segs;
-                //printf("Total packets required for %u segment_size and %u nb_segs is %d; total_payload: %u\n", (unsigned)segment_length, (unsigned)nb_segs, total_pkts_required, (unsigned)payload_left);
+                NETPERF_DEBUG("Total packets required for %u segment_size and %u nb_segs is %d; total_payload: %u.", (unsigned)segment_length, (unsigned)nb_segs, total_pkts_required, (unsigned)payload_left);
                 
                 size_t seg_offset = 0;
                 for (int pkt = 0; pkt < total_pkts_required; pkt++) {
@@ -1363,12 +1354,11 @@ static int do_server(void) {
 
                     if (zero_copy_mode) {
                         for (int seg = 0; seg < nb_segs_segment; seg++) {
-                            void *payload_at_offset = (void *)((char *)payload_to_copy + offsets[seg_offset]);
-                            // TODO: is this cast to iova correct here?
-                            rte_iova_t iova_at_offset = (rte_iova_t)((char *)payload_iova + offsets[seg_offset]);
+                            void *payload_at_offset = (void *)(get_server_region(payload_to_copy, offsets[seg_offset], segment_size));
+                            rte_iova_t iova_at_offset = (rte_iova_t)(get_server_region(payload_iova, offsets[seg_offset], segment_size));
                             tx_bufs[seg][pkt] = rte_pktmbuf_alloc(extbuf_pool); // allocate an external buffer for each segment
                             if (tx_bufs[seg][pkt] == NULL) {
-                                printf("Failed to allocate tx buf burst # %i, seg %i\n", i, seg);
+                                printf("Failed to allocate tx buf burst # %i, seg %i.", i, seg);
                                 exit(1);
                             }
 
@@ -1376,7 +1366,7 @@ static int do_server(void) {
                             tx_bufs[seg][pkt]->buf_iova = iova_at_offset;
                             tx_bufs[seg][pkt]->data_off = 0;
                             
-                            //printf("\t->Allocated packet segment %d, for pkt %d\n", seg, pkt);
+                            NETPERF_DEBUG("\t->Allocated packet segment %d, for pkt %d", seg, pkt);
                             if (seg == 0) {
                                 // copy in the packet header to the first segment
                                 // for fake GSO segmentation.
@@ -1396,14 +1386,14 @@ static int do_server(void) {
                             if (prev != NULL) {
                                prev->next = tx_bufs[seg][pkt];
                             }
-                            //printf("\t->Pkt # %d, segment # %d, data_len: %u\n", pkt, seg, (unsigned)actual_segment_size);
+                            NETPERF_DEBUG("\t->Pkt # %d, segment # %d, data_len: %u.", pkt, seg, (unsigned)actual_segment_size);
                             tx_bufs[seg][pkt]->data_len = (uint16_t)actual_segment_size;
                             prev = tx_bufs[seg][pkt];
                         }
                     } else {
                         tx_bufs[0][pkt] = rte_pktmbuf_alloc(tx_mbuf_pool);
                         if (tx_bufs[0][pkt] == NULL) {
-                            printf("Failed to allocate tx buf burst # %i, seg %i\n", i, 0);
+                            NETPERF_WARN("Failed to allocate tx buf burst # %i, seg %i.", i, 0);
                             exit(1);
                         }
                         swap_headers(tx_bufs[0][pkt],
@@ -1422,7 +1412,7 @@ static int do_server(void) {
                         char *payload_ptr = rte_pktmbuf_mtod_offset(tx_bufs[0][pkt], char *, header_size + 16);
                         size_t amt_to_copy_left = pkt_len;
                         for (int seg = 0; seg < (size_t)(nb_segs); seg++) {
-                            void *copy_pointer = (void *)((char *)payload_to_copy + offsets[seg_offset]);
+                            void *copy_pointer = (void *)(get_server_region(payload_to_copy, offsets[seg_offset], segment_size));
                             // specifically DON'T copy less for the copy-out
                             // solution
                             size_t amt_to_copy = MIN(amt_to_copy_left, actual_segment_size);
@@ -1438,14 +1428,26 @@ static int do_server(void) {
                     payload_left -= pkt_len;
                 }
                 assert(payload_left == 0);
-                //printf("Past construction, about to burst\n");
-
+                
                 // burst all of the packets for this response
+#ifdef __TIMERS__
+                uint64_t end_construct = time_now(clock_offset);
+                add_latency(&server_construction_dist, end_construct - start_processing);
+                uint64_t start_send = time_now(clock_offset);
+#endif
                 nb_tx = rte_eth_tx_burst_(our_dpdk_port_id, queue, tx_bufs[0], total_pkts_required);
                 if (nb_tx != total_pkts_required) {
-                    printf("error: could not transmit all %u pkts, transmitted %u\n", total_pkts_required, nb_tx);
+                    NETPERF_DEBUG("error: could not transmit all %u pkts, transmitted %u.", total_pkts_required, nb_tx);
                 }
+#ifdef __TIMERS__
+                uint64_t end_send = time_now(clock_offset);
+                add_latency(&server_send_dist, end_send - start_send);
+#endif
                 rte_pktmbuf_free(rx_buf);
+#ifdef __TIMERS__
+                uint64_t end_time = time_now(clock_offset);
+                add_latency(&server_processing_dist, end_time - start_processing);
+#endif
             }
         }
     }
@@ -1459,6 +1461,23 @@ static void sig_handler(int signum){
     if (has_latency_log) {
         free(latency_log);
     }
+
+    // if debug timers were turned on, dump them
+#ifdef __TIMERS__
+	if (mode == MODE_UDP_SERVER) {
+        NETPERF_INFO("----");
+        NETPERF_INFO("server request processing timers: ");
+        dump_debug_latencies(&server_processing_dist);
+        NETPERF_INFO("----");
+        NETPERF_INFO("server send processing timers: ");
+        dump_debug_latencies(&server_send_dist);
+        NETPERF_INFO("----");
+        NETPERF_INFO("server send construction timers: ");
+        dump_debug_latencies(&server_construction_dist);
+        NETPERF_INFO("----");
+    }
+#endif   
+    exit(0);
 }
 
 static int do_memcpy_bench() {
@@ -1596,6 +1615,10 @@ main(int argc, char **argv)
     if (mode == MODE_UDP_CLIENT) {
         return do_client();
     } else {
+        // set up signal handler
+        if (signal(SIGINT, sig_handler) == SIG_ERR) {
+            NETPERF_WARN("Can't catch SIGINT");
+        }
         do_server();
     }
 
