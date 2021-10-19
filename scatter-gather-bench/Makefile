@@ -5,9 +5,11 @@
 
 # binary name
 APP = netperf
+CXX = g++
 
 # all source are stored in SRCS-y
-SRCS-y := main.c
+SRCS-y := main.c rand_exp.cc
+# SRCS-cc := rand_exp.cc
 
 
 # Build using pkg-config variables if possible
@@ -34,16 +36,18 @@ ifeq ($(TIMERS), y)
 	CFLAGS += -D__TIMERS__
 endif
 
-LDFLAGS_SHARED = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --libs libdpdk) -lrte_net_mlx5 -lrte_bus_pci -lrte_bus_vdev -lrte_common_mlx5
-LDFLAGS_STATIC = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --static --libs libdpdk) -lrte_net_mlx5 -lrte_bus_pci -lrte_bus_vdev -lrte_common_mlx5
+LDFLAGS_SHARED = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --libs libdpdk) -lrte_net_mlx5 -lrte_bus_pci -lrte_bus_vdev -lrte_common_mlx5 -lpthread -lm
+LDFLAGS_STATIC = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --static --libs libdpdk) -lrte_net_mlx5 -lrte_bus_pci -lrte_bus_vdev -lrte_common_mlx5 -lpthread -lm
 
 CFLAGS += -DALLOW_EXPERIMENTAL_API -lm
 
 build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
 	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
+	#$(CXX) $(CFLAGS) $(SRC-cc) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
 
 build/$(APP)-static: $(SRCS-y) Makefile $(PC_FILE) | build
 	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_STATIC)
+	#$(CXX) $(CFLAGS) $(SRC-cc) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
 
 build:
 	@mkdir -p $@

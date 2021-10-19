@@ -463,6 +463,7 @@ class Iteration(metaclass=abc.ABCMeta):
                 else:
                     programs_to_kill[host] = (program_counter,
                                               kill_cmd)
+                #input("Press Enter to continue...")
 
         any_failed = False
         # now join all of the joining programs

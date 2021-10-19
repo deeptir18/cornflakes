@@ -9,7 +9,7 @@ pub struct YCSBRequest<'a> {
     pub keys: Vec<&'a str>,
     pub val: &'a str,
     pub req_type: MsgType,
-    cur_idx: usize, // in generating the (Get-M) or (Put-M) request from this, where are we ?
+    cur_idx: usize, // in erating the (Get-M) or (Put-M) request from this, where are we ?
     pub num_keys: usize,
     pub req_id: MsgID,
 }

@@ -23,7 +23,7 @@
 #define EXIT (exit(1))
 #ifdef __DEBUG__
 #define NETPERF_DEBUG(msg, ...) \
-        printf(CYN "[%s, %s, line %d] DEBUG: " RESET, __FILE__, __FUNCTION__, __LINE__); \
+        printf(CYN "[%s, %s, line %d, thread %d] DEBUG: " RESET, __FILE__, __FUNCTION__, __LINE__, thread_id); \
         printf(msg, ##__VA_ARGS__); \
         printf("\n");
 #else
@@ -49,19 +49,19 @@
         exit(1); \
     }
 #define NETPERF_INFO(msg, ...) \
-        printf(GRN "[%s, %s, line %d] INFO: " RESET, __FILE__, __FUNCTION__, __LINE__); \
+        printf(GRN "[%s, %s, line %d, thread_id %d] INFO: " RESET, __FILE__, __FUNCTION__, __LINE__, thread_id); \
         printf(msg, ##__VA_ARGS__); \
         printf("\n");
 #define NETPERF_WARN(msg, ...) \
-        printf(YEL "[%s, %s, line %d] WARN: " RESET, __FILE__, __FUNCTION__, __LINE__); \
+        printf(YEL "[%s, %s, line %d, thread_id %d] WARN: " RESET, __FILE__, __FUNCTION__, __LINE__, thread_id); \
         printf(msg, ##__VA_ARGS__); \
         printf("\n");
 #define NETPERF_ERROR(msg, ...) \
-        printf(MAG "[%s, %s, line %d] ERROR: " RESET, __FILE__, __FUNCTION__, __LINE__); \
+        printf(MAG "[%s, %s, line %d, thread_id %d] ERROR: " RESET, __FILE__, __FUNCTION__, __LINE__, thread_id); \
         printf(msg, ##__VA_ARGS__); \
         printf("\n");
 #define NETPERF_PANIC(msg, ...) \
-    printf(RED "[%s, %s, line %d] PANIC: " RESET, __FILE__, __FUNCTION__, __LINE__); \
+    printf(RED "[%s, %s, line %d, thread_id %d] PANIC: " RESET, __FILE__, __FUNCTION__, __LINE__, thread_id); \
     printf(msg, ##__VA_ARGS__); \
     printf("\n"); \
     exit(1);

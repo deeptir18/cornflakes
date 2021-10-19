@@ -5,4 +5,5 @@ members = ["cornflakes-codegen",
             "echo-server",
             "cornflakes-utils",
             "data-structure-query",
-            "kv-store"]
+            "kv-store",
+            "data-shuffle"]

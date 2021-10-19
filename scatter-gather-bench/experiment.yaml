@@ -3,7 +3,7 @@
 time: 10
 programs:
     start_server:
-        start: sudo LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu  nice -n -19 taskset 0x1 {cornflakes_dir}/scatter-gather-bench/build/netperf {config_eal} -- --mode=SERVER --ip={server_ip}{with_copy} --array_size={array_size}
+        start: sudo LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu  nice -n -19 taskset 0x1 {cornflakes_dir}/scatter-gather-bench/build/netperf {config_eal} -- --mode=SERVER --server_ip={server_ip}{with_copy} --array_size={array_size} --segment_size={segment_size} --num_segments={num_segments}
         hosts: [server]
         perf: sudo perf stat -e task-clock,cycles,instructions,cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses,L1-dcache-stores,dTLB-loads,dTLB-load-misses,dTLB-prefetch-misses,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses -o {folder}/server.perf.log
         log:
@@ -12,7 +12,7 @@ programs:
             record: "{folder}/server.record.log"
         stop: sudo kill -9 `ps aux | grep {cornflakes_dir}/scatter-gather-bench/build/netperf | awk '{{print $2}}' | head -n4`
     start_client:
-        start: sudo LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/scatter-gather-bench/build/netperf {config_eal} -- --mode=CLIENT --server_ip={server_ip} --ip={host_ip} --server_mac={server_mac} --rate={rate} --segment_size={segment_size} --num_mbufs={num_mbufs} --time={time} --log={folder}/{host}.latency.log --array_size={array_size}
+        start: sudo LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/scatter-gather-bench/build/netperf {config_eal} -- --mode=CLIENT --server_ip={server_ip} --client_ip={client_ip} --server_mac={server_mac} --rate={rate} --segment_size={segment_size} --num_segments={num_segments} --time={time} --log={folder}/{host}.latency.log --array_size={array_size}
         hosts: [client1, client2, client3, client4, client5, client6, client7, client8, client9, client10, client11]
         log:
             out: "{folder}/{host}.log"
