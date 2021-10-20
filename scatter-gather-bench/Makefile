@@ -36,10 +36,10 @@ ifeq ($(TIMERS), y)
 	CFLAGS += -D__TIMERS__
 endif
 
-LDFLAGS_SHARED = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --libs libdpdk) -lrte_net_mlx5 -lrte_bus_pci -lrte_bus_vdev -lrte_common_mlx5 -lpthread -lm
-LDFLAGS_STATIC = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --static --libs libdpdk) -lrte_net_mlx5 -lrte_bus_pci -lrte_bus_vdev -lrte_common_mlx5 -lpthread -lm
+LDFLAGS_SHARED = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --libs libdpdk) -lrte_net_mlx5 -lrte_bus_pci -lrte_bus_vdev -lrte_common_mlx5 -lpthread -lm -lstdc++
+LDFLAGS_STATIC = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --static --libs libdpdk) -lrte_net_mlx5 -lrte_bus_pci -lrte_bus_vdev -lrte_common_mlx5 -lpthread -lm -lstdc++
 
-CFLAGS += -DALLOW_EXPERIMENTAL_API -lm
+CFLAGS += -DALLOW_EXPERIMENTAL_API -lm -lstdc++
 
 build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
 	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)

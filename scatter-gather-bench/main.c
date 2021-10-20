@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2010-2014 Intel Corporation
  */
+#define _GNU_SOURCE
 #include "mem.h"
 #include "debug.h"
 #include <inttypes.h>
@@ -22,6 +23,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sched.h>
 #include "rand_exp.h"
 
 #include <rte_memory.h>
@@ -205,6 +207,10 @@ static void dump_debug_latencies(Latency_Dist_t *dist) {
 static void dump_latencies(Latency_Dist_t *dist, float total_time, size_t message_size, float rate_gbps, size_t client_id, Summary_Statistics_t *statistics) {
     static __thread int thread_id;
     printf("Trying to dump latencies on client side with message size for client %lu: %lu\n", message_size, client_id);
+    if (dist->total_count == 0) {
+        NETPERF_WARN("No packets received");
+        return;
+    }
     // sort the latencies
     uint64_t *arr = malloc(dist->total_count * sizeof(uint64_t));
     if (arr == NULL) {
@@ -441,6 +447,7 @@ static size_t num_client_threads = 1; // number of client threads sending packet
 static size_t client_id = 0; // out of all the separate clients sending, which client am I
 static uint64_t random_seed = 0; // random seed to generate the  payload with
 static pthread_t threads[MAX_THREADS];
+static cpu_set_t cpusets[MAX_THREADS];
 static uint16_t dpdk_nbports;
 static uint8_t mode;
 static uint8_t memory_mode;
@@ -559,14 +566,14 @@ static void initialize_outgoing_header(OutgoingHeader *header,
     ipv4_hdr->fragment_offset = 0;
     ipv4_hdr->time_to_live = IP_DEFTTL;
     ipv4_hdr->next_proto_id = IPPROTO_UDP;
-    ipv4_hdr->src_addr = rte_cpu_to_be_32(client_ip);
-    ipv4_hdr->dst_addr = rte_cpu_to_be_32(server_ip);
+    ipv4_hdr->src_addr = rte_cpu_to_be_32(src_ip);
+    ipv4_hdr->dst_addr = rte_cpu_to_be_32(dst_ip);
     /* offload checksum computation in hardware */
     ipv4_hdr->hdr_checksum = 0;
 
     /* add in UDP hdr*/
-    udp_hdr->src_port = rte_cpu_to_be_16(client_port);
-    udp_hdr->dst_port = rte_cpu_to_be_16(server_port);
+    udp_hdr->src_port = rte_cpu_to_be_16(src_port);
+    udp_hdr->dst_port = rte_cpu_to_be_16(dst_port);
     udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + payload_size);
     udp_hdr->dgram_cksum = 0;
 }
@@ -595,7 +602,7 @@ static void initialize_client_requests_common(size_t num_total_clients) {
             current_req->timestamp = 0; // TODO: fill this in
             current_req->packet_id = (uint64_t)iter;
             for (size_t i = 0; i < (size_t)num_mbufs; i++) {
-                NETPERF_DEBUG("[Client %lu], req %lu, ,seg # %lu, index: %lu", client_id, iter, i, cur_region_idx);
+                //NETPERF_DEBUG("[Client %lu], req %lu, ,seg # %lu, index: %lu", client_id, iter, i, cur_region_idx);
                 current_req->segment_offsets[i] = cur_region_idx;
                 cur_region_idx = get_next_ptr(indices, cur_region_idx);
             }
@@ -603,17 +610,6 @@ static void initialize_client_requests_common(size_t num_total_clients) {
         }
 
         
-        // Initialize client request timestamps for each client
-        uint64_t *timestamps = malloc(sizeof(uint64_t) * num_requests);
-        sample_exp_distribution((double)intersend_time, num_requests, timestamps);
-        current_req = (struct ClientRequest*)client_requests[client_id];
-        for (size_t iter = 0; iter < num_requests; iter++)  {
-            current_req->timestamp = timestamps[iter];
-            NETPERF_INFO("[Client %lu] Timestamp to send packet: %lu", client_id, current_req->timestamp);
-            current_req++;
-        }
-        free(timestamps);
-
     }
     free(indices);
 }
@@ -621,6 +617,20 @@ static void initialize_client_requests_common(size_t num_total_clients) {
 // initialize specific part of client header (per thread)
 static void initialize_client_header(uint32_t ip, uint16_t port, size_t client_id) {
     size_t client_payload_size = sizeof(uint64_t) * (2 + (size_t)num_mbufs);
+    size_t num_requests = (size_t)((float)seconds * rate * 1.20);
+    // initialize timestamps for each thread
+    uint64_t *timestamps = malloc(sizeof(uint64_t) * num_requests);
+    NETPERF_INFO("Starting to sample distr");
+    sample_exp_distribution((double)intersend_time, num_requests, timestamps);
+    NETPERF_INFO("Finished sample distr");
+    ClientRequest *current_req = (struct ClientRequest*)client_requests[client_id];
+    for (size_t iter = 0; iter < num_requests; iter++) {
+        current_req->timestamp = timestamps[iter];
+        NETPERF_DEBUG("[Client %lu] Timestamp to send packet: %lu", client_id, current_req->timestamp);
+        current_req++;
+    }
+    NETPERF_INFO("Finished copying timestamps");
+    free(timestamps);
     initialize_outgoing_header(&outgoing_headers[client_id],
                                 &my_eth,
                                 &server_mac,
@@ -957,7 +967,7 @@ static int init_dpdk_port(uint16_t port_id, struct rte_mempool **rx_mbuf_pools, 
     
     struct rte_eth_conf port_conf = {};
     port_conf.rxmode.max_rx_pkt_len = RX_PACKET_LEN;
-    port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_TIMESTAMP | DEV_RX_OFFLOAD_IPV4_CKSUM;
+    port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_TIMESTAMP;
     port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS | ETH_MQ_RX_RSS_FLAG;
     port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
     port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
@@ -989,6 +999,7 @@ static int init_dpdk_port(uint16_t port_id, struct rte_mempool **rx_mbuf_pools, 
 
     // allocate and set up num_queues TX queue per Ethernet port.
     for (uint16_t i = 0; i < tx_rings; ++i) {
+        NETPERF_DEBUG("Initializing tx queue %u", i);
         rte_eth_tx_queue_setup(port_id, i, nb_txd, socket_id, &tx_conf);
     }
 
@@ -1126,9 +1137,11 @@ static int parse_packet(struct sockaddr_in *src,
                         struct sockaddr_in *dst,
                         void **payload,
                         size_t *payload_len,
-                        struct rte_mbuf *pkt)
+                        struct rte_mbuf *pkt,
+                        size_t client_id)
 {
     static __thread int thread_id;
+    thread_id = client_id;
     NETPERF_DEBUG("Received packet, checking if valid; pkt_len %u", pkt->pkt_len);
     // packet layout order is (from outside -> in):
     // ether_hdr
@@ -1136,10 +1149,21 @@ static int parse_packet(struct sockaddr_in *src,
     // udp_hdr
     // request id
     uint8_t *p = rte_pktmbuf_mtod(pkt, uint8_t *);
+    char *cur_byte = p;
     size_t header = 0;
 
     // check the ethernet header
     struct rte_ether_hdr * const eth_hdr = (struct rte_ether_hdr *)(p);
+    // print all the bytes in the ethernet header:
+    /*printf("eth header: ");
+    for (size_t i = 0; i < sizeof(struct rte_ether_hdr); i++) {
+        printf("%x ", *cur_byte);
+        if ((i+1) % 4 == 0) {
+            printf("   ");
+        }
+        cur_byte++;
+    }
+    printf("\n");*/
     p += sizeof(*eth_hdr);
     header += sizeof(*eth_hdr);
     uint16_t eth_type = ntohs(eth_hdr->ether_type);
@@ -1163,6 +1187,15 @@ static int parse_packet(struct sockaddr_in *src,
     struct rte_ipv4_hdr *const ip_hdr = (struct rte_ipv4_hdr *)(p);
     p += sizeof(*ip_hdr);
     header += sizeof(*ip_hdr);
+    /*printf("ip header: ");
+    for (size_t i = 0; i < sizeof(struct rte_ipv4_hdr); i++) {
+        printf("%x", *cur_byte);
+        if ((i+1) % 4 == 0) {
+            printf(" ");
+        }
+        cur_byte++;
+    }
+    printf("\n");*/
 
 
     // In network byte order.
@@ -1181,16 +1214,25 @@ static int parse_packet(struct sockaddr_in *src,
     struct rte_udp_hdr * const udp_hdr = (struct rte_udp_hdr *)(p);
     p += sizeof(*udp_hdr);
     header += sizeof(*udp_hdr);
-
+    
+    /*printf("udp header: ");
+    for (size_t i = 0; i < sizeof(struct rte_udp_hdr); i++) {
+        printf("%x", *cur_byte);
+        if ((i+1) % 4 == 0) {
+            printf(" ");
+        }
+        cur_byte++;
+    }
+    printf("\n");*/
     // In network byte order.
     in_port_t udp_src_port = udp_hdr->src_port;
     in_port_t udp_dst_port = udp_hdr->dst_port;
+    NETPERF_DEBUG("Received packet with ip checksum of %u, to dst ip %u, udp checksum of %u", ntohs(ip_hdr->hdr_checksum), ntohl(ip_hdr->dst_addr), ntohs(udp_hdr->dgram_cksum));
 
     src->sin_port = udp_src_port;
     dst->sin_port = udp_dst_port;
     src->sin_family = AF_INET;
     dst->sin_family = AF_INET;
-    NETPERF_DEBUG("Past udp port check; header is size %lu", header);
     
     *payload_len = pkt->pkt_len - header;
     *payload = (void *)p;
@@ -1261,7 +1303,8 @@ static uint32_t compute_flow_affinity(uint32_t local_ip,
 	const uint8_t *rss_key = (uint8_t *)sym_rss_key;
 
 	uint32_t input_tuple[] = {
-        remote_ip, local_ip, local_port | remote_port << 16
+        //local_ip, remote_ip, local_port | remote_port << 16
+        remote_ip, local_ip, remote_port | local_port << 16
 	};
 
     uint32_t ret = rte_softrss((uint32_t *)&input_tuple, ARRAY_SIZE(input_tuple),
@@ -1314,7 +1357,7 @@ static void * do_client(void *client) {
     // initialize all the packets for this thread
     initialize_client_header(our_client_ip, our_client_port, client_id);
     clock_offset = raw_time();
-    uint64_t start_time, end_time;
+    uint64_t start_time, end_time, last_sent, wait_time;
     struct rte_mbuf *pkts[BURST_SIZE];
     struct rte_mbuf *pkt;
     uint16_t nb_rx;
@@ -1327,6 +1370,8 @@ static void * do_client(void *client) {
     
     // TODO: add in scaffolding for timing/printing out quick statistics
     start_time = rte_get_timer_cycles();
+    wait_time = 0;
+    last_sent = start_time;
     int outstanding = 0;
     uint64_t id = 0;
     int total_pkts_required = calculate_total_pkts_required(segment_size, num_mbufs);
@@ -1334,7 +1379,8 @@ static void * do_client(void *client) {
     // todo: ends up getting padded to be 60 or something
     size_t client_payload_size = sizeof(uint64_t) * (1 + num_mbufs);
     
-    while (rte_get_timer_cycles_() < start_time + seconds * rte_get_timer_hz_()) {
+    while (rte_get_timer_cycles_() < (start_time + seconds * rte_get_timer_hz_())) {
+        NETPERF_DEBUG("Past cycle waiting, about to send");
         // allocate packet
         pkt = rte_pktmbuf_alloc_(tx_mbuf_pools[client_id]);
         if (pkt == NULL) {
@@ -1363,17 +1409,18 @@ static void * do_client(void *client) {
             pkts_sent = rte_eth_tx_burst(our_dpdk_port_id, (uint16_t)client_id, &pkt, 1);
         }
         outstanding += total_pkts_required;
-        uint64_t last_sent = rte_get_timer_cycles();
-        NETPERF_DEBUG("Sent packet at %u, %u send_time, %d is outstanding, intersend is %u; req addr is %p", (unsigned)last_sent, (unsigned)time_now(clock_offset), outstanding, (unsigned)intersend_time, current_request);
-
+        last_sent = rte_get_timer_cycles();
         current_request++;
-        uint64_t wait_time = (uint64_t)((float)current_request->timestamp * ((float)(1e9) / (float)rte_get_timer_hz()));
-        NETPERF_INFO("Wait time: %lu, timer_hz: %lu", wait_time, rte_get_timer_hz());
+        wait_time = current_request->timestamp * rte_get_timer_hz() / 1e9;
+        NETPERF_DEBUG("Sent packet at %u, %u send_time, %d is outstanding, wait time is %lu", (unsigned)last_sent, (unsigned)time_now(clock_offset), outstanding, wait_time);
 
         /* now poll on receiving packets */
         nb_rx = 0;
         reqs += 1;
-        while ((outstanding > 0)) {
+        while (rte_get_timer_cycles_() < (last_sent + wait_time)) {
+            if (rte_get_timer_cycles_() > (start_time + seconds * rte_get_timer_hz_())) {
+                break;
+            }
             nb_rx = rte_eth_rx_burst_(our_dpdk_port_id, (uint16_t)client_id, pkts, BURST_SIZE);
             if (nb_rx == 0) {
                 if (rte_get_timer_cycles() > (last_sent + wait_time)) {
@@ -1386,15 +1433,14 @@ static void * do_client(void *client) {
                 struct sockaddr_in src, dst;
                 void *payload = NULL;
                 size_t payload_length = 0;
-                int valid = parse_packet(&src, &dst, &payload, &payload_length, pkts[i]);
+                int valid = parse_packet(&src, &dst, &payload, &payload_length, pkts[i], client_id);
                 if (valid == 0) {
                     /* parse the timestamp and record it */
                     uint64_t now = (uint64_t)time_now(clock_offset);
                     uint64_t id = (*(uint64_t *)payload);
                     ClientRequest *recvd_req = (ClientRequest *)((char *)client_requests[client_id] + (sizeof(ClientRequest) * (size_t)(id)));
-                    NETPERF_DEBUG("aDDR OF received req: %p", recvd_req);
                     uint64_t then = recvd_req->timestamp;
-                    NETPERF_DEBUG("Got a packet at time now: %u from %u, with payload_length: %u (without header), id: %u.", (unsigned)(now), (unsigned)then, (unsigned)payload_length - 8, (unsigned)id);
+                    NETPERF_DEBUG("Received a packet at time now: %u from %u, with payload_length: %u (without header), id: %u.", (unsigned)(now), (unsigned)then, (unsigned)payload_length - 8, (unsigned)id);
                     add_latency_to_map(&packet_maps[client_id], now - then, id);
                     rte_pktmbuf_free_(pkts[i]);
                     outstanding--;
@@ -1402,9 +1448,6 @@ static void * do_client(void *client) {
                     rte_pktmbuf_free_(pkts[i]);
                 }
             }
-        }
-        while (((last_sent + wait_time) <= rte_get_timer_cycles())) {
-            continue;
         }
     }
     end_time = rte_get_timer_cycles();
@@ -1415,7 +1458,7 @@ static void * do_client(void *client) {
     dump_latencies(&latency_dists[client_id], total_time, num_mbufs * segment_size, rate_gbps, client_id, &summary_statistics[client_id]);
     free_pktmap(&packet_maps[client_id], &latency_dists[client_id]);
     free(client_requests[client_id]);
-    NETPERF_INFO("Freed client request payloads\n");
+    NETPERF_DEBUG("Freed client request payloads\n");
     return (void *)0;
 }
 
@@ -1558,7 +1601,7 @@ static int do_server(void) {
             struct sockaddr_in src, dst;
             void *payload = NULL;
             size_t payload_length = 0;
-            int valid = parse_packet(&src, &dst, &payload, &payload_length, rx_bufs[i]);
+            int valid = parse_packet(&src, &dst, &payload, &payload_length, rx_bufs[i], 0);
             struct rte_mbuf* secondary = NULL;
             
             if (valid == 0) {
@@ -1863,6 +1906,7 @@ static void dump_total_statistics(size_t num_clients) {
  * tx memory pools.*/
 static int spawn_client_threads() {
     // do global thread init
+    int ret;
     initialize_client_requests_common(num_client_threads);
     static __thread int thread_id;
     int thread_results[MAX_THREADS];
@@ -1870,6 +1914,13 @@ static int spawn_client_threads() {
     // start a thread for each client 
     for (size_t i = 0; i < num_client_threads; i++) {
         thread_results[i] = pthread_create(&threads[i], NULL, do_client, (void *)i);
+        // set affinity for this thread
+        CPU_ZERO(&cpusets[i]);
+        CPU_SET(i + 1, &cpusets[i]);
+        ret = pthread_setaffinity_np(threads[i], sizeof(cpu_set_t), &cpusets[i]);
+        if (ret != 0) {
+            NETPERF_WARN("Unable to set cpu affinity for thread %lu", i);
+        }
     }
 
     for (size_t i = 0; i < num_client_threads; i++) {

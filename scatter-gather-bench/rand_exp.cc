@@ -3,7 +3,7 @@
 
 extern "C"
 void sample_exp_distribution(double lambda, size_t num_rolls, uint64_t *timestamps_ptr) {
-    std::default_random_engine generator;
+    thread_local std::mt19937 generator(std::random_device{}());
     std::poisson_distribution<int> distribution(lambda);
 
     for (size_t i = 0; i < num_rolls; i++) {
