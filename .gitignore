@@ -2,6 +2,8 @@
 Cargo.lock
 **/*.rs.bk
 **/*.swp
+**/.nfs*
+**/*.swo
 **/results
 experiments/Rplots.pdf
 experiments/tmp.pdf
