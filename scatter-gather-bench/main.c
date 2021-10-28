@@ -115,15 +115,6 @@ static char *threads_log = NULL;
 static int has_threads_log = 0;
 static int has_latency_log = 0;
 
-typedef struct Latency_Dist_t
-{
-    uint64_t min, max;
-    uint64_t latency_sum;
-    uint64_t total_count;
-    float moving_avg;
-    uint64_t *latencies;
-} Latency_Dist_t;
-
 struct tx_pktmbuf_priv
 {
     int32_t lkey;
@@ -222,16 +213,7 @@ static void dump_latencies(Latency_Dist_t *dist, float total_time, size_t messag
     float achieved_rate_gbps = (float)(dist->total_count) / (float)total_time * (float)(message_size) * 8.0 / (float)1e9;
     float percent_rate = achieved_rate_gbps / rate_gbps;
     if (has_latency_log) {
-        char *latency_log_name = (char *)(malloc(strlen(latency_log) + 1));
-        // NOTE: For this work, latency_log must have a %d in it
-        // (client_1_thread_%d.log)
-        snprintf(latency_log_name, strlen(latency_log), latency_log, (int)client_id);
-        FILE *fp = fopen(latency_log_name, "w");
-        for (int i = 0; i < dist->total_count; i++) {
-            fprintf(fp, "%lu\n", dist->latencies[i]);
-        }
-        fclose(fp);
-        free(latency_log_name);
+        write_latency_log(latency_log, dist, client_id);
     }
     free((void *)arr);
     statistics->min = dist->min;
@@ -1464,7 +1446,7 @@ static void * do_client(void *client) {
     free(client_requests[client_id]);
     NETPERF_DEBUG("Freed client request payloads\n");
     return (void *)0;
-}
+} 
 
 
 static void swap_headers(struct rte_mbuf *tx_buf, struct rte_mbuf *rx_buf, size_t payload_length) {

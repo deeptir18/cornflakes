@@ -22,3 +22,14 @@ typedef struct Summary_Statistics_t
     float percent_rate;
 } Summary_Statistics_t;
 
+typedef struct Latency_Dist_t
+{
+    uint64_t min, max;
+    uint64_t latency_sum;
+    uint64_t total_count;
+    float moving_avg;
+    uint64_t *latencies;
+} Latency_Dist_t;
+
+
+

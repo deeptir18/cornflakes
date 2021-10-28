@@ -2,11 +2,13 @@
 #include "debug.h"
 #include "stats.h"
 #include "stdio.h"
-#include "string.h"
+#include <string>
+#include <sstream>      // std::stringstream
 
 #ifdef __cplusplus 
 extern "C" {
 #endif
+    
 
     void write_threads_info(char *filename, size_t num_threads, Summary_Statistics_t thread_info[8]) {
         static __thread int thread_id;
@@ -44,7 +46,23 @@ extern "C" {
         }
         fprintf(fp, "\n}\n");
         fclose(fp);
-}
+    }
+
+    void write_latency_log(char *latency_log, Latency_Dist_t *dist, size_t client_id) {
+        using namespace std;
+        static __thread int thread_id;
+        std::string original_name(latency_log);
+        // assume the string ends with ".log"
+        size_t suffix_pos = original_name.size() - 4;
+        std::stringstream repl;
+        repl << original_name.substr(0, suffix_pos) << "-" << client_id << original_name.substr(suffix_pos, 4);
+        NETPERF_INFO("Writing latencies into thread log %s", repl.str().c_str());
+        FILE *fp = fopen(repl.str().c_str(), "w");
+        for (int i = 0; i < dist->total_count; i++) {
+            fprintf(fp, "%lu\n", dist->latencies[i]);
+        }
+        fclose(fp);
+    }
 
 
 #ifdef __cplusplus 
