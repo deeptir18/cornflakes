@@ -24,6 +24,7 @@ extern "C" {
             NETPERF_INFO("Writing in info for thread %lu", i);
             fprintf(fp, "\"%lu\":\t{", i);
             fprintf(fp, "\n\t\t\"id\": %u,", info->id);
+            fprintf(fp, "\n\t\t\"retries\": %d,", 0);
             fprintf(fp, "\n\t\t\"sent\": %lu,", info->sent);
             fprintf(fp, "\n\t\t\"recved\": %lu,", info->recved);
             fprintf(fp, "\n\t\t\"runtime\": %f,", info->runtime);
@@ -55,7 +56,7 @@ extern "C" {
         // assume the string ends with ".log"
         size_t suffix_pos = original_name.size() - 4;
         std::stringstream repl;
-        repl << original_name.substr(0, suffix_pos) << "-" << client_id << original_name.substr(suffix_pos, 4);
+        repl << original_name.substr(0, suffix_pos) << client_id << original_name.substr(suffix_pos, 4);
         NETPERF_INFO("Writing latencies into thread log %s", repl.str().c_str());
         FILE *fp = fopen(repl.str().c_str(), "w");
         for (int i = 0; i < dist->total_count; i++) {
