@@ -109,7 +109,7 @@ typedef unsigned long virtaddr_t;
 /******************************************/
 /******************************************/
 static __thread int thread_id = 0;
-#define MAX_ITERATIONS 3000000
+#define MAX_ITERATIONS 8000000
 static char* latency_log = NULL;
 static char *threads_log = NULL;
 static int has_threads_log = 0;
@@ -1339,12 +1339,11 @@ static void * do_client(void *client) {
     // initialize all the packets for this thread
     initialize_client_header(our_client_ip, our_client_port, client_id);
     clock_offset = raw_time();
-    uint64_t start_time, end_time, last_sent, wait_time;
+    uint64_t start_time, end_time, last_sent, wait_time, deficit_cycles, next;
     struct rte_mbuf *pkts[BURST_SIZE];
     struct rte_mbuf *pkt;
     uint16_t nb_rx;
     uint64_t reqs = 0;
-    uint64_t cycle_wait = intersend_time * rte_get_timer_hz() / (1e9);
     size_t payload_size = 32;
     float rate_gbps = (float)rate * (float)(segment_size * num_mbufs) * 8.0 / (float)1e9;
 
@@ -1352,6 +1351,7 @@ static void * do_client(void *client) {
     
     // TODO: add in scaffolding for timing/printing out quick statistics
     start_time = rte_get_timer_cycles();
+    next = start_time;
     wait_time = 0;
     last_sent = start_time;
     int outstanding = 0;
@@ -1370,7 +1370,6 @@ static void * do_client(void *client) {
             return (void *)-EINVAL;
         }
         uint8_t *ptr = rte_pktmbuf_mtod(pkt, uint8_t *);
-        cycle_wait = current_request->timestamp;
         current_request->timestamp = time_now(clock_offset);
         rte_memcpy((char *)ptr, (char *)&outgoing_headers[client_id], sizeof(OutgoingHeader));
         ptr += header_size;
@@ -1392,8 +1391,17 @@ static void * do_client(void *client) {
         }
         outstanding += total_pkts_required;
         last_sent = rte_get_timer_cycles();
+        deficit_cycles = last_sent - next;
         current_request++;
         wait_time = current_request->timestamp * rte_get_timer_hz() / 1e9;
+        NETPERF_DEBUG("Wait time: %lu, deficit: %lu", wait_time, deficit_cycles);
+        if (deficit_cycles > wait_time) {
+            wait_time = 0;
+            next = last_sent;
+        } else {
+            wait_time -= deficit_cycles;
+            next = last_sent + wait_time;
+        }
         NETPERF_DEBUG("Sent packet at %u, %u send_time, %d is outstanding, wait time is %lu", (unsigned)last_sent, (unsigned)time_now(clock_offset), outstanding, wait_time);
 
         /* now poll on receiving packets */
