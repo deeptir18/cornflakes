@@ -25,6 +25,8 @@
 #include <pthread.h>
 #include <sched.h>
 #include "rand_exp.h"
+#include "thread_info.h"
+#include "stats.h"
 
 #include <rte_memory.h>
 #include <rte_launch.h>
@@ -109,20 +111,9 @@ typedef unsigned long virtaddr_t;
 static __thread int thread_id = 0;
 #define MAX_ITERATIONS 3000000
 static char* latency_log = NULL;
+static char *threads_log = NULL;
+static int has_threads_log = 0;
 static int has_latency_log = 0;
-
-typedef struct Summary_Statistics_t
-{
-    uint64_t min;
-    uint64_t max;
-    uint64_t median;
-    uint64_t p99;
-    uint64_t p999;
-    uint64_t avg;
-    float offered_rate_gbps;
-    float achieved_rate_gbps;
-    float percent_rate;
-} Summary_Statistics_t;
 
 typedef struct Latency_Dist_t
 {
@@ -204,8 +195,9 @@ static void dump_debug_latencies(Latency_Dist_t *dist) {
     free(arr);
 }
 
-static void dump_latencies(Latency_Dist_t *dist, float total_time, size_t message_size, float rate_gbps, size_t client_id, Summary_Statistics_t *statistics) {
+static void dump_latencies(Latency_Dist_t *dist, float total_time, size_t message_size, float rate_gbps, float rate_pps, size_t client_id, Summary_Statistics_t *statistics) {
     static __thread int thread_id;
+    statistics->recved = dist->total_count;
     printf("Trying to dump latencies on client side with message size for client %lu: %lu\n", message_size, client_id);
     if (dist->total_count == 0) {
         NETPERF_WARN("No packets received");
@@ -249,7 +241,9 @@ static void dump_latencies(Latency_Dist_t *dist, float total_time, size_t messag
     statistics->p99 = p99;
     statistics->p999 = p999;
     statistics->offered_rate_gbps = rate_gbps;
+    statistics->offered_rate_pps = rate_pps;
     statistics->achieved_rate_gbps = achieved_rate_gbps;
+    statistics->achieved_rate_pps = (float)(dist->total_count) / (float)total_time;
     statistics->percent_rate = percent_rate;
     return;
 }
@@ -739,12 +733,13 @@ static int parse_args(int argc, char *argv[]) {
         {"num_segments", optional_argument, 0, 'n'},
         {"array_size", optional_argument, 0, 'a'},
         {"client_threads", optional_argument, 0, 'b'},
+        {"threads_log", optional_argument, 0, 'q'},
         {"client_id", optional_argument, 0, 'x'},
         {"with_copy", no_argument, 0, 'k'},
         {0,           0,                 0,  0   }
     };
     int long_index = 0;
-    while ((opt = getopt_long(argc, argv,"m:i:s:l:p:c:z:t:r:n:a:k:b:x:",
+    while ((opt = getopt_long(argc, argv,"m:i:s:l:p:c:z:t:r:n:a:k:b:x:q:",
                    long_options, &long_index )) != -1) {
         switch (opt) {
             case 'm':
@@ -770,6 +765,11 @@ static int parse_args(int argc, char *argv[]) {
                 has_latency_log = 1;
                 latency_log = (char *)malloc(strlen(optarg));
                 strcpy(latency_log, optarg);
+                break;
+            case 'q':
+                has_threads_log = 1;
+                threads_log = (char *)malloc(strlen(optarg));
+                strcpy(threads_log, optarg);
                 break;
             case 'p':
                 has_port = 1;
@@ -1455,7 +1455,11 @@ static void * do_client(void *client) {
     printf("\nRan for %f seconds, sent %"PRIu64" packets.\n",
 			total_time, reqs);
     calculate_latencies(&packet_maps[client_id], &latency_dists[client_id], reqs, total_pkts_required);
-    dump_latencies(&latency_dists[client_id], total_time, num_mbufs * segment_size, rate_gbps, client_id, &summary_statistics[client_id]);
+    summary_statistics[client_id].id = client_id;
+    summary_statistics[client_id].sent = reqs;
+    summary_statistics[client_id].runtime = total_time;
+    summary_statistics[client_id].retries = 0;
+    dump_latencies(&latency_dists[client_id], total_time, num_mbufs * segment_size, rate_gbps, rate, client_id, &summary_statistics[client_id]);
     free_pktmap(&packet_maps[client_id], &latency_dists[client_id]);
     free(client_requests[client_id]);
     NETPERF_DEBUG("Freed client request payloads\n");
@@ -1930,6 +1934,12 @@ static int spawn_client_threads() {
 
     // at the end, print out all the client statistics
     dump_total_statistics(num_client_threads);
+
+    // print out all the threads info to the thread filename
+    if (has_threads_log) {
+        write_threads_info(threads_log, num_client_threads, summary_statistics);
+        free(threads_log);
+    }
     return 0;
 }
 

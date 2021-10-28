@@ -8,8 +8,7 @@ APP = netperf
 CXX = g++
 
 # all source are stored in SRCS-y
-SRCS-y := main.c rand_exp.cc
-# SRCS-cc := rand_exp.cc
+SRCS-y := main.c rand_exp.cc thread_info.cc
 
 
 # Build using pkg-config variables if possible
