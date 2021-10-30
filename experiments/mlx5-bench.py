@@ -1,4 +1,5 @@
 from main import runner
+import time
 from main import utils
 import heapq
 import yaml
@@ -244,6 +245,8 @@ class ScatterGatherIteration(runner.Iteration):
         ret["pci_addr"] = config_yaml["dpdk"]["pci_addr"]
         ret["array_size"] = self.array_size
         ret["num_threads"] = self.num_threads
+        ret["num_machines"] = NUM_CLIENTS
+        ret["random_seed"] = time.time()
         # both sides need to know about the server mac address
         server_host = programs_metadata["start_server"]["hosts"][0]
         ret["server_mac"] = config_yaml["hosts"][server_host]["mac"]

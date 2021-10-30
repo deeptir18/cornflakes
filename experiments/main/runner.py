@@ -205,12 +205,18 @@ class Experiment(metaclass=abc.ABCMeta):
         ct = 0
         total = len(iterations)
         start = time.time()
-        expected_time = 25 * total / 3600.0
+        expected_time = 20 * total / 3600.0
+        utils.warn("Expected time to finish: {} hours".format(expected_time))
         for iteration in iterations:
             ct += 1
-            utils.info("Running iteration  # {} out of {}, {} % done with iterations expected time to finish: {} hours".format(
-                ct - 1, total, (float(ct - 1)/float(total) * 100.0),
-                expected_time))
+            if (ct > 1):
+                rate_so_far = (ct - 1)/(time.time() - start)
+                left = (total - (ct - 1))
+                expected_time_to_finish = (
+                    float(left) / (float(rate_so_far))) / 3600.0
+                utils.info("Running iteration  # {} out of {}, {} % done with iterations expected time to finish: {} hours".format(
+                    ct - 1, total, (float(ct - 1)/float(total) * 100.0),
+                    expected_time_to_finish))
             if iteration.get_folder_name(folder_path).exists():
                 utils.info("Iteration already exists, skipping:"
                            "{}".format(iteration))
@@ -254,10 +260,7 @@ class Experiment(metaclass=abc.ABCMeta):
                     f.write(ret + os.linesep)
                     f.close()
             # because we've tried to do analysis, ok to sleep for less
-            time.sleep(1)
-            now = time.time()
-            total_so_far = now - start
-            expected_time = (float(total_so_far) / ct * total) / 3600.0
+            time.sleep(2)
 
     def execute(self, parser, namespace):
         total_args = self.add_specific_args(parser, namespace)

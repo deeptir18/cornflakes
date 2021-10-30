@@ -420,8 +420,9 @@ struct rte_ether_addr server_mac = {
     .addr_bytes = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 };
 static size_t num_client_threads = 1; // number of client threads sending packets (automatically figures out port / IP to use)
+static size_t num_total_machines = 1;
+static uint64_t client_random_seed = 0;
 static size_t client_id = 0; // out of all the separate clients sending, which client am I
-static uint64_t random_seed = 0; // random seed to generate the  payload with
 static pthread_t threads[MAX_THREADS];
 static cpu_set_t cpusets[MAX_THREADS];
 static uint16_t dpdk_nbports;
@@ -558,7 +559,7 @@ static void initialize_outgoing_header(OutgoingHeader *header,
 static void initialize_client_requests_common(size_t num_total_clients) {
     size_t num_requests = (size_t)((float)seconds * rate * 1.20);
 	uint64_t *indices = NULL;
-	if (initialize_pointer_chasing_at_client(&indices, array_size, segment_size, time(0)) != 0) {
+	if (initialize_pointer_chasing_at_client(&indices, array_size, segment_size, client_random_seed) != 0) {
 		printf("Failed to initialize pointer chasing at client\n");
 		exit(1);
 	}
@@ -573,7 +574,7 @@ static void initialize_client_requests_common(size_t num_total_clients) {
         }
         struct ClientRequest *current_req = (struct ClientRequest*)client_requests[client_id];
         size_t num_segments_within_region = array_size / segment_size;
-        size_t start_offset = (num_segments_within_region / num_client_threads) * client_id;
+        size_t start_offset = (num_segments_within_region / (num_client_threads * num_total_machines)) * client_id;
         uint64_t cur_region_idx = indices[0]; // TODO: start them all at an offset from each other?
         NETPERF_INFO("For client %lu, start_idx is %lu/%lu", client_id, start_offset, num_segments_within_region);
         for (size_t cur_offset = 0; cur_offset < start_offset; cur_offset++) {
@@ -722,11 +723,13 @@ static int parse_args(int argc, char *argv[]) {
         {"client_threads", optional_argument, 0, 'b'},
         {"threads_log", optional_argument, 0, 'q'},
         {"client_id", optional_argument, 0, 'x'},
+        {"num_machines", optional_argument, 0, 'w'},
+        {"random_seed", optional_argument, 0, 'v'},
         {"with_copy", no_argument, 0, 'k'},
         {0,           0,                 0,  0   }
     };
     int long_index = 0;
-    while ((opt = getopt_long(argc, argv,"m:i:s:l:p:c:z:t:r:n:a:k:b:x:q:",
+    while ((opt = getopt_long(argc, argv,"m:i:s:l:p:c:z:t:r:n:a:k:b:x:q:v:w:",
                    long_options, &long_index )) != -1) {
         switch (opt) {
             case 'm':
@@ -812,6 +815,14 @@ static int parse_args(int argc, char *argv[]) {
             case 'x': // client id
                 str_to_long(optarg, &tmp);
                 client_id = (size_t)tmp;
+                break;
+            case 'v':
+                str_to_long(optarg, &tmp);
+                client_random_seed = (uint64_t)tmp;
+                break;
+            case 'w':
+                str_to_long(optarg, &tmp);
+                num_total_machines = (size_t)tmp;
                 break;
             default: print_usage();
                  exit(EXIT_FAILURE);

@@ -12,7 +12,7 @@ programs:
             record: "{folder}/server.record.log"
         stop: sudo kill -9 `ps aux | grep  {cornflakes_dir}/mlx5-netperf/build/mlx5-netperf | awk '{{print $2}}' | head -n3`
     start_client:
-        start: sudo LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/scatter-gather-bench/build/netperf {config_eal} -- --mode=CLIENT --server_ip={server_ip} --client_ip={client_ip} --server_mac={server_mac} --rate={rate} --segment_size={segment_size} --num_segments={num_segments} --time={time} --log={folder}/{host}.latency-t.log --array_size={array_size} --client_threads={num_threads} --threads_log={folder}/{host}.threads.log
+        start: sudo LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/scatter-gather-bench/build/netperf {config_eal} -- --mode=CLIENT --server_ip={server_ip} --client_ip={client_ip} --server_mac={server_mac} --rate={rate} --segment_size={segment_size} --num_segments={num_segments} --time={time} --log={folder}/{host}.latency-t.log --array_size={array_size} --client_threads={num_threads} --threads_log={folder}/{host}.threads.log --random_seed={random_seed} --num_machines={num_machines}
         hosts: [client1, client2, client3, client6, client7, client9, client10, client8, client5, client4]
         log:
             out: "{folder}/{host}.log"
