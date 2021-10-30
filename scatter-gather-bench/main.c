@@ -171,12 +171,18 @@ static void dump_debug_latencies(Latency_Dist_t *dist) {
         printf("Not able to allocate array to sort latencies\n");
         exit(1);
     }
+    float running_avg = 0;
     for (size_t i = 0; i < dist->total_count; i++) {
+        if (i > 0) {
+        running_avg = (running_avg) * (float)(i - 1) / (float)(i) + (float)(dist->latencies[i])/(float)(i);
+        } else {
+            running_avg = dist->latencies[i];
+        }
         arr[i] = dist->latencies[i];
     }
     NETPERF_DEBUG("Filled array");
     qsort(arr, dist->total_count, sizeof(uint64_t), cmpfunc);
-	uint64_t avg_latency = (dist->latency_sum) / (dist->total_count);
+	uint64_t avg_latency = (uint64_t)running_avg;
     uint64_t median = arr[(size_t)((double)dist->total_count * 0.50)];
     uint64_t p99 = arr[(size_t)((double)dist->total_count * 0.99)];
     uint64_t p999 = arr[(size_t)((double)dist->total_count * 0.999)];
@@ -421,6 +427,7 @@ struct rte_ether_addr server_mac = {
 };
 static size_t num_client_threads = 1; // number of client threads sending packets (automatically figures out port / IP to use)
 static size_t num_total_machines = 1;
+static size_t machine_id = 0;
 static uint64_t client_random_seed = 0;
 static size_t client_id = 0; // out of all the separate clients sending, which client am I
 static pthread_t threads[MAX_THREADS];
@@ -574,7 +581,8 @@ static void initialize_client_requests_common(size_t num_total_clients) {
         }
         struct ClientRequest *current_req = (struct ClientRequest*)client_requests[client_id];
         size_t num_segments_within_region = array_size / segment_size;
-        size_t start_offset = (num_segments_within_region / (num_client_threads * num_total_machines)) * client_id;
+        size_t client_thread_id = (machine_id * num_client_threads) + client_id;
+        size_t start_offset = (num_segments_within_region / (num_client_threads * num_total_machines)) * client_thread_id;
         uint64_t cur_region_idx = indices[0]; // TODO: start them all at an offset from each other?
         NETPERF_INFO("For client %lu, start_idx is %lu/%lu", client_id, start_offset, num_segments_within_region);
         for (size_t cur_offset = 0; cur_offset < start_offset; cur_offset++) {
@@ -725,6 +733,7 @@ static int parse_args(int argc, char *argv[]) {
         {"client_id", optional_argument, 0, 'x'},
         {"num_machines", optional_argument, 0, 'w'},
         {"random_seed", optional_argument, 0, 'v'},
+        {"machine_id", optional_argument, 0, 'j'},
         {"with_copy", no_argument, 0, 'k'},
         {0,           0,                 0,  0   }
     };
@@ -823,6 +832,10 @@ static int parse_args(int argc, char *argv[]) {
             case 'w':
                 str_to_long(optarg, &tmp);
                 num_total_machines = (size_t)tmp;
+                break;
+            case 'j':
+                str_to_long(optarg, &tmp);
+                machine_id = (size_t)tmp;
                 break;
             default: print_usage();
                  exit(EXIT_FAILURE);

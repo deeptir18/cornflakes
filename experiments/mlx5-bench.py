@@ -26,7 +26,7 @@ ARRAY_SIZES_TO_LOOP = [65536, 819200, 4096000, 65536000, 655360000]
 rates = [5000, 10000, 50000, 100000, 200000,
          300000, 400000, 410000, 420000, 431000]
 # max rates to get "knee" (for smallest working set size, 0 extra busy work)
-max_rates = {256: 450000, 512: 425000, 1024: 375000, 2048: 350000, 4096: 225000,
+max_rates = {256: 425000, 512: 400000, 1024: 375000, 2048: 350000, 4096: 225000,
              8192: 150000}
 sample_percentages = [10, 30, 50, 65, 70, 75, 85, 90, 95, 100]
 
@@ -233,6 +233,9 @@ class ScatterGatherIteration(runner.Iteration):
             exit(1)
         return ret
 
+    def find_client_id(self, host):
+        return int(host[len(host) - 1])
+
     def get_program_args(self,
                          folder,
                          program,
@@ -279,6 +282,7 @@ class ScatterGatherIteration(runner.Iteration):
             host_options = self.get_iteration_clients(
                 programs_metadata[program]["hosts"])
             rate = self.find_rate(host_options, host)
+            ret["host_id"] = self.find_client_id(host)
             ret["client_ip"] = config_yaml["hosts"][host]["ip"]
             ret["rate"] = rate
             ret["time"] = exp_time
