@@ -11,7 +11,7 @@ STRIP_THRESHOLD = 0.03
 SEGMENT_SIZES_TO_LOOP = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
 TOTAL_SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096, 8192]
 # NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16]
-NB_SEGMENTS_TO_LOOP = [1]  # for now, just stick to one segment to loop
+NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8]
 MAX_CLIENT_RATE_PPS = 200000
 MAX_RATE_GBPS = 5  # TODO: should be configured per machine
 MIN_RATE_PPS = 5000
@@ -336,16 +336,17 @@ class ScatterGather(runner.Experiment):
                                     for num_segments in NB_SEGMENTS_TO_LOOP:
                                         segment_size = int(
                                             total_size / num_segments)
+                                        as_one = False
                                         it = ScatterGatherIteration([(rate,
                                                                       NUM_CLIENTS)],
                                                                     segment_size,
                                                                     num_segments,
                                                                     with_copy,
+                                                                    as_one,
                                                                     NUM_THREADS,
                                                                     trial=trial,
                                                                     array_size=array_size)
                                         ret.append(it)
-                                        ret.append(it_wc)
             return ret
 
     def add_specific_args(self, parser, namespace):

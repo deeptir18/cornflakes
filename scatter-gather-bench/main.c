@@ -572,8 +572,13 @@ static void initialize_client_requests_common(size_t num_total_clients) {
             printf("Initialized client requests at %p\n", client_requests);
         }
         struct ClientRequest *current_req = (struct ClientRequest*)client_requests[client_id];
-        size_t num_segments_within_region = (array_size - segment_size) / 64;
+        size_t num_segments_within_region = array_size / segment_size;
+        size_t start_offset = (num_segments_within_region / num_client_threads) * client_id;
         uint64_t cur_region_idx = indices[0]; // TODO: start them all at an offset from each other?
+        NETPERF_INFO("For client %lu, start_idx is %lu/%lu", client_id, start_offset, num_segments_within_region);
+        for (size_t cur_offset = 0; cur_offset < start_offset; cur_offset++) {
+            cur_region_idx = get_next_ptr(indices, cur_region_idx);
+        }
         for (size_t iter = 0; iter < num_requests; iter++) {
             current_req->timestamp = 0; // TODO: fill this in
             current_req->packet_id = (uint64_t)iter;
