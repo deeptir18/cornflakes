@@ -172,29 +172,36 @@ class Experiment(metaclass=abc.ABCMeta):
             # use torch (Which should parallelize within iterations)
             utils.debug("Ct: {}".format(ct))
             ct += 1
-            ret = self.run_analysis_individual_trial(folder_path,
-                                                     program_metadata,
-                                                     iteration, print_stats)
+            # check if the folder has "analysis.log"
+            analysis_path = iteration.get_folder_name(folder_path) /\
+                "analysis.log"
+            ret = ""
+            if (os.path.exists(analysis_path)):
+                try:
+                    with open(analysis_path) as analysis_file:
+                        lines = analysis_file.readlines()
+                        lines = [line.strip() for line in lines]
+                        ret = lines[0]
+                except:
+                    # otherwise, try to parse again
+                    ret = ""
+            if (ret == ""):
+                ret = self.run_analysis_individual_trial(folder_path,
+                                                         program_metadata,
+                                                         iteration, print_stats)
             if ret != "":
                 if f is not None:
                     f.write(ret + os.linesep)
-            # pool_args.append([folder_path, program_metadata, iteration,
-            #                  print_stats])
-
-        #ret = pool.starmap(self.run_analysis_individual_trial, pool_args)
-        # for line in ret:
-        #    if line != "":
-        #        if f is not None:
-        #            f.write(line + os.linesep)
         if f is not None:
             f.close()
 
-    def run_iterations(self, total_args, iterations):
+    def run_iterations(self, total_args, iterations, print_stats=False):
         """
         Loops over the iterations and runs each experiment.
         """
         program_version_info = self.get_program_version_info()
         folder_path = Path(total_args.folder)
+        program_metadata = self.get_exp_config()["programs"]
         ct = 0
         total = len(iterations)
         start = time.time()
@@ -233,13 +240,24 @@ class Experiment(metaclass=abc.ABCMeta):
                 utils.warn("Failed to execute program after {} retries.".format(
                     utils.NUM_RETRIES))
                 exit(1)
-            # sleep before next trial
-            time.sleep(5)
+            # before next trial, run analysis
+            ret = self.run_analysis_individual_trial(folder_path,
+                                                     program_metadata,
+                                                     iteration, print_stats)
+            if ret != "":
+                # open a file called "analysis.log" in the iteration folder and
+                # write the folder there
+                analysis_path = iteration.get_folder_name(folder_path) /\
+                    "analysis.log"
+                f = open(analysis_path, "w")
+                if f is not None:
+                    f.write(ret + os.linesep)
+                    f.close()
+            # because we've tried to do analysis, ok to sleep for less
+            time.sleep(1)
             now = time.time()
             total_so_far = now - start
             expected_time = (float(total_so_far) / ct * total) / 3600.0
-
-            # TODO: add some, enter to continues?
 
     def execute(self, parser, namespace):
         total_args = self.add_specific_args(parser, namespace)
@@ -248,7 +266,7 @@ class Experiment(metaclass=abc.ABCMeta):
         # run the experiment (s) and analysis
         if total_args.exp_type == "loop":
             if not(total_args.analysis_only) and not(total_args.graph_only):
-                self.run_iterations(total_args, iterations)
+                self.run_iterations(total_args, iterations, print_stats=False)
             if not(total_args.no_analysis) and not(namespace.pprint) and not(total_args.graph_only):
                 self.run_analysis_loop(total_args,
                                        iterations,
@@ -260,7 +278,7 @@ class Experiment(metaclass=abc.ABCMeta):
 
         elif total_args.exp_type == "individual":
             if not(total_args.analysis_only):
-                self.run_iterations(total_args, iterations)
+                self.run_iterations(total_args, iterations, print_stats=True)
             if not(total_args.no_analysis) and not(namespace.pprint):
                 self.run_analysis_loop(total_args,
                                        iterations,

@@ -10,7 +10,7 @@ import json
 import numpy as np
 import torch
 
-NUM_TRIALS = 2
+NUM_TRIALS = 3
 NUM_RETRIES = 0
 
 
