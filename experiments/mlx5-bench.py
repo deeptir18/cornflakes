@@ -12,7 +12,8 @@ STRIP_THRESHOLD = 0.03
 SEGMENT_SIZES_TO_LOOP = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
 TOTAL_SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096, 8192]
 # NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16]
-NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8]
+#NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8]
+NB_SEGMENTS_TO_LOOP = [1, 2, 8]
 MAX_CLIENT_RATE_PPS = 200000
 MAX_RATE_GBPS = 5  # TODO: should be configured per machine
 MIN_RATE_PPS = 5000
@@ -249,7 +250,7 @@ class ScatterGatherIteration(runner.Iteration):
         ret["array_size"] = self.array_size
         ret["num_threads"] = self.num_threads
         ret["num_machines"] = NUM_CLIENTS
-        ret["random_seed"] = time.time()
+        ret["random_seed"] = int(time.time())
         # both sides need to know about the server mac address
         server_host = programs_metadata["start_server"]["hosts"][0]
         ret["server_mac"] = config_yaml["hosts"][server_host]["mac"]
@@ -282,7 +283,7 @@ class ScatterGatherIteration(runner.Iteration):
             host_options = self.get_iteration_clients(
                 programs_metadata[program]["hosts"])
             rate = self.find_rate(host_options, host)
-            ret["host_id"] = self.find_client_id(host)
+            ret["host_id"] = self.find_client_id(host) - 1
             ret["client_ip"] = config_yaml["hosts"][host]["ip"]
             ret["rate"] = rate
             ret["time"] = exp_time

@@ -119,7 +119,7 @@ struct tx_pktmbuf_priv
 {
     int32_t lkey;
     int32_t field2; // needs to be atleast 8 bytes large
-};
+} __attribute__((packed));
 
 typedef struct OutgoingHeader
 {
@@ -883,7 +883,8 @@ static int parse_args(int argc, char *argv[]) {
                                 sizeof(struct tx_pktmbuf_priv) + sizeof(struct rte_mbuf),
                                 rte_socket_id());
         if (extbuf_pool == NULL) {
-            printf("Failed to initialize linked data mempool\n");
+            NETPERF_WARN("Failed to initialize linked data mempool: %s\n", strerror(rte_errno));
+            return ENOMEM;
         }
         if (rte_mempool_obj_iter(
                 extbuf_pool,
@@ -1033,13 +1034,6 @@ static int init_dpdk_port(uint16_t port_id, struct rte_mempool **rx_mbuf_pools, 
 static int global_init(size_t num_queues) {
     static __thread int thread_id;
     NETPERF_INFO("Running global dpdk init for %lu threads", num_queues);
-    // initialize ports
-    const uint16_t nbports = rte_eth_dev_count_avail();
-    dpdk_nbports = nbports;
-    if (nbports <= 0) {
-       rte_exit(EXIT_FAILURE, "No ports available\n"); 
-    }
-    fprintf(stderr, "DPDK reports that %d ports (interfaces) are available.\n", nbports);
 
     // for each "queue", initialize a tx and rx pool.
     // attach rx pool to the queue.
@@ -1129,6 +1123,11 @@ static int dpdk_eal_init(int argc, char **argv) {
     if (args_parsed < 0) {
         rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
     }
+    dpdk_nbports = rte_eth_dev_count_avail();
+    if (dpdk_nbports <= 0) {
+       rte_exit(EXIT_FAILURE, "No ports available\n"); 
+    }
+    NETPERF_INFO("DPDK reports that %d ports (interfaces) are available.", dpdk_nbports);
     return args_parsed;
 }
 
@@ -1667,7 +1666,7 @@ static int do_server(void) {
                             tx_bufs[seg][pkt]->buf_iova = iova_at_offset;
                             tx_bufs[seg][pkt]->data_off = 0;
                             
-                            NETPERF_DEBUG("\t->Allocated packet segment %d, for pkt %d", seg, pkt);
+                            NETPERF_DEBUG("Allocated packet segment %d, for pkt %d", seg, pkt);
                             if (seg == 0) {
                                 // copy in the packet header to the first segment
                                 // for fake GSO segmentation.
@@ -1687,7 +1686,7 @@ static int do_server(void) {
                             if (prev != NULL) {
                                prev->next = tx_bufs[seg][pkt];
                             }
-                            NETPERF_DEBUG("\t->Pkt # %d, segment # %d, data_len: %u.", pkt, seg, (unsigned)actual_segment_size);
+                            NETPERF_DEBUG("->Pkt # %d, segment # %d, data_len: %u.", pkt, seg, (unsigned)actual_segment_size);
                             tx_bufs[seg][pkt]->data_len = (uint16_t)actual_segment_size;
                             prev = tx_bufs[seg][pkt];
                         }
@@ -1985,7 +1984,6 @@ main(int argc, char **argv)
         return do_memcpy_bench();
     }
 
-    //signal(SIGINT, sig_handler); // Register signal handler
     if (mode == MODE_UDP_CLIENT) {
         return spawn_client_threads();
     } else {
