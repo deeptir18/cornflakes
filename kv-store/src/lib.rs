@@ -467,6 +467,21 @@ pub enum MsgType {
     Put(usize),
 }
 
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+pub enum TwitterMsgType {
+  Get(usize),
+  Gets(usize),
+  Set(usize),
+  Add(usize),
+  Replace(usize),
+  Cas(usize),
+  Append(usize),
+  Prepend(usize),
+  Delete(usize),
+  Incr(usize),
+  Decr(usize),
+}
+
 pub trait KVSerializer<D>
 where
     D: Datapath,
@@ -569,6 +584,50 @@ where
         }
         tracing::info!("Done loading keys into kv store");
         Ok(())
+    }
+
+    pub fn load_twitter(
+          &mut self,
+          trace_file: &str,
+          connection: &mut D,
+          value_size: usize,
+          num_values: usize,
+        ) -> Result<()> {
+        let file = File::open(twitter_trace);
+        let mut buf_reader = BufReader::new(file);
+        for line_q in buf_reader.lines() {
+          let line = line_q?;
+          let mut twitter_req = TwitterGets::new();
+          let mut added = HashSet::new();
+          match twitter_req.get_type() {
+            MsgType::Get(_) => {
+                if added.get(twitter_req.get_key()) {
+                    continue;
+                }
+                let mut buffer = 
+                    CfBuf::allocate(connection, twitter_req.get_val_size(), ALIGN_SIZE).wrap_err(
+                        format!("Failed to allocate CfBuf for req # {}", req.get_id()),
+                    )?;
+                let mut val = String::new();
+                for i in 0..twitter_req.val_size {
+                    // Insert a char at the end of string
+                    val.push('a');
+                }
+                // Write in the value to the buffer
+                if buffer
+                    .write()
+                    .wrap_err("Failed to write bytes into CfBuf.")?
+                    != val.len()
+                {
+                    bail!("Failed to write all of the value bytes into CfBuf.");
+                }
+                self.map.insert(buffer.get_key(), buffer);
+            }
+            _=> {
+                added.insert(twitter_req.get_key());
+            }
+          }
+        }
     }
 }
 
