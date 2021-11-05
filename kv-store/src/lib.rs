@@ -4,6 +4,8 @@ pub mod cornflakes_dynamic;
 pub mod flatbuffers;
 pub mod protobuf;
 pub mod ycsb_parser;
+pub mod twitter_parser;
+
 use byteorder::{BigEndian, ByteOrder};
 use color_eyre::eyre::{bail, eyre, Result, WrapErr};
 use cornflakes_libos::{
@@ -19,9 +21,10 @@ use std::{
     net::Ipv4Addr,
     sync::{Arc, Mutex},
     time::Duration,
+    collections::HashSet,
 };
 use ycsb_parser::YCSBRequest;
-
+use twitter_parser::TwitterGets;
 // TODO: though capnpc 0.14^ supports generating nested namespace files
 // there seems to be a bug in the code generation, so must include it at crate root
 mod kv_capnp {
@@ -588,46 +591,53 @@ where
 
     pub fn load_twitter(
           &mut self,
-          trace_file: &str,
+          twitter_trace: &str,
           connection: &mut D,
           value_size: usize,
           num_values: usize,
         ) -> Result<()> {
-        let file = File::open(twitter_trace);
-        let mut buf_reader = BufReader::new(file);
+        let file = File::open(twitter_trace)?;
+        let buf_reader = BufReader::new(file);
         for line_q in buf_reader.lines() {
           let line = line_q?;
-          let mut twitter_req = TwitterGets::new();
+          let mut twitter_req = TwitterGets::new(&line)?;
           let mut added = HashSet::new();
           match twitter_req.get_type() {
             MsgType::Get(_) => {
-                if added.get(twitter_req.get_key()) {
+                if added.contains(twitter_req.get_key()) {
                     continue;
                 }
                 let mut buffer = 
                     CfBuf::allocate(connection, twitter_req.get_val_size(), ALIGN_SIZE).wrap_err(
-                        format!("Failed to allocate CfBuf for req # {}", req.get_id()),
+                        format!("Failed to allocate CfBuf for req {}", twitter_req.get_key()),
                     )?;
                 let mut val = String::new();
-                for i in 0..twitter_req.val_size {
+                for i in 0..twitter_req.get_val_size() {
                     // Insert a char at the end of string
                     val.push('a');
                 }
                 // Write in the value to the buffer
                 if buffer
-                    .write()
+                    .write(val.as_bytes())
                     .wrap_err("Failed to write bytes into CfBuf.")?
                     != val.len()
                 {
                     bail!("Failed to write all of the value bytes into CfBuf.");
                 }
-                self.map.insert(buffer.get_key(), buffer);
+                self.map.insert(twitter_req.get_key().to_string(), buffer);
             }
             _=> {
                 added.insert(twitter_req.get_key());
             }
           }
         }
+        Ok(())
+    }
+
+    pub fn print_hash_map(&self) {
+      for (key, value) in self.map {
+          println!("{}", key);
+      }
     }
 }
 

@@ -133,6 +133,8 @@ struct Opt {
     start_cutoff: usize,
     #[structopt(long = "distribution", default_value = "exponential")]
     distribution: DistributionType,
+    #[structopt(long="trace_type", default_value="0")] // 0 = YCSB, 1 = Twitter
+    trace_type: usize,
 }
 
 /// Given a path, calculates the number of lines in the file.
@@ -173,6 +175,12 @@ macro_rules! init_kv_server(
         set_ctrlc_handler(&kv_server)?;
         // load values into kv store
         kv_server.init(&mut connection)?;
+        if $opt.trace == 1 {
+          kv_server.load_twitter(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;   
+          kv_server.print_hash_map();
+          debug!("Loaded in the twitter trace!");
+          return;
+        }
         kv_server.load(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;
         kv_server.run_state_machine(&mut connection)?;
     }
