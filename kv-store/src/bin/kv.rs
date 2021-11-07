@@ -29,6 +29,7 @@ use std::{
     time::Instant,
 };
 use structopt::StructOpt;
+use tracing::debug;
 
 #[derive(Debug, StructOpt, Clone)]
 #[structopt(name = "KV Store App.", about = "KV store server and client.")]
@@ -170,16 +171,18 @@ fn get_num_requests(opt: &Opt) -> Result<usize> {
 #[macro_export]
 macro_rules! init_kv_server(
     ($serializer: ty, $datapath: ty, $datapath_init: expr, $opt: ident) => {
+        tracing::info!("Initializing the KV server!");
         let mut connection = $datapath_init?;
+        tracing::info!("Done creating the datapath connection!");
         let mut kv_server: KVServer<$serializer,$datapath> = KVServer::new($opt.use_native_buffers)?;
         set_ctrlc_handler(&kv_server)?;
         // load values into kv store
         kv_server.init(&mut connection)?;
-        if $opt.trace == 1 {
+        if $opt.trace_type == 1 {
           kv_server.load_twitter(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;   
           kv_server.print_hash_map();
           debug!("Loaded in the twitter trace!");
-          return;
+          ()
         }
         kv_server.load(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;
         kv_server.run_state_machine(&mut connection)?;
@@ -261,6 +264,7 @@ where
 }
 
 fn main() -> Result<()> {
+    tracing::info!("Starting the KV app!");
     let opt = Opt::from_args();
     global_debug_init(opt.trace_level)?;
 
@@ -305,9 +309,16 @@ fn main() -> Result<()> {
         if opt.mode == AppMode::Server {
             // calculate the number of lines in the trace file
             let num_lines = lines_in_file(&opt.trace_file)?;
-            connection
-                .add_mempool("kv_buffer_pool", opt.value_size, num_lines * opt.num_values)
-                .wrap_err("Could not add mempool to DPDK conneciton")?;
+            tracing::info!("Number of lines in the trace file: {}", num_lines);
+            if opt.trace_type == 1 {
+                connection
+                  .add_twitter_mempool("twitter_kv_bufpool", num_lines)
+                  .wrap_err("Could not add Twitter mempool to DPDK connection")?;
+            } else {
+                connection
+                  .add_mempool("kv_buffer_pool", opt.value_size, num_lines * opt.num_values)
+                  .wrap_err("Could not add mempool to DPDK connection")?;
+            }
         }
         Ok(connection)
     };

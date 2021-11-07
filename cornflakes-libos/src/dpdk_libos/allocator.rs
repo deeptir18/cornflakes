@@ -162,6 +162,7 @@ impl MempoolAllocator {
     pub fn allocate(&self, alloc_size: usize, _alignment: usize) -> Result<*mut rte_mbuf> {
         let mut min_size = std::f64::INFINITY;
         for size in self.mempools.keys() {
+            tracing::info!("Size: {}, Alloc size: {}", size, alloc_size);
             if alloc_size <= *size {
                 if *size as f64 <= min_size {
                     min_size = *size as f64;
@@ -187,9 +188,34 @@ impl MempoolAllocator {
             }
         }
 
+        /*Do calculation based on the buffer size*/
+        let log2 = (alloc_size as f64).log2().ceil() as u32;
+        let bytes = usize::pow(2, log2) as usize;
+        let num_values = 10000; //TODO: MAGIC NUMBER ALERT!!!!!
+        let name : &str = "twitter_kv_bufpool";
+        let mempool = wrapper::create_mempool(
+            &name,
+            1,
+            bytes + super::dpdk_bindings::RTE_PKTMBUF_HEADROOM as usize,
+            num_values, //TODO: MAGIC NUMBER ALERT!!!!!
+        ).wrap_err(format!(
+                "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}", name, bytes, num_values))?;
+        self.add_mempool(mempool, bytes)
+            .wrap_err(format!(
+                    "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}",
+                    name, bytes, num_values))?;
+        let mbuf = dpdk_call!(rte_pktmbuf_alloc(mempool));
+        if !mbuf.is_null() {
+                /*tracing::debug!(
+                    "Allocating object of size {:?} from mempool of size {}",
+                    alloc_size,
+                    min_size
+                );*/
+            return Ok(mbuf);
+        }
         bail!(
-            "No space in mempools to allocate buffer of size {}",
-            alloc_size
+            "Mbuf is null!"
+            //"No space in mempools to allocate buffer of size {}",
         );
     }
 

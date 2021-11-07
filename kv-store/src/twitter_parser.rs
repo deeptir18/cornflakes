@@ -20,14 +20,14 @@ impl<'a> TwitterGets<'a> {
       match op {
         "get" => Ok(TwitterGets{
             key: vec_gets[1],
-            key_size: vec_gets[2].parse::<usize>(),
-            val_size: vec_gets[3].parse::<usize>(),
+            key_size: vec_gets[2].parse::<usize>().unwrap(),
+            val_size: vec_gets[3].parse::<usize>().unwrap(),
             operation: MsgType::Get(1),
         }),
         _ => Ok(TwitterGets{
             key: vec_gets[1],
-            key_size: vec_gets[2].parse()::<usize>(),
-            val_size: vec_gets[3].parse()::<usize>(),
+            key_size: vec_gets[2].parse::<usize>().unwrap(),
+            val_size: vec_gets[3].parse::<usize>().unwrap(),
             operation: MsgType::Put(1),
         })
       }

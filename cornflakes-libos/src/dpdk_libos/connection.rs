@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tracing::warn;
+use rand_distr::num_traits::pow;
 
 const MAX_ENTRIES: usize = 60;
 const PROCESSING_TIMER: &str = "E2E_PROCESSING_TIME";
@@ -185,6 +186,7 @@ impl DPDKConnection {
         mode: AppMode,
         use_scatter_gather: bool,
     ) -> Result<DPDKConnection> {
+        tracing::info!("Initializing a new DPDKConnection!");
         let (ip_to_mac, mac_to_ip, udp_port, _client_port) = parse_yaml_map(config_file).wrap_err(
             "Failed to get ip to mac address mapping, or udp port information from yaml config.",
         )?;
@@ -241,7 +243,7 @@ impl DPDKConnection {
                 Arc::new(Mutex::new(HistogramWrapper::new(PUSH_PROCESSING_TIMER)?)),
             );
         }
-
+        tracing::info!("Create the allocator and add mempools!");
         let mut mempool_allocator = allocator::MempoolAllocator::default();
         for mempool in mempools.iter() {
             mempool_allocator
@@ -313,6 +315,43 @@ impl DPDKConnection {
 
     fn get_outgoing_header(&self, dst_addr: &utils::AddressInfo) -> utils::HeaderInfo {
         self.addr_info.get_outgoing(dst_addr)
+    }
+
+    pub fn add_twitter_mempool(
+        &mut self,
+        name: &str,
+        num_lines: usize,
+    ) -> Result<()> {
+        // find optimal number of values above this
+        tracing::info!("Creating 4 mempools of size 256, 512, 1024, and 2048");
+        for i in 8..11 {
+            let bytes = pow(2usize, i);
+            let num_values = num_lines/4 - 1;
+            let mempool_name = format!("{}_{}", name, bytes);
+            tracing::info!("Trying to add mempool {} to thingy", mempool_name);
+            let mempool = wrapper::create_mempool(
+                &mempool_name,
+                1,
+                bytes + super::dpdk_bindings::RTE_PKTMBUF_HEADROOM as usize,
+                num_values,
+            )
+            .wrap_err(format!(
+                "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}",
+                name, bytes, num_values
+            ))?;
+            tracing::debug!(
+                "Created mempool avail count: {}, in_use count: {}",
+                dpdk_call!(rte_mempool_avail_count(mempool)),
+                dpdk_call!(rte_mempool_in_use_count(mempool)),
+            );
+            self.mempool_allocator
+                .add_mempool(mempool, bytes)
+                .wrap_err(format!(
+                    "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}",
+                    name, bytes, num_values
+                ))?;
+        }
+        Ok(())
     }
 
     pub fn add_mempool(
