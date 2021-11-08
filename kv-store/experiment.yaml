@@ -13,8 +13,8 @@ programs:
         stop: sudo kill -SIGINT `ps aux | grep {cornflakes_dir}/target/release/kv | grep -v grep | awk '{{print $2}}'`
 
     start_client:
-        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/kv --config_file {config_file} --mode client --queries {queries} --debug_level info --size {size} --rate {rate} --serialization {client-library} --server_ip {server_ip} --time {time} --num_values {num_values} --start_cutoff {start_cutoff} --num_threads {num_threads} --logfile {folder}/{host}.latency.log --threadlog {folder}/{host}.threads.log
-        hosts: [client1, client2, client3, client4]
+        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/kv --config_file {config_file} --mode client --queries {queries} --debug_level info --size {size} --rate {rate} --serialization {client-library} --server_ip {server_ip} --time {time} --num_values {num_values} --start_cutoff {start_cutoff} --num_threads {num_threads} --num_clients {num_machines} --client_id {machine_id} --logfile {folder}/{host}.latency.log --threadlog {folder}/{host}.threads.log
+        hosts: [client1, client2, client3]
         log:
             out: "{folder}/{host}.log"
             err: "{folder}/{host}.err.log"

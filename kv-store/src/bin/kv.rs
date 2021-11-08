@@ -462,6 +462,7 @@ where
     )?;
 
     let exp_duration = start_run.elapsed().as_nanos();
+    tracing::warn!("Thread {} received {}", thread_id, loadgen.num_recved());
     loadgen.sort_rtts(opt.start_cutoff)?;
     // log latencies for this thread to per thread latency log file
     match &opt.logfile {

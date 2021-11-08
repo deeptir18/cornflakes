@@ -106,6 +106,12 @@ class KVIteration(runner.Iteration):
         else:
             utils.debug("Passed in unknown program name: {}".format(program))
 
+    def get_num_clients(self):
+        total_hosts = 0
+        for i in self.client_rates:
+            total_hosts += i[1]
+        return total_hosts
+
     def get_iteration_clients(self, possible_hosts):
         total_hosts = 0
         for i in self.client_rates:
@@ -200,7 +206,8 @@ class KVIteration(runner.Iteration):
             ret["rate"] = rate
             ret["num_threads"] = self.num_threads
             ret["num_clients"] = len(host_options)
-            ret["client_id"] = self.find_client_id(host_options, host)
+            ret["num_machines"] = self.get_num_clients()
+            ret["machine_id"] = self.find_client_id(host_options, host)
 
             # calculate server host
             server_host = programs_metadata["start_server"]["hosts"][0]
@@ -330,6 +337,9 @@ class KVBench(runner.Experiment):
             "achieved_load_pps,achieved_load_gbps,"\
             "percent_achieved_rate,total_retries,"\
             "avg,median,p99,p999"
+
+    def exp_post_process_analysis(self, total_args, logfile, new_logfile):
+        pass
 
     def run_analysis_individual_trial(self,
                                       higher_level_folder,

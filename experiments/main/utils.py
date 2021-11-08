@@ -1,4 +1,5 @@
 import os
+import pandas as pd
 import sys
 import yaml
 from pathlib import Path
@@ -10,7 +11,7 @@ import json
 import numpy as np
 import torch
 
-NUM_TRIALS = 3
+NUM_TRIALS = 2
 NUM_RETRIES = 0
 
 
@@ -108,3 +109,16 @@ def parse_number_trials_done(exp_folder):
         if "trial" in str(folder):
             num_trials += 1
     return num_trials
+
+
+def check_log_extension(arg_value):
+    if not arg_value.endswith(".log"):
+        warn("Filename must end with .log")
+        raise argparse.ArgumentTypeError
+    return arg_value
+
+
+def get_postprocess_logfile(logfile):
+
+    new_logfile = logfile[0:len(logfile) - 4] + "-postprocess" + ".log"
+    return new_logfile

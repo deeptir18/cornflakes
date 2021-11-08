@@ -133,6 +133,26 @@ class Experiment(metaclass=abc.ABCMeta):
         return
 
     @abc.abstractmethod
+    def exp_post_process_analysis(self, total_args, summary_logfile, new_logfile):
+        """
+        Experiment specific post process analysis (calculate "min p99", "knee",
+        etc"
+        """
+        return
+
+    def run_post_process_analysis(self, total_args, logfile=None):
+        """
+        Runs any calculations for entire set of data generated.
+        """
+        if logfile is None:
+            return
+
+        utils.info("Original log: {}".format(logfile))
+        new_logfile = utils.get_postprocess_logfile(logfile)
+
+        self.exp_post_process_analysis(total_args, logfile, new_logfile)
+
+    @abc.abstractmethod
     def run_analysis_individual_trial(self,
                                       higher_level_folder,
                                       program_metadata,
@@ -150,7 +170,10 @@ class Experiment(metaclass=abc.ABCMeta):
     def run_graphing_scripts(self, total_args, folder, logfile=None):
         if logfile is None:
             return
-        self.graph_results(total_args, folder, logfile)
+        if logfile is not None:
+            post_process_logfile = utils.get_postprocess_logfile(logfile)
+            self.graph_results(total_args, folder, logfile,
+                               post_process_logfile)
 
     def run_analysis_loop(self, total_args, iterations, print_stats=False, logfile=None):
         """
@@ -170,7 +193,6 @@ class Experiment(metaclass=abc.ABCMeta):
         ct = 0
         for iteration in iterations:
             # use torch (Which should parallelize within iterations)
-            utils.debug("Ct: {}".format(ct))
             ct += 1
             # check if the folder has "analysis.log"
             analysis_path = iteration.get_folder_name(folder_path) /\
@@ -194,6 +216,9 @@ class Experiment(metaclass=abc.ABCMeta):
                     f.write(ret + os.linesep)
         if f is not None:
             f.close()
+
+        # run post process analysis if required
+        self.run_post_process_analysis(total_args, logfile)
 
     def run_iterations(self, total_args, iterations, print_stats=False):
         """
@@ -408,6 +433,8 @@ class Iteration(metaclass=abc.ABCMeta):
             kill_cmd = None
             if "stop" in program:
                 kill_cmd = program["stop"]
+            utils.info("Relevant hosts:"
+                       "{}".format(self.get_relevant_hosts(program, program_name)))
             for host in self.get_relevant_hosts(program, program_name):
                 program_cmd = program["start"]
                 if "log" in program:

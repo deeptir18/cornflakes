@@ -4,6 +4,7 @@ use rand_distr::{Distribution, Exp};
 
 #[inline]
 pub fn rate_pps_to_interarrival_nanos(rate: u64) -> f64 {
+    tracing::debug!("Nanos intersend: {:?}", 1_000_000_000.0 / rate as f64);
     1_000_000_000.0 / rate as f64
 }
 
@@ -21,7 +22,7 @@ pub enum DistributionType {
 #[derive(Debug, Copy, Clone)]
 pub enum PacketDistribution {
     Uniform(u64),
-    Exponential(Exp<f64>),
+    Exponential(f64),
 }
 
 impl std::str::FromStr for DistributionType {
@@ -43,9 +44,8 @@ impl PacketDistribution {
         match typ {
             DistributionType::Uniform => Ok(PacketDistribution::Uniform(interarrival_nanos as u64)),
             DistributionType::Exponential => {
-                let l = 1.0 / interarrival_nanos;
-                let exp = Exp::new(l).wrap_err("Not able to make exponential distribution")?;
-                Ok(PacketDistribution::Exponential(exp))
+                let l = interarrival_nanos;
+                Ok(PacketDistribution::Exponential(l))
             }
         }
     }
@@ -55,7 +55,12 @@ impl PacketDistribution {
         let mut rng = thread_rng();
         match *self {
             PacketDistribution::Uniform(interarrival_nanos) => interarrival_nanos,
-            PacketDistribution::Exponential(exp) => exp.sample(&mut rng) as u64,
+            PacketDistribution::Exponential(l) => {
+                let exp = Exp::new(1.0 / l)
+                    .wrap_err("Not able to make exponential distribution")
+                    .unwrap();
+                exp.sample(&mut rng) as u64
+            }
         }
     }
 }
@@ -76,8 +81,8 @@ impl PacketSchedule {
         tracing::info!("Initializing packet schedule for {} requests", num_requests);
         let distribution = PacketDistribution::new(dist_type, rate_pps)
             .wrap_err("Failed to initialize distribution")?;
-        let mut packets: Vec<Packet> = vec![Packet::default(); num_requests];
-        for i in 0..num_requests {
+        let mut packets: Vec<Packet> = vec![Packet::default(); num_requests * 4];
+        for i in 0..(num_requests * 4) {
             packets[i] = Packet {
                 time_since_last: distribution.sample(),
             };

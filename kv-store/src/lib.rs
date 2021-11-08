@@ -65,6 +65,7 @@ pub struct QueryIterator {
     cur_thread_id: usize,
     cur_client_id: usize,
     lines: Lines<BufReader<File>>,
+    line_id: usize,
 }
 
 impl QueryIterator {
@@ -86,6 +87,7 @@ impl QueryIterator {
             cur_thread_id: 0,
             cur_client_id: 0,
             lines: reader.lines(),
+            line_id: 0,
         })
     }
 
@@ -98,14 +100,15 @@ impl QueryIterator {
     }
 
     fn increment(&mut self) {
+        self.line_id += 1;
         self.increment_client_id_counter();
-        if self.client_id == 0 {
-            // increment thread when we reach the next client
-            self.increment_thread_id_counter();
-        }
     }
 
     fn increment_client_id_counter(&mut self) {
+        if (self.cur_client_id + 1) == self.total_num_clients {
+            // increment thread when we reach the next client
+            self.increment_thread_id_counter();
+        }
         self.cur_client_id = (self.cur_client_id + 1) % self.total_num_clients;
     }
 
@@ -123,6 +126,12 @@ impl Iterator for QueryIterator {
                 if let Some(parsed_line_res) = self.lines.next() {
                     match parsed_line_res {
                         Ok(s) => {
+                            tracing::debug!(
+                                client_id = self.client_id,
+                                thread_id = self.thread_id,
+                                "Returning line {}",
+                                self.line_id
+                            );
                             self.increment();
                             return Some(Ok(s));
                         }
@@ -240,6 +249,14 @@ where
             start_cutoff: start_cutoff,
             _marker: PhantomData,
         })
+    }
+
+    pub fn num_sent(&self) -> usize {
+        self.last_sent_id
+    }
+
+    pub fn num_recved(&self) -> usize {
+        self.recved
     }
 
     pub fn sort_rtts(&mut self, start_cutoff: usize) -> Result<()> {
