@@ -1,4 +1,5 @@
 from main import runner
+import pandas as pd
 import time
 from main import utils
 import heapq
@@ -12,8 +13,7 @@ STRIP_THRESHOLD = 0.03
 SEGMENT_SIZES_TO_LOOP = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
 TOTAL_SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096, 8192]
 # NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16]
-#NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8]
-NB_SEGMENTS_TO_LOOP = [1, 2, 8]
+NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8]
 MAX_CLIENT_RATE_PPS = 200000
 MAX_RATE_GBPS = 5  # TODO: should be configured per machine
 MIN_RATE_PPS = 5000
@@ -67,7 +67,8 @@ def parse_log_info(log):
 
 class ScatterGatherIteration(runner.Iteration):
     def __init__(self, client_rates, segment_size,
-                 num_segments, with_copy, as_one, num_threads, trial=None, array_size=8192):
+                 num_segments, with_copy, as_one, num_threads, trial=None,
+                 array_size=8192, busy_cycles=0):
         """
         Arguments:
         * client_rates: Mapping from {int, int} specifying rates and how many
@@ -85,6 +86,10 @@ class ScatterGatherIteration(runner.Iteration):
         self.trial = trial
         self.as_one = as_one
         self.array_size = array_size
+        self.busy_cycles = busy_cycles
+
+    def get_busy_cycles(self):
+        return self.busy_cycles
 
     def get_num_threads(self):
         return self.num_threads
@@ -237,6 +242,12 @@ class ScatterGatherIteration(runner.Iteration):
     def find_client_id(self, host):
         return int(host[len(host) - 1])
 
+    def get_num_clients(self):
+        total_hosts = 0
+        for i in self.client_rates:
+            total_hosts += i[1]
+        return total_hosts
+
     def get_program_args(self,
                          folder,
                          program,
@@ -249,7 +260,7 @@ class ScatterGatherIteration(runner.Iteration):
         ret["pci_addr"] = config_yaml["dpdk"]["pci_addr"]
         ret["array_size"] = self.array_size
         ret["num_threads"] = self.num_threads
-        ret["num_machines"] = NUM_CLIENTS
+        ret["num_machines"] = self.get_num_clients()
         ret["random_seed"] = int(time.time())
         # both sides need to know about the server mac address
         server_host = programs_metadata["start_server"]["hosts"][0]
@@ -396,6 +407,7 @@ class ScatterGather(runner.Experiment):
         else:
             parser.add_argument("-l", "--logfile",
                                 help="Logfile name",
+                                type=utils.check_log_extension,
                                 default="summary.log")
             parser.add_argument("-lp", "--looping_variable",
                                 dest="looping_variable",
@@ -417,6 +429,67 @@ class ScatterGather(runner.Experiment):
             "achieved_load_pps,achieved_load_gbps," \
             "percent_acheived_rate," \
             "avg,median,p99,p999"
+
+    def exp_post_process_analysis(self, total_args, logfile, new_logfile):
+        # need to determine summary "p99 at low rate, median at low rate, knee
+        # of the curve" for each situation
+        folder_path = Path(total_args.folder)
+        out = open(folder_path / new_logfile, "w")
+        df = pd.read_csv(folder_path / logfile)
+        print(df.head(10))
+        if total_args.looping_variable == "array_total_size":
+            out.write(
+                "array_size,segment_size,num_segments,with_copy,as_one,mp99,p99sd,mmedian,mediansd,tputkneepps,tputkneeppssd,tputkneegbps,tputkneegbpssd" + os.linesep)
+            for array_size in ARRAY_SIZES_TO_LOOP:
+                for total_size in TOTAL_SIZES_TO_LOOP:
+                    for num_segments in NB_SEGMENTS_TO_LOOP:
+                        segment_size = int(total_size / num_segments)
+                        for with_copy in [False, True]:
+                            filtered_df = df[(df.array_size == array_size) &
+                                             (df.num_segments == num_segments) &
+                                             (df.segment_size == segment_size) &
+                                             (df.with_copy == with_copy)]
+                            # calculate lowest rate, get p99 and median
+                            # stats
+                            min_rate =\
+                                filtered_df["offered_load_pps"].min()
+                            latency_df =\
+                                filtered_df[(filtered_df.offered_load_pps ==
+                                             min_rate)]
+                            p99_mean = latency_df["p99"].mean()
+                            p99_sd = latency_df["p99"].std()
+                            median_mean = latency_df["median"].mean()
+                            median_sd = latency_df["median"].std()
+
+                            # CURRENT KNEE CALCULATION:
+                            # offered load where the p99 <= 25 us
+                            cutoff_df = filtered_df[(filtered_df.p99 <=
+                                                     25000)]
+                            max_rate = cutoff_df["offered_load_pps"].max()
+                            tput_df =\
+                                filtered_df[(filtered_df.offered_load_pps ==
+                                             max_rate)]
+                            offered_load_pps_mean =\
+                                tput_df["offered_load_pps"].mean()
+
+                            offered_load_pps_std =\
+                                tput_df["offered_load_pps"].std()
+                            offered_load_gbps_mean =\
+                                tput_df["offered_load_gbps"].mean()
+
+                            offered_load_gbps_std =\
+                                tput_df["offered_load_gbps"].std()
+                            as_one = False
+                            out.write(str(array_size) + "," + str(segment_size) + "," +
+                                      str(num_segments) + "," + str(with_copy) + "," +
+                                      str(as_one) + "," + str(p99_mean) + "," +
+                                      str(p99_sd) + "," + str(median_mean) +
+                                      "," + str(median_sd) + "," +
+                                      str(offered_load_pps_mean) + "," +
+                                      str(offered_load_pps_std) + "," +
+                                      str(offered_load_gbps_mean) + "," +
+                                      str(offered_load_gbps_std) + os.linesep)
+        out.close()
 
     def run_analysis_individual_trial(self,
                                       higher_level_folder,
@@ -532,22 +605,21 @@ class ScatterGather(runner.Experiment):
                                                                             p999 * 1000)
         return csv_line
 
-    def graph_results(self, total_args, folder, logfile):
+    def graph_results(self, total_args, folder, logfile,
+                      post_process_logfile):
         cornflakes_repo = self.config_yaml["cornflakes_dir"]
         plot_path = Path(folder) / "plots"
         plot_path.mkdir(exist_ok=True)
         full_log = Path(folder) / logfile
+        post_process_log = Path(folder) / post_process_logfile
 
+        plotting_script = Path(cornflakes_repo) / \
+            "experiments" / "plotting_scripts" / "sg_bench.R"
         if total_args.looping_variable == "array_total_size":
-            # implement graphing for this case: how do we visualize array size
-            # and cross of segments at the same time?
-            plotting_script = Path(cornflakes_repo) / \
-                "experiments" / "plotting_scripts" / "sg_bench.R"
-            metrics = ["median", "p99"]
-
+            metrics = ["median", "p99", "tput"]
             for metric in metrics:
                 output_file = plot_path / "summary_{}.pdf".format(metric)
-                args = [str(plotting_script), str(full_log), str(output_file),
+                args = [str(plotting_script), str(full_log), str(post_process_log), str(output_file),
                         metric, "full"]
                 try:
                     print(" ".join(args))
@@ -555,6 +627,7 @@ class ScatterGather(runner.Experiment):
                 except:
                     utils.warn(
                         "Failed to run plot command: {}".format(args))
+                    exit(1)
 
             for metric in metrics:
                 for total_size in TOTAL_SIZES_TO_LOOP:
@@ -568,8 +641,8 @@ class ScatterGather(runner.Experiment):
                         pdf = individual_plot_path /\
                             "totalsize_{}_numsegments_{}_{}.pdf".format(total_size,
                                                                         num_segments, metric)
-                        total_plot_args = [str(plotting_script),
-                                           str(full_log), str(pdf),
+                        total_plot_args = [str(plotting_script), str(full_log),
+                                           str(post_process_log), str(pdf),
                                            metric, "individual", str(
                             total_size),
                             str(num_segments)]
@@ -579,6 +652,35 @@ class ScatterGather(runner.Experiment):
                         except:
                             utils.warn(
                                 "Failed to run plot command: {}".format(args))
+                        # for each array size, plot an individual tput latency
+                        # curve
+                        for array_size in ARRAY_SIZES_TO_LOOP:
+                            if metric == "tput":
+                                continue
+                            individual_plot_path = plot_path /\
+                                "totalsize_{}".format(total_size) /\
+                                "numsegments_{}".format(num_segments) /\
+                                "arraysize_{}".format(array_size)
+                            individual_plot_path.mkdir(
+                                parents=True, exist_ok=True)
+                            pdf = individual_plot_path /\
+                                "totalsize_{}_numsegments_{}_arraysize_{}_{}.pdf".format(total_size,
+                                                                                         num_segments,
+                                                                                         array_size, metric)
+
+                            total_plot_args = [str(plotting_script),
+                                               str(full_log),
+                                               str(post_process_log), str(pdf),
+                                               metric, "tput_latency_arraysize", str(
+                                total_size),
+                                str(num_segments),
+                                str(array_size)]
+                            try:
+                                print(" ".join(total_plot_args))
+                                sh.run(total_plot_args)
+                            except:
+                                utils.warn(
+                                    "Failed to run plot command: {}".format(args))
 
 
 def main():
