@@ -17,7 +17,7 @@ MESSAGE_TYPES.extend(["list-2", "list-4", "list-8", "list-12", "list-16",
 # MESSAGE_TYPES.extend(["list-{}".format(i) for i in range(1, 5)])
 # MESSAGE_TYPES.extend(["tree-{}".format(i) for i in range(1, 4)])
 MAX_CLIENT_RATE_PPS = 60000
-MAX_NUM_CLIENTS = 7
+NUM_CLIENTS = 3
 CLIENT_RATE_INCREMENT = 20000
 SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cereal", "capnproto", "protobuf",
                            "flatbuffers",  # "cornflakes-fixed",
@@ -185,6 +185,16 @@ class EchoBenchIteration(runner.Iteration):
             exit(1)
         return ret
 
+    def find_client_id(self, client_options, host):
+        # TODO: what if this doesn't work
+        return client_options.index(host)
+
+    def get_num_clients(self):
+        total_hosts = 0
+        for i in self.client_rates:
+            total_hosts += i[1]
+        return total_hosts
+
     def get_program_args(self,
                          folder,
                          program,
@@ -215,6 +225,8 @@ class EchoBenchIteration(runner.Iteration):
             rate = self.find_rate(host_options, host)
             ret["rate"] = rate
             ret["num_threads"] = self.num_threads
+            ret["num_machines"] = self.get_num_clients()
+            ret["machine_id"] = self.find_client_id(host_options, host)
 
             # calculate server host
             server_host = programs_metadata["start_server"]["hosts"][0]
@@ -345,6 +357,9 @@ class EchoBench(runner.Experiment):
             "percent_acheived_rate,total_retries,"\
             "avg,median,p99,p999"
 
+    def exp_post_process_analysis(self, total_args, logfile, new_logfile):
+        pass
+
     def run_analysis_individual_trial(self,
                                       higher_level_folder,
                                       program_metadata,
@@ -419,7 +434,7 @@ class EchoBench(runner.Experiment):
                                    retries,
                                    host_avg, host_p99, host_p999, host_median))
 
-        sorted_latencies = list(heapq.merge(*client_latency_lists))
+        sorted_latencies = utils.sort_latency_lists(client_latency_lists)
         median = utils.median_func(sorted_latencies) / float(1000)
         p99 = utils.p99_func(sorted_latencies) / float(1000)
         p999 = utils.p999_func(sorted_latencies) / float(1000)
