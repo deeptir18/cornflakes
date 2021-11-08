@@ -120,6 +120,14 @@ struct Opt {
         default_value = "1"
     )]
     num_threads: usize,
+    #[structopt(
+        long = "num_clients",
+        help = "Total number of clients",
+        default_value = "1"
+    )]
+    num_clients: usize,
+    #[structopt(long = "client_id", help = "ID of this client", default_value = "1")]
+    client_id: usize,
 }
 
 macro_rules! init_echo_server(
