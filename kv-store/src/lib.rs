@@ -600,7 +600,7 @@ where
         let buf_reader = BufReader::new(file);
         let mut cur_idx : usize = 0;
         for line_q in buf_reader.lines() {
-          tracing::info!("Current Index: {}", cur_idx);
+          //tracing::info!("Current Index: {}", cur_idx);
           cur_idx+=1;
           let line = line_q?;
           let mut twitter_req = TwitterGets::new(&line)?;
@@ -610,7 +610,7 @@ where
                 if added.contains(twitter_req.get_key()) {
                     continue;
                 }
-                tracing::info!("Value Size: {}", twitter_req.get_val_size());
+                //tracing::info!("Value Size: {}", twitter_req.get_val_size());
                 let mut buffer = 
                     CfBuf::allocate(connection, twitter_req.get_val_size(), ALIGN_SIZE).wrap_err(
                         format!("Failed to allocate CfBuf for req {}", twitter_req.get_key()),

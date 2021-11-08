@@ -909,7 +909,7 @@ impl Datapath for DPDKConnection {
         utils::TOTAL_HEADER_SIZE
     }
 
-    fn allocate(&self, size: usize, align: usize) -> Result<Self::DatapathPkt> {
+    fn allocate(&mut self, size: usize, align: usize) -> Result<Self::DatapathPkt> {
         let mbuf = self
             .mempool_allocator
             .allocate(size, align)

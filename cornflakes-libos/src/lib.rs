@@ -881,7 +881,7 @@ pub trait Datapath {
     fn get_header_size(&self) -> usize;
 
     /// Allocate a datapath buffer (registered) with this size and alignment.
-    fn allocate(&self, size: usize, alignment: usize) -> Result<Self::DatapathPkt>;
+    fn allocate(&mut self, size: usize, alignment: usize) -> Result<Self::DatapathPkt>;
 }
 
 pub fn high_timeout_at_start(received: usize) -> Duration {
