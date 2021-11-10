@@ -206,7 +206,7 @@ impl MempoolAllocator {
      let log2 = (alloc_size as f64).log2().ceil() as u32;
      let bytes = usize::pow(2, log2) as usize;
      let num_values = 100; //TODO: MAGIC NUMBER ALERT!!!!!
-     let name : &str = "twitter_kv_bufpool";
+     let name : &str = "kv_bufpool";
      let mempool_name = format!("{}_{}_{}", name, bytes, self.cur_idx);
      self.cur_idx += 1;
      tracing::info!("Create new mempool with properties {}, {}, and {}", mempool_name, bytes, num_values);
@@ -214,7 +214,7 @@ impl MempoolAllocator {
             &mempool_name,
             1,
             bytes + super::dpdk_bindings::RTE_PKTMBUF_HEADROOM as usize,
-            3, //TODO: MAGIC NUMBER ALERT!!!!!
+            249999, //TODO: MAGIC NUMBER ALERT!!!!!
      ).wrap_err(format!(
              "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}", 
              name, bytes, num_values))?;

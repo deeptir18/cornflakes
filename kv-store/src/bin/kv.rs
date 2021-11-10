@@ -180,11 +180,11 @@ macro_rules! init_kv_server(
         kv_server.init(&mut connection)?;
         if $opt.trace_type == 1 {
           kv_server.load_twitter(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;   
-          kv_server.print_hash_map();
+          //kv_server.print_hash_map();
           debug!("Loaded in the twitter trace!");
-          ()
+        } else {
+            kv_server.load(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;
         }
-        kv_server.load(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;
         kv_server.run_state_machine(&mut connection)?;
     }
 );
