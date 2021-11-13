@@ -11,9 +11,11 @@ import subprocess as sh
 STRIP_THRESHOLD = 0.03
 
 SEGMENT_SIZES_TO_LOOP = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
-TOTAL_SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096, 8192]
-# NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16]
-NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8]
+#TOTAL_SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096, 8192]
+TOTAL_SIZES_TO_LOOP = [256, 4096]
+#TOTAL_SIZES_SMALLER_SET = [256, 4096]
+#NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16]
+NB_SEGMENTS_TO_LOOP = [2, 8]
 MAX_CLIENT_RATE_PPS = 200000
 MAX_RATE_GBPS = 5  # TODO: should be configured per machine
 MIN_RATE_PPS = 5000
@@ -29,7 +31,8 @@ rates = [5000, 10000, 50000, 100000, 200000,
 # max rates to get "knee" (for smallest working set size, 0 extra busy work)
 max_rates = {256: 425000, 512: 400000, 1024: 375000, 2048: 350000, 4096: 225000,
              8192: 150000}
-sample_percentages = [10, 30, 50, 65, 70, 75, 85, 90, 95, 100]
+sample_percentages = [10, 30, 40, 45, 50, 53, 55, 57,
+                      60, 63, 66, 69, 72, 75, 78, 81, 83, 85, 88, 91, 93, 95, 100]
 
 
 def parse_client_time_and_pkts(line):
@@ -178,6 +181,9 @@ class ScatterGatherIteration(runner.Iteration):
             else:
                 return "zero_copy"
 
+    def get_busy_cycles_string(self):
+        return "busycycles_{}".format(self.busy_cycles)
+
     def get_num_threads_string(self):
         return "threads_{}".format(self.num_threads)
 
@@ -203,12 +209,14 @@ class ScatterGatherIteration(runner.Iteration):
             " num_segments: {}, " \
             " with_copy: {}," \
             "array size: {}," \
-            "num client threads: {}," \
+            "busy cycles us: {},"
+        "num client threads: {}," \
             " trial: {}".format(self.get_client_rate_string(),
                                 self.get_segment_size_string(),
                                 self.get_num_segments_string(),
                                 self.get_with_copy_string(),
                                 self.get_array_size(),
+                                self.get_busy_cycles(),
                                 self.get_num_threads(),
                                 self.get_trial_string())
 
@@ -221,6 +229,7 @@ class ScatterGatherIteration(runner.Iteration):
         path = Path(high_level_folder)
         return path / self.get_segment_size_string() /\
             self.get_num_segments_string() / self.get_array_size_string() /\
+            self.get_busy_cycles_string() /\
             self.get_client_rate_string() / self.get_num_threads_string() / \
             self.get_with_copy_string()
 
@@ -262,6 +271,7 @@ class ScatterGatherIteration(runner.Iteration):
         ret["num_threads"] = self.num_threads
         ret["num_machines"] = self.get_num_clients()
         ret["random_seed"] = int(time.time())
+        ret["busy_cycles"] = self.busy_cycles
         # both sides need to know about the server mac address
         server_host = programs_metadata["start_server"]["hosts"][0]
         ret["server_mac"] = config_yaml["hosts"][server_host]["mac"]
@@ -333,7 +343,8 @@ class ScatterGather(runner.Experiment):
                                         total_args.with_copy,
                                         total_args.as_one,
                                         total_args.num_threads,
-                                        array_size=total_args.array_size)
+                                        array_size=total_args.array_size,
+                                        busy_cycles=total_args.busy_cycles)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             it.set_trial(num_trials_finished)
@@ -382,6 +393,11 @@ class ScatterGather(runner.Experiment):
                             type=int,
                             default=10000,
                             help="Array size")
+        parser.add_argument("-bc", "--busy_cycles",
+                            dest="busy_cycles",
+                            type=int,
+                            default=0,
+                            help="Busy cycles in us")
         if namespace.exp_type == "individual":
             parser.add_argument("-r", "--rate",
                                 dest="rate",
