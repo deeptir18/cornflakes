@@ -104,7 +104,7 @@ struct Opt {
         default_value = "cornflakes-dynamic"
     )]
     serialization: SerializationType,
-    #[structopt(long = "retries", help = "Disable client retries.")]
+    #[structopt(long = "retries", help = "Enable client retries.")]
     retries: bool,
     #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
     logfile: Option<String>,

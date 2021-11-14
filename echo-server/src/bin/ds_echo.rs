@@ -102,8 +102,8 @@ struct Opt {
         default_value = "cornflakes-dynamic"
     )]
     serialization: SerializationType,
-    #[structopt(long = "no_retries", help = "Disable client retries.")]
-    no_retries: bool,
+    #[structopt(long = "retries", help = "Enable client retries.")]
+    retries: bool,
     #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
     logfile: Option<String>,
     #[structopt(long = "threadlog", help = "Logfile to log per thread statistics")]
@@ -384,16 +384,16 @@ where
         parse_server_port(&opt.config_file).wrap_err("Failed to parse server port")?;
     client.init(connection)?;
     let start_run = Instant::now();
-    let timeout = match opt.no_retries {
-        false => cornflakes_libos::high_timeout_at_start,
-        true => cornflakes_libos::no_retries_timeout,
+    let timeout = match opt.retries {
+        true => cornflakes_libos::high_timeout_at_start,
+        false => cornflakes_libos::no_retries_timeout,
     };
     client.run_open_loop(
         connection,
         schedule,
         opt.total_time,
         timeout,
-        opt.no_retries,
+        !opt.retries,
         &opt.server_ip,
         server_port,
     )?;
