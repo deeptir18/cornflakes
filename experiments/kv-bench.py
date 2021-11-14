@@ -14,8 +14,8 @@ rates = [6250, 10000, 12500, 18750, 25000, 30000, 35000, 45000, 50000, 55000,
          60000, 65000, 75000, 85000, 95000, 105000, 115000, 125000, 130000,
          135000]
 
-SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096]
-# SIZES_TO_LOOP = [256, 1024]
+# SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096]
+SIZES_TO_LOOP = [256, 4096]
 NUM_VALUES_TO_LOOP = [1, 2, 4]
 SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cornflakes1c-dynamic",
                            "capnproto", "flatbuffers"]
