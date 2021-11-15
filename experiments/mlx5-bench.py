@@ -1,3 +1,4 @@
+import numpy as np
 from main import runner
 import pandas as pd
 import time
@@ -9,12 +10,11 @@ import os
 import parse
 import subprocess as sh
 STRIP_THRESHOLD = 0.03
-
 SEGMENT_SIZES_TO_LOOP = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
-#TOTAL_SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096, 8192]
+# TOTAL_SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096, 8192]
 TOTAL_SIZES_TO_LOOP = [256, 4096]
-#TOTAL_SIZES_SMALLER_SET = [256, 4096]
-#NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16]
+# TOTAL_SIZES_SMALLER_SET = [256, 4096]
+# NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16]
 NB_SEGMENTS_TO_LOOP = [2, 8]
 MAX_CLIENT_RATE_PPS = 200000
 MAX_RATE_GBPS = 5  # TODO: should be configured per machine
@@ -443,7 +443,7 @@ class ScatterGather(runner.Experiment):
         return "segment_size,num_segments,with_copy,as_one,array_size," \
             "num_threads,num_clients,offered_load_pps,offered_load_gbps," \
             "achieved_load_pps,achieved_load_gbps," \
-            "percent_acheived_rate," \
+            "percent_achieved_rate," \
             "avg,median,p99,p999"
 
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
@@ -452,10 +452,9 @@ class ScatterGather(runner.Experiment):
         folder_path = Path(total_args.folder)
         out = open(folder_path / new_logfile, "w")
         df = pd.read_csv(folder_path / logfile)
-        print(df.head(10))
         if total_args.looping_variable == "array_total_size":
             out.write(
-                "array_size,segment_size,num_segments,with_copy,as_one,mp99,p99sd,mmedian,mediansd,tputkneepps,tputkneeppssd,tputkneegbps,tputkneegbpssd" + os.linesep)
+                "array_size,segment_size,num_segments,with_copy,as_one,mp99,p99sd,mmedian,mediansd,maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd" + os.linesep)
             for array_size in ARRAY_SIZES_TO_LOOP:
                 for total_size in TOTAL_SIZES_TO_LOOP:
                     for num_segments in NB_SEGMENTS_TO_LOOP:
@@ -476,35 +475,49 @@ class ScatterGather(runner.Experiment):
                             p99_sd = latency_df["p99"].std()
                             median_mean = latency_df["median"].mean()
                             median_sd = latency_df["median"].std()
+                            filtered_df =\
+                                filtered_df[filtered_df["percent_achieved_rate"]
+                                            >= .95]
+
+                            def ourstd(x):
+                                return np.std(x, ddof=0)
 
                             # CURRENT KNEE CALCULATION:
-                            # offered load where the p99 <= 25 us
-                            cutoff_df = filtered_df[(filtered_df.p99 <=
-                                                     25000)]
-                            max_rate = cutoff_df["offered_load_pps"].max()
-                            tput_df =\
-                                filtered_df[(filtered_df.offered_load_pps ==
-                                             max_rate)]
-                            offered_load_pps_mean =\
-                                tput_df["offered_load_pps"].mean()
+                            # just find maximum achieved rate across all rates
+                            # group by array size, num segments, segment size,
+                            # average
+                            clustered_df = filtered_df.groupby(["array_size",
+                                                                "num_segments", "segment_size", "with_copy",
+                                                                "offered_load_pps",
+                                                                "offered_load_gbps"],
+                                                               as_index=False).agg(
+                                achieved_load_pps_mean=pd.NamedAgg(column="achieved_load_pps",
+                                                                   aggfunc="mean"),
+                                achieved_load_pps_sd=pd.NamedAgg(column="achieved_load_pps",
+                                                                 aggfunc=ourstd),
+                                achieved_load_gbps_mean=pd.NamedAgg(column="achieved_load_gbps",
+                                                                    aggfunc="mean"),
+                                achieved_load_gbps_sd=pd.NamedAgg(column="achieved_load_gbps",
+                                                                  aggfunc=ourstd))
 
-                            offered_load_pps_std =\
-                                tput_df["offered_load_pps"].std()
-                            offered_load_gbps_mean =\
-                                tput_df["offered_load_gbps"].mean()
-
-                            offered_load_gbps_std =\
-                                tput_df["offered_load_gbps"].std()
+                            max_achieved_pps = clustered_df["achieved_load_pps_mean"].max(
+                            )
+                            max_achieved_gbps = clustered_df["achieved_load_gbps_mean"].max(
+                            )
+                            std_achieved_pps = clustered_df.loc[clustered_df['achieved_load_pps_mean'].idxmax(),
+                                                                'achieved_load_pps_sd']
+                            std_achieved_gbps = clustered_df.loc[clustered_df['achieved_load_gbps_mean'].idxmax(),
+                                                                 'achieved_load_gbps_sd']
                             as_one = False
                             out.write(str(array_size) + "," + str(segment_size) + "," +
                                       str(num_segments) + "," + str(with_copy) + "," +
                                       str(as_one) + "," + str(p99_mean) + "," +
                                       str(p99_sd) + "," + str(median_mean) +
                                       "," + str(median_sd) + "," +
-                                      str(offered_load_pps_mean) + "," +
-                                      str(offered_load_pps_std) + "," +
-                                      str(offered_load_gbps_mean) + "," +
-                                      str(offered_load_gbps_std) + os.linesep)
+                                      str(max_achieved_pps) + "," +
+                                      str(max_achieved_gbps) + "," +
+                                      str(std_achieved_pps) + "," +
+                                      str(std_achieved_gbps) + os.linesep)
         out.close()
 
     def run_analysis_individual_trial(self,
@@ -588,17 +601,17 @@ class ScatterGather(runner.Experiment):
         avg = utils.mean_func(sorted_latencies) / float(1000)
 
         if print_stats:
-            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, " \
-                "achieved load: {:.4f} req/s | {:.4f} Gbps, " \
-                "percentage achieved rate: {:.4f}," \
-                "retries: {}, " \
-                "avg latency: {:.4f} \u03BCs, p99: {:.4f} \u03BCs, p999: {:.4f}" \
-                "\u03BCs, median: {:.4f} \u03BCs".format(
-                    total_offered_load_pps, total_offered_load_gbps,
-                    total_achieved_load_pps, total_achieved_load_gbps,
-                    float(total_achieved_load_pps / total_offered_load_pps),
-                    total_retries,
-                    avg, p99, p999, median)
+            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, "
+            "achieved load: {:.4f} req/s | {:.4f} Gbps, "
+            "percentage achieved rate: {:.4f},"
+            "retries: {}, "
+            "avg latency: {:.4f} \u03BCs, p99: {:.4f} \u03BCs, p999: {:.4f}"
+            "\u03BCs, median: {:.4f} \u03BCs".format(
+                total_offered_load_pps, total_offered_load_gbps,
+                total_achieved_load_pps, total_achieved_load_gbps,
+                float(total_achieved_load_pps / total_offered_load_pps),
+                total_retries,
+                avg, p99, p999, median)
             utils.info("Total Stats: ", total_stats)
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)
@@ -629,7 +642,7 @@ class ScatterGather(runner.Experiment):
         full_log = Path(folder) / logfile
         post_process_log = Path(folder) / post_process_logfile
 
-        plotting_script = Path(cornflakes_repo) / \
+        plotting_script = Path(cornflakes_repo) /\
             "experiments" / "plotting_scripts" / "sg_bench.R"
         if total_args.looping_variable == "array_total_size":
             metrics = ["median", "p99", "tput"]

@@ -9,16 +9,15 @@ import copy
 STRIP_THRESHOLD = 0.03
 
 # SIZES_TO_LOOP = [1024, 2048, 4096, 8192]
-NUM_THREADS = [1, 2, 4, 8]
-SIZES_TO_LOOP = [2048, 4096, 8192]
+NUM_THREADS = 4
+NUM_CLIENTS = 2
+SIZES_TO_LOOP = [512, 4096]
 MESSAGE_TYPES = ["single"]
-MESSAGE_TYPES.extend(["list-2", "list-4", "list-8", "list-12", "list-16",
+MESSAGE_TYPES.extend(["list-2", "list-4", "list-8",
                      "tree-2", "tree-1", "tree-3"])
-# MESSAGE_TYPES.extend(["list-{}".format(i) for i in range(1, 5)])
-# MESSAGE_TYPES.extend(["tree-{}".format(i) for i in range(1, 4)])
-MAX_CLIENT_RATE_PPS = 60000
-NUM_CLIENTS = 3
-CLIENT_RATE_INCREMENT = 20000
+rates = [2000, 3000, 4000, 5000, 6250, 7500, 10000, 12500, 18750, 25000, 30000, 35000, 45000, 50000, 55000,
+         60000, 65000, 75000, 85000, 95000, 105000, 115000, 125000, 130000,
+         135000, 140000, 145000, 150000, 155000, 160000, 165000, 170000, 175000]
 SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cereal", "capnproto", "protobuf",
                            "flatbuffers",  # "cornflakes-fixed",
                            # "cornflakes1c-fixed"]  # "cornflakes1c-fixed", "protobuf", "capnproto",
@@ -283,24 +282,16 @@ class EchoBench(runner.Experiment):
             # loop over the options
             ret = []
             for trial in range(utils.NUM_TRIALS):
-                for message_type in MESSAGE_TYPES:
-                    for size in SIZES_TO_LOOP:
-                        for serialization in SERIALIZATION_LIBRARIES:
-                            if size == 8192\
-                                and message_type == "tree-5"\
-                                and (serialization == "cornflakes-dynamic"
-                                     or serialization == "cornflakes-1cdynamic"):
-                                continue
-                            # TODO: just figure out how to do this in a better
-                            # way
-                            machine_threads = [
-                                (1, 1), (2, 1), (3, 1), (2, 2), (3, 2), (2, 4)]
-                            rates = [rate for rate in range(
-                                50000, 110000, 10000)]
-                            for (machine_thread, rate) in zip(machine_threads,
-                                                              rates):
-                                client_rate = [(rate, machine_thread[0])]
-                                num_threads = machine_thread[1]
+                for serialization in SERIALIZATION_LIBRARIES:
+                    if size == 8192\
+                            and message_type == "tree-5"\
+                            and (serialization == "cornflakes-dynamic" or serialization == "cornflakes-1cdynamic"):
+                        continue
+                    for rate in rates:
+                        client_rate = [(rate, num_clients)]
+                        num_threads = NUM_THREADS
+                        for size in SIZES_TO_LOOP:
+                            for message_type in MESSAGE_TYPES:
                                 it = EchoBenchIteration(client_rate,
                                                         size,
                                                         serialization,

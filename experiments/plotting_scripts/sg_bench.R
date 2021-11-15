@@ -8,7 +8,8 @@ library(showtext)
 library(viridis)
 font_add_google("Fira Sans")
 showtext_auto()
-labels <- c("scatter_gather" = "Scatter Gather", "copy_each_segment" = "Copy")
+x_labels <- c("65536" = "65536\nWithin L1", "819200" = "819200\nWithin L2", "4096000" = "4096000\nWithin L3", "65536000" = "65536000\nMemory\n~4X L3", "655360000" = "655360000\n Memory\n~40x L3")
+
 
 shape_values <- c('scatter_gather' = 15, 'copy_each_segment' = 19)
 
@@ -36,6 +37,8 @@ d_postprocess$mp99 <- d_postprocess$mp99 / 1000.0
 d_postprocess$p99sd <- d_postprocess$p99sd / 1000.0
 d_postprocess$mmedian <- d_postprocess$mmedian / 1000.0
 d_postprocess$mediansd <- d_postprocess$mediansd / 1000.0
+d_postprocess$maxtputpps <- d_postprocess$maxtputpps / 1000000.0
+d_postprocess$maxtputppssd <- d_postprocess$maxtputppssd / 1000000.0
 d$offered_load_pps <- d$offered_load_pps / 1000000.0
 d$achieved_load_pps <- d$achieved_load_pps / 1000000.0
 
@@ -61,8 +64,8 @@ base_median_plot <- function(data) {
             expand_limits(y = 0) +
             geom_bar(position="dodge", stat="identity", width = 0.9) +
             geom_errorbar(aes(ymin=mmedian-mediansd, ymax=mmedian+mediansd),position="dodge", stat="identity") +
-            scale_fill_viridis_d() +
-            scale_color_viridis_d() +
+            scale_fill_viridis_d(labels = labels) +
+            scale_color_viridis_d(labels = labels) +
             geom_text(data, 
                       mapping = aes(x=factor(array_size), 
                                     y = mmedian + mediansd,
@@ -71,7 +74,7 @@ base_median_plot <- function(data) {
                                     vjust = -0.45,
                                     hjust = -0.1,
                                     angle = 45), 
-                      size = 2,
+                      size = 4,
                       position = position_dodge2(width = 0.9, preserve = "single")) +
             labs(x = "Working Set Size (bytes)", y = "Median Latency (µs)")
 
@@ -86,8 +89,8 @@ base_p99_plot <- function(data) {
             expand_limits(y = 0) +
             geom_bar(position="dodge", stat="identity", width = 0.9) +
             geom_errorbar(aes(ymin=mp99-p99sd, ymax=mp99+p99sd),position="dodge", stat="identity") +
-            scale_fill_viridis_d() +
-            scale_color_viridis_d() +
+            scale_fill_viridis_d(labels = labels) +
+            scale_color_viridis_d(labels = labels) +
             geom_text(data, 
                       mapping = aes(x=factor(array_size), 
                                     y = mp99 + p99sd,
@@ -96,7 +99,7 @@ base_p99_plot <- function(data) {
                                     vjust = -0.45,
                                     hjust = -0.1,
                                     angle = 45), 
-                      size = 2,
+                      size = 4,
                       position = position_dodge2(width = 0.9, preserve = "single")) +
             labs(x = "Working Set Size (bytes)", y = "p99 Latency (µs)")
 
@@ -107,24 +110,25 @@ base_p99_plot <- function(data) {
 base_tput_plot <- function(data) {
     plot <- ggplot(data,
                    aes(x = factor(array_size),
-                       y = tputkneepps,
+                       y = maxtputpps,
                        fill = system_name)) +
                 expand_limits(y = 0) +
             geom_bar(position="dodge", stat="identity", width = 0.9) +
-            geom_errorbar(aes(ymin=tputkneepps - tputkneeppssd, ymax=tputkneepps + tputkneeppssd),position="dodge", stat="identity") +
-            scale_fill_viridis_d() +
-            scale_color_viridis_d() +
+            geom_errorbar(aes(ymin=maxtputpps - maxtputppssd, ymax=maxtputpps + maxtputppssd),position="dodge", stat="identity") +
+            scale_fill_viridis_d(labels = labels) +
+            scale_color_viridis_d(labels = labels) +
             geom_text(data, 
                       mapping = aes(x=factor(array_size), 
-                                    y = tputkneepps + tputkneeppssd,
-                                    label = tputkneepps,
+                                    y = maxtputpps + maxtputppssd,
+                                    label = round(maxtputpps, 2),
                                     family = "Fira Sans",
                                     vjust = -0.45,
-                                    hjust = -0.1,
-                                    angle = 45), 
-                      size = 2,
+                                    hjust = +0.45,
+                                    angle = 0), 
+                      size = 3,
                       position = position_dodge2(width = 0.9, preserve = "single")) +
-            labs(x = "Working Set Size (bytes)", y = "Highest Offered Load under 25 µs (Requests / sec)")
+              scale_x_discrete(labels = x_labels) +
+            labs(x = "Working Set Size (bytes)", y = "Highest Achieved Load (100K Requests / sec)")
 
 }
 
@@ -139,11 +143,11 @@ label_plot <- function(plot) {
                   legend.text=element_text(size=15),
                   axis.title=element_text(size=27,face="plain", colour="#000000"),
                   axis.text.y=element_text(size=10, colour="#000000"),
-                  axis.text.x=element_text(size=10, colour="#000000", angle=45))
+                  axis.text.x=element_text(size=10, colour="#000000", angle=0))
 }
 
 base_p99_tput_latency <- function(data, y_cutoff) {
-    print(data)
+    # print(data)
     plot <- ggplot(data,
                     aes(x = offered_load_pps,
                         y = mp99,
@@ -157,7 +161,7 @@ base_p99_tput_latency <- function(data, y_cutoff) {
 }
 
 base_median_tput_latency <- function(data, y_cutoff) {
-    print(data)
+    # print(data)
     plot <- ggplot(data,
                     aes(x = offered_load_pps,
                         y = mmedian,
@@ -220,7 +224,7 @@ base_plot <- function(data, metric) {
 
 individual_plot <- function(data, metric, size, values) {
     data <- subset(data, num_segments == values & total_size == size)
-    print(data)
+    # print(data)
     plot <- base_plot(data, metric)
     print(plot)
     return(plot)

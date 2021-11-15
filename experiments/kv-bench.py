@@ -454,7 +454,7 @@ class KVBench(runner.Experiment):
                     - start))
         return csv_line
 
-    def graph_results(self, args, folder, logfile):
+    def graph_results(self, args, folder, logfile, post_process_logfile):
         cornflakes_repo = self.config_yaml["cornflakes_dir"]
         plot_path = Path(folder) / "plots"
         plot_path.mkdir(exist_ok=True)

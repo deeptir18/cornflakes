@@ -49,6 +49,7 @@ base_plot <- function(data, metric) {
 }
 
 base_p99_plot <- function(data, y_cutoff) {
+    print(data)
     plot <- ggplot(data,
                     aes(x = offered_load_pps,
                         y = mp99,
@@ -56,7 +57,7 @@ base_p99_plot <- function(data, y_cutoff) {
                         shape = serialization,
                         ymin = mp99 - sdp99,
                         ymax = mp99 + sdp99)) +
-            coord_cartesian(ylim=c(0, y_cutoff)) +
+            coord_cartesian(ylim=c(0, y_cutoff), expand = FALSE) +
     labs(x = "Throughput (Requests/sec)", y = "p99 Latency (µs)")
     return(plot)
 }
@@ -69,7 +70,7 @@ base_median_plot <- function(data, y_cutoff) {
                         shape = serialization,
                         ymin = avgmedian - sdmedian,
                         ymax = avgmedian + sdmedian)) +
-            coord_cartesian(ylim=c(0, y_cutoff)) +
+            coord_cartesian(ylim=c(0, y_cutoff), expand = FALSE) +
     labs(x = "Throughput (Requests/sec)", y = "Median Latency (µs)")
     return(plot)
 }
@@ -95,7 +96,6 @@ label_plot <- function(plot) {
 
 individual_plot <- function(data, metric, size, values) {
     data <- subset(data, num_values == values & total_size == size)
-    print(data)
     plot <- base_plot(data, metric)
     print(plot)
     return(plot)
