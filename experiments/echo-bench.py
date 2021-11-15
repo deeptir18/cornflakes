@@ -15,9 +15,10 @@ SIZES_TO_LOOP = [512, 4096]
 MESSAGE_TYPES = ["single"]
 MESSAGE_TYPES.extend(["list-2", "list-4", "list-8",
                      "tree-2", "tree-1", "tree-3"])
-rates = [2000, 3000, 4000, 5000, 6250, 7500, 10000, 12500, 18750, 25000, 30000, 35000, 45000, 50000, 55000,
-         60000, 65000, 75000, 85000, 95000, 105000, 115000, 125000, 130000,
-         135000, 140000, 145000, 150000, 155000, 160000, 165000, 170000, 175000]
+rates = [5000, 10000, 15000, 25000, 35000, 45000, 55000,
+         65000, 75000, 85000, 95000, 105000, 115000, 125000,
+         135000, 145000, 155000, 165000,
+         175000, 185000, 200000]
 SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cereal", "capnproto", "protobuf",
                            "flatbuffers",  # "cornflakes-fixed",
                            # "cornflakes1c-fixed"]  # "cornflakes1c-fixed", "protobuf", "capnproto",
@@ -283,15 +284,15 @@ class EchoBench(runner.Experiment):
             ret = []
             for trial in range(utils.NUM_TRIALS):
                 for serialization in SERIALIZATION_LIBRARIES:
-                    if size == 8192\
-                            and message_type == "tree-5"\
-                            and (serialization == "cornflakes-dynamic" or serialization == "cornflakes-1cdynamic"):
-                        continue
                     for rate in rates:
-                        client_rate = [(rate, num_clients)]
+                        client_rate = [(rate, NUM_CLIENTS)]
                         num_threads = NUM_THREADS
                         for size in SIZES_TO_LOOP:
                             for message_type in MESSAGE_TYPES:
+                                if size == 8192\
+                                        and message_type == "tree-5"\
+                                        and (serialization == "cornflakes-dynamic" or serialization == "cornflakes-1cdynamic"):
+                                    continue
                                 it = EchoBenchIteration(client_rate,
                                                         size,
                                                         serialization,
