@@ -11,91 +11,124 @@ showtext_auto()
 
 args <- commandArgs(trailingOnly=TRUE)
 d <- read.csv(args[1], sep=",", header = TRUE)
-# d <- subset(d, d[9] * 100 > 88)
+# argument 2: pdf to write plot into
+plot_pdf <- args[2]
+# argument 3: metric (p99, or median)
+metric <- args[3]
+# argument 4: plot type ([full, individual])
+plot_type <- args[4]
+# argument 5: if individual -- message type
+# argument 6: if individual -- size (of message total)
 
-labels <- c("cf_zero_copy_send_zero_copy_recv" = "Cornflakes, Zero-Copy Send and Zero-Copy  Receive", "cf_copy_send_zero_copy_recv" = "Cornflakes, Copy-Send and Zero-Copy Receive", "flatbuffers" = "Flatbuffers", "capnproto" = "Capnproto", "protobuf" = "Protobuf")
+labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cereal" = "Cereal", "cornflakes-dynamic" = "Cornflakes (Hardware SG)", "cornflakes1c-dynamic" = "Cornflakes (1 Software Copy)")
 
-shape_values <- c('cf_zero_copy_send_zero_copy_recv' = 7, 'cf_copy_recv_copy_send' = 4, 'cf_zero_copy_send_zero_copy_recv' = 18, 'cf_copy_send_zero_copy_recv' = 17)
-color_values <- c('cf_zero_copy_send_zero_copy_recv' = '#1b9e77',
-                    'cf_copy_send_zero_copy_recv' = '#d95f02',
-                    'cf_copy_recv_copy_send' = '#7570b3',
-                    'cf_zero_copy_send_copy_recv' = '#e7298a')
-shape_values <- c('protobuf' = 4, 'capnproto' = 18, 'flatbuffers' = 17, 'cf_copy_send_zero_copy_recv' = 15, 'cf_zero_copy_send_zero_copy_recv' = 19)
-color_values <- c('cf_zero_copy_send_zero_copy_recv' = '#1b9e77',
-                    'cf_copy_send_zero_copy_recv' = '#d95f02',
+shape_values <- c('protobuf' = 7, 'cereal' = 4, 'capnproto' = 18, 'flatbuffers' = 17, 'cornflakes1c-dynamic' = 15, 'cornflakes-dynamic' = 19)
+
+color_values <- c('cornflakes-dynamic' = '#1b9e77', 
+                    'cornflakes1c-dynamic' = '#d95f02',
                     'flatbuffers' = '#7570b3',
                     'capnproto' = '#e7298a',
+                    'cereal' = '#66a61e',
                     'protobuf' = '#e6ab02')
-#line_types <- c('baseline_zero_copy' = 'solid', 'baseline' = 'solid', 'capnproto' = 'solid', 'flatbuffers' = 'solid', 'protobtyes' = 'solid', 'protobuf' = 'solid', 'cornflakes' = 'dashed')
-
-# add in the row name based on the zero-copy flags
-get_system_name <- function(row) {
-    if (row["recv_mode"] == "zero_copy_recv" && row["serialization"] == "cornflakes-dynamic") {
-        res <- "cf_zero_copy_send_zero_copy_recv"
-    }
-    else if (row["recv_mode"] == "zero_copy_recv" && row["serialization"] == "cornflakes1c-dynamic") {
-        res <- "cf_copy_send_zero_copy_recv"
-    } else {
-    #else if (row["recv_mode"] == "copy_to_dma_memory" && row["serialization"] == "cornflakes-dynamic") {
-    #    res <- "cf_zero_copy_send_copy_recv"
-    #}
-    #else if (row["recv_mode"] == "copy_out_recv" && row["serialization"] == "cornflakes1c-dynamic") {
-    #    res <- "cf_copy_recv_copy_send"
-        res <- row["serialization"]
-    }
-    return(res)
-}
 options(width=10000)
 
-d$system_name <- apply(d, 1, get_system_name)
-d <- subset(d, d$system_name != "cf_zero_copy_send_copy_recv")
-summarized <- ddply(d, c("system_name", "size", "message_type", "achieved_load_gbps"),
-                    summarise,
-                    mavg = mean(avg),
-                    mp99 = mean(p99),
-                    mp999 = mean(p999),
-                    avgmedian = mean(median))
-print(summarized)
-gathered <- gather(summarized, key="latency", value = "mmt", -system_name, -size, -message_type, -achieved_load_gbps)
-gathered_p99 <- subset(gathered, gathered$latency == "avgmedian")
-print(gathered_p99)
+base_plot <- function(data, metric) {
+    if (metric == "p99") {
+        base_plot <- base_p99_plot(data, 100.0)
+        base_plot <- label_plot(base_plot)
+    } else if (metric == "median") {
+        base_plot <- base_median_plot(data, 50.0)
+        base_plot <- label_plot(base_plot)
+    }
+}
 
-base_plot <- function(data) {
+base_p99_plot <- function(data, y_cutoff) {
     plot <- ggplot(data,
-                   aes(x = achieved_load_gbps,
-                       y = mmt,
-                       color = system_name,
-                       shape = system_name,
-                       )) +
-            expand_limits(x = 0, y = 0) +
-            geom_point(size=2) +
-            geom_line(size = 1, aes(color=system_name)) +
-            labs(x = "Throughput (Requests/ms)", y = "Latency (µs)") +
+                    aes(x = offered_load_gbps,
+                        y = mp99,
+                        color = serialization,
+                        shape = serialization,
+                        ymin = mp99 - sdp99,
+                        ymax = mp99 + sdp99)) +
+            coord_cartesian(ylim=c(0, y_cutoff), expand = FALSE) +
+    labs(x = "Offered Load (Gbps)", y = "p99 Latency (µs)")
+    return(plot)
+}
+
+base_median_plot <- function(data, y_cutoff) {
+    plot <- ggplot(data,
+                    aes(x = offered_load_gbps,
+                        y = avgmedian,
+                        color = serialization,
+                        shape = serialization,
+                        ymin = avgmedian - sdmedian,
+                        ymax = avgmedian + sdmedian)) +
+            coord_cartesian(ylim=c(0, y_cutoff), expand = FALSE) +
+    labs(x = "Offered Load (Gbps)", y = "Median Latency (µs)")
+    return(plot)
+}
+
+label_plot <- function(plot) {
+    plot <- plot +
+            geom_point(size=4) +
+            geom_line(size = 1, aes(color=serialization)) +
             scale_shape_manual(values = shape_values, labels = labels) +
             scale_color_manual(values = color_values ,labels = labels) +
             scale_fill_manual(values = color_values, labels = labels) +
             theme_light() +
+            expand_limits(x = 0, y = 0) +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
                   legend.title = element_blank(),
                   legend.key.size = unit(10, 'mm'),
-                  legend.spacing.x = unit(0.1, 'cm')) +
-    coord_cartesian(ylim=c(0, 50))
+                  legend.spacing.x = unit(0.1, 'cm'),
+                  axis.title=element_text(size=27,face="plain", colour="#000000"),
+                  axis.text=element_text(size=27, colour="#000000"))
     return(plot)
 }
 
-full_plot <- function(data) {
-    plot <- base_plot(data)
-    plot <- plot +
-        labs(x = "Achieved Throughput (Gbps)", y = "Median Latency (µs)") +
-        facet_grid(message_type ~ size)
+individual_plot <- function(data, metric, total_size, msg_type) {
+    data <- subset(data, message_type == msg_type & size == total_size)
+    plot <- base_plot(data, metric)
     print(plot)
     return(plot)
 }
 
-full_plot(gathered_p99)
-ggsave("tmp.pdf", width=9, height=9)
-embed_fonts("tmp.pdf", outfile=args[2])
+full_plot <- function(data, metric) {
+    plot <- base_plot(data, metric) +
+        facet_grid(message_type ~ size, scales="free") +
+            theme(legend.position = "top",
+                  text = element_text(family="Fira Sans"),
+                  legend.title = element_blank(),
+                  legend.key.size = unit(10, 'mm'),
+                  legend.spacing.x = unit(0.1, 'cm'),
+                  axis.title=element_text(size=10,face="plain", colour="#000000"),
+                  axis.text=element_text(size=8, colour="#000000"))
 
+    print(plot)
+    return(plot)
+}
+summarized <- ddply(d, c("serialization", "size", "message_type", "offered_load_pps", "offered_load_gbps"),
+                    summarise,
+                    mavg = mean(avg),
+                    mp99 = mean(p99),
+                    mp999 = mean(p999),
+                    avgmedian = mean(median),
+                    sdp99 = sd(p99),
+                    sdmedian = sd(median),
+                    maloadgbps = mean(achieved_load_gbps),
+                    maload = mean(achieved_load_pps))
+
+if (plot_type == "full") {
+    plot <- full_plot(summarized, metric)
+    ggsave("tmp.pdf", width=9, height=9)
+    embed_fonts("tmp.pdf", outfile=plot_pdf)
+} else if (plot_type == "individual") {
+    msg_type <- args[5]
+    size <- strtoi(args[6])
+    plot <- individual_plot(summarized, metric, size, msg_type)
+    ggsave("tmp.pdf", width=9, height=6)
+    embed_fonts("tmp.pdf", outfile=plot_pdf)
+}
 
 

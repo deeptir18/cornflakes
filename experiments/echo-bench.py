@@ -462,8 +462,42 @@ class EchoBench(runner.Experiment):
                                                                    p999)
         return csv_line
 
-    def graph_results(self, args, folder, logfile):
-        utils.warn("Graphing not implemented yet")
+    def graph_results(self, args, folder, logfile, post_process_logfile):
+        cornflakes_repo = self.config_yaml["cornflakes_dir"]
+        plot_path = Path(folder) / "plots"
+        plot_path.mkdir(exist_ok=True)
+        full_log = Path(folder) / logfile
+        post_process_log = Path(folder) / post_process_logfile
+        plotting_script = Path(cornflakes_repo) / \
+            "experiments" / "plotting_scripts" / "echo_bench.R"
+        base_args = [str(plotting_script), str(full_log)]
+        metrics = ["p99", "median"]
+
+        # make total plot
+        for metric in metrics:
+            utils.debug("Summary plot for ", metric)
+            total_pdf = plot_path / "summary_{}.pdf".format(metric)
+            total_plot_args = [str(plotting_script),
+                               str(full_log), str(total_pdf),
+                               metric, "full"]
+            sh.run(total_plot_args)
+        # make individual plots
+        for metric in metrics:
+            for size in SIZES_TO_LOOP:
+                for message_type in MESSAGE_TYPES:
+                    individual_plot_path = plot_path / \
+                        "size_{}".format(size) / \
+                        "msg_{}".format(message_type)
+                    individual_plot_path.mkdir(parents=True, exist_ok=True)
+                    pdf = individual_plot_path /\
+                        "size_{}_msg_{}_{}.pdf".format(
+                            size, message_type, metric)
+                    total_plot_args = [str(plotting_script),
+                                       str(full_log), str(pdf),
+                                       metric, "individual", message_type,
+                                       str(size)]
+
+                    sh.run(total_plot_args)
 
 
 def main():
