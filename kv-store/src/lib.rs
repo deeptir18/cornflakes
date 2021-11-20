@@ -420,6 +420,281 @@ where
     }
 }
 
+pub struct TwitterClient<S, D>
+where
+    S: SerializedRequestGenerator<D>,
+    D: Datapath,
+{
+    /// Actual serializer.
+    serializer: S,
+    /// How large are the values are we using?
+    /// Required to calculate the serialized object size.
+    value_size: usize,
+    /// Number of values in GetM or PutM request (required for framing).
+    num_values: usize,
+    /// This thread's id
+    thread_id: usize,
+    /// Iterator over queries.
+    queries: QueryIterator,
+    /// Which server to send to.
+    server_ip: Ipv4Addr,
+    /// Currently send window.
+    in_flight: HashMap<MsgID, String>,
+    /// Received so far.
+    recved: usize,
+    /// Number of retries.
+    retries: usize,
+    /// Last send message id.
+    last_sent_id: usize,
+    /// RTTs of requests.
+    rtts: ManualHistogram,
+    /// Buffer used to store serialized request.
+    request_data: Vec<u8>,
+    /// Using retries or not.
+    using_retries: bool,
+    /// If in debug, keep track of MsgID -> MsgType
+    message_info: HashMap<MsgID, MsgType>,
+    /// How many retries to keep track of
+    start_cutoff: usize,
+    _marker: PhantomData<D>,
+}
+
+impl<S, D> TwitterClient<S, D>
+where
+    S: SerializedRequestGenerator<D>,
+    D: Datapath,
+{
+    pub fn new(
+        client_id: usize,
+        value_size: usize,
+        num_values: usize,
+        trace_file: &str,
+        thread_id: usize,
+        total_threads: usize,
+        total_clients: usize,
+        server_ip: Ipv4Addr,
+        rtts: ManualHistogram,
+        using_retries: bool,
+        start_cutoff: usize,
+    ) -> Result<Self> {
+        tracing::info!(
+            client_id = client_id,
+            value_size = value_size,
+            num_values = num_values,
+            thread_id = thread_id,
+            total_threads = total_threads,
+            total_clients = total_clients,
+            "Initializing Twitter client"
+        );
+
+        let query_iterator = QueryIterator::new(
+            client_id,
+            thread_id,
+            total_threads,
+            total_clients,
+            trace_file,
+        )?;
+
+        Ok(TwitterClient {
+            serializer: S::new_request_generator(),
+            value_size: value_size,
+            num_values: num_values,
+            thread_id: thread_id,
+            queries: query_iterator,
+            server_ip: server_ip,
+            recved: 0,
+            retries: 0,
+            last_sent_id: 0,
+            rtts: rtts,
+            request_data: vec![0u8; 9216],
+            in_flight: HashMap::default(),
+            using_retries: using_retries,
+            message_info: HashMap::default(),
+            start_cutoff: start_cutoff,
+            _marker: PhantomData,
+        })
+    }
+
+    pub fn get_timing(&mut self) -> Result<(
+        )> {
+        Ok(())
+    }
+
+    pub fn sort_rtts(&mut self, start_cutoff: usize) -> Result<()> {
+        self.rtts.sort_and_truncate(start_cutoff)?;
+        Ok(())
+    }
+
+    pub fn log_rtts(&mut self, path: &str, start_cutoff: usize) -> Result<()> {
+        self.rtts.sort_and_truncate(start_cutoff)?;
+        self.rtts.log_truncated_to_file(path, start_cutoff)?;
+        Ok(())
+    }
+
+    pub fn get_mut_rtts(&mut self) -> &mut ManualHistogram {
+        &mut self.rtts
+    }
+
+    pub fn dump(
+        &mut self,
+        path: Option<String>,
+        total_time: Duration,
+        start_cutoff: usize,
+    ) -> Result<()> {
+        self.rtts.sort_and_truncate(start_cutoff)?;
+        tracing::info!(
+            thread = self.queries.get_thread_id(),
+            client_id = self.queries.get_client_id(),
+            received = self.recved - start_cutoff,
+            retries = self.retries,
+            unique_sent = self.last_sent_id - 1 - start_cutoff,
+            total_time = ?total_time.as_secs_f64(),
+            "High level sending stats",
+        );
+        self.rtts.dump("End-to-end kv client RTTs:")?;
+
+        match path {
+            Some(p) => {
+                self.rtts.log_truncated_to_file(&p, start_cutoff)?;
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    pub fn get_num_recved(&self, start_cutoff: usize) -> usize {
+        self.recved - start_cutoff
+    }
+
+    pub fn get_num_sent(&self, start_cutoff: usize) -> usize {
+        self.last_sent_id - 1 - start_cutoff
+    }
+
+    pub fn get_num_retries(&self) -> usize {
+        self.retries
+    }
+}
+
+impl<S, D> ClientSM for TwitterClient<S, D>
+where
+    S: SerializedRequestGenerator<D>,
+    D: Datapath,
+{
+    type Datapath = D;
+
+    fn server_ip(&self) -> Ipv4Addr {
+        self.server_ip
+    }
+
+    fn received_so_far(&self) -> usize {
+        self.recved
+    }
+
+    fn get_next_msg(&mut self) -> Result<Option<(MsgID, &[u8])>> {
+        if let Some(next_line_res) = self.queries.next() {
+            let next_line = next_line_res.wrap_err("Not able to get next line from iterator")?;
+            self.last_sent_id += 1;
+            let mut req = YCSBRequest::new(
+                &next_line,
+                self.num_values,
+                self.value_size,
+                (self.last_sent_id - 1) as MsgID,
+            )?;
+            tracing::debug!("About to send: {:?}", req);
+            let size = self
+                .serializer
+                .write_next_framed_request(&mut self.request_data.as_mut_slice(), &mut req)?;
+            if self.using_retries || (self.last_sent_id - 1 < self.start_cutoff) {
+                // insert into in flight map
+                if !(self.in_flight.contains_key(&(self.last_sent_id as u32 - 1))) {
+                    self.in_flight
+                        .insert(self.last_sent_id as u32 - 1, next_line.to_string());
+                }
+            }
+
+            if cfg!(debug_assertions) {
+                if !(self
+                    .message_info
+                    .contains_key(&(self.last_sent_id as u32 - 1)))
+                {
+                    self.message_info
+                        .insert(self.last_sent_id as u32 - 1, req.get_type());
+                }
+            }
+
+            tracing::debug!("Returning msg to send");
+            Ok(Some((
+                self.last_sent_id as u32 - 1,
+                &self.request_data.as_slice()[0..size],
+            )))
+        } else {
+            return Ok(None);
+        }
+    }
+
+    fn process_received_msg(
+        &mut self,
+        sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
+        rtt: Duration,
+    ) -> Result<()> {
+        self.recved += 1;
+        tracing::debug!(
+            thread_id = self.thread_id,
+            "Receiving {}th packet with id {}, length {}",
+            self.recved,
+            sga.get_id(),
+            sga.data_len(),
+        );
+
+        // if debug, deserialize and check the message has the right dimensions
+        if cfg!(debug_assertions) {
+            if let Some(msg_type) = self.message_info.remove(&sga.get_id()) {
+                // run some kind of ``check''
+                if !self
+                    .serializer
+                    .check_recved_msg(&sga, msg_type, self.value_size)?
+                {
+                    bail!("Msg check failed");
+                } else {
+                    tracing::debug!("PASSED THE RECV MESSAGE CHECK");
+                }
+            } else {
+                bail!("Received ID not in message map: {}", sga.get_id());
+            }
+        }
+        if self.using_retries || (sga.get_id() < self.start_cutoff as u32) {
+            if let Some(_) = self.in_flight.remove(&sga.get_id()) {
+            } else {
+                bail!("Received ID not in in flight map: {}", sga.get_id());
+            }
+        }
+        self.rtts.record(rtt.as_nanos() as u64);
+        Ok(())
+    }
+
+    fn init(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
+        Ok(())
+    }
+
+    fn cleanup(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
+        Ok(())
+    }
+
+    fn msg_timeout_cb(&mut self, id: MsgID) -> Result<(MsgID, &[u8])> {
+        tracing::info!(id, last_sent = self.last_sent_id, "Retry callback");
+        self.retries += 1;
+        if let Some(line) = self.in_flight.get(&id) {
+            let mut req = YCSBRequest::new(&line, self.num_values, self.value_size, id)?;
+            let size = self
+                .serializer
+                .write_next_framed_request(&mut self.request_data.as_mut_slice(), &mut req)?;
+            Ok((id, &self.request_data.as_slice()[0..size]))
+        } else {
+            bail!("Cannot find data for msg # {} to send retry", id);
+        }
+    }
+}
+
 // Each client serialization library must implement this to generate framed requests for the server
 // to parse.
 pub trait SerializedRequestGenerator<D>

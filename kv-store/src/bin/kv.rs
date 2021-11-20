@@ -5,7 +5,7 @@ use cornflakes_libos::{
     dpdk_libos::connection::DPDKConnection,
     loadgen::{
         client_threads::{dump_thread_stats, ThreadStats},
-        request_schedule::{generate_schedules, DistributionType, PacketSchedule},
+        request_schedule::{generate_schedules, generate_twitter_schedules, DistributionType, PacketSchedule},
     },
     timing::ManualHistogram,
     utils::AddressInfo,
@@ -18,7 +18,7 @@ use cornflakes_utils::{
 use kv_store::{
     capnproto::CapnprotoSerializer, cornflakes_dynamic::CornflakesDynamicSerializer,
     flatbuffers::FlatBufferSerializer, protobuf::ProtobufSerializer, KVSerializer, KVServer,
-    SerializedRequestGenerator, YCSBClient,
+    SerializedRequestGenerator, YCSBClient, twitter_parser::TwitterGets,
 };
 use std::{
     net::Ipv4Addr,
@@ -27,6 +27,11 @@ use std::{
     process::Command,
     thread::{spawn, JoinHandle},
     time::Instant,
+    io::BufReader,
+    io::BufRead,
+    fs::File,
+    collections::HashMap,
+    convert::TryInto,
 };
 use structopt::StructOpt;
 use tracing::debug;
@@ -193,6 +198,51 @@ macro_rules! run_kv_client(
     ($serializer: ty, $datapath: ty, $datapath_global_init: expr, $datapath_init: ident, $opt: ident) => {
         let num_rtts = get_num_requests(&$opt)?;
         let schedules = generate_schedules(num_rtts, $opt.rate, $opt.distribution, $opt.num_threads)?;
+        if $opt.trace_type == 1 {
+            let mut client_hash = create_client_hash(&$opt.trace_file)?;
+            let time = get_times(client_hash)?;
+            let twitter_schedules = generate_twitter_schedules(time, $opt.num_threads)?;
+            
+            // do global init
+            let (port, per_thread_info) = $datapath_global_init?;
+            let mut threads: Vec<JoinHandle<Result<ThreadStats>>> = vec![];
+
+            // spawn n client threads
+            for i in 0..$opt.num_threads {
+              let physical_port = port;
+              let (rx_packet_allocator, addr) = per_thread_info[i].clone();
+              let per_thread_options = $opt.clone();
+              let hist = ManualHistogram::new(num_rtts);
+              let twitter_schedule = twitter_schedules[i].clone();
+              threads.push(spawn(move || {
+                  match set_thread_affinity(&vec![i+1]) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        bail!("Could not set thread affinity for thread {} on core {}: {:?}", i, i+1, e);
+                    }
+                  }
+                  let mut connection = $datapath_init(physical_port, i, rx_packet_allocator, addr, &per_thread_options)?;
+                  let mut loadgen: YCSBClient<$serializer, $datapath> = YCSBClient::new(per_thread_options.client_id, 
+                                                                                        per_thread_options.value_size, 
+                                                                                        per_thread_options.num_values, 
+                                                                                        &per_thread_options.queries, 
+                                                                                        i, 
+                                                                                        per_thread_options.num_threads, 
+                                                                                        per_thread_options.num_clients, 
+                                                                                        per_thread_options.server_ip, 
+                                                                                        hist, 
+                                                                                        per_thread_options.retries, 
+                                                                                        per_thread_options.start_cutoff).wrap_err("Failed to initialize loadgen")?;
+                if $opt.trace_type == 1 {
+                    return run_client(i, &mut loadgen, &mut connection, &per_thread_options, twitter_schedule).wrap_err("Failed to run client");
+                } else {
+                    return run_client(i, &mut loadgen, &mut connection, &per_thread_options, twitter_schedule).wrap_err("Failed to run client");
+                }
+              }));
+            }
+        }
+        let num_rtts = get_num_requests(&$opt)?;
+        let schedules = generate_schedules(num_rtts, $opt.rate, $opt.distribution, $opt.num_threads)?;
         // do global init
         let (port, per_thread_info) = $datapath_global_init?;
         let mut threads: Vec<JoinHandle<Result<ThreadStats>>> = vec![];
@@ -212,9 +262,22 @@ macro_rules! run_kv_client(
                     }
                 }
                 let mut connection = $datapath_init(physical_port, i, rx_packet_allocator, addr, &per_thread_options)?;
-                let mut loadgen: YCSBClient<$serializer, $datapath> =
-                    YCSBClient::new(per_thread_options.client_id, per_thread_options.value_size, per_thread_options.num_values, &per_thread_options.queries, i, per_thread_options.num_threads, per_thread_options.num_clients, per_thread_options.server_ip, hist, per_thread_options.retries, per_thread_options.start_cutoff).wrap_err("Failed to initialize loadgen")?;
-                run_client(i, &mut loadgen, &mut connection, &per_thread_options, schedule).wrap_err("Failed to run client")
+                let mut loadgen: YCSBClient<$serializer, $datapath> = YCSBClient::new(per_thread_options.client_id, 
+                                                                                      per_thread_options.value_size, 
+                                                                                      per_thread_options.num_values, 
+                                                                                      &per_thread_options.queries, 
+                                                                                      i, 
+                                                                                      per_thread_options.num_threads, 
+                                                                                      per_thread_options.num_clients, 
+                                                                                      per_thread_options.server_ip, 
+                                                                                      hist, 
+                                                                                      per_thread_options.retries, 
+                                                                                      per_thread_options.start_cutoff).wrap_err("Failed to initialize loadgen")?;
+                if $opt.trace_type == 1 {
+                    return run_client(i, &mut loadgen, &mut connection, &per_thread_options, schedule).wrap_err("Failed to run client");
+                } else {
+                    return run_client(i, &mut loadgen, &mut connection, &per_thread_options, schedule).wrap_err("Failed to run client");
+                }
             }));
         }
 
@@ -242,6 +305,32 @@ macro_rules! run_kv_client(
     }
 
 );
+
+fn get_times(client_hash: HashMap<u64, Vec<String>>) -> Result<Vec<u64>> {
+    let ret_vec : Vec<u64> = Vec::new();
+    for key in client_hash.keys() {
+      ret_vec.push(client_hash[key].len().try_into().unwrap());
+    }
+    Ok(ret_vec)
+}
+
+fn create_client_hash(twitter_trace: &str) -> Result<HashMap<u64, Vec<String>>> {
+    let mut client_hash = HashMap::<u64, Vec<String>>::new();
+    let file = File::open(twitter_trace)?;
+    let buf_reader = BufReader::new(file);
+    for line_q in buf_reader.lines() {
+        let line = line_q?;
+        let mut twitter_line = TwitterGets::new(&line)?;
+        if client_hash.contains_key(twitter_line.get_second().parse()::<u64>().unwrap()) {
+            client_hash[&twitter_line.get_second().parse()::<u64>().unwrap()].push(line.to_string());
+            continue;
+        }
+        let mut vec = Vec<String>::new();
+        vec.push(line.to_string());
+        client_hash.insert(twitter_line.get_second().try_into().unwrap(), vec);
+    }
+    Ok(client_hash)
+}
 
 fn set_ctrlc_handler<S, D>(server: &KVServer<S, D>) -> Result<()>
 where

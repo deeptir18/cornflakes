@@ -9,6 +9,7 @@ pub struct TwitterGets<'a> {
     pub key: &'a str,
     pub key_size: usize,
     pub val_size: usize,
+    pub second: usize,
     pub operation: MsgType,
 }
 
@@ -22,12 +23,14 @@ impl<'a> TwitterGets<'a> {
             key: vec_gets[1],
             key_size: vec_gets[2].parse::<usize>().unwrap(),
             val_size: vec_gets[3].parse::<usize>().unwrap(),
+            second: vec_gets[0].parse::<usize>().unwrap(),
             operation: MsgType::Get(1),
         }),
         _ => Ok(TwitterGets{
             key: vec_gets[1],
             key_size: vec_gets[2].parse::<usize>().unwrap(),
             val_size: vec_gets[3].parse::<usize>().unwrap(),
+            second: vec_gets[0].parse::<usize>().unwrap(),
             operation: MsgType::Put(1),
         })
       }
@@ -43,6 +46,10 @@ impl<'a> TwitterGets<'a> {
 
     pub fn get_type(&self) -> MsgType {
         self.operation
+    }
+
+    pub fn get_second(&self) -> usize {
+        self.second
     }
 }
 

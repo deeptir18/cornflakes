@@ -88,6 +88,16 @@ impl PacketSchedule {
         Ok(PacketSchedule { packets: packets })
     }
 
+    pub fn new_twitter (times: Vec<u64>) -> Result<Self> {
+        let mut packets: Vec<Packet> = vec![Packet::default(); times.len()];
+        for i in 1..times.len() {
+            let time_lapse = times[i] - times[i - 1];
+            packets[i] = Packet{ time_since_last: time_lapse };
+        }
+        packets[0] = Packet { time_since_last: 0 };
+        Ok(PacketSchedule { packets: packets })
+    }
+
     fn get(&self, idx: usize) -> u64 {
         self.packets[idx].time_since_last
     }
@@ -119,4 +129,15 @@ pub fn generate_schedules(
         schedules.push(PacketSchedule::new(requests, rate_pps, dist)?);
     }
     Ok(schedules)
+}
+
+pub fn generate_twitter_schedules(
+    times: Vec<u64>,
+    num_threads: usize,
+) -> Result<Vec<PacketSchedule>> {
+  let mut schedules : Vec<PacketSchedule> = Vec::default();
+  for _i in 0..num_threads {
+      schedules.push(PacketSchedule::new_twitter(times.clone())?);
+  }
+  Ok(schedules)
 }
