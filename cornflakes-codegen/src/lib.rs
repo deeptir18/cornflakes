@@ -14,6 +14,7 @@ use std::{
 pub enum HeaderType {
     ConstantDeserialization,
     LinearDeserialization,
+    LinearDeserializationRefCnt,
 }
 
 impl std::str::FromStr for HeaderType {
@@ -22,6 +23,7 @@ impl std::str::FromStr for HeaderType {
         Ok(match s {
             "fixed" => HeaderType::ConstantDeserialization,
             "dynamic" => HeaderType::LinearDeserialization,
+            "dynamic-rc" => HeaderType::LinearDeserializationRefCnt,
             x => bail!("{} header type unknown.", x),
         })
     }

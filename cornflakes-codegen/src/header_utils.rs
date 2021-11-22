@@ -1,3 +1,4 @@
+use super::rust_codegen::{WhereClause, WherePair};
 use color_eyre::eyre::{bail, Result};
 use protobuf_parser::{Field, FieldType, FileDescriptor, Message, Rule};
 use std::collections::HashMap;
@@ -5,12 +6,16 @@ use std::path::PathBuf;
 
 const ALIGN_SIZE: usize = 8;
 static LIFETIME_NAME: &str = "registered";
+static DATAPATH_TRAIT_KEY: &str = "D";
+static DATAPATH_TRAIT: &str = "Datapath";
 
 #[derive(Debug, Clone)]
 pub struct ProtoReprInfo {
     repr: FileDescriptor,
     message_map: HashMap<String, Message>,
     lifetime_name: String,
+    datapath_trait_key: String,
+    datapath_trait: String,
 }
 
 impl ProtoReprInfo {
@@ -23,6 +28,8 @@ impl ProtoReprInfo {
             repr: repr,
             message_map: message_map,
             lifetime_name: LIFETIME_NAME.to_string(),
+            datapath_trait_key: DATAPATH_TRAIT_KEY.to_string(),
+            datapath_trait: DATAPATH_TRAIT.to_string(),
         }
     }
 
@@ -30,8 +37,16 @@ impl ProtoReprInfo {
         &self.message_map
     }
 
+    fn get_datapath_trait_key(&self) -> String {
+        self.datapath_trait_key.to_string()
+    }
+
+    fn get_datapath_trait(&self) -> String {
+        self.datapath_trait.to_string()
+    }
+
     pub fn get_lifetime(&self) -> String {
-        self.lifetime_name.clone()
+        format!("'{}", self.lifetime_name)
     }
 
     pub fn get_repr(&self) -> FileDescriptor {
@@ -153,6 +168,47 @@ impl MessageInfo {
 
     pub fn get_fields(&self) -> Vec<Field> {
         self.0.fields.clone()
+    }
+
+    pub fn get_type_params(&self, is_ref_counted: bool, fd: &ProtoReprInfo) -> Result<Vec<String>> {
+        let mut ret: Vec<String> = Vec::default();
+        if self.requires_lifetime(&fd.get_message_map())? {
+            ret.push(fd.get_lifetime());
+        }
+        if self.requires_datapath_type_param(is_ref_counted, &fd.get_message_map())? {
+            ret.push(fd.get_datapath_trait_key());
+        }
+
+        Ok(ret)
+    }
+
+    pub fn get_where_clause(
+        &self,
+        is_ref_counted: bool,
+        fd: &ProtoReprInfo,
+    ) -> Result<WhereClause> {
+        if self.requires_datapath_type_param(is_ref_counted, &fd.get_message_map())? {
+            return Ok(WhereClause::new(vec![WherePair::new(
+                &fd.get_datapath_trait_key(),
+                &fd.get_datapath_trait(),
+            )]));
+        } else {
+            return Ok(WhereClause::default());
+        }
+    }
+
+    pub fn requires_datapath_type_param(
+        &self,
+        is_ref_counted: bool,
+        message_map: &HashMap<String, Message>,
+    ) -> Result<bool> {
+        for field in self.0.fields.iter() {
+            let field_info = FieldInfo(field.clone());
+            if field_info.requires_datapath_type_param(is_ref_counted, message_map)? {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
     }
 
     // Does any field in this message require a lifetime?
@@ -529,6 +585,33 @@ impl FieldInfo {
             _ => {
                 bail!("FieldType {:?} not supported by compiler", self.0.typ);
             }
+        }
+    }
+
+    pub fn requires_datapath_type_param(
+        &self,
+        is_ref_counted: bool,
+        message_map: &HashMap<String, Message>,
+    ) -> Result<bool> {
+        if !is_ref_counted {
+            return Ok(false);
+        }
+        if self.is_list() {
+            return Ok(true);
+        }
+
+        match &self.0.typ {
+            FieldType::String | FieldType::Bytes => Ok(true),
+            FieldType::MessageOrEnum(msg_name) => {
+                let msg = match message_map.get(msg_name.as_str()) {
+                    Some(m) => MessageInfo(m.clone()),
+                    None => {
+                        bail!("Msg name: {} not found in message map.", msg_name);
+                    }
+                };
+                msg.requires_datapath_type_param(is_ref_counted, message_map)
+            }
+            _ => Ok(false),
         }
     }
 

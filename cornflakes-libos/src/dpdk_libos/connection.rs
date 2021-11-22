@@ -400,7 +400,7 @@ fn init_timers(mode: AppMode) -> Result<HashMap<String, Arc<Mutex<HistogramWrapp
     Ok(timers)
 }
 
-fn get_ether_addr(mac: &MacAddress) -> MaybeUninit<rte_ether_addr> {
+fn _get_ether_addr(mac: &MacAddress) -> MaybeUninit<rte_ether_addr> {
     let eth_array = mac.to_array();
     let mut server_eth_uninit: MaybeUninit<rte_ether_addr> = MaybeUninit::zeroed();
     unsafe {
@@ -426,7 +426,7 @@ impl Datapath for DPDKConnection {
         // TODO: only works when there is one physical queue
         let dpdk_port = nb_ports - 1;
 
-        let (ip_to_mac, mac_to_ip, server_port, client_port) = parse_yaml_map(config_path)
+        let (_ip_to_mac, mac_to_ip, server_port, client_port) = parse_yaml_map(config_path)
             .wrap_err(
             "Failed to get ip to mac address mapping, or udp port information from yaml config.",
         )?;

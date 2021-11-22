@@ -1,7 +1,7 @@
 use super::{
     super::header_utils::{FieldInfo, MessageInfo, ProtoReprInfo},
     ArgInfo, Context, FunctionArg, FunctionContext, ImplContext, LoopBranch, LoopContext,
-    SerializationCompiler, StructContext, StructDefContext, UnsafeContext,
+    SerializationCompiler, StructContext, StructDefContext, StructName, TraitName, UnsafeContext,
 };
 use color_eyre::eyre::{bail, Result};
 use protobuf_parser::FieldType;
@@ -215,13 +215,13 @@ fn add_serialization_func(
             FunctionArg::new_arg(offset_str, ArgInfo::owned("usize")),
         ],
         "Vec<(CornPtr<'registered, 'normal>, *mut u8)>",
-        "normal",
+        "'normal",
     );
     compiler.add_context(Context::Function(func_context))?;
     compiler.add_def_with_let(
         true,
         Some(format!(
-            "Vec<(CornPtr<'{}, 'normal>, *mut u8)>",
+            "Vec<(CornPtr<{}, 'normal>, *mut u8)>",
             fd.get_lifetime()
         )),
         "ret",
@@ -423,16 +423,11 @@ fn add_header_repr(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let lifetime = match msg_info.requires_lifetime(fd.get_message_map())? {
-        true => fd.get_lifetime(),
-        false => "".to_string(),
-    };
-    let impl_context = ImplContext::new(
-        &msg_info.get_name(),
-        Some("HeaderRepr".to_string()),
-        &lifetime,
-        &lifetime,
-    );
+    let type_annotations = msg_info.get_type_params(false, &fd)?;
+    let where_clause = msg_info.get_where_clause(false, &fd)?;
+    let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
+    let trait_name = TraitName::new("HeaderRepr", type_annotations.clone());
+    let impl_context = ImplContext::new(struct_name, Some(trait_name), where_clause);
     compiler.add_context(Context::Impl(impl_context))?;
     // add constant header size
     compiler.add_const_def("CONSTANT_HEADER_SIZE", "usize", "SIZE_FIELD + OFFSET_FIELD")?;
@@ -655,11 +650,14 @@ fn add_impl(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let struct_lifetime = match msg_info.requires_lifetime(&fd.get_message_map())? {
-        true => fd.get_lifetime(),
-        false => "".to_string(),
-    };
-    let impl_context = ImplContext::new(&msg_info.get_name(), None, &struct_lifetime, "");
+    let type_annotations = msg_info.get_type_params(false, &fd)?;
+    let where_clause = msg_info.get_where_clause(false, &fd)?;
+    let impl_context = ImplContext::new(
+        StructName::new(&msg_info.get_name(), type_annotations.clone()),
+        None,
+        where_clause,
+    );
+
     compiler.add_context(Context::Impl(impl_context))?;
     // add constants at the top of the impl
     compiler.add_const_def(
@@ -713,16 +711,11 @@ fn add_default_impl(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let struct_lifetime = match msg_info.requires_lifetime(&fd.get_message_map())? {
-        true => fd.get_lifetime(),
-        false => "".to_string(),
-    };
-    let impl_context = ImplContext::new(
-        &msg_info.get_name(),
-        Some("Default".to_string()),
-        &struct_lifetime,
-        "",
-    );
+    let type_annotations = msg_info.get_type_params(false, &fd)?;
+    let where_clause = msg_info.get_where_clause(false, &fd)?;
+    let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
+    let trait_name = TraitName::new("Default", vec![]);
+    let impl_context = ImplContext::new(struct_name, Some(trait_name), where_clause);
     compiler.add_context(Context::Impl(impl_context))?;
     let func_context = FunctionContext::new("default", false, Vec::default(), "Self");
     compiler.add_context(Context::Function(func_context))?;
@@ -753,10 +746,13 @@ fn add_struct_definition(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
+    let type_annotations = msg_info.get_type_params(false, &fd)?;
+    let where_clause = msg_info.get_where_clause(false, &fd)?;
+    let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
     let struct_ctx = StructContext::new(
-        msg_info.get_name().as_str(),
+        struct_name,
         msg_info.derives_copy(&fd.get_message_map())?,
-        fd.get_lifetime().as_str(),
+        where_clause,
     );
 
     // add struct header
