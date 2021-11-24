@@ -123,6 +123,7 @@ fn add_serialization_func(
             "final_bitmap.as_ptr() as _".to_string(),
             "Self::BITMAP_SIZE".to_string(),
         ],
+        false,
     )?;
     // end of unsafe block
     compiler.pop_context()?;
@@ -216,7 +217,7 @@ fn add_serialization_for_field(
                 compiler.add_func_call(
                     Some("ret".to_string()),
                     "append",
-                    vec![format!("&mut self.{}.inner_serialize(cur_header_ptr, cur_dynamic_ptr, cur_header_offset, cur_dynamic_offset, copy_func)", field_info.get_name())])?;
+                    vec![format!("&mut self.{}.inner_serialize(cur_header_ptr, cur_dynamic_ptr, cur_header_offset, cur_dynamic_offset, copy_func)", field_info.get_name())], false)?;
             }
             _ => {
                 bail!("Field type not supported: {:?}", &field_info.0.typ);
@@ -230,14 +231,14 @@ fn add_serialization_for_field(
             | FieldType::Uint64
             | FieldType::Float => {
                 let rust_type = &field_info.get_base_type_str()?;
-                let field_size = &field_info.get_header_size_str(true)?;
+                let field_size = &field_info.get_header_size_str(true, false)?;
                 compiler.add_line(&format!("LittleEndian::write_{}( unsafe {{ slice::from_raw_parts_mut(cur_header_ptr as _, {}) }}, self.{});", rust_type, field_size, &field_info.get_name()))?;
             }
             FieldType::String | FieldType::Bytes | FieldType::MessageOrEnum(_) => {
                 compiler.add_func_call(
                     Some("ret".to_string()),
                     "append",
-                    vec![format!("&mut self.{}.inner_serialize(cur_header_ptr, cur_dynamic_ptr, cur_header_offset, cur_dynamic_offset, copy_func)", field_info.get_name())])?;
+                    vec![format!("&mut self.{}.inner_serialize(cur_header_ptr, cur_dynamic_ptr, cur_header_offset, cur_dynamic_offset, copy_func)", field_info.get_name())], false)?;
             }
             _ => {
                 bail!("Field type not supported: {:?}", &field_info.0.typ);
@@ -267,6 +268,7 @@ fn add_serialization_for_field(
                     "append",
                     vec![format!("&mut list_field.inner_serialize(cur_header_ptr, cur_dynamic_ptr, cur_header_offset, cur_dynamic_offset, copy_func)")
                     ],
+                    false
                 )?;
             }
             _ => {
@@ -290,8 +292,9 @@ fn add_serialization_for_field(
                             "self.header_ptr.as_ptr().offset((self.offset + {}) as isize) as _",
                             field_info.get_header_offset_str(true)
                         ),
-                        field_info.get_header_size_str(true)?,
+                        field_info.get_header_size_str(true, false)?,
                     ],
+                    false,
                 )?;
                 compiler.pop_context()?;
             }
@@ -302,6 +305,7 @@ fn add_serialization_for_field(
                     "append",
                     vec![format!("&mut field.inner_serialize(cur_header_ptr, cur_dynamic_ptr, cur_header_offset, cur_dynamic_offset, copy_func)")
                     ],
+                    false
                 )?;
             }
             _ => {
@@ -347,7 +351,7 @@ fn add_header_repr(
     let mut constant_size = "Self::BITMAP_SIZE".to_string();
     for field in msg_info.get_fields().iter() {
         let field_info = FieldInfo(field.clone());
-        let header_size_str = field_info.get_header_size_str(true)?;
+        let header_size_str = field_info.get_header_size_str(true, false)?;
         constant_size = format!("{} + {}", constant_size, header_size_str);
     }
     compiler.add_const_def("CONSTANT_HEADER_SIZE", "usize", &constant_size)?;
@@ -425,7 +429,7 @@ fn add_field_deserialization(
     output: Option<(bool, String)>,
 ) -> Result<()> {
     // based on the field type, there's a special way to deserialize
-    let field_size_type = field.get_header_size_str(true)?;
+    let field_size_type = field.get_header_size_str(true, false)?;
     let field_offset_type = field.get_header_offset_str(true);
     if field.is_list() {
         match &field.0.typ {
@@ -556,6 +560,7 @@ fn add_field_deserialization(
                         "self.header_ptr".to_string(),
                         format!("self.offset + {}", field_offset_type),
                     ],
+                    false,
                 )?;
                 match &output {
                     Some(_) => {}
@@ -578,6 +583,7 @@ fn add_field_deserialization(
                         "self.header_ptr".to_string(),
                         format!("self.offset + {}", field_offset_type),
                     ],
+                    false,
                 )?;
                 match &output {
                     Some(_) => {}
@@ -600,6 +606,7 @@ fn add_field_deserialization(
                         "self.header_ptr".to_string(),
                         format!("self.offset + {}", field_offset_type),
                     ],
+                    false,
                 )?;
                 match &output {
                     Some(_) => {}
@@ -644,7 +651,7 @@ fn add_get(
     compiler.add_context(Context::Loop(loop_context))?;
     // If branch: if value has been set externally,
     // return external value
-    let self_return_value = match field.derives_copy(&fd.get_message_map())? {
+    let self_return_value = match field.derives_copy(&fd.get_message_map(), false)? {
         true => format!("self.{}", field.get_name()),
         false => format!("self.{}.clone()", field.get_name()),
     };
@@ -811,7 +818,7 @@ fn add_impl(
     for field in msg_info.get_fields().iter() {
         compiler.add_newline()?;
         let field_info = FieldInfo(field.clone());
-        for (var, typ, def) in msg_info.get_constants(&field_info, true)?.iter() {
+        for (var, typ, def) in msg_info.get_constants(&field_info, true, false)?.iter() {
             compiler.add_const_def(var, typ, def)?;
         }
     }
@@ -901,7 +908,7 @@ fn add_struct_definition(
     let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
     let struct_ctx = StructContext::new(
         struct_name,
-        msg_info.derives_copy(&fd.get_message_map())?,
+        msg_info.derives_copy(&fd.get_message_map(), false)?,
         where_clause,
     );
     // add struct header

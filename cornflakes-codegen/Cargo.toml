@@ -10,7 +10,7 @@ structopt-derive="0.2.16"
 tracing = "0.1.12"
 tracing-subscriber = "0.2.17"
 color-eyre = "0.5"
-protobuf-parser = "0.1.3"
+protobuf-parser = { path = "../protobuf-parser" }
 which = "4.1.0"
 byteorder = "1.3.4"
 bytes = "1.0.1"

@@ -7,3 +7,6 @@
 	path = mlx5-netperf
     url = https://github.com/deeptir18/mlx5-netperf.git
     ignore = untracked
+[submodule "protobuf-parser"]
+	path = protobuf-parser
+	url = https://github.com/deeptir18/protobuf-parser.git

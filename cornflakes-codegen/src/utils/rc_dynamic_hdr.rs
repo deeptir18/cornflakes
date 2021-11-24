@@ -176,13 +176,12 @@ where
     }
 }
 
-#[derive(Copy)]
-pub struct CFString<'a, D>
+pub enum CFString<'a, D>
 where
     D: Datapath,
 {
-    pub ptr: &'a [u8],
-    _marker: PhantomData<D>,
+    Rc(CfBuf<D>),
+    Raw(&'a [u8]),
 }
 
 impl<'a, D> std::cmp::PartialEq for CFString<'a, D>
@@ -190,29 +189,58 @@ where
     D: Datapath,
 {
     fn eq(&self, other: &Self) -> bool {
-        self.ptr == other.ptr
+        if let Some(rc_ref) = other.get_rc() {
+            if let Some(our_rc_ref) = self.get_rc() {
+                return rc_ref == our_rc_ref;
+            }
+        }
+        if let Some(raw) = other.get_raw() {
+            if let Some(our_raw) = self.get_raw() {
+                return raw == our_raw;
+            }
+        }
+        return false;
     }
 }
-
-impl<'a, D> std::cmp::Eq for CFString<'a, D> where D: Datapath {}
 
 impl<'a, D> std::fmt::Debug for CFString<'a, D>
 where
     D: Datapath,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", self.ptr)
+        match self {
+            CFString::Rc(ptr) => write!(f, "Ref counted string: {:?}", ptr),
+            CFString::Raw(ptr) => write!(f, "Raw string: {:?}", ptr),
+        }
     }
 }
+
+impl<'a, D> std::cmp::Eq for CFString<'a, D> where D: Datapath {}
 
 impl<'a, D> Clone for CFString<'a, D>
 where
     D: Datapath,
 {
     fn clone(&self) -> Self {
-        CFString {
-            ptr: self.ptr,
-            _marker: PhantomData,
+        match self {
+            CFString::Rc(cfbuf) => CFString::Rc(cfbuf.clone()),
+            CFString::Raw(bytes) => CFString::Raw(bytes),
+        }
+    }
+}
+
+impl<'a, D> AsRef<[u8]> for CFString<'a, D>
+where
+    D: Datapath,
+{
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            CFString::Raw(ptr) => {
+                return ptr;
+            }
+            CFString::Rc(ptr) => {
+                return ptr.as_ref();
+            }
         }
     }
 }
@@ -222,32 +250,58 @@ where
     D: Datapath,
 {
     pub fn new(ptr: &'a str) -> Self {
-        CFString {
-            ptr: ptr.as_bytes(),
-            _marker: PhantomData,
-        }
+        CFString::Raw(ptr.as_bytes())
     }
 
     pub fn new_from_bytes(ptr: &'a [u8]) -> Self {
-        CFString {
-            ptr: ptr,
-            _marker: PhantomData,
-        }
+        CFString::Raw(ptr)
     }
 
     pub fn len(&self) -> usize {
-        self.ptr.len()
+        match self {
+            CFString::Rc(ptr) => ptr.len(),
+            CFString::Raw(buf) => buf.len(),
+        }
     }
 
-    pub fn to_str(&self) -> Result<&'a str> {
-        let s = str::from_utf8(self.ptr).wrap_err("Could not turn CFString into str")?;
-        Ok(s)
+    pub fn to_str(&self) -> Result<&str> {
+        match self {
+            CFString::Raw(ptr) => str::from_utf8(ptr).wrap_err("Could not turn CFString into str"),
+            CFString::Rc(ptr) => {
+                let s =
+                    str::from_utf8(ptr.as_ref()).wrap_err("Could not turn CFString into str")?;
+                Ok(s)
+            }
+        }
     }
 
     /// Assumes that the string is utf8-encoded.
     pub fn to_string(&self) -> Result<String> {
         let s = self.to_str()?;
         Ok(s.to_string())
+    }
+
+    pub fn get_rc(&self) -> Option<CfBuf<D>> {
+        match self {
+            CFString::Rc(ptr) => Some(ptr.clone()),
+            CFString::Raw(_) => None,
+        }
+    }
+
+    pub fn get_raw(&self) -> Option<&'a [u8]> {
+        match self {
+            CFString::Rc(_) => None,
+            CFString::Raw(buf) => Some(buf),
+        }
+    }
+
+    pub fn get_inner(&self) -> Result<&'a [u8]> {
+        match self {
+            CFString::Raw(ptr) => Ok(ptr),
+            CFString::Rc(_) => {
+                bail!("Cannot return raw ref from Rc variant of CFString.")
+            }
+        }
     }
 }
 
@@ -256,10 +310,7 @@ where
     D: Datapath,
 {
     fn default() -> Self {
-        CFString {
-            ptr: Default::default(),
-            _marker: PhantomData,
-        }
+        CFString::Raw(&[])
     }
 }
 
@@ -288,9 +339,16 @@ where
         _offset: usize,
     ) -> Result<Vec<(RcCornPtr<'a, D>, *mut u8)>> {
         let mut obj_ref = ObjectRef(header_ptr as _);
-        obj_ref.write_size(self.ptr.len());
-        tracing::debug!("Returning cornptr of len {}", self.ptr.len());
-        Ok(vec![(RcCornPtr::RawRef(self.ptr), header_ptr)])
+        match self {
+            CFString::Rc(ptr) => {
+                obj_ref.write_size(ptr.len());
+                Ok(vec![(RcCornPtr::RefCounted(ptr.clone()), header_ptr)])
+            }
+            CFString::Raw(bytes) => {
+                obj_ref.write_size(bytes.len());
+                Ok(vec![(RcCornPtr::RawRef(bytes), header_ptr)])
+            }
+        }
     }
 
     /// Remember that the packet could be a scatter-gather array, so the offset into the buffer
@@ -303,17 +361,37 @@ where
         size: usize,
     ) -> Result<()> {
         tracing::debug!(
-            relative_offset = relative_offset,
-            buffer_offset = buffer_offset,
-            size = size,
-            "In inner deserialize for string"
+            buffer_offset,
+            relative_offset,
+            size,
+            "Deserializing cf bytes"
         );
         let header_slice = pkt.contiguous_slice(relative_offset + buffer_offset, size)?;
         let object_ref = ObjectRef(header_slice.as_ptr());
-        self.ptr = pkt.contiguous_slice(
-            object_ref.get_offset() + buffer_offset,
-            object_ref.get_size(),
-        )?;
+        let payload_offset = object_ref.get_offset() + buffer_offset;
+        let payload_size = object_ref.get_size();
+
+        let (payload_seg, off_within_payload_seg) = pkt.index_at_offset(payload_offset);
+        tracing::debug!(
+            "Payload seg: {}, off: {}",
+            payload_seg,
+            off_within_payload_seg
+        );
+        let payload_segment = pkt.index(payload_seg);
+        ensure!(
+            (payload_segment.buf_size() - off_within_payload_seg) >= payload_size,
+            "Not enough space in payload segment for CfBuf payload."
+        );
+        // create reference to underlying DatapathPkt that increments the reference count
+        let payload_buf =
+            CfBuf::new_with_bounds(payload_segment, off_within_payload_seg, payload_size);
+
+        // assume underlying packet is in REGISTERED MEMORY
+        tracing::debug!(
+            "Switching from raw ref to rc version of CFString for payload: {}",
+            payload_size
+        );
+        *self = CFString::Rc(payload_buf);
         Ok(())
     }
 }

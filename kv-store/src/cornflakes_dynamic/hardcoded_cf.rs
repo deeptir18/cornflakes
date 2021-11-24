@@ -6,7 +6,7 @@ use cornflakes_libos::{CfBuf, Datapath, RcCornPtr, ReceivedPkt};
 use std::{marker::PhantomData, slice};
 
 const GETREQ_BITMAP_SIZE: usize = 8;
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetReq<'a, D>
 where
     D: Datapath,
@@ -408,7 +408,7 @@ where
 
     pub fn set_key(&mut self, field: &'a str) {
         self.bitmap[Self::KEY_BITMAP_IDX] = 1;
-        self.key = CFString::new(field);
+        self.key = CFString::Raw(field.as_bytes());
     }
 
     pub fn has_val(&self) -> bool {

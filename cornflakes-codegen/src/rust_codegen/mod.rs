@@ -20,9 +20,8 @@ pub fn compile(repr: &ProtoReprInfo, output_folder: &str, options: CompileOption
         }
 
         HeaderType::LinearDeserializationRefCnt => {
-            unimplemented!();
-            //linear_codegen_rc::compile(repr, &mut compiler)
-            //   .wrap_err("Linear codegen refcnt failed to generate code.")?;
+            linear_codegen_rc::compile(repr, &mut compiler)
+                .wrap_err("Linear codegen refcnt failed to generate code.")?;
         }
     }
     compiler.flush(&repr.get_output_file(output_folder).as_path())?;
@@ -628,6 +627,12 @@ impl SerializationCompiler {
         Ok(())
     }
 
+    pub fn add_macro_call(&mut self, macro_name: &str, args: Vec<String>) -> Result<()> {
+        let line = format!("{}!({});", macro_name, args.join(", "));
+        self.add_line(&line)?;
+        Ok(())
+    }
+
     pub fn add_line(&mut self, line: &str) -> Result<()> {
         self.current_string
             .push_str(&("\t".repeat(self.current_indent_level())));
@@ -685,6 +690,23 @@ impl SerializationCompiler {
         Ok(())
     }
 
+    pub fn add_constant_def(
+        &mut self,
+        is_pub: bool,
+        left: &str,
+        typ: &str,
+        right: &str,
+    ) -> Result<()> {
+        let pub_str = match is_pub {
+            true => "pub ",
+            false => "",
+        };
+
+        let line = format!("{}const {}: {} = {}", pub_str, left, typ, right);
+        self.add_line(&line)?;
+        Ok(())
+    }
+
     pub fn add_def_with_let(
         &mut self,
         is_mut: bool,
@@ -728,13 +750,19 @@ impl SerializationCompiler {
         caller: Option<String>,
         func: &str,
         args: Vec<String>,
+        add_res: bool,
     ) -> Result<()> {
         let caller_str = match caller {
             Some(x) => format!("{}.", x),
             None => "".to_string(),
         };
 
-        let line = format!("{}{}({});", caller_str, func, args.join(", "));
+        let res = match add_res {
+            true => "?",
+            false => "",
+        };
+
+        let line = format!("{}{}({}){};", caller_str, func, args.join(", "), res);
         self.add_line(&line)?;
         Ok(())
     }

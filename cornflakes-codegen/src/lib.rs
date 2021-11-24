@@ -100,8 +100,10 @@ fn generate_proto_representation(input_file: &str) -> Result<ProtoReprInfo> {
 
 /// Write out generated Rust serialization code from schema to given output file.
 pub fn compile(input_file: &str, output_folder: &str, options: CompileOptions) -> Result<()> {
-    let repr = generate_proto_representation(input_file)?;
-
+    let mut repr = generate_proto_representation(input_file)?;
+    if options.header_type == HeaderType::LinearDeserializationRefCnt {
+        repr.set_ref_counted();
+    }
     match options.language {
         Language::C => {
             bail!("Code generation module for C not implemented yet.");
