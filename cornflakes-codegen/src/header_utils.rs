@@ -47,7 +47,7 @@ impl ProtoReprInfo {
         self.datapath_trait_key.to_string()
     }
 
-    fn get_datapath_trait(&self) -> String {
+    pub fn get_datapath_trait(&self) -> String {
         self.datapath_trait.to_string()
     }
 
@@ -374,6 +374,16 @@ impl MessageInfo {
 
     pub fn num_fields(&self) -> usize {
         self.0.fields.len()
+    }
+
+    pub fn refers_to_bytes(&self, msg_map: &HashMap<String, Message>) -> Result<bool> {
+        for field in self.0.fields.iter() {
+            let field_info = FieldInfo(field.clone());
+            if field_info.refers_to_bytes(msg_map)? {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
     }
 
     pub fn has_dynamic_fields(
@@ -736,7 +746,7 @@ impl FieldInfo {
                 | FieldType::RefCountedString
                 | FieldType::Bytes
                 | FieldType::String => {
-                    return Ok(true);
+                    return Ok(false);
                 }
                 _ => {}
             }
@@ -767,6 +777,25 @@ impl FieldInfo {
         }
     }
 
+    pub fn refers_to_bytes(&self, message_map: &HashMap<String, Message>) -> Result<bool> {
+        match &self.0.typ {
+            FieldType::String
+            | FieldType::Bytes
+            | FieldType::RefCountedString
+            | FieldType::RefCountedBytes => Ok(true),
+            FieldType::MessageOrEnum(msg_name) => {
+                let msg = match message_map.get(msg_name.as_str()) {
+                    Some(m) => MessageInfo(m.clone()),
+                    None => {
+                        bail!("Msg name: {} not found in message map.", msg_name);
+                    }
+                };
+                msg.refers_to_bytes(message_map)
+            }
+            _ => Ok(false),
+        }
+    }
+
     pub fn requires_datapath_type_param(
         &self,
         is_ref_counted: bool,
@@ -780,7 +809,10 @@ impl FieldInfo {
         }
 
         match &self.0.typ {
-            FieldType::String | FieldType::Bytes => Ok(true),
+            FieldType::String
+            | FieldType::Bytes
+            | FieldType::RefCountedString
+            | FieldType::RefCountedBytes => Ok(true),
             FieldType::MessageOrEnum(msg_name) => {
                 let msg = match message_map.get(msg_name.as_str()) {
                     Some(m) => MessageInfo(m.clone()),
@@ -801,7 +833,10 @@ impl FieldInfo {
         }
 
         match &self.0.typ {
-            FieldType::String | FieldType::Bytes => Ok(true),
+            FieldType::String
+            | FieldType::Bytes
+            | FieldType::RefCountedBytes
+            | FieldType::RefCountedString => Ok(true),
             FieldType::MessageOrEnum(msg_name) => {
                 let msg = match message_map.get(msg_name.as_str()) {
                     Some(m) => MessageInfo(m.clone()),

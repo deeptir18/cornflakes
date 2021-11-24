@@ -1,8 +1,8 @@
 pub mod hardcoded_cf;
 
-/*pub mod kv_messages {
+pub mod kv_messages {
     include!(concat!(env!("OUT_DIR"), "/kv_cf_dynamic.rs"));
-}*/
+}
 
 use super::{ycsb_parser::YCSBRequest, KVSerializer, MsgType, SerializedRequestGenerator};
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};

@@ -702,7 +702,7 @@ impl SerializationCompiler {
             false => "",
         };
 
-        let line = format!("{}const {}: {} = {}", pub_str, left, typ, right);
+        let line = format!("{}const {}: {} = {};", pub_str, left, typ, right);
         self.add_line(&line)?;
         Ok(())
     }

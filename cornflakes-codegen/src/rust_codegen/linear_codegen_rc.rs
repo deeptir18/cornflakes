@@ -2,6 +2,7 @@ use super::{
     super::header_utils::{FieldInfo, MessageInfo, ProtoReprInfo},
     ArgInfo, Context, FunctionArg, FunctionContext, ImplContext, LoopBranch, LoopContext,
     SerializationCompiler, StructContext, StructDefContext, StructName, TraitName, UnsafeContext,
+    WhereClause, WherePair,
 };
 use color_eyre::eyre::{bail, Result};
 use protobuf_parser::FieldType;
@@ -58,7 +59,7 @@ fn add_deserialization_func(
             FunctionArg::new_arg("relative_offset", ArgInfo::owned("usize")),
             FunctionArg::new_arg("size", ArgInfo::owned("usize")),
         ],
-        "",
+        "Result<()>",
     );
     compiler.add_context(Context::Function(func_context))?;
     compiler.add_macro_call(
@@ -66,12 +67,12 @@ fn add_deserialization_func(
         vec![
             format!("size >= {}", msg_info.get_bitmap_var_name()),
             format!(
-                "Not enough space to deserialize bitmap in {}",
+                "\"Not enough space to deserialize bitmap in {}\"",
                 msg_info.get_name()
             ),
         ],
     )?;
-    compiler.add_unsafe_def_with_let(
+    compiler.add_def_with_let(
         false,
         None,
         "bitmap_slice",
@@ -83,7 +84,7 @@ fn add_deserialization_func(
     compiler.add_newline()?;
 
     let cur_header_offset_mut = msg_info.num_fields() > 1;
-    compiler.add_unsafe_def_with_let(
+    compiler.add_def_with_let(
         cur_header_offset_mut,
         None,
         "cur_header_offset",
@@ -102,6 +103,7 @@ fn add_deserialization_func(
         add_field_deserialization(fd, compiler, msg_info, &field_info)?;
         compiler.pop_context()?;
     }
+    compiler.add_return_val("Ok(())", false)?;
     compiler.pop_context()?;
     Ok(())
 }
@@ -129,7 +131,7 @@ fn add_field_deserialization(
             | FieldType::String
             | FieldType::Bytes
             | FieldType::MessageOrEnum(_) => {
-                compiler.add_def_with_let(false, None, "list_slice", &format!("pkt.contiguous_slice(relative_offset + cur_header_offset + buffer_offset, {}", field_info.get_header_size_str(true, true)?))?;
+                compiler.add_def_with_let(false, None, "list_slice", &format!("pkt.contiguous_slice(relative_offset + cur_header_offset + buffer_offset, {})?", field_info.get_header_size_str(true, true)?))?;
                 compiler.add_def_with_let(
                     false,
                     None,
@@ -235,13 +237,14 @@ fn add_serialization_func(
             FunctionArg::new_arg("copy_func", ArgInfo::owned("unsafe fn (dst: *mut ::std::os::raw::c_void, src: *const ::std::os::raw::c_void, len: usize,)")),
             FunctionArg::new_arg(offset_str, ArgInfo::owned("usize")),
         ],
-        &format!("Result<Vec<(RcCornPtr<'{}, {}>, *mut u8)>>", fd.get_lifetime(), fd.get_datapath_trait_key()),
+        &format!("Result<Vec<(RcCornPtr<{}, {}>, *mut u8)>>", fd.get_lifetime(), fd.get_datapath_trait_key()),
     );
     compiler.add_context(Context::Function(func_context))?;
+    let has_cornptrs = msg_info.refers_to_bytes(fd.get_message_map())?;
     compiler.add_def_with_let(
-        true,
+        has_cornptrs,
         Some(format!(
-            "Vec<(RcCornPtr<'{}, {}>, *mut u8)>",
+            "Vec<(RcCornPtr<{}, {}>, *mut u8)>",
             fd.get_lifetime(),
             fd.get_datapath_trait_key(),
         )),
@@ -308,7 +311,7 @@ fn add_serialization_func(
     }
 
     compiler.add_newline()?;
-    compiler.add_return_val("ret", false)?;
+    compiler.add_return_val("Ok(ret)", false)?;
 
     compiler.pop_context()?;
     Ok(())
@@ -460,10 +463,16 @@ fn add_header_repr(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let type_annotations = msg_info.get_type_params(false, &fd)?;
-    let where_clause = msg_info.get_where_clause(false, &fd)?;
+    let type_annotations = msg_info.get_type_params(true, &fd)?;
+    let where_clause = WhereClause::new(vec![WherePair::new(
+        &fd.get_datapath_trait_key(),
+        &fd.get_datapath_trait(),
+    )]);
     let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
-    let trait_name = TraitName::new("HeaderRepr", type_annotations.clone());
+    let trait_name = TraitName::new(
+        "HeaderRepr",
+        vec![fd.get_lifetime(), fd.get_datapath_trait_key()],
+    );
     let impl_context = ImplContext::new(struct_name, Some(trait_name), where_clause);
     compiler.add_context(Context::Impl(impl_context))?;
     // add constant header size
@@ -500,7 +509,7 @@ fn add_header_repr(
         "usize",
     );
     compiler.add_context(Context::Function(header_offset_function_context))?;
-    let mut dynamic_offset = "Self::BITMAP_SIZE".to_string();
+    let mut dynamic_offset = msg_info.get_bitmap_var_name();
     for field in msg_info.get_fields().iter() {
         let field_info = FieldInfo(field.clone());
         dynamic_offset = format!(
@@ -558,7 +567,10 @@ fn add_get(
     compiler.add_context(Context::Function(func_context))?;
     let return_val = match field.is_list() || field.is_nested_msg() {
         true => format!("&self.{}", field.get_name()),
-        false => format!("self.{}", field.get_name()),
+        false => match field.is_bytes_or_string() {
+            true => format!("self.{}.clone()", field.get_name()),
+            false => format!("self.{}", field.get_name()),
+        },
     };
 
     compiler.add_return_val(&return_val, false)?;
@@ -593,7 +605,7 @@ fn add_set_ref_counted(
             FunctionArg::MutSelfArg,
             FunctionArg::new_arg(
                 "field",
-                ArgInfo::owned(&format!("CFBuf<{}>", fd.get_datapath_trait_key())),
+                ArgInfo::owned(&format!("CfBuf<{}>", fd.get_datapath_trait_key())),
             ),
         ],
         "",
@@ -622,10 +634,7 @@ fn add_set_ref_counted(
         true,
         vec![
             FunctionArg::MutSelfArg,
-            FunctionArg::new_arg(
-                "field",
-                ArgInfo::owned(&format!("'{} [u8]", fd.get_lifetime())),
-            ),
+            FunctionArg::new_arg("field", ArgInfo::ref_arg("[u8]", Some(fd.get_lifetime()))),
         ],
         "",
     );
@@ -710,7 +719,10 @@ fn add_list_init(compiler: &mut SerializationCompiler, field: &FieldInfo) -> Res
                 &format!("List::init(num)"),
             )?;
         }
-        FieldType::String | FieldType::Bytes => {
+        FieldType::String
+        | FieldType::Bytes
+        | FieldType::RefCountedString
+        | FieldType::RefCountedBytes => {
             compiler.add_statement(
                 &format!("self.{}", field.get_name()),
                 &format!("VariableList::init(num)"),
@@ -883,13 +895,16 @@ fn add_struct_definition(
 
 fn add_dependencies(repr: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
     compiler.add_dependency("cornflakes_libos::{CfBuf, Datapath, RcCornPtr, ReceivedPkt}")?;
-    compiler.add_dependency("cornflakes_codegen::utils::rc_dynamic_hdr::*;")?;
+    compiler.add_dependency("cornflakes_codegen::utils::rc_dynamic_hdr::*")?;
     compiler
         .add_dependency("cornflakes_codegen::utils::{rc_dynamic_hdr::HeaderRepr, ObjectRef}")?;
     compiler.add_dependency("color_eyre::eyre::{ensure, Result}")?;
     if repr.has_int_field() {
         compiler.add_dependency("byteorder::{ByteOrder, LittleEndian}")?;
     }
-    compiler.add_dependency("std::{marker::PhantomData, slice}")?;
+    // if any message has integers, we need slice
+    if repr.has_int_field() {
+        compiler.add_dependency("std::{slice}")?;
+    }
     Ok(())
 }

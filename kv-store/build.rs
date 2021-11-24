@@ -1,5 +1,5 @@
 use capnpc;
-//use cornflakes_codegen::{compile, CompileOptions, HeaderType, Language};
+use cornflakes_codegen::{compile, CompileOptions, HeaderType, Language};
 use cxx_build;
 use protoc_rust;
 use std::{
@@ -17,7 +17,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/cereal/include/cereal_headers.hh");
     // protobuf, cornflakes, flatbuffers, capnproto schema files
     println!("cargo:rerun-if-changed=src/protobuf/kv_proto.proto");
-    //println!("cargo:rerun-if-changed=src/cornflakes_dynamic/kv_cf_dynamic.proto");
+    println!("cargo:rerun-if-changed=src/cornflakes_dynamic/kv_cf_dynamic.proto");
     println!("cargo:rerun-if-changed=src/capnproto/kv.capnp");
     println!("cargo:rerun-if-changed=src/flatbuffers/kv_fb.fbs");
 
@@ -31,7 +31,7 @@ fn main() {
         .join("include");
 
     // store all compiled proto files in out_dir
-    /* let _include_path = canonicalize(cargo_dir.parent().unwrap())
+    let _include_path = canonicalize(cargo_dir.parent().unwrap())
         .unwrap()
         .join("include");
 
@@ -41,13 +41,13 @@ fn main() {
     match compile(
         input_cf_file.as_path().to_str().unwrap(),
         &out_dir,
-        CompileOptions::new(HeaderType::LinearDeserialization, Language::Rust),
+        CompileOptions::new(HeaderType::LinearDeserializationRefCnt, Language::Rust),
     ) {
         Ok(_) => {}
         Err(e) => {
             panic!("Cornflakes codegen failed: {:?}", e);
         }
-    }*/
+    }
 
     // compile c++ bridge to cereal
     cxx_build::bridge("src/cereal/mod.rs")

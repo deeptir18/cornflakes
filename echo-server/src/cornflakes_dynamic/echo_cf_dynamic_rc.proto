@@ -1,12 +1,12 @@
 syntax = "proto3";
-package echo_cf_dynamic;
+package echo_cf_dynamic_rc;
 
 message SingleBufferCF {
-    bytes message = 1;
+    ref_counted_bytes message = 1;
 }
 
 message ListCF {
-    repeated bytes messages = 1;
+    repeated ref_counted_bytes messages = 1;
 }
 
 message Tree1LCF {

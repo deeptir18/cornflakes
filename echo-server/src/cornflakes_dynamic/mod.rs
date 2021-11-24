@@ -3,6 +3,9 @@ pub mod cf_testobject2;
 pub mod echo_messages {
     include!(concat!(env!("OUT_DIR"), "/echo_cf_dynamic.rs"));
 }
+pub mod echo_messages_rc {
+    include!(concat!(env!("OUT_DIR"), "/echo_cf_dynamic_rc.rs"));
+}
 use super::{
     get_equal_fields, get_payloads_as_vec, init_payloads, init_payloads_as_vec, CerealizeClient,
     CerealizeMessage,
