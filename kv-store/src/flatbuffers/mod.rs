@@ -10,7 +10,7 @@ pub mod kv_api {
 use kv_api::kv_fb;
 
 use super::{
-    ycsb_parser::YCSBRequest, KVSerializer, MsgType, SerializedRequestGenerator, ALIGN_SIZE,
+    ycsb_parser::YCSBRequest, twitter_parser::TwitterRequest, KVSerializer, MsgType, SerializedRequestGenerator, ALIGN_SIZE,
 };
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_libos::{CfBuf, Datapath, RcCornPtr, RcCornflake, ReceivedPkt};
@@ -332,6 +332,85 @@ where
     }
 
     fn write_next_request<'a>(&self, buf: &mut [u8], req: &mut YCSBRequest<'a>) -> Result<usize> {
+        // TODO: is it more efficient to allocate with some capacity?
+        let mut builder = FlatBufferBuilder::new();
+        match req.get_type() {
+            MsgType::Get(size) => match size {
+                0 => {
+                    bail!("Msg size cannot be 0");
+                }
+                1 => {
+                    let (key, _val) = req.get_next_kv()?;
+                    let args = kv_fb::GetReqArgs {
+                        id: req.get_id(),
+                        key: Some(builder.create_string(key.as_ref())),
+                    };
+                    let get_req = kv_fb::GetReq::create(&mut builder, &args);
+                    builder.finish(get_req, None);
+                }
+                x => {
+                    let mut request_keys: Vec<String> = Vec::with_capacity(x);
+                    while let Some((key, _val)) = req.next() {
+                        request_keys.push(key);
+                    }
+                    let args_vec: Vec<WIPOffset<&'fbb str>> = (0..x)
+                        .map(|i| builder.create_string(&request_keys[i]))
+                        .collect();
+                    let getm_req_args = kv_fb::GetMReqArgs {
+                        id: req.get_id(),
+                        keys: Some(builder.create_vector(args_vec.as_slice())),
+                    };
+                    let getm_req = kv_fb::GetMReq::create(&mut builder, &getm_req_args);
+                    builder.finish(getm_req, None);
+                }
+            },
+            MsgType::Put(size) => match size {
+                0 => {
+                    bail!("Msg size cannot be 0")
+                }
+                1 => {
+                    let (key, val) = req.get_next_kv()?;
+                    let args = kv_fb::PutReqArgs {
+                        id: req.get_id(),
+                        key: Some(builder.create_string(key.as_ref())),
+                        val: Some(builder.create_vector_direct::<u8>(val.as_ref())),
+                    };
+                    let put_req = kv_fb::PutReq::create(&mut builder, &args);
+                    builder.finish(put_req, None);
+                }
+                x => {
+                    let mut request_keys: Vec<String> = Vec::with_capacity(x);
+                    while let Some((key, _val)) = req.next() {
+                        request_keys.push(key);
+                    }
+                    let key_vec: Vec<WIPOffset<&'fbb str>> = (0..x)
+                        .map(|i| builder.create_string(&request_keys[i]))
+                        .collect();
+                    let val_vec_data: Vec<kv_fb::ValueArgs> = (0..x)
+                        .map(|_| kv_fb::ValueArgs {
+                            data: Some(
+                                builder.create_vector_direct::<u8>(&req.get_val().as_bytes()),
+                            ),
+                        })
+                        .collect();
+                    let val_vec: Vec<WIPOffset<kv_fb::Value>> = val_vec_data
+                        .iter()
+                        .map(|args| kv_fb::Value::create(&mut builder, args))
+                        .collect();
+                    let putm_req_args = kv_fb::PutMReqArgs {
+                        id: req.get_id(),
+                        keys: Some(builder.create_vector(key_vec.as_slice())),
+                        vals: Some(builder.create_vector(val_vec.as_slice())),
+                    };
+                    let putm_req = kv_fb::PutMReq::create(&mut builder, &putm_req_args);
+                    builder.finish(putm_req, None);
+                }
+            },
+        }
+        copy_into_buf(buf, &builder)
+    }
+
+    fn write_next_twitter_request<'a>(&self, buf: &mut [u8], req: &mut TwitterRequest<'a>) -> Result<usize> {
         // TODO: is it more efficient to allocate with some capacity?
         let mut builder = FlatBufferBuilder::new();
         match req.get_type() {

@@ -89,12 +89,22 @@ impl PacketSchedule {
     }
 
     pub fn new_twitter (times: Vec<u64>) -> Result<Self> {
-        let mut packets: Vec<Packet> = vec![Packet::default(); times.len()];
-        for i in 1..times.len() {
-            let time_lapse = times[i] - times[i - 1];
-            packets[i] = Packet{ time_since_last: time_lapse };
+        let mut sum : u64 = 0;
+        for i in 0..times.len() {
+            sum += times[i];
         }
-        packets[0] = Packet { time_since_last: 0 };
+        let mut packets: Vec<Packet> = vec![Packet::default(); sum as usize];
+        let mut index : usize = 0;
+        for i in 0..times.len() {
+            let nanosec : u64 = 1000000000;
+            let time_lapse = nanosec/times[i];
+            let mut base : u64 = i as u64;
+            for j in 0..times[i] {
+                packets[(index + (j as usize))] = Packet{ time_since_last: base };
+                base += time_lapse;
+            }
+            index += times[i] as usize;
+        }
         Ok(PacketSchedule { packets: packets })
     }
 

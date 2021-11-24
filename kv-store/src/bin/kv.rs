@@ -18,7 +18,7 @@ use cornflakes_utils::{
 use kv_store::{
     capnproto::CapnprotoSerializer, cornflakes_dynamic::CornflakesDynamicSerializer,
     flatbuffers::FlatBufferSerializer, protobuf::ProtobufSerializer, KVSerializer, KVServer,
-    SerializedRequestGenerator, YCSBClient, twitter_parser::TwitterGets,
+    SerializedRequestGenerator, YCSBClient, twitter_parser::TwitterRequest,
 };
 use std::{
     net::Ipv4Addr,
@@ -196,53 +196,17 @@ macro_rules! init_kv_server(
 
 macro_rules! run_kv_client(
     ($serializer: ty, $datapath: ty, $datapath_global_init: expr, $datapath_init: ident, $opt: ident) => {
+        let is_twitter = $opt.trace_type == 1;
         let num_rtts = get_num_requests(&$opt)?;
-        let schedules = generate_schedules(num_rtts, $opt.rate, $opt.distribution, $opt.num_threads)?;
-        if $opt.trace_type == 1 {
-            let mut client_hash = create_client_hash(&$opt.trace_file)?;
+        tracing::debug!("Done getting the right number of requests!");
+        let schedules;
+        if $opt.trace_type != 1 {
+            schedules = generate_schedules(num_rtts, $opt.rate, $opt.distribution, $opt.num_threads)?;
+        } else {
+            let client_hash = create_client_hash(&$opt.queries)?;
             let time = get_times(client_hash)?;
-            let twitter_schedules = generate_twitter_schedules(time, $opt.num_threads)?;
-            
-            // do global init
-            let (port, per_thread_info) = $datapath_global_init?;
-            let mut threads: Vec<JoinHandle<Result<ThreadStats>>> = vec![];
-
-            // spawn n client threads
-            for i in 0..$opt.num_threads {
-              let physical_port = port;
-              let (rx_packet_allocator, addr) = per_thread_info[i].clone();
-              let per_thread_options = $opt.clone();
-              let hist = ManualHistogram::new(num_rtts);
-              let twitter_schedule = twitter_schedules[i].clone();
-              threads.push(spawn(move || {
-                  match set_thread_affinity(&vec![i+1]) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        bail!("Could not set thread affinity for thread {} on core {}: {:?}", i, i+1, e);
-                    }
-                  }
-                  let mut connection = $datapath_init(physical_port, i, rx_packet_allocator, addr, &per_thread_options)?;
-                  let mut loadgen: YCSBClient<$serializer, $datapath> = YCSBClient::new(per_thread_options.client_id, 
-                                                                                        per_thread_options.value_size, 
-                                                                                        per_thread_options.num_values, 
-                                                                                        &per_thread_options.queries, 
-                                                                                        i, 
-                                                                                        per_thread_options.num_threads, 
-                                                                                        per_thread_options.num_clients, 
-                                                                                        per_thread_options.server_ip, 
-                                                                                        hist, 
-                                                                                        per_thread_options.retries, 
-                                                                                        per_thread_options.start_cutoff).wrap_err("Failed to initialize loadgen")?;
-                if $opt.trace_type == 1 {
-                    return run_client(i, &mut loadgen, &mut connection, &per_thread_options, twitter_schedule).wrap_err("Failed to run client");
-                } else {
-                    return run_client(i, &mut loadgen, &mut connection, &per_thread_options, twitter_schedule).wrap_err("Failed to run client");
-                }
-              }));
-            }
+            schedules = generate_twitter_schedules(time, $opt.num_threads)?;
         }
-        let num_rtts = get_num_requests(&$opt)?;
-        let schedules = generate_schedules(num_rtts, $opt.rate, $opt.distribution, $opt.num_threads)?;
         // do global init
         let (port, per_thread_info) = $datapath_global_init?;
         let mut threads: Vec<JoinHandle<Result<ThreadStats>>> = vec![];
@@ -261,23 +225,10 @@ macro_rules! run_kv_client(
                         bail!("Could not set thread affinity for thread {} on core {}: {:?}", i, i+1, e);
                     }
                 }
+                
                 let mut connection = $datapath_init(physical_port, i, rx_packet_allocator, addr, &per_thread_options)?;
-                let mut loadgen: YCSBClient<$serializer, $datapath> = YCSBClient::new(per_thread_options.client_id, 
-                                                                                      per_thread_options.value_size, 
-                                                                                      per_thread_options.num_values, 
-                                                                                      &per_thread_options.queries, 
-                                                                                      i, 
-                                                                                      per_thread_options.num_threads, 
-                                                                                      per_thread_options.num_clients, 
-                                                                                      per_thread_options.server_ip, 
-                                                                                      hist, 
-                                                                                      per_thread_options.retries, 
-                                                                                      per_thread_options.start_cutoff).wrap_err("Failed to initialize loadgen")?;
-                if $opt.trace_type == 1 {
-                    return run_client(i, &mut loadgen, &mut connection, &per_thread_options, schedule).wrap_err("Failed to run client");
-                } else {
-                    return run_client(i, &mut loadgen, &mut connection, &per_thread_options, schedule).wrap_err("Failed to run client");
-                }
+                let mut loadgen: YCSBClient<$serializer, $datapath> = YCSBClient::new(per_thread_options.client_id, per_thread_options.value_size, per_thread_options.num_values, &per_thread_options.queries, i, per_thread_options.num_threads, per_thread_options.num_clients, per_thread_options.server_ip, hist, per_thread_options.retries, per_thread_options.start_cutoff, is_twitter).wrap_err("Failed to initialize loadgen")?;
+                run_client(i, &mut loadgen, &mut connection, &per_thread_options, schedule).wrap_err("Failed to run client")
             }));
         }
 
@@ -307,7 +258,7 @@ macro_rules! run_kv_client(
 );
 
 fn get_times(client_hash: HashMap<u64, Vec<String>>) -> Result<Vec<u64>> {
-    let ret_vec : Vec<u64> = Vec::new();
+    let mut ret_vec : Vec<u64> = Vec::new();
     for key in client_hash.keys() {
       ret_vec.push(client_hash[key].len().try_into().unwrap());
     }
@@ -320,12 +271,14 @@ fn create_client_hash(twitter_trace: &str) -> Result<HashMap<u64, Vec<String>>> 
     let buf_reader = BufReader::new(file);
     for line_q in buf_reader.lines() {
         let line = line_q?;
-        let mut twitter_line = TwitterGets::new(&line)?;
-        if client_hash.contains_key(twitter_line.get_second().parse()::<u64>().unwrap()) {
-            client_hash[&twitter_line.get_second().parse()::<u64>().unwrap()].push(line.to_string());
+        let twitter_line = TwitterRequest::new(&line)?;
+        if client_hash.contains_key(&twitter_line.get_second()) {
+            if let Some(line_vec) = client_hash.get_mut(&twitter_line.get_second()) {
+                line_vec.push(line.to_string());
+            }
             continue;
         }
-        let mut vec = Vec<String>::new();
+        let mut vec = Vec::new();
         vec.push(line.to_string());
         client_hash.insert(twitter_line.get_second().try_into().unwrap(), vec);
     }

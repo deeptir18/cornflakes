@@ -24,7 +24,7 @@ use std::{
     collections::HashSet,
 };
 use ycsb_parser::YCSBRequest;
-use twitter_parser::TwitterGets;
+use twitter_parser::TwitterRequest;
 // TODO: though capnpc 0.14^ supports generating nested namespace files
 // there seems to be a bug in the code generation, so must include it at crate root
 mod kv_capnp {
@@ -184,6 +184,8 @@ where
     using_retries: bool,
     /// If in debug, keep track of MsgID -> MsgType
     message_info: HashMap<MsgID, MsgType>,
+    /// Is the trace twitter or not
+    twitter_trace: bool,
     /// How many retries to keep track of
     start_cutoff: usize,
     _marker: PhantomData<D>,
@@ -206,6 +208,7 @@ where
         rtts: ManualHistogram,
         using_retries: bool,
         start_cutoff: usize,
+        twitter_trace: bool, 
     ) -> Result<Self> {
         tracing::info!(
             client_id = client_id,
@@ -225,6 +228,8 @@ where
             trace_file,
         )?;
 
+        tracing::info!("Created the query iterator!");
+
         Ok(YCSBClient {
             serializer: S::new_request_generator(),
             value_size: value_size,
@@ -240,6 +245,7 @@ where
             in_flight: HashMap::default(),
             using_retries: using_retries,
             message_info: HashMap::default(),
+            twitter_trace: twitter_trace,
             start_cutoff: start_cutoff,
             _marker: PhantomData,
         })
@@ -315,20 +321,15 @@ where
         self.recved
     }
 
-    fn get_next_msg(&mut self) -> Result<Option<(MsgID, &[u8])>> {
+    /*fn get_next_twitter_msg(&mut self) -> Result<Option<(MsgID, &[u8])>> {
         if let Some(next_line_res) = self.queries.next() {
             let next_line = next_line_res.wrap_err("Not able to get next line from iterator")?;
             self.last_sent_id += 1;
-            let mut req = YCSBRequest::new(
-                &next_line,
-                self.num_values,
-                self.value_size,
-                (self.last_sent_id - 1) as MsgID,
-            )?;
+            let mut req = TwitterRequest::new(&next_line)?;
             tracing::debug!("About to send: {:?}", req);
             let size = self
                 .serializer
-                .write_next_framed_request(&mut self.request_data.as_mut_slice(), &mut req)?;
+                .write_next_twitter_framed_request(&mut self.request_data.as_mut_slice(), &mut req)?;
             if self.using_retries || (self.last_sent_id - 1 < self.start_cutoff) {
                 // insert into in flight map
                 if !(self.in_flight.contains_key(&(self.last_sent_id as u32 - 1))) {
@@ -353,7 +354,90 @@ where
                 &self.request_data.as_slice()[0..size],
             )))
         } else {
-            return Ok(None);
+            Ok(None)
+        }
+    }*/
+
+    fn get_next_msg(&mut self) -> Result<Option<(MsgID, &[u8])>> {
+        if let Some(next_line_res) = self.queries.next() {
+            let next_line = next_line_res.wrap_err("Not able to get next line from iterator")?;
+            self.last_sent_id += 1;
+            let size;
+            if self.twitter_trace {
+                let mut req = TwitterRequest::new(&next_line)?;
+                tracing::debug!("About to send: {:?}", req);
+                size = self.serializer
+                           .write_next_twitter_framed_request(&mut self.request_data.as_mut_slice(), &mut req)?;
+                if self.using_retries || (self.last_sent_id - 1 < self.start_cutoff) {
+                  // insert into in flight map
+                  if !(self.in_flight.contains_key(&(self.last_sent_id as u32 - 1))) {
+                      self.in_flight
+                          .insert(self.last_sent_id as u32 - 1, next_line.to_string());
+                  }
+                }
+
+                if cfg!(debug_assertions) {
+                    if !(self.message_info
+                             .contains_key(&(self.last_sent_id as u32 - 1)))
+                  {
+                    self.message_info
+                        .insert(self.last_sent_id as u32 - 1, req.get_type());
+                  }
+                }
+            } else {
+                let mut req = YCSBRequest::new(
+                    &next_line,
+                    self.num_values,
+                    self.value_size,
+                    (self.last_sent_id - 1) as MsgID,
+                )?;
+                tracing::debug!("About to send: {:?}", req);
+                size = self
+                .serializer
+                .write_next_framed_request(&mut self.request_data.as_mut_slice(), &mut req)?;
+                
+                if self.using_retries || (self.last_sent_id - 1 < self.start_cutoff) {
+                  // insert into in flight map
+                  if !(self.in_flight.contains_key(&(self.last_sent_id as u32 - 1))) {
+                      self.in_flight
+                          .insert(self.last_sent_id as u32 - 1, next_line.to_string());
+                  }
+                }
+
+                if cfg!(debug_assertions) {
+                    if !(self.message_info
+                             .contains_key(&(self.last_sent_id as u32 - 1)))
+                  {
+                    self.message_info
+                        .insert(self.last_sent_id as u32 - 1, req.get_type());
+                  }
+                }
+            }
+            /*if self.using_retries || (self.last_sent_id - 1 < self.start_cutoff) {
+                // insert into in flight map
+                if !(self.in_flight.contains_key(&(self.last_sent_id as u32 - 1))) {
+                    self.in_flight
+                        .insert(self.last_sent_id as u32 - 1, next_line.to_string());
+                }
+            }
+
+            if cfg!(debug_assertions) {
+                if !(self
+                    .message_info
+                    .contains_key(&(self.last_sent_id as u32 - 1)))
+                {
+                    self.message_info
+                        .insert(self.last_sent_id as u32 - 1, req.get_type());
+                }
+            }*/
+
+            tracing::debug!("Returning msg to send");
+            Ok(Some((
+                self.last_sent_id as u32 - 1,
+                &self.request_data.as_slice()[0..size],
+            )))
+        } else {
+            Ok(None)
         }
     }
 
@@ -717,6 +801,7 @@ where
     /// Get the next request, in bytes.
     /// Buf starts ahead of whatever message framing is required.
     fn write_next_request<'a>(&self, buf: &mut [u8], req: &mut YCSBRequest<'a>) -> Result<usize>;
+    fn write_next_twitter_request<'a>(&self, buf: &mut [u8], req: &mut TwitterRequest<'a>) -> Result<usize>;
 
     /// Returns the request size.
     fn write_next_framed_request(
@@ -736,6 +821,25 @@ where
             }
         }
         Ok(self.write_next_request(&mut buf[4..], req_data)? + REQ_TYPE_SIZE)
+    }
+
+    fn write_next_twitter_framed_request(
+        &self,
+        buf: &mut [u8],
+        req_data: &mut TwitterRequest,
+    ) -> Result<usize> {
+        // Write in the request type (big endian. hardware might read these fields?).
+        match req_data.req_type {
+            MsgType::Get(size) => {
+                BigEndian::write_u16(&mut buf[0..2], 0);
+                BigEndian::write_u16(&mut buf[2..4], size as u16);
+            }
+            MsgType::Put(size) => {
+                BigEndian::write_u16(&mut buf[0..2], 1);
+                BigEndian::write_u16(&mut buf[2..4], size as u16);
+            }
+        }
+        Ok(self.write_next_twitter_request(&mut buf[4..], req_data)? + REQ_TYPE_SIZE)
     }
 }
 
@@ -869,16 +973,13 @@ where
           twitter_trace: &str,
           connection: &mut D,
           value_size: usize,
-          num_values: usize,
+          _num_values: usize,
         ) -> Result<()> {
         let file = File::open(twitter_trace)?;
         let buf_reader = BufReader::new(file);
-        let mut cur_idx : usize = 0;
         for line_q in buf_reader.lines() {
-          //tracing::info!("Current Index: {}", cur_idx);
-          cur_idx+=1;
           let line = line_q?;
-          let mut twitter_req = TwitterGets::new(&line)?;
+          let twitter_req = TwitterRequest::new(&line)?;
           let mut added = HashSet::new();
           match twitter_req.get_type() {
             MsgType::Get(_) => {
@@ -914,7 +1015,7 @@ where
     }
 
     pub fn print_hash_map(&self) {
-      for (key, value) in &self.map {
+      for (key, _value) in &self.map {
           println!("{}", key);
       }
     }
