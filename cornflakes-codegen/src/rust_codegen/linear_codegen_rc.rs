@@ -620,9 +620,22 @@ fn add_set_ref_counted(
     compiler.pop_context()?;
 
     // add non ref counted variant
+    let raw_value = match field.get_type() {
+        FieldType::Bytes | FieldType::RefCountedBytes => {
+            FunctionArg::new_arg("field", ArgInfo::ref_arg("[u8]", Some(fd.get_lifetime())))
+        }
+        FieldType::String | FieldType::RefCountedString => {
+            FunctionArg::new_arg("field", ArgInfo::ref_arg("str", Some(fd.get_lifetime())))
+        }
+
+        _ => {
+            unreachable!();
+        }
+    };
+
     let set_value = match field.get_type() {
-        FieldType::Bytes | FieldType::RefCountedBytes => "CFBytes",
-        FieldType::String | FieldType::RefCountedString => "CFString",
+        FieldType::Bytes | FieldType::RefCountedBytes => "CFBytes::Raw(field)",
+        FieldType::String | FieldType::RefCountedString => "CFString::new(field)",
         _ => {
             unreachable!();
         }
@@ -632,19 +645,13 @@ fn add_set_ref_counted(
     let func_context = FunctionContext::new(
         &format!("set_{}", field_name),
         true,
-        vec![
-            FunctionArg::MutSelfArg,
-            FunctionArg::new_arg("field", ArgInfo::ref_arg("[u8]", Some(fd.get_lifetime()))),
-        ],
+        vec![FunctionArg::MutSelfArg, raw_value],
         "",
     );
 
     compiler.add_context(Context::Function(func_context))?;
     compiler.add_statement(&format!("self.bitmap[{}]", bitmap_idx_str), "1")?;
-    compiler.add_statement(
-        &format!("self.{}", &field_name),
-        &format!("{}::Raw(field)", set_value),
-    )?;
+    compiler.add_statement(&format!("self.{}", &field_name), set_value)?;
     compiler.pop_context()?;
     Ok(())
 }

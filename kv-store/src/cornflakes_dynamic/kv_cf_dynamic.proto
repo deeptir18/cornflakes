@@ -23,18 +23,18 @@ message PutResp {
 
 message GetMReq {
     uint32 id = 1;
-    repeated ref_counted_string key = 2;
+    repeated ref_counted_string keys = 2;
 }
 
 message GetMResp {
     uint32 id = 1;
-    repeated ref_counted_bytes value = 2;
+    repeated ref_counted_bytes vals = 2;
 }
 
 message PutMReq {
     uint32 id = 1;
-    repeated ref_counted_string key = 2;
-    repeated ref_counted_bytes val = 3;
+    repeated ref_counted_string keys = 2;
+    repeated ref_counted_bytes vals = 3;
 }
 
 message PutMResp {
