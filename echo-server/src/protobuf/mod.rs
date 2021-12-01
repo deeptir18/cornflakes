@@ -10,7 +10,8 @@ pub mod echo_messages {
 use super::{get_payloads_as_vec, init_payloads, CerealizeClient, CerealizeMessage};
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
-    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPkt, ScatterGather,
+    mem::MmapMetadata, CornPtr, Cornflake, Datapath, RcCornPtr, RcCornflake, ReceivedPkt,
+    ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use protobuf::{CodedOutputStream, Message};
@@ -174,13 +175,12 @@ where
         self.message_type
     }
 
-    fn process_msg<'registered, 'normal: 'registered>(
+    fn process_msg<'registered>(
         &self,
         recved_msg: &'registered ReceivedPkt<D>,
-        ctx: &'normal mut Self::Ctx,
-    ) -> Result<Cornflake<'registered, 'normal>> {
-        let mut cf = Cornflake::with_capacity(1);
-        let mut output_stream = CodedOutputStream::vec(ctx);
+    ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
+        let mut ctx = Vec::default();
+        let mut output_stream = CodedOutputStream::vec(&mut ctx);
         match self.message_type {
             SimpleMessageType::Single => {
                 let object_deser = echo_messages::SingleBufferProto::parse_from_bytes(
@@ -252,8 +252,16 @@ where
         output_stream
             .flush()
             .wrap_err("Failed to flush output stream.")?;
-        cf.add_entry(CornPtr::Normal(ctx));
-        Ok(cf)
+        Ok((ctx, RcCornflake::with_capacity(1)))
+    }
+
+    fn process_header<'registered>(
+        &self,
+        ctx: &'registered Self::Ctx,
+        cornflake: &mut RcCornflake<'registered, D>,
+    ) -> Result<()> {
+        cornflake.add_entry(RcCornPtr::RawRef(ctx.as_slice()));
+        Ok(())
     }
 
     fn new_context(&self) -> Self::Ctx {

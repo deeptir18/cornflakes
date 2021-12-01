@@ -49,6 +49,7 @@ impl MempoolInfo {
     }
 
     pub fn is_within_bounds(&self, buf: &[u8]) -> bool {
+        tracing::debug!(addr =  buf.as_ptr() as usize, start =? self.start as usize, end = self.start + self.size, in_bounds = (buf.as_ptr() as usize > self.start) && (buf.as_ptr() as usize) < (self.start + self.size), "Checking if in bounds");
         (buf.as_ptr() as usize > self.start) && (buf.as_ptr() as usize) < (self.start + self.size)
     }
 

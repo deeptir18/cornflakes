@@ -18,7 +18,7 @@ extern "C" {
     fn register_custom_extbuf_ops_() -> ::std::os::raw::c_int;
     fn set_custom_extbuf_ops_(mempool: *mut rte_mempool) -> ::std::os::raw::c_int;
     fn rte_mempool_count_(mempool: *mut rte_mempool) -> ::std::os::raw::c_int;
-    fn rte_pktmbuf_refcnt_update_(packet: *mut rte_mbuf, val: i16);
+    fn rte_pktmbuf_refcnt_update_or_free_(packet: *mut rte_mbuf, val: i16);
     fn rte_pktmbuf_refcnt_set_(packet: *mut rte_mbuf, val: u16);
     fn rte_pktmbuf_refcnt_get_(packet: *mut rte_mbuf) -> u16;
     fn rte_pktmbuf_free_(packet: *mut rte_mbuf);
@@ -218,8 +218,8 @@ pub unsafe fn rte_mempool_count(mempool: *mut rte_mempool) -> ::std::os::raw::c_
 }
 
 #[inline]
-pub unsafe fn rte_pktmbuf_refcnt_update(packet: *mut rte_mbuf, val: i16) {
-    rte_pktmbuf_refcnt_update_(packet, val);
+pub unsafe fn rte_pktmbuf_refcnt_update_or_free(packet: *mut rte_mbuf, val: i16) {
+    rte_pktmbuf_refcnt_update_or_free_(packet, val);
 }
 
 #[inline]

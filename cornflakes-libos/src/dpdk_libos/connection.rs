@@ -46,6 +46,7 @@ impl DPDKBuffer {
                 (*mbuf).data_len = (*mbuf).buf_len - (*mbuf).data_off;
             },
         }
+        dpdk_call!(rte_pktmbuf_refcnt_set(mbuf, 1));
         DPDKBuffer {
             mbuf: mbuf,
             offset: data_offset,
@@ -66,14 +67,19 @@ impl Default for DPDKBuffer {
 impl Drop for DPDKBuffer {
     fn drop(&mut self) {
         // decrement the reference count of the mbuf, or if at 1 or 0, free it
-        tracing::debug!(pkt =? self.mbuf, "Calling drop on dpdk buffer object");
+        tracing::debug!(pkt =? self.mbuf, cur_refcnt = dpdk_call!(rte_pktmbuf_refcnt_read(self.mbuf)), "Calling drop on dpdk buffer object");
         wrapper::free_mbuf(self.mbuf);
     }
 }
 
 impl Clone for DPDKBuffer {
     fn clone(&self) -> DPDKBuffer {
-        dpdk_call!(rte_pktmbuf_refcnt_update(self.mbuf, 1));
+        tracing::debug!(
+            "Cloning mbuf {:?} and increasing ref count to {}",
+            self.mbuf,
+            wrapper::refcnt(self.mbuf) + 1
+        );
+        dpdk_call!(rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1));
         DPDKBuffer {
             mbuf: self.mbuf,
             offset: self.offset,
@@ -89,7 +95,7 @@ impl std::fmt::Debug for DPDKBuffer {
 
 impl RefCnt for DPDKBuffer {
     fn change_rc(&mut self, amt: isize) {
-        dpdk_call!(rte_pktmbuf_refcnt_update(self.mbuf, amt as i16));
+        dpdk_call!(rte_pktmbuf_refcnt_update_or_free(self.mbuf, amt as i16));
     }
 
     fn count_rc(&self) -> usize {
@@ -743,7 +749,9 @@ impl Datapath for DPDKConnection {
                     bail!("Mbuf for index {} in returned array is null.", idx);
                 }
 
+                tracing::debug!(header_mempool_avail =? dpdk_call!(rte_mempool_avail_count(self.default_mempool)), "Number available in header_mempool");
                 tracing::debug!(
+                    mbuf_addr =? self.recv_mbufs[idx],
                     data_len = unsafe { (*(self.recv_mbufs[idx])).data_len as usize },
                     id = msg_id,
                     pkt_len = unsafe { (*(self.recv_mbufs[idx])).pkt_len as usize },

@@ -2,7 +2,7 @@ pub mod capnproto;
 pub mod cereal;
 pub mod client;
 pub mod cornflakes_dynamic;
-pub mod cornflakes_fixed;
+// pub mod cornflakes_fixed;
 pub mod flatbuffers;
 pub mod protobuf;
 pub mod server;
@@ -19,7 +19,7 @@ mod echo_capnp {
 }
 
 use color_eyre::eyre::{bail, Result};
-use cornflakes_libos::{mem::MmapMetadata, Cornflake, Datapath, ReceivedPkt};
+use cornflakes_libos::{mem::MmapMetadata, Datapath, RcCornflake, ReceivedPkt};
 use cornflakes_utils::SimpleMessageType;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -56,11 +56,16 @@ where
     /// Message type
     fn message_type(&self) -> SimpleMessageType;
     /// Echo the received message into a corresponding scatter-gather array.
-    fn process_msg<'registered, 'normal: 'registered>(
+    fn process_msg<'registered>(
         &self,
         recved_msg: &'registered ReceivedPkt<DatapathImpl>,
-        ctx: &'normal mut Self::Ctx,
-    ) -> Result<Cornflake<'registered, 'normal>>;
+    ) -> Result<(Self::Ctx, RcCornflake<'registered, DatapathImpl>)>;
+
+    fn process_header<'registered>(
+        &self,
+        ctx: &'registered Self::Ctx,
+        cornflake: &mut RcCornflake<'registered, DatapathImpl>,
+    ) -> Result<()>;
 
     fn new_context(&self) -> Self::Ctx;
 }

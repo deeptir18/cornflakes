@@ -66,6 +66,7 @@ pub fn get_mbuf_with_memcpy(
     buf: &[u8],
     id: MsgID,
 ) -> Result<*mut rte_mbuf> {
+    tracing::debug!(header_mempool_avail =? dpdk_call!(rte_mempool_avail_count(header_mempool)), "Number available in header_mempool");
     tracing::debug!(len = buf.len(), "Copying single buffer into mbuf");
     let header_mbuf =
         alloc_mbuf(header_mempool).wrap_err("Unable to allocate mbuf from mempool.")?;
@@ -188,7 +189,6 @@ impl Pkt {
         // 3: copy the payloads from the sga into the mbufs
         self.set_sga_payloads(mbufs, pkt_id, sga, allocator, external_regions)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
-
         tracing::debug!(header_mempool_avail =? dpdk_call!(rte_mempool_count(header_mempool)), extbuf_mempool_avail =? dpdk_call!(rte_mempool_count(extbuf_mempool)), "Number available in header_mempool, in extbuf_mempool");
 
         Ok(())
@@ -392,14 +392,8 @@ impl Pkt {
             }
             // set lkey of packet to be -1
             dpdk_call!(set_lkey_not_present(mbufs[idx][pkt_id]));
-
-            // only set reference for last mbuf in the list.
-            if unsafe { (*mbufs[idx][pkt_id]).next == ptr::null_mut() } {
-                dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 1));
-                dpdk_call!(rte_pktmbuf_refcnt_update(original_mbuf_ptr, 1));
-            } else {
-                dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 0));
-            }
+            dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 1));
+            dpdk_call!(rte_pktmbuf_refcnt_update_or_free(original_mbuf_ptr, 1));
             in_native_mempool = true;
         }
         if !in_native_mempool {
@@ -821,6 +815,10 @@ pub fn dpdk_init(config_path: &str, num_cores: usize) -> Result<(Vec<*mut rte_me
 pub fn alloc_mbuf(mempool: *mut rte_mempool) -> Result<*mut rte_mbuf> {
     let mbuf = dpdk_call!(rte_pktmbuf_alloc(mempool));
     if mbuf.is_null() {
+        tracing::warn!(
+            avail_count = dpdk_call!(rte_mempool_avail_count(mempool)),
+            "Amount of mbufs available in mempool"
+        );
         bail!("Allocated null mbuf from rte_pktmbuf_alloc.");
     }
     Ok(mbuf)
@@ -1007,21 +1005,17 @@ fn check_valid_packet(
     ))
 }
 
+pub fn refcnt(pkt: *mut rte_mbuf) -> u16 {
+    dpdk_call!(rte_pktmbuf_refcnt_read(pkt))
+}
+
 /// Frees the mbuf, returns it to it's original mempool.
 /// Arguments:
 /// * pkt - *mut rte_mbuf to free.
 #[inline]
 pub fn free_mbuf(pkt: *mut rte_mbuf) {
-    let refcnt = dpdk_call!(rte_pktmbuf_refcnt_read(pkt));
-    tracing::debug!(packet =? pkt, cur_refcnt = refcnt, "Called free_mbuf on packet");
-    if refcnt == 1 || refcnt == 0 {
-        //tracing::debug!(packet =? pkt, "Actually freeing pkt: refcnt was 1 or 0");
-        dpdk_call!(rte_pktmbuf_free(pkt));
-    } else {
-        //tracing::debug!(pkt =? pkt, refcnt =? refcnt, "Decrementing refcnt");
-        dpdk_call!(rte_pktmbuf_refcnt_set(pkt, refcnt - 1));
-        //tracing::debug!(pkt =? pkt, refcnt =? dpdk_call!(rte_pktmbuf_refcnt_read(pkt)), "New refcnt");
-    }
+    tracing::debug!(packet =? pkt, cur_refcnt = dpdk_call!(rte_pktmbuf_refcnt_read(pkt)), "Called free_mbuf on packet");
+    dpdk_call!(rte_pktmbuf_refcnt_update_or_free(pkt, -1));
 }
 
 /*#[inline]

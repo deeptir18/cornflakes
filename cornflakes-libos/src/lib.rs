@@ -569,10 +569,7 @@ where
     }
 
     pub fn allocate(conn: &mut D, size: usize, alignment: usize) -> Result<Self> {
-        let mut buf = conn.allocate(size, alignment)?;
-        // TODO: should we be allocating the ref count here?
-        // Or should the "datapath" be doing it
-        buf.increment_rc();
+        let buf = conn.allocate(size, alignment)?;
         Ok(CfBuf {
             len: buf.buf_size(),
             buf: buf,

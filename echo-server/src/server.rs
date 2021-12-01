@@ -1,8 +1,8 @@
 use super::CerealizeMessage;
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
-    timing::HistogramWrapper, utils::AddressInfo, Cornflake, Datapath, ReceivedPkt, ScatterGather,
-    ServerSM,
+    timing::HistogramWrapper, utils::AddressInfo, Datapath, RcCornflake, ReceivedPkt,
+    ScatterGather, ServerSM,
 };
 use std::{
     marker::PhantomData,
@@ -50,15 +50,21 @@ where
         sgas: Vec<(ReceivedPkt<<Self as ServerSM>::Datapath>, Duration)>,
         conn: &mut D,
     ) -> Result<()> {
-        let mut out_sgas: Vec<(Cornflake, AddressInfo)> = Vec::with_capacity(sgas.len());
-        let mut contexts: Vec<S::Ctx> = (0..sgas.len())
-            .map(|_i| self.serializer.new_context())
-            .collect();
-        for (in_sga, ctx) in sgas.iter().zip(contexts.iter_mut()) {
-            let mut out_sga = self.serializer.process_msg(&in_sga.0, ctx)?;
-            out_sga.set_id(in_sga.0.get_id());
-            out_sgas.push((out_sga, in_sga.0.get_addr().clone()));
+        let mut out_sgas: Vec<(RcCornflake<D>, AddressInfo)> = Vec::with_capacity(sgas.len());
+        let mut contexts: Vec<S::Ctx> = Vec::default();
+        for (_i, (in_sga, _)) in sgas.iter().enumerate() {
+            let (header_ctx, mut out_sga) = self.serializer.process_msg(&in_sga)?;
+            out_sga.set_id(in_sga.get_id());
+            out_sgas.push((out_sga, in_sga.get_addr().clone()));
+            contexts.push(header_ctx);
         }
+
+        for i in 0..out_sgas.len() {
+            let (cf, _addr) = &mut out_sgas[i];
+            let ctx = &contexts[i];
+            self.serializer.process_header(ctx, cf)?;
+        }
+
         conn.push_sgas(&out_sgas)
             .wrap_err("Unable to send out sgas in datapath.")?;
         Ok(())

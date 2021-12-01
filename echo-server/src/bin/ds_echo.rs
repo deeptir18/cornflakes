@@ -20,12 +20,13 @@ use echo_server::{
     cereal::{CerealEchoClient, CerealSerializer},
     client::EchoClient,
     cornflakes_dynamic::{CornflakesDynamicEchoClient, CornflakesDynamicSerializer},
-    cornflakes_fixed::{CornflakesFixedEchoClient, CornflakesFixedSerializer},
+    //cornflakes_fixed::{CornflakesFixedEchoClient, CornflakesFixedSerializer},
     flatbuffers::{FlatbuffersEchoClient, FlatbuffersSerializer},
     get_equal_fields,
     protobuf::{ProtobufEchoClient, ProtobufSerializer},
     server::EchoServer,
-    CerealizeClient, CerealizeMessage,
+    CerealizeClient,
+    CerealizeMessage,
 };
 use std::{
     net::Ipv4Addr,
@@ -245,17 +246,25 @@ fn main() -> Result<()> {
     match opt.mode {
         AppMode::Server => match (opt.datapath, opt.serialization) {
             (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
-                init_echo_server!(CornflakesDynamicSerializer, dpdk_datapath(true), opt);
+                init_echo_server!(
+                    CornflakesDynamicSerializer<DPDKConnection>,
+                    dpdk_datapath(true),
+                    opt
+                );
             }
-            (NetworkDatapath::DPDK, SerializationType::CornflakesFixed) => {
+            /*(NetworkDatapath::DPDK, SerializationType::CornflakesFixed) => {
                 init_echo_server!(CornflakesFixedSerializer, dpdk_datapath(true), opt);
-            }
+            }*/
             (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyDynamic) => {
-                init_echo_server!(CornflakesDynamicSerializer, dpdk_datapath(false), opt);
+                init_echo_server!(
+                    CornflakesDynamicSerializer<DPDKConnection>,
+                    dpdk_datapath(false),
+                    opt
+                );
             }
-            (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyFixed) => {
+            /*(NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyFixed) => {
                 init_echo_server!(CornflakesFixedSerializer, dpdk_datapath(false), opt);
-            }
+            }*/
             (NetworkDatapath::DPDK, SerializationType::Protobuf) => {
                 init_echo_server!(ProtobufSerializer, dpdk_datapath(false), opt);
             }
@@ -275,14 +284,14 @@ fn main() -> Result<()> {
         AppMode::Client => match (opt.datapath, opt.serialization) {
             (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
                 init_echo_client!(
-                    CornflakesDynamicEchoClient,
+                    CornflakesDynamicEchoClient<DPDKConnection>,
                     DPDKConnection,
                     dpdk_global_init(),
                     dpdk_per_thread_init,
                     opt
                 );
             }
-            (NetworkDatapath::DPDK, SerializationType::CornflakesFixed) => {
+            /*(NetworkDatapath::DPDK, SerializationType::CornflakesFixed) => {
                 init_echo_client!(
                     CornflakesFixedEchoClient,
                     DPDKConnection,
@@ -290,17 +299,17 @@ fn main() -> Result<()> {
                     dpdk_per_thread_init,
                     opt
                 );
-            }
+            }*/
             (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyDynamic) => {
                 init_echo_client!(
-                    CornflakesDynamicEchoClient,
+                    CornflakesDynamicEchoClient<DPDKConnection>,
                     DPDKConnection,
                     dpdk_global_init(),
                     dpdk_per_thread_init,
                     opt
                 );
             }
-            (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyFixed) => {
+            /*(NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyFixed) => {
                 init_echo_client!(
                     CornflakesFixedEchoClient,
                     DPDKConnection,
@@ -308,7 +317,7 @@ fn main() -> Result<()> {
                     dpdk_per_thread_init,
                     opt
                 );
-            }
+            }*/
             (NetworkDatapath::DPDK, SerializationType::Protobuf) => {
                 init_echo_client!(
                     ProtobufEchoClient,
@@ -345,7 +354,6 @@ fn main() -> Result<()> {
                     opt
                 );
             }
-
             _ => {
                 unimplemented!();
             }

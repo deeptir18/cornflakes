@@ -263,9 +263,18 @@ int rte_mempool_count_(struct rte_mempool *mp) {
 	return ops->get_count(mp);
 }
 
-void rte_pktmbuf_refcnt_update_(struct rte_mbuf *packet, int16_t val) {
-    //printf("[rte_mbuf_refcnt_update_] Increasing refcnt of mbuf %p by val %d; currently %d\n", packet, val, rte_mbuf_refcnt_read(packet));
-    rte_mbuf_refcnt_update(packet, val);
+void rte_pktmbuf_refcnt_update_or_free_(struct rte_mbuf *packet, int16_t val) {
+    //printf("[rte_mbuf_refcnt_update_] Changing refcnt of mbuf %p by val %d; currently %d\n", packet, val, rte_mbuf_refcnt_read(packet));
+    uint16_t cur_rc = rte_mbuf_refcnt_read(packet);
+    if (((int16_t)cur_rc + val ) <= 0) {
+        //rte_mbuf_refcnt_set(packet, 0);
+        //printf("[rte_pktmbuf_refcnt_update_or_free_] Freeing packet %p\n", packet);
+        rte_pktmbuf_free(packet);
+        return;
+    } else {
+        //rte_mbuf_refcnt_update(packet, cur_rc + val);
+        rte_mbuf_refcnt_set(packet, cur_rc + val);
+    }
     //printf("[rte_mbuf_refcnt_update_] Refcnt is now %d\n", rte_mbuf_refcnt_read(packet));
 }
 
