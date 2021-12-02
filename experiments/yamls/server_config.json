@@ -1,0 +1,11 @@
+{
+    "cornflakes_dir":"/proj/demeter-PG0/prthaker/cornflakes/",
+    "pci_addr":"0000:41:00.0",
+    "server_mac":"1c:34:da:41:c6:fc",
+    "server_ip":"128.110.218.251",
+    "array_size":3276800000,
+    "segment_size":8192,
+    "num_segments":1,
+    "with_copy":"",
+    "busy_cycles":0
+}

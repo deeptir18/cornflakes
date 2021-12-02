@@ -444,8 +444,8 @@ static uint32_t segment_size = 256;
 static uint32_t seconds = 1;
 static uint32_t rate = 500000; // in packets / second
 static uint32_t intersend_time;
-static unsigned int client_port = 12345;
-static unsigned int server_port = 12345;
+static unsigned int client_port = 54321;
+static unsigned int server_port = 54321;
 static struct rte_mempool *tx_mbuf_pools[MAX_THREADS];
 static struct rte_mempool *rx_mbuf_pools[MAX_THREADS];
 static struct rte_mempool *extbuf_pools[MAX_THREADS];
