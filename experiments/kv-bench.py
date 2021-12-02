@@ -30,7 +30,8 @@ class KVIteration(runner.Iteration):
                  load_trace,
                  access_trace,
                  num_threads,
-                 trial=None):
+                 trial=None,
+                 ref_counting=True):
         self.client_rates = client_rates
         self.size = size
         self.serialization = serialization
@@ -39,6 +40,7 @@ class KVIteration(runner.Iteration):
         self.trial = trial
         self.load_trace = load_trace
         self.access_trace = access_trace
+        self.ref_counting = ref_counting
 
     def __str__(self):
         return "Iteration info: client rates: {}, " \
@@ -46,15 +48,20 @@ class KVIteration(runner.Iteration):
             "num values: {}, " \
             "serialization: {}, " \
             "num_threads: {}, " \
+            "ref counting: {}," \
             "trial: {}".format(self.get_client_rate_string(),
                                self.get_size_string(),
                                self.get_num_values_string(),
                                self.serialization,
                                self.num_threads,
+                               self.ref_counting,
                                self.get_trial_string())
 
     def get_num_threads(self):
         return self.num_threads
+
+    def get_ref_counting(self):
+        return self.ref_counting
 
     def get_size(self):
         return self.size
@@ -85,6 +92,9 @@ class KVIteration(runner.Iteration):
 
     def get_num_threads_string(self):
         return "{}_threads".format(self.num_threads)
+
+    def ref_counting_string(self):
+        return "ref_counting_{}".format(self.ref_counting)
 
     def get_client_rate_string(self):
         # 2@300000,1@100000 implies 2 clients at 300000 pkts / sec and 1 at
@@ -153,7 +163,9 @@ class KVIteration(runner.Iteration):
 
     def get_parent_folder(self, high_level_folder):
         path = Path(high_level_folder)
-        return path / self.serialization / self.get_size_string() / self.get_num_values_string() / self.get_client_rate_string() / self.get_num_threads_string()
+        return path / self.serialization / self.get_size_string() /\
+            self.get_num_values_string() / self.get_client_rate_string() /\
+            self.get_num_threads_string() / self.ref_counting_string()
 
     def get_folder_name(self, high_level_folder):
         return self.get_parent_folder(high_level_folder) / self.get_trial_string()
@@ -196,6 +208,10 @@ class KVIteration(runner.Iteration):
 
         if program == "start_server":
             ret["trace"] = self.load_trace
+            if not(self.ref_counting):
+                ret["no_ref_counting"] = " --no_ref_counting"
+            else:
+                ret["no_ref_counting"] = ""
         elif program == "start_client":
             ret["queries"] = self.access_trace
 
@@ -250,7 +266,8 @@ class KVBench(runner.Experiment):
                              total_args.serialization,
                              total_args.load_trace,
                              total_args.access_trace,
-                             total_args.num_threads)
+                             total_args.num_threads,
+                             ref_counting=not(total_args.no_ref_counting))
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             if total_args.analysis_only or total_args.graph_only:
@@ -280,7 +297,8 @@ class KVBench(runner.Experiment):
                                                  total_args.load_trace,
                                                  total_args.access_trace,
                                                  num_threads,
-                                                 trial=trial)
+                                                 trial=trial,
+                                                 ref_counting=not(total_args.no_ref_counting))
                                 ret.append(it)
             return ret
 
@@ -295,6 +313,10 @@ class KVBench(runner.Experiment):
                             dest="access_trace",
                             required=True)
         if namespace.exp_type == "individual":
+            parser.add_argument("-nrc", "--no_ref_counting",
+                                dest="no_ref_counting",
+                                action='store_true',
+                                help="Turn off reference counting in server.")
             parser.add_argument("-nt", "--num_threads",
                                 dest="num_threads",
                                 type=int,
@@ -332,7 +354,7 @@ class KVBench(runner.Experiment):
         return self.config_yaml
 
     def get_logfile_header(self):
-        return "serialization,value_size,num_values,"\
+        return "serialization,refcounting,value_size,num_values,"\
             "offered_load_pps,offered_load_gbps,"\
             "achieved_load_pps,achieved_load_gbps,"\
             "percent_achieved_rate,total_retries,"\
@@ -437,19 +459,20 @@ class KVBench(runner.Experiment):
             utils.info("Total Stats: ", total_stats)
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)
-        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
-                                                                   iteration.get_size(),
-                                                                   iteration.get_num_values(),
-                                                                   total_offered_load_pps,
-                                                                   total_offered_load_gbps,
-                                                                   total_achieved_load_pps,
-                                                                   total_achieved_load_gbps,
-                                                                   percent_acheived_load,
-                                                                   total_retries,
-                                                                   avg,
-                                                                   median,
-                                                                   p99,
-                                                                   p999)
+        csv_line = "{},{},,{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
+                                                                       iteration.get_ref_counting(),
+                                                                       iteration.get_size(),
+                                                                       iteration.get_num_values(),
+                                                                       total_offered_load_pps,
+                                                                       total_offered_load_gbps,
+                                                                       total_achieved_load_pps,
+                                                                       total_achieved_load_gbps,
+                                                                       percent_acheived_load,
+                                                                       total_retries,
+                                                                       avg,
+                                                                       median,
+                                                                       p99,
+                                                                       p999)
         utils.debug("Returning csv line: {} in {}".format(csv_line, time.time()
                     - start))
         return csv_line

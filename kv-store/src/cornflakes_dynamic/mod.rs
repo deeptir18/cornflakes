@@ -9,7 +9,7 @@ use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_codegen::utils::rc_dynamic_hdr::{CFBytes, CFString, HeaderRepr};
 use cornflakes_libos::{
     dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, CfBuf, Datapath, RcCornPtr, RcCornflake,
-    ReceivedPkt, ScatterGather,
+    ReceivedPkt, ScatterGather, USING_REF_COUNTING,
 };
 use hashbrown::HashMap;
 use std::marker::PhantomData;
@@ -39,7 +39,7 @@ where
 
     fn handle_get<'a>(
         &self,
-        pkt: ReceivedPkt<D>,
+        mut pkt: ReceivedPkt<D>,
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
         offset: usize,
@@ -96,6 +96,9 @@ where
                 }
 
                 let (header_vec, cf) = getm_response.serialize(rte_memcpy)?;
+                if unsafe { !USING_REF_COUNTING } {
+                    pkt.free_inner();
+                }
                 return Ok((header_vec, cf));
             }
         }
@@ -103,7 +106,7 @@ where
 
     fn handle_put<'a>(
         &self,
-        pkt: ReceivedPkt<D>,
+        mut pkt: ReceivedPkt<D>,
         map: &mut HashMap<String, CfBuf<D>>,
         num_values: usize,
         offset: usize,
@@ -150,6 +153,9 @@ where
                 response.set_id(putm_request.get_id());
 
                 let (header_vec, cf) = response.serialize(rte_memcpy)?;
+                if unsafe { !USING_REF_COUNTING } {
+                    pkt.free_inner();
+                }
                 return Ok((header_vec, cf));
             }
         }

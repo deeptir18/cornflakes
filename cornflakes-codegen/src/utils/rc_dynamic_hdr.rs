@@ -1,6 +1,6 @@
 use super::ObjectRef;
 use bytes::{BufMut, BytesMut};
-use color_eyre::eyre::{bail, ensure, Result, WrapErr};
+use color_eyre::eyre::{bail, /*ensure,*/ Result, WrapErr};
 use cornflakes_libos::{
     CfBuf, CornType, Datapath, PtrAttributes, RcCornPtr, RcCornflake, ReceivedPkt, ScatterGather,
 };
@@ -83,10 +83,10 @@ where
             len: usize,
         ),
     ) -> Result<usize> {
-        ensure!(
+        /*ensure!(
             buf.len() >= self.dynamic_header_size(),
             "Not enough space in buffer for entire object"
-        );
+        );*/
 
         let cf = self.serialize_with_context(buf, copy_func)?;
         let mut buf_offset = self.dynamic_header_size();
@@ -378,10 +378,10 @@ where
             off_within_payload_seg
         );
         let payload_segment = pkt.index(payload_seg);
-        ensure!(
+        /*ensure!(
             (payload_segment.buf_size() - off_within_payload_seg) >= payload_size,
             "Not enough space in payload segment for CfBuf payload."
-        );
+        );*/
         // create reference to underlying DatapathPkt that increments the reference count
         let payload_buf =
             CfBuf::new_with_bounds(payload_segment, off_within_payload_seg, payload_size);
@@ -589,10 +589,10 @@ where
             off_within_payload_seg
         );
         let payload_segment = pkt.index(payload_seg);
-        ensure!(
+        /*ensure!(
             (payload_segment.buf_size() - off_within_payload_seg) >= payload_size,
             "Not enough space in payload segment for CfBuf payload."
-        );
+        );*/
         // create reference to underlying DatapathPkt that increments the reference count
         let payload_buf =
             CfBuf::new_with_bounds(payload_segment, off_within_payload_seg, payload_size);

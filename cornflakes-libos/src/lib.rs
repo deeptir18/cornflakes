@@ -26,8 +26,14 @@ use std::{
 };
 use timing::HistogramWrapper;
 use utils::AddressInfo;
-
+pub static mut USING_REF_COUNTING: bool = true;
 pub type MsgID = u32;
+
+pub fn turn_off_ref_counting() {
+    unsafe {
+        USING_REF_COUNTING = false;
+    }
+}
 
 /// Trait defining functionality any ``scatter-gather'' types should have,
 /// that datapaths can access or modify about these types,
@@ -658,6 +664,9 @@ where
 /// Some datapaths have their own ref counting schema,
 /// So this trait exposes ref counting over those schemes.
 pub trait RefCnt {
+    // drops inner variable (for debugging)
+    fn free_inner(&mut self);
+
     fn count_rc(&self) -> usize;
 
     fn change_rc(&mut self, amt: isize);
@@ -697,6 +706,12 @@ where
             pkts: pkts,
             id: id,
             addr: addr,
+        }
+    }
+
+    pub fn free_inner(&mut self) {
+        for pkt in self.pkts.iter_mut() {
+            pkt.free_inner();
         }
     }
 

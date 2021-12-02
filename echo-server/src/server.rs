@@ -2,7 +2,7 @@ use super::CerealizeMessage;
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
     timing::HistogramWrapper, utils::AddressInfo, Datapath, RcCornflake, ReceivedPkt,
-    ScatterGather, ServerSM,
+    ScatterGather, ServerSM, USING_REF_COUNTING,
 };
 use std::{
     marker::PhantomData,
@@ -47,7 +47,7 @@ where
 
     fn process_requests(
         &mut self,
-        sgas: Vec<(ReceivedPkt<<Self as ServerSM>::Datapath>, Duration)>,
+        mut sgas: Vec<(ReceivedPkt<<Self as ServerSM>::Datapath>, Duration)>,
         conn: &mut D,
     ) -> Result<()> {
         let mut out_sgas: Vec<(RcCornflake<D>, AddressInfo)> = Vec::with_capacity(sgas.len());
@@ -67,6 +67,12 @@ where
 
         conn.push_sgas(&out_sgas)
             .wrap_err("Unable to send out sgas in datapath.")?;
+        // only do this with ref counting turned off
+        if unsafe { !USING_REF_COUNTING } {
+            for (sga, _) in sgas.iter_mut() {
+                sga.free_inner();
+            }
+        }
         Ok(())
     }
 

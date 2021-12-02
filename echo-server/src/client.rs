@@ -2,6 +2,7 @@ use super::CerealizeClient;
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
     mem::MmapMetadata, timing::ManualHistogram, ClientSM, Datapath, MsgID, ReceivedPkt,
+    USING_REF_COUNTING,
 };
 use cornflakes_utils::SimpleMessageType;
 use std::{marker::PhantomData, net::Ipv4Addr, time::Duration};
@@ -136,15 +137,18 @@ where
 
     fn process_received_msg(
         &mut self,
-        sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
+        mut sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
         rtt: Duration,
     ) -> Result<()> {
         self.recved += 1;
-        tracing::debug!("Receiving {}th packet", self.recved);
+        tracing::debug!("Receiving {}th packet at {:?}", self.recved, sga.index(0));
         self.rtts.record(rtt.as_nanos() as u64);
         if cfg!(debug_assertions) {
             // check the payload that was echoed back is correct
             self.serializer.check_echoed_payload(&sga)?;
+        }
+        if unsafe { !USING_REF_COUNTING } {
+            sga.free_inner();
         }
         Ok(())
     }

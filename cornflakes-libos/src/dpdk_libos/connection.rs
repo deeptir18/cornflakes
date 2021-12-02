@@ -4,6 +4,7 @@ use super::{
         dpdk_call, mbuf_slice, mem,
         timing::{record, timefunc, HistogramWrapper},
         utils, CornType, Datapath, MsgID, PtrAttributes, ReceivedPkt, RefCnt, ScatterGather,
+        USING_REF_COUNTING,
     },
     allocator, wrapper,
 };
@@ -67,19 +68,23 @@ impl Default for DPDKBuffer {
 impl Drop for DPDKBuffer {
     fn drop(&mut self) {
         // decrement the reference count of the mbuf, or if at 1 or 0, free it
-        tracing::debug!(pkt =? self.mbuf, cur_refcnt = dpdk_call!(rte_pktmbuf_refcnt_read(self.mbuf)), "Calling drop on dpdk buffer object");
-        wrapper::free_mbuf(self.mbuf);
+        if unsafe { USING_REF_COUNTING } {
+            tracing::debug!(pkt =? self.mbuf, cur_refcnt = dpdk_call!(rte_pktmbuf_refcnt_read(self.mbuf)), "Calling drop on dpdk buffer object");
+            wrapper::free_mbuf(self.mbuf);
+        }
     }
 }
 
 impl Clone for DPDKBuffer {
     fn clone(&self) -> DPDKBuffer {
-        tracing::debug!(
-            "Cloning mbuf {:?} and increasing ref count to {}",
-            self.mbuf,
-            wrapper::refcnt(self.mbuf) + 1
-        );
-        dpdk_call!(rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1));
+        if unsafe { USING_REF_COUNTING } {
+            tracing::debug!(
+                "Cloning mbuf {:?} and increasing ref count to {}",
+                self.mbuf,
+                wrapper::refcnt(self.mbuf) + 1
+            );
+            dpdk_call!(rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1));
+        }
         DPDKBuffer {
             mbuf: self.mbuf,
             offset: self.offset,
@@ -94,6 +99,10 @@ impl std::fmt::Debug for DPDKBuffer {
 }
 
 impl RefCnt for DPDKBuffer {
+    fn free_inner(&mut self) {
+        // drop the underlying packet
+        dpdk_call!(rte_pktmbuf_free(self.mbuf));
+    }
     fn change_rc(&mut self, amt: isize) {
         dpdk_call!(rte_pktmbuf_refcnt_update_or_free(self.mbuf, amt as i16));
     }

@@ -13,14 +13,14 @@ NUM_THREADS = 4
 NUM_CLIENTS = 2
 SIZES_TO_LOOP = [512, 4096]
 MESSAGE_TYPES = ["single"]
-MESSAGE_TYPES.extend(["list-2", "list-4", "list-8",
+MESSAGE_TYPES.extend(["list-1", "list-2", "list-4", "list-8",
                      "tree-2", "tree-1", "tree-3"])
 rates = [5000, 10000, 15000, 25000, 35000, 45000, 55000,
          65000, 75000, 85000, 95000, 105000, 115000, 125000,
          135000, 145000, 155000, 165000,
          175000, 185000, 200000]
-SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cereal", "capnproto", "protobuf",
-                           "flatbuffers",  # "cornflakes-fixed",
+SERIALIZATION_LIBRARIES = ["cornflakes-dynamic",  # "cereal", "capnproto", "protobuf",
+                           # "flatbuffers",  # "cornflakes-fixed",
                            # "cornflakes1c-fixed"]  # "cornflakes1c-fixed", "protobuf", "capnproto",
                            "cornflakes1c-dynamic"]
 # "flatbuffers"]
@@ -57,7 +57,8 @@ class EchoBenchIteration(runner.Iteration):
     def __init__(self, client_rates, size,
                  serialization, message_type,
                  num_threads,
-                 trial=None):
+                 trial=None,
+                 ref_counting=True):
         """
         Arguments:
         * client_rates: Mapping from {int, int} specifying rates and how many
@@ -76,6 +77,7 @@ class EchoBenchIteration(runner.Iteration):
         self.message_type = message_type
         self.trial = trial
         self.num_threads = num_threads
+        self.ref_counting = ref_counting
 
     def get_num_threads(self):
         return self.num_threads
@@ -94,6 +96,9 @@ class EchoBenchIteration(runner.Iteration):
 
     def set_trial(self, trial):
         self.trial = trial
+
+    def get_ref_counting(self):
+        return self.ref_counting
 
     def get_num_threads_string(self):
         return "{}_threads".format(self.num_threads)
@@ -143,6 +148,9 @@ class EchoBenchIteration(runner.Iteration):
     def get_size_string(self):
         return "size_{}".format(self.size)
 
+    def ref_counting_string(self):
+        return "ref_counting_{}".format(self.ref_counting)
+
     def get_trial_string(self):
         if self.trial == None:
             utils.error("TRIAL IS NOT SET FOR ITERATION.")
@@ -155,11 +163,13 @@ class EchoBenchIteration(runner.Iteration):
             "serialization: {}, " \
             "message_type: {}, " \
             "num_threads: {}, " \
+            "ref counting: {}," \
             "trial: {}".format(self.get_client_rate_string(),
                                self.get_size_string(),
                                self.serialization,
                                self.message_type,
                                self.num_threads,
+                               self.ref_counting,
                                self.get_trial_string())
 
     def get_serialization_folder(self, high_level_folder):
@@ -168,7 +178,9 @@ class EchoBenchIteration(runner.Iteration):
 
     def get_parent_folder(self, high_level_folder):
         path = Path(high_level_folder)
-        return path / self.serialization / self.message_type / self.get_size_string() / self.get_client_rate_string() / self.get_num_threads_string()
+        return path / self.serialization / self.message_type /\
+            self.get_size_string() / self.get_client_rate_string() /\
+            self.get_num_threads_string() / self.ref_counting_string()
 
     def get_folder_name(self, high_level_folder):
         return self.get_parent_folder(high_level_folder) / self.get_trial_string()
@@ -217,7 +229,10 @@ class EchoBenchIteration(runner.Iteration):
             ret["client-library"] = "cornflakes1c-fixed"
 
         if program == "start_server":
-            pass
+            if not(self.ref_counting):
+                ret["no_ref_counting"] = " --no_ref_counting"
+            else:
+                ret["no_ref_counting"] = ""
         elif program == "start_client":
             # calculate client rate
             host_options = self.get_iteration_clients(
@@ -266,7 +281,8 @@ class EchoBench(runner.Experiment):
                                     total_args.size,
                                     total_args.serialization,
                                     total_args.message_type,
-                                    total_args.num_threads)
+                                    total_args.num_threads,
+                                    ref_counting=not(total_args.no_ref_counting))
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             if total_args.analysis_only or total_args.graph_only:
@@ -298,7 +314,8 @@ class EchoBench(runner.Experiment):
                                                         serialization,
                                                         message_type,
                                                         num_threads,
-                                                        trial=trial)
+                                                        trial=trial,
+                                                        ref_counting=not(total_args.no_ref_counting))
                                 ret.append(it)
             return ret
 
@@ -307,6 +324,10 @@ class EchoBench(runner.Experiment):
                             help="logfile name",
                             default="latencies.log")
         if namespace.exp_type == "individual":
+            parser.add_argument("-nrc", "--no_ref_counting",
+                                dest="no_ref_counting",
+                                action='store_true',
+                                help="Turn off reference counting in server.")
             parser.add_argument("-nt", "--num_threads",
                                 dest="num_threads",
                                 type=int,
@@ -343,7 +364,7 @@ class EchoBench(runner.Experiment):
         return self.config_yaml
 
     def get_logfile_header(self):
-        return "serialization,message_type,size,"\
+        return "serialization,refcounting,message_type,size,"\
             "offered_load_pps,offered_load_gbps,"\
             "achieved_load_pps,achieved_load_gbps,"\
             "percent_acheived_rate,total_retries,"\
@@ -447,19 +468,20 @@ class EchoBench(runner.Experiment):
             utils.info("Total Stats: ", total_stats)
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)
-        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
-                                                                   iteration.get_message_type(),
-                                                                   iteration.get_size(),
-                                                                   total_offered_load_pps,
-                                                                   total_offered_load_gbps,
-                                                                   total_achieved_load_pps,
-                                                                   total_achieved_load_gbps,
-                                                                   percent_acheived_load,
-                                                                   total_retries,
-                                                                   avg,
-                                                                   median,
-                                                                   p99,
-                                                                   p999)
+        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
+                                                                      iteration.get_ref_counting(),
+                                                                      iteration.get_message_type(),
+                                                                      iteration.get_size(),
+                                                                      total_offered_load_pps,
+                                                                      total_offered_load_gbps,
+                                                                      total_achieved_load_pps,
+                                                                      total_achieved_load_gbps,
+                                                                      percent_acheived_load,
+                                                                      total_retries,
+                                                                      avg,
+                                                                      median,
+                                                                      p99,
+                                                                      p999)
         return csv_line
 
     def graph_results(self, args, folder, logfile, post_process_logfile):

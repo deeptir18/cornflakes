@@ -8,6 +8,7 @@ use cornflakes_libos::{
         request_schedule::{generate_schedules, DistributionType, PacketSchedule},
     },
     timing::ManualHistogram,
+    turn_off_ref_counting,
     utils::AddressInfo,
     ClientSM, Datapath, ServerSM,
 };
@@ -129,6 +130,8 @@ struct Opt {
     num_clients: usize,
     #[structopt(long = "client_id", help = "ID of this client", default_value = "1")]
     client_id: usize,
+    #[structopt(long = "no_ref_counting", help = "Turn off ref counting")]
+    no_ref_counting: bool,
 }
 
 macro_rules! init_echo_server(
@@ -158,6 +161,7 @@ macro_rules! init_echo_client(
             let per_thread_sizes = sizes.clone();
             let schedule = schedules[i].clone();
             threads.push(spawn(move || {
+                tracing::info!(ref_counting = unsafe {cornflakes_libos::USING_REF_COUNTING}, "Ref counting mode");
                 match set_thread_affinity(&vec![i+1]) {
                     Ok(_) => {}
                     Err(e) => {
@@ -203,6 +207,9 @@ macro_rules! init_echo_client(
 fn main() -> Result<()> {
     let opt = Opt::from_args();
     global_debug_init(opt.trace_level)?;
+    if opt.no_ref_counting {
+        turn_off_ref_counting();
+    }
 
     let dpdk_global_init = || -> Result<(u16, Vec<(<DPDKConnection as Datapath>::RxPacketAllocator, AddressInfo)>)> {
         dpdk_bindings::load_mlx5_driver();

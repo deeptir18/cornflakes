@@ -10,6 +10,7 @@ use cornflakes_libos::{
     timing::{HistogramWrapper, ManualHistogram},
     utils::AddressInfo,
     CfBuf, ClientSM, Datapath, MsgID, RcCornflake, ReceivedPkt, ScatterGather, ServerSM,
+    USING_REF_COUNTING,
 };
 use hashbrown::HashMap;
 use std::{
@@ -373,7 +374,7 @@ where
 
     fn process_received_msg(
         &mut self,
-        sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
+        mut sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
         rtt: Duration,
     ) -> Result<()> {
         self.recved += 1;
@@ -408,6 +409,9 @@ where
             }
         }
         self.rtts.record(rtt.as_nanos() as u64);
+        if unsafe { !USING_REF_COUNTING } {
+            sga.free_inner();
+        }
         Ok(())
     }
 

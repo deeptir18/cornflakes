@@ -72,6 +72,7 @@ inline void free_referred_mbuf(void *buf) {
             //printf("Freeing mbuf %p\n", ref_mbuf);
             rte_pktmbuf_free(ref_mbuf);
         } else {
+        //printf("[free_refered_mbuf_] Original extbuf buffer: %p; Pointer of referred mbuf: %p; refcnt being set to: %u\n", buf, ref_mbuf, (unsigned)ref_cnt - 1);
             rte_mbuf_refcnt_set(ref_mbuf, ref_cnt - 1);
         }
     }
@@ -267,7 +268,6 @@ void rte_pktmbuf_refcnt_update_or_free_(struct rte_mbuf *packet, int16_t val) {
     //printf("[rte_mbuf_refcnt_update_] Changing refcnt of mbuf %p by val %d; currently %d\n", packet, val, rte_mbuf_refcnt_read(packet));
     uint16_t cur_rc = rte_mbuf_refcnt_read(packet);
     if (((int16_t)cur_rc + val ) <= 0) {
-        //rte_mbuf_refcnt_set(packet, 0);
         //printf("[rte_pktmbuf_refcnt_update_or_free_] Freeing packet %p\n", packet);
         rte_pktmbuf_free(packet);
         return;

@@ -8,6 +8,7 @@ use cornflakes_libos::{
         request_schedule::{generate_schedules, DistributionType, PacketSchedule},
     },
     timing::ManualHistogram,
+    turn_off_ref_counting,
     utils::AddressInfo,
     ClientSM, Datapath, ServerSM,
 };
@@ -133,6 +134,8 @@ struct Opt {
     start_cutoff: usize,
     #[structopt(long = "distribution", default_value = "exponential")]
     distribution: DistributionType,
+    #[structopt(long = "no_ref_counting", help = "Turn off ref counting")]
+    no_ref_counting: bool,
 }
 
 /// Given a path, calculates the number of lines in the file.
@@ -194,6 +197,7 @@ macro_rules! run_kv_client(
             let hist = ManualHistogram::new(num_rtts);
             let schedule = schedules[i].clone();
             threads.push(spawn(move || {
+                tracing::info!(ref_counting = unsafe {cornflakes_libos::USING_REF_COUNTING}, "Ref counting mode");
                 match set_thread_affinity(&vec![i+1]) {
                     Ok(_) => {}
                     Err(e) => {
@@ -256,6 +260,9 @@ fn main() -> Result<()> {
     let opt = Opt::from_args();
     global_debug_init(opt.trace_level)?;
 
+    if opt.no_ref_counting {
+        turn_off_ref_counting();
+    }
     let dpdk_global_init = || -> Result<(u16, Vec<(<DPDKConnection as Datapath>::RxPacketAllocator, AddressInfo)>)> {
         dpdk_bindings::load_mlx5_driver();
         let remote_ip = match opt.mode {
