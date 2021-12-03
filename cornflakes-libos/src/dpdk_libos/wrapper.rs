@@ -410,14 +410,11 @@ impl Pkt {
                     (*mbufs[idx + chunk][pkt_id]).data_len = chunk_size as u16;
                     (*mbufs[idx + chunk][pkt_id]).data_off = data_off + (chunk_size * chunk) as u16;
                 }
-                if chunk > 0 {
-                    dpdk_call!(set_refers_to_another(mbufs[idx + chunk][pkt_id], 0));
-                }
                 // set lkey of packet to be -1
                 dpdk_call!(set_lkey_not_present(mbufs[idx + chunk][pkt_id]));
+                dpdk_call!(set_refers_to_another(mbufs[idx + chunk][pkt_id], 1));
+                dpdk_call!(rte_pktmbuf_refcnt_update_or_free(original_mbuf_ptr, 1));
             }
-            dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 1));
-            dpdk_call!(rte_pktmbuf_refcnt_update_or_free(original_mbuf_ptr, 1));
             in_native_mempool = true;
         }
         if !in_native_mempool {

@@ -42,7 +42,7 @@ class KVIteration(runner.Iteration):
         self.load_trace = load_trace
         self.access_trace = access_trace
         self.ref_counting = ref_counting
-        self.splits_per_chunk = 1
+        self.splits_per_chunk = splits_per_chunk
 
     def __str__(self):
         return "Iteration info: client rates: {}, " \
