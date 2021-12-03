@@ -88,24 +88,40 @@ impl PacketSchedule {
         Ok(PacketSchedule { packets: packets })
     }
 
-    pub fn new_twitter (times: Vec<u64>) -> Result<Self> {
-        let mut sum : u64 = 0;
-        for i in 0..times.len() {
-            sum += times[i];
-        }
-        let mut packets: Vec<Packet> = vec![Packet::default(); sum as usize];
+    pub fn new_twitter (times: Vec<u64>,
+                        start_idx: usize,
+                        end_idx: usize,
+                        last_entry: usize,
+                        packet_entries: usize) -> Result<Self> {
+        let mut packets: Vec<Packet> = vec![Packet::default(); packet_entries as usize];
         let mut index : usize = 0;
-        for i in 0..times.len() {
+        let mut num_entries : usize = 0;
+        for i in start_idx..end_idx+1 {
             let nanosec : u64 = 1000000000;
             let time_lapse = nanosec/times[i];
             let mut base : u64 = i as u64;
+            if i == start_idx {
+                for j in last_entry..times[i] as usize {
+                  if num_entries == packet_entries {
+                    return Ok(PacketSchedule{ packets : packets});
+                  }
+                  packets[(index + (j as usize))] = Packet{ time_since_last: base };
+                  base += time_lapse;
+                  num_entries += 1;
+                }
+                continue;
+            }
             for j in 0..times[i] {
+                if num_entries == packet_entries {
+                    return Ok(PacketSchedule{ packets : packets});
+                }
                 packets[(index + (j as usize))] = Packet{ time_since_last: base };
                 base += time_lapse;
+                num_entries += 1;
             }
             index += times[i] as usize;
         }
-        Ok(PacketSchedule { packets: packets })
+        return Ok(PacketSchedule { packets: packets });
     }
 
     fn get(&self, idx: usize) -> u64 {
@@ -141,13 +157,56 @@ pub fn generate_schedules(
     Ok(schedules)
 }
 
+// {30, 10} => 0: 
+// Partition: 20
+pub fn find_idx_offset(times: Vec<u64>,
+                       start_idx: usize,
+                       partition: usize,
+                       last_offset: usize) -> (usize, usize) {
+  /*find the appropriate start, end, and offset*/
+    let end_idx : usize = 0;
+    let new_offset : usize = 0;
+    for i in start_idx..times.len() {
+      partition -= times[i] as usize; // 20 - 30 = -10
+      if partition <= 0 {
+        end_idx = i;
+        new_offset = partition; // 20
+        return (end_idx, new_offset);
+      }
+    }
+    return (end_idx, new_offset);
+}
+
 pub fn generate_twitter_schedules(
     times: Vec<u64>,
     num_threads: usize,
 ) -> Result<Vec<PacketSchedule>> {
   let mut schedules : Vec<PacketSchedule> = Vec::default();
-  for _i in 0..num_threads {
-      schedules.push(PacketSchedule::new_twitter(times.clone())?);
+  let mut sum : usize = 0;
+  for i in 0..times.len() {
+    sum += times[i] as usize;
   }
+  // what if number of threads is greater than sum?
+  let partition : usize = sum/num_threads;
+  let start_idx : usize = 0;
+  let offset : usize = 0;
+  let new_offset : usize = 0;
+  let end_idx : usize = 0;
+  (end_idx, new_offset) = find_idx_offset(times.clone(), start_idx, partition, offset);
+  for _i in 0..num_threads-1 {
+      schedules.push(PacketSchedule::new_twitter(times.clone(), 
+                                                 start_idx, 
+                                                 end_idx,
+                                                 offset,
+                                                 partition)?);
+      start_idx = end_idx;
+      offset = new_offset;
+      (end_idx, new_offset) = find_idx_offset(times.clone(), start_idx, partition, offset);
+  }
+  schedules.push(PacketSchedule::new_twitter(times.clone(), 
+                                             start_idx, 
+                                             end_idx,
+                                             offset,
+                                             sum - partition*(num_threads-1))?);
   Ok(schedules)
 }
