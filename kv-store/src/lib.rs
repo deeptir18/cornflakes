@@ -190,7 +190,11 @@ where
     /// Using retries or not.
     using_retries: bool,
     /// If in debug, keep track of MsgID -> MsgType
-    message_info: HashMap<MsgID, MsgType>,
+    message_info: HashMap<MsgID, (MsgType, Vec<String>)>,
+    /// If in debug mode, actually load and check that the response is correct
+    debug_data: HashMap<String, String>,
+    /// Check actual values
+    debug_response: bool,
     /// How many retries to keep track of
     start_cutoff: usize,
     _marker: PhantomData<D>,
@@ -206,6 +210,7 @@ where
         value_size: usize,
         num_values: usize,
         trace_file: &str,
+        data_trace_file: &str,
         thread_id: usize,
         total_threads: usize,
         total_clients: usize,
@@ -223,6 +228,32 @@ where
             total_clients = total_clients,
             "Initializing YCSB client"
         );
+
+        let mut debug_response = false;
+        let mut debug_data = HashMap::default();
+        if data_trace_file != "" {
+            debug_response = true;
+            let file = File::open(data_trace_file)?;
+            let reader = BufReader::new(file);
+            let mut cur_idx = 0;
+
+            for line_res in reader.lines() {
+                let line = line_res?;
+                let mut req = YCSBRequest::new(&line, num_values, value_size, cur_idx)?;
+                cur_idx += 1;
+                match req.get_type() {
+                    MsgType::Get(_) => {
+                        bail!("Loading trace file cannot have a get!");
+                    }
+                    MsgType::Put(_) => {
+                        while let Some((key, val)) = req.next() {
+                            let value = val.to_string();
+                            debug_data.insert(key, value);
+                        }
+                    }
+                }
+            }
+        }
 
         let query_iterator = QueryIterator::new(
             client_id,
@@ -247,6 +278,8 @@ where
             in_flight: HashMap::default(),
             using_retries: using_retries,
             message_info: HashMap::default(),
+            debug_data: debug_data,
+            debug_response: debug_response,
             start_cutoff: start_cutoff,
             _marker: PhantomData,
         })
@@ -357,8 +390,10 @@ where
                     .message_info
                     .contains_key(&(self.last_sent_id as u32 - 1)))
                 {
-                    self.message_info
-                        .insert(self.last_sent_id as u32 - 1, req.get_type());
+                    self.message_info.insert(
+                        self.last_sent_id as u32 - 1,
+                        (req.get_type(), req.get_keys_vec()),
+                    );
                 }
             }
 
@@ -388,12 +423,16 @@ where
 
         // if debug, deserialize and check the message has the right dimensions
         if cfg!(debug_assertions) {
-            if let Some(msg_type) = self.message_info.remove(&sga.get_id()) {
+            if let Some((msg_type, keys)) = self.message_info.remove(&sga.get_id()) {
                 // run some kind of ``check''
-                if !self
-                    .serializer
-                    .check_recved_msg(&sga, msg_type, self.value_size)?
-                {
+                if !self.serializer.check_recved_msg(
+                    &sga,
+                    msg_type,
+                    self.value_size,
+                    keys,
+                    &self.debug_data,
+                    self.debug_response,
+                )? {
                     bail!("Msg check failed");
                 } else {
                     tracing::debug!("PASSED THE RECV MESSAGE CHECK");
@@ -455,6 +494,9 @@ where
         pkt: &ReceivedPkt<D>,
         msg_type: MsgType,
         value_size: usize,
+        keys: Vec<String>,
+        hashmap: &HashMap<String, String>,
+        check_value: bool,
     ) -> Result<bool>;
 
     /// Get the next request, in bytes.

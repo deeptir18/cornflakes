@@ -206,6 +206,9 @@ where
         pkt: &ReceivedPkt<D>,
         msg_type: MsgType,
         value_size: usize,
+        _keys: Vec<String>,
+        _hashmap: &HashMap<String, String>,
+        _check_value: bool,
     ) -> Result<bool> {
         let message = pkt.contiguous_slice(0, pkt.data_len())?;
         let id = pkt.get_id();

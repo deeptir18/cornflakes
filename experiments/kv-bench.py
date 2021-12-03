@@ -31,7 +31,8 @@ class KVIteration(runner.Iteration):
                  access_trace,
                  num_threads,
                  trial=None,
-                 ref_counting=True):
+                 ref_counting=True,
+                 splits_per_chunk=1):
         self.client_rates = client_rates
         self.size = size
         self.serialization = serialization
@@ -41,6 +42,7 @@ class KVIteration(runner.Iteration):
         self.load_trace = load_trace
         self.access_trace = access_trace
         self.ref_counting = ref_counting
+        self.splits_per_chunk = 1
 
     def __str__(self):
         return "Iteration info: client rates: {}, " \
@@ -49,16 +51,21 @@ class KVIteration(runner.Iteration):
             "serialization: {}, " \
             "num_threads: {}, " \
             "ref counting: {}," \
+            "splits per chunk: {}," \
             "trial: {}".format(self.get_client_rate_string(),
                                self.get_size_string(),
                                self.get_num_values_string(),
                                self.serialization,
                                self.num_threads,
                                self.ref_counting,
+                               self.splits_per_chunk,
                                self.get_trial_string())
 
     def get_num_threads(self):
         return self.num_threads
+
+    def get_splits_per_chunk(self):
+        return self.splits_per_chunk
 
     def get_ref_counting(self):
         return self.ref_counting
@@ -95,6 +102,9 @@ class KVIteration(runner.Iteration):
 
     def ref_counting_string(self):
         return "ref_counting_{}".format(self.ref_counting)
+
+    def get_splits_per_chunk_string(self):
+        return "splits_per_chunk_{}".format(self.splits_per_chunk)
 
     def get_client_rate_string(self):
         # 2@300000,1@100000 implies 2 clients at 300000 pkts / sec and 1 at
@@ -164,7 +174,7 @@ class KVIteration(runner.Iteration):
     def get_parent_folder(self, high_level_folder):
         path = Path(high_level_folder)
         return path / self.serialization / self.get_size_string() /\
-            self.get_num_values_string() / self.get_client_rate_string() /\
+            self.get_num_values_string() / self.get_splits_per_chunk_string() / self.get_client_rate_string() /\
             self.get_num_threads_string() / self.ref_counting_string()
 
     def get_folder_name(self, high_level_folder):
@@ -212,6 +222,7 @@ class KVIteration(runner.Iteration):
                 ret["no_ref_counting"] = " --no_ref_counting"
             else:
                 ret["no_ref_counting"] = ""
+            ret["splits_per_chunk"] = self.splits_per_chunk
         elif program == "start_client":
             ret["queries"] = self.access_trace
 
@@ -267,7 +278,8 @@ class KVBench(runner.Experiment):
                              total_args.load_trace,
                              total_args.access_trace,
                              total_args.num_threads,
-                             ref_counting=not(total_args.no_ref_counting))
+                             ref_counting=not(total_args.no_ref_counting),
+                             splits_per_chunk=total_args.splits_per_chunk)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             if total_args.analysis_only or total_args.graph_only:
@@ -298,7 +310,9 @@ class KVBench(runner.Experiment):
                                                  total_args.access_trace,
                                                  num_threads,
                                                  trial=trial,
-                                                 ref_counting=not(total_args.no_ref_counting))
+                                                 ref_counting=not(
+                                                     total_args.no_ref_counting),
+                                                 splits_per_chunk=total_args.splits_per_chunk)
                                 ret.append(it)
             return ret
 
@@ -313,6 +327,11 @@ class KVBench(runner.Experiment):
                             dest="access_trace",
                             required=True)
         if namespace.exp_type == "individual":
+            parser.add_argument("-spc", "--splits_per_chunk",
+                                dest="splits_per_chunk",
+                                type=int,
+                                default=1,
+                                help="Number of chunks to split values into.")
             parser.add_argument("-nrc", "--no_ref_counting",
                                 dest="no_ref_counting",
                                 action='store_true',
@@ -354,7 +373,7 @@ class KVBench(runner.Experiment):
         return self.config_yaml
 
     def get_logfile_header(self):
-        return "serialization,refcounting,value_size,num_values,"\
+        return "serialization,refcounting,splits_per_chunk,value_size,num_values,"\
             "offered_load_pps,offered_load_gbps,"\
             "achieved_load_pps,achieved_load_gbps,"\
             "percent_achieved_rate,total_retries,"\
@@ -459,20 +478,21 @@ class KVBench(runner.Experiment):
             utils.info("Total Stats: ", total_stats)
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)
-        csv_line = "{},{},,{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
-                                                                       iteration.get_ref_counting(),
-                                                                       iteration.get_size(),
-                                                                       iteration.get_num_values(),
-                                                                       total_offered_load_pps,
-                                                                       total_offered_load_gbps,
-                                                                       total_achieved_load_pps,
-                                                                       total_achieved_load_gbps,
-                                                                       percent_acheived_load,
-                                                                       total_retries,
-                                                                       avg,
-                                                                       median,
-                                                                       p99,
-                                                                       p999)
+        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
+                                                                         iteration.get_ref_counting(),
+                                                                         iteration.get_splits_per_chunk(),
+                                                                         iteration.get_size(),
+                                                                         iteration.get_num_values(),
+                                                                         total_offered_load_pps,
+                                                                         total_offered_load_gbps,
+                                                                         total_achieved_load_pps,
+                                                                         total_achieved_load_gbps,
+                                                                         percent_acheived_load,
+                                                                         total_retries,
+                                                                         avg,
+                                                                         median,
+                                                                         p99,
+                                                                         p999)
         utils.debug("Returning csv line: {} in {}".format(csv_line, time.time()
                     - start))
         return csv_line

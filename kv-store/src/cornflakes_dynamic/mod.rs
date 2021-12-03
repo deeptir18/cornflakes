@@ -186,8 +186,29 @@ where
         pkt: &ReceivedPkt<D>,
         msg_type: MsgType,
         value_size: usize,
+        keys: Vec<String>,
+        hashmap: &HashMap<String, String>,
+        check_value: bool,
     ) -> Result<bool> {
         let id = pkt.get_id();
+        let values = match check_value {
+            true => {
+                let mut vals: Vec<String> = Vec::default();
+                for key in keys.iter() {
+                    match hashmap.get(key) {
+                        Some(v) => {
+                            vals.push(v.to_string());
+                        }
+
+                        None => {
+                            bail!("Request key {:?} does not have a value in the hashmap", key);
+                        }
+                    }
+                }
+                vals
+            }
+            false => Vec::default(),
+        };
         match msg_type {
             MsgType::Get(num_values) => {
                 match num_values {
@@ -210,6 +231,13 @@ where
                         get_resp.get_val().len() == value_size,
                         format!("Deserialized value does not have the correct size, expected: {}, actual: {}", value_size, get_resp.get_val().len())
                     );
+                        if check_value {
+                            ensure!(
+                                get_resp.get_val().to_bytes_vec()
+                                    == values[0].as_str().as_bytes().to_vec(),
+                                "Value is not correct"
+                            );
+                        }
                     }
                     _ => {
                         let mut getm_resp = kv_messages::GetMResp::<D>::new();
@@ -238,6 +266,13 @@ where
                                     val.len()
                                 )
                             );
+                            if check_value {
+                                ensure!(
+                                    vals[i].to_bytes_vec()
+                                        == values[i].as_str().as_bytes().to_vec(),
+                                    "Value is not correct"
+                                );
+                            }
                         }
                     }
                 }

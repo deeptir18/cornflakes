@@ -302,6 +302,9 @@ where
         pkt: &ReceivedPkt<D>,
         msg_type: MsgType,
         value_size: usize,
+        _keys: Vec<String>,
+        _hashmap: &HashMap<String, String>,
+        _check_value: bool,
     ) -> Result<bool> {
         let segment_array_vec = read_context(&pkt, 0)?;
         let segment_array = SegmentArray::new(&segment_array_vec.as_slice());

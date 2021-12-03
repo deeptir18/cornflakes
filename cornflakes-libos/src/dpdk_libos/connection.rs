@@ -181,6 +181,8 @@ pub struct DPDKConnection {
     send_mbufs: [[*mut rte_mbuf; wrapper::RECEIVE_BURST_SIZE as usize]; wrapper::MAX_SCATTERS],
     /// Mbufs used for rx_burst.
     recv_mbufs: [*mut rte_mbuf; wrapper::RECEIVE_BURST_SIZE as usize],
+    /// For scatter-gather mode debugging: splits per chunk of data
+    splits_per_chunk: usize,
 }
 
 impl DPDKConnection {
@@ -281,7 +283,17 @@ impl DPDKConnection {
             send_mbufs: [[ptr::null_mut(); wrapper::RECEIVE_BURST_SIZE as usize];
                 wrapper::MAX_SCATTERS],
             recv_mbufs: [ptr::null_mut(); wrapper::RECEIVE_BURST_SIZE as usize],
+            splits_per_chunk: 1,
         })
+    }
+
+    pub fn set_splits_per_chunk(&mut self, size: usize) -> Result<()> {
+        ensure!(
+            size <= wrapper::MAX_SCATTERS,
+            format!("Splits per chunk cannot exceed {}", wrapper::MAX_SCATTERS)
+        );
+        self.splits_per_chunk = size;
+        Ok(())
     }
 
     fn get_timer(
@@ -580,6 +592,7 @@ impl Datapath for DPDKConnection {
             send_mbufs: [[ptr::null_mut(); wrapper::RECEIVE_BURST_SIZE as usize];
                 wrapper::MAX_SCATTERS],
             recv_mbufs: [ptr::null_mut(); wrapper::RECEIVE_BURST_SIZE as usize],
+            splits_per_chunk: 1,
         })
     }
 
@@ -663,6 +676,7 @@ impl Datapath for DPDKConnection {
                             header,
                             &self.mempool_allocator,
                             &self.external_memory_regions,
+                            self.splits_per_chunk,
                         )
                         .wrap_err(format!(
                             "Unable to construct pkt from sga with scatter-gather, sga idx: {}",

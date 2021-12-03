@@ -402,7 +402,6 @@ void set_lkey_not_present_(struct rte_mbuf *packet) {
     struct tx_pktmbuf_priv *data = tx_pktmbuf_get_priv(packet);
     data->lkey = 0;
     data->lkey_present = 0;
-
 }
 
 void set_refers_to_another_(struct rte_mbuf *packet, uint16_t val) {
