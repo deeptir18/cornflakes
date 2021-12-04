@@ -18,6 +18,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "profiler")]
+use perftools;
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct MempoolPtr(pub *mut rte_mempool);
 unsafe impl Send for MempoolPtr {}
@@ -163,6 +166,8 @@ impl Pkt {
         external_regions: &Vec<mem::MmapMetadata>,
         splits_per_chunk: usize,
     ) -> Result<()> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Construct from sga with scatter-gather");
         // TODO: change this back
         // 1: allocate and add header mbuf
         mbufs[0][pkt_id] =
@@ -299,13 +304,16 @@ impl Pkt {
         external_regions: &Vec<mem::MmapMetadata>,
         splits_per_chunk: usize,
     ) -> Result<()> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Set sga payloads func");
         let mut current_attached_idx = 0;
         for i in 0..sga.num_segments() {
             let cornptr = sga.index(i);
             // any attached mbufs will start at index 1 (1 after header)
             match cornptr.buf_type() {
                 CornType::Registered => {
-                    // TODO: uncomment this
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Processing registered");
                     current_attached_idx += 1;
                     self.set_external_payload(
                         mbufs,
@@ -323,6 +331,8 @@ impl Pkt {
                     }
                 }
                 CornType::Normal => {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Processing copies");
                     if current_attached_idx > 0 {
                         bail!("Sga cannot have owned buffers after borrowed buffers; all owned buffers must be at the front.");
                     }
@@ -375,6 +385,9 @@ impl Pkt {
         sga_id: MsgID,
         splits_per_chunk: usize,
     ) -> Result<()> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Set external payload func");
+
         debug!("The mbuf idx we're changing: {}", idx);
         // check whether the payload is in one of the memzones, or an external region
         tracing::debug!(

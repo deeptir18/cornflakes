@@ -18,8 +18,8 @@ use structopt::StructOpt;
 struct Opt {
     #[structopt(short = "z", long = "zero_copy", help = "zero-copy mode.")]
     zero_copy: bool,
-    #[structopt(long = "copy_to_mbuf", help = "copy out to mbuf")]
-    copy_to_mbuf: bool,
+    //#[structopt(long = "copy_to_mbuf", help = "copy out to mbuf")]
+    //copy_to_mbuf: bool,
     #[structopt(
         short = "debug",
         long = "debug_level",

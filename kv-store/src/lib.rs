@@ -13,6 +13,8 @@ use cornflakes_libos::{
     USING_REF_COUNTING,
 };
 use hashbrown::HashMap;
+#[cfg(feature = "profiler")]
+use perftools;
 use std::{
     fs::File,
     io::{prelude::*, BufReader, Lines, Write},
@@ -540,9 +542,13 @@ where
     where
         Self: Sized;
 
+    fn init(&mut self, _num_values: usize) -> Result<()> {
+        Ok(())
+    }
+
     /// Peforms get request
     fn handle_get<'a>(
-        &self,
+        &mut self,
         pkt: ReceivedPkt<D>,
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
@@ -658,6 +664,9 @@ where
         let mut out_sgas: Vec<(RcCornflake<D>, AddressInfo)> = Vec::with_capacity(sgas.len());
         let mut contexts: Vec<S::HeaderCtx> = Vec::default();
         for (in_sga, _) in sgas.into_iter() {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("KV process sga");
+
             // process the framing in the msg
             let msg_type = read_msg_framing(&in_sga)?;
             tracing::debug!("Parsed {:?} request", msg_type);

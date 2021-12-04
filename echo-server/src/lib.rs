@@ -3,6 +3,7 @@ pub mod cereal;
 pub mod client;
 pub mod cornflakes_dynamic;
 // pub mod cornflakes_fixed;
+pub mod baselines;
 pub mod flatbuffers;
 pub mod protobuf;
 pub mod server;

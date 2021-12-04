@@ -42,7 +42,7 @@ where
     }
 
     fn handle_get<'a>(
-        &self,
+        &mut self,
         pkt: ReceivedPkt<D>,
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
@@ -71,6 +71,8 @@ where
                 // TODO: is it more efficient to allocate with some capacity?
                 let mut builder = FlatBufferBuilder::new();
                 let args = kv_fb::GetRespArgs {
+                    // todo: value.as_ref() should directly be able to get the underlying data
+                    // address without a dereference
                     val: Some(builder.create_vector_direct::<u8>(value.as_ref())),
                     id: get_request.id(),
                 };
@@ -376,6 +378,9 @@ where
                     let args = kv_fb::PutReqArgs {
                         id: req.get_id(),
                         key: Some(builder.create_string(key.as_ref())),
+                        // TODO: val.as_ref() should directly return / store the mbuf data addr,
+                        // without needing the extra pointer deref to the underlying Mbuf to read
+                        // any metadata
                         val: Some(builder.create_vector_direct::<u8>(val.as_ref())),
                     };
                     let put_req = kv_fb::PutReq::create(&mut builder, &args);

@@ -23,7 +23,13 @@ SERIALIZATION_LIBRARIES = ["cornflakes-dynamic",  # "cereal", "capnproto", "prot
                            # "flatbuffers",  # "cornflakes-fixed",
                            # "cornflakes1c-fixed"]  # "cornflakes1c-fixed", "protobuf", "capnproto",
                            "cornflakes1c-dynamic"]
-# "flatbuffers"]
+MOTIVATION_SERIALIZATION_LIBRARIES = ["ideal", "onecopy", "twocopy",
+                                      "flatbuffers", "capnproto", "cereal", "protobuf"]
+ALL_SERIALIZATION_LIBRARIES = ["ideal", "onecopy", "twocopy",
+                               "cornflakes-dynamic", "cornflakes1c-dynamic",
+                               "flatbuffers", "capnproto", "cereal", "protobuf"]
+MOTIVATION_MESSAGE_TYPE = "list-2"
+MOTIVATION_SIZES_TO_LOOP = [512, 1024, 2048, 4096]
 
 
 def parse_client_time_and_pkts(line):
@@ -298,24 +304,42 @@ class EchoBench(runner.Experiment):
         else:
             # loop over the options
             ret = []
-            for trial in range(utils.NUM_TRIALS):
-                for serialization in SERIALIZATION_LIBRARIES:
-                    for rate in rates:
-                        client_rate = [(rate, NUM_CLIENTS)]
-                        num_threads = NUM_THREADS
-                        for size in SIZES_TO_LOOP:
-                            for message_type in MESSAGE_TYPES:
-                                if size == 8192\
-                                        and message_type == "tree-5"\
-                                        and (serialization == "cornflakes-dynamic" or serialization == "cornflakes-1cdynamic"):
-                                    continue
+            if total_args.loop_mode == "eval":
+                for trial in range(utils.NUM_TRIALS):
+                    for serialization in SERIALIZATION_LIBRARIES:
+                        for rate in rates:
+                            client_rate = [(rate, NUM_CLIENTS)]
+                            num_threads = NUM_THREADS
+                            for size in SIZES_TO_LOOP:
+                                for message_type in MESSAGE_TYPES:
+                                    if size == 8192\
+                                            and message_type == "tree-5"\
+                                            and (serialization == "cornflakes-dynamic" or serialization == "cornflakes-1cdynamic"):
+                                        continue
+                                    it = EchoBenchIteration(client_rate,
+                                                            size,
+                                                            serialization,
+                                                            message_type,
+                                                            num_threads,
+                                                            trial=trial,
+                                                            ref_counting=not(total_args.no_ref_counting))
+                                    ret.append(it)
+            elif total_args.loop_mode == "motivation":
+                for trial in range(utils.NUM_TRIALS):
+                    for serialization in ALL_SERIALIZATION_LIBRARIES:
+                        for rate in rates:
+                            client_rate = [(rate, NUM_CLIENTS)]
+                            num_threads = NUM_THREADS
+                            message_type = MOTIVATION_MESSAGE_TYPE
+                            for size in MOTIVATION_SIZES_TO_LOOP:
+                                size = MOTIVATION_SIZE
                                 it = EchoBenchIteration(client_rate,
-                                                        size,
-                                                        serialization,
-                                                        message_type,
-                                                        num_threads,
-                                                        trial=trial,
-                                                        ref_counting=not(total_args.no_ref_counting))
+                                                    size,
+                                                    serialization,
+                                                    message_type,
+                                                    num_threads,
+                                                    trial=trial,
+                                                    ref_counting=not(total_args.no_ref_counting))
                                 ret.append(it)
             return ret
 
@@ -352,8 +376,14 @@ class EchoBench(runner.Experiment):
                                 default=1)
             parser.add_argument("-ser", "--serialization",
                                 dest="serialization",
-                                choices=SERIALIZATION_LIBRARIES,
+                                choices=ALL_SERIALIZATION_LIBRARIES,
                                 required=True)
+        else:
+            parser.add_argument("-lm", "--loop_mode",
+                                dest="loop_mode",
+                                choices=["eval", "motivation"],
+                                default="eval",
+                                help="looping mode variable")
         args = parser.parse_args(namespace=namespace)
         return args
 
@@ -504,9 +534,10 @@ class EchoBench(runner.Experiment):
                                metric, "full"]
             sh.run(total_plot_args)
         # make individual plots
-        for metric in metrics:
-            for size in SIZES_TO_LOOP:
-                for message_type in MESSAGE_TYPES:
+        if args.loop_mode == "motivation":
+            for metric in metrics:
+                for size in MOTIVATION_SIZES_TO_LOOP:
+                    message_type = MOTIVATION_MESSAGE_TYPE
                     individual_plot_path = plot_path / \
                         "size_{}".format(size) / \
                         "msg_{}".format(message_type)
@@ -519,7 +550,25 @@ class EchoBench(runner.Experiment):
                                        metric, "individual", message_type,
                                        str(size)]
 
-                    sh.run(total_plot_args)
+                 sh.run(total_plot_args)
+
+        elif args.loop_mode == "eval":
+            for metric in metrics:
+                for size in SIZES_TO_LOOP:
+                    for message_type in MESSAGE_TYPES:
+                        individual_plot_path = plot_path / \
+                            "size_{}".format(size) / \
+                            "msg_{}".format(message_type)
+                        individual_plot_path.mkdir(parents=True, exist_ok=True)
+                        pdf = individual_plot_path /\
+                            "size_{}_msg_{}_{}.pdf".format(
+                                size, message_type, metric)
+                        total_plot_args = [str(plotting_script),
+                                           str(full_log), str(pdf),
+                                           metric, "individual", message_type,
+                                           str(size)]
+
+                        sh.run(total_plot_args)
 
 
 def main():

@@ -12,6 +12,8 @@ use cornflakes_libos::{
     ReceivedPkt, ScatterGather, USING_REF_COUNTING,
 };
 use hashbrown::HashMap;
+#[cfg(feature = "profiler")]
+use perftools;
 use std::marker::PhantomData;
 
 // empty object
@@ -44,26 +46,52 @@ where
         num_values: usize,
         offset: usize,
     ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Handle get cornflakes");
+
         let mut get_request = kv_messages::GetReq::<D>::new();
-        get_request.deserialize(&pkt, offset)?;
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Deserialize pkt");
+            get_request.deserialize(&pkt, offset)?;
+        }
+
         let key = get_request.get_key();
-        tracing::debug!("Handling get request with {} num_values", num_values);
 
         let mut get_response = kv_messages::GetResp::<D>::new();
         get_response.set_id(get_request.get_id());
         get_response.init_vals(num_values);
         let values = get_response.get_mut_vals();
-        let vals = match map.get(key.to_str()?) {
-            Some(v) => v,
-            None => {
-                bail!("Cannot find values for key in KV store: {:?}", key);
+        let vals = {
+            let key_str = {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("re-encode str");
+                key.to_str()?
+            };
+
+            {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("Query key");
+                match map.get(key_str) {
+                    Some(v) => v,
+                    None => {
+                        bail!("Cannot find value for key in KV store: {:?}", key);
+                    }
+                }
             }
         };
+
         for i in 0..num_values {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Set val rc");
             values.append(CFBytes::new_rc(vals[i].clone()));
         }
 
-        let (header_vec, cf) = get_response.serialize(rte_memcpy)?;
+        let (header_vec, cf) = {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Serialize resp");
+            get_response.serialize(rte_memcpy)?
+        };
         if unsafe { !USING_REF_COUNTING } {
             pkt.free_inner();
         }

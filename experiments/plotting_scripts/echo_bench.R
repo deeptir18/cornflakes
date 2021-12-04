@@ -20,12 +20,15 @@ plot_type <- args[4]
 # argument 5: if individual -- message type
 # argument 6: if individual -- size (of message total)
 
-labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cereal" = "Cereal", "cornflakes-dynamic" = "Cornflakes (Hardware SG)", "cornflakes1c-dynamic" = "Cornflakes (1 Software Copy)")
+labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cereal" = "Cereal", "cornflakes-dynamic" = "Cornflakes (Hardware SG)", "cornflakes1c-dynamic" = "Cornflakes (1 Software Copy)", "ideal" = "Peak Single-Core", "onecopy" = "One Copy", "twocopy" = "Two Copies")
 
-shape_values <- c('protobuf' = 7, 'cereal' = 4, 'capnproto' = 18, 'flatbuffers' = 17, 'cornflakes1c-dynamic' = 15, 'cornflakes-dynamic' = 19)
+shape_values <- c('protobuf' = 7, 'cereal' = 4, 'capnproto' = 18, 'flatbuffers' = 17, 'cornflakes1c-dynamic' = 15, 'cornflakes-dynamic' = 19, "ideal" = 20, "onecopy" = 21, "twocopy" = 22)
 
 color_values <- c('cornflakes-dynamic' = '#1b9e77', 
                     'cornflakes1c-dynamic' = '#d95f02',
+                    "ideal" = '#1b9e77',
+                    "onecopy" = '#d95f02',
+                    "twocopy" = "#e5692a",
                     'flatbuffers' = '#7570b3',
                     'capnproto' = '#e7298a',
                     'cereal' = '#66a61e',

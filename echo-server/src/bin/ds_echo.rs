@@ -17,6 +17,7 @@ use cornflakes_utils::{
     SimpleMessageType, TraceLevel,
 };
 use echo_server::{
+    baselines::{BaselineClient, IdealSerializer, OneCopySerializer, TwoCopySerializer},
     capnproto::{CapnprotoEchoClient, CapnprotoSerializer},
     cereal::{CerealEchoClient, CerealSerializer},
     client::EchoClient,
@@ -127,9 +128,9 @@ struct Opt {
         help = "Total number of clients",
         default_value = "1"
     )]
-    num_clients: usize,
+    _num_clients: usize,
     #[structopt(long = "client_id", help = "ID of this client", default_value = "1")]
-    client_id: usize,
+    _client_id: usize,
     #[structopt(long = "no_ref_counting", help = "Turn off ref counting")]
     no_ref_counting: bool,
 }
@@ -139,6 +140,9 @@ macro_rules! init_echo_server(
         let mut connection = $datapath_init?;
         let serializer = <$serializer>::new($opt.message, $opt.size);
         let mut echo_server = EchoServer::new(serializer);
+        if $opt.serialization == SerializationType::IdealBaseline {
+            echo_server.set_echo_pkt_mode();
+        }
         set_ctrlc_handler(&echo_server)?;
         echo_server.init(&mut connection)?;
         echo_server.run_state_machine(&mut connection)?;
@@ -284,6 +288,15 @@ fn main() -> Result<()> {
             (NetworkDatapath::DPDK, SerializationType::Cereal) => {
                 init_echo_server!(CerealSerializer, dpdk_datapath(false), opt);
             }
+            (NetworkDatapath::DPDK, SerializationType::OneCopyBaseline) => {
+                init_echo_server!(OneCopySerializer, dpdk_datapath(false), opt);
+            }
+            (NetworkDatapath::DPDK, SerializationType::TwoCopyBaseline) => {
+                init_echo_server!(TwoCopySerializer, dpdk_datapath(false), opt);
+            }
+            (NetworkDatapath::DPDK, SerializationType::IdealBaseline) => {
+                init_echo_server!(IdealSerializer, dpdk_datapath(false), opt);
+            }
             _ => {
                 unimplemented!();
             }
@@ -355,6 +368,17 @@ fn main() -> Result<()> {
             (NetworkDatapath::DPDK, SerializationType::Cereal) => {
                 init_echo_client!(
                     CerealEchoClient,
+                    DPDKConnection,
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
+                    opt
+                );
+            }
+            (NetworkDatapath::DPDK, SerializationType::OneCopyBaseline)
+            | (NetworkDatapath::DPDK, SerializationType::TwoCopyBaseline)
+            | (NetworkDatapath::DPDK, SerializationType::IdealBaseline) => {
+                init_echo_client!(
+                    BaselineClient<DPDKConnection>,
                     DPDKConnection,
                     dpdk_global_init(),
                     dpdk_per_thread_init,

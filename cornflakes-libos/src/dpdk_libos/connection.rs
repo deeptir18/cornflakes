@@ -3,8 +3,8 @@ use super::{
         dpdk_bindings::*,
         dpdk_call, mbuf_slice, mem,
         timing::{record, timefunc, HistogramWrapper},
-        utils, CornType, Datapath, MsgID, PtrAttributes, ReceivedPkt, RefCnt, ScatterGather,
-        USING_REF_COUNTING,
+        utils, CornType, Datapath, MsgID, PtrAttributes, RcCornflake, ReceivedPkt, RefCnt,
+        ScatterGather, USING_REF_COUNTING,
     },
     allocator, wrapper,
 };
@@ -20,6 +20,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tracing::warn;
+
+#[cfg(feature = "profiler")]
+use perftools;
 
 const MAX_ENTRIES: usize = 60;
 const PROCESSING_TIMER: &str = "E2E_PROCESSING_TIME";
@@ -99,6 +102,9 @@ impl std::fmt::Debug for DPDKBuffer {
 }
 
 impl RefCnt for DPDKBuffer {
+    fn inner_offset(&self) -> usize {
+        self.offset
+    }
     fn free_inner(&mut self) {
         // drop the underlying packet
         dpdk_call!(rte_pktmbuf_free(self.mbuf));
@@ -632,6 +638,104 @@ impl Datapath for DPDKConnection {
         Ok(())
     }
 
+    fn push_rc_sgas(&mut self, sgas: &Vec<(RcCornflake<Self>, utils::AddressInfo)>) -> Result<()>
+    where
+        Self: Sized,
+    {
+        let push_processing_start = Instant::now();
+        let push_processing_timer =
+            self.get_timer(PUSH_PROCESSING_TIMER, cfg!(feature = "timers"))?;
+        record(
+            push_processing_timer,
+            push_processing_start.elapsed().as_nanos() as u64,
+        )?;
+        let mut pkts: Vec<wrapper::Pkt> =
+            sgas.iter().map(|(_sga, _)| wrapper::Pkt::init()).collect();
+
+        let headers: Vec<utils::HeaderInfo> = sgas
+            .iter()
+            .map(|(_, addr)| self.get_outgoing_header(addr))
+            .collect();
+        let pkt_construct_timer = self.get_timer(PKT_CONSTRUCT_TIMER, cfg!(feature = "timers"))?;
+        let use_scatter_gather = self.use_scatter_gather;
+        timefunc(
+            &mut || {
+                for (i, (((ref sga, _), ref header), ref mut pkt)) in sgas
+                    .iter()
+                    .zip(headers.iter())
+                    .zip(pkts.iter_mut())
+                    .enumerate()
+                {
+                    if use_scatter_gather {
+                        pkt.construct_from_sga(
+                            &mut self.send_mbufs,
+                            i,
+                            sga,
+                            self.default_mempool,
+                            self.extbuf_mempool,
+                            header,
+                            &self.mempool_allocator,
+                            &self.external_memory_regions,
+                            self.splits_per_chunk,
+                        )
+                        .wrap_err(format!(
+                            "Unable to construct pkt from sga with scatter-gather, sga idx: {}",
+                            sga.get_id()
+                        ))?;
+                    } else {
+                        pkt.construct_from_sga_without_scatter_gather(
+                            &mut self.send_mbufs,
+                            i,
+                            sga,
+                            self.default_mempool,
+                            header,
+                        )
+                        .wrap_err(format!(
+                            "Unable to construct pkt from sga without scatter-gather, sga idx: {}",
+                            sga.get_id()
+                        ))?;
+                    }
+                }
+                Ok(())
+            },
+            cfg!(feature = "timers"),
+            pkt_construct_timer,
+        )?;
+        tracing::debug!("Constructed packet.");
+
+        // if client, add start time for packet
+        // if server, end packet processing counter
+        match self.mode {
+            AppMode::Server => {
+                if cfg!(feature = "timers") {
+                    for (sga, addr) in sgas.iter() {
+                        self.end_entry(PROCESSING_TIMER, sga.get_id(), addr.ipv4_addr)?;
+                    }
+                }
+            }
+            AppMode::Client => {
+                for (sga, _) in sgas.iter() {
+                    // only insert new time IF this packet has not already been sent
+                    if !self.outgoing_window.contains_key(&sga.get_id()) {
+                        let _ = self.outgoing_window.insert(sga.get_id(), Instant::now());
+                    }
+                }
+            }
+        }
+
+        // send out the scatter-gather array
+        let mbuf_ptr = &mut self.send_mbufs[0][0] as _;
+        timefunc(
+            &mut || {
+                wrapper::tx_burst(self.dpdk_port, self.queue_id, mbuf_ptr, sgas.len() as u16)
+                    .wrap_err(format!("Failed to send SGAs."))
+            },
+            cfg!(feature = "timers"),
+            self.get_timer(TX_BURST_TIMER, cfg!(feature = "timers"))?,
+        )?;
+
+        Ok(())
+    }
     /// Sends out a cornflake to the given Ipv4Addr.
     /// Returns an error if the address is not present in the ip_to_mac table,
     /// or if there is a problem constructing a linked list of mbufs to copy/attach the cornflake
@@ -642,6 +746,8 @@ impl Datapath for DPDKConnection {
     /// out.
     /// * addr - Ipv4Addr to send the given scatter-gather array to.
     fn push_sgas(&mut self, sgas: &Vec<(impl ScatterGather, utils::AddressInfo)>) -> Result<()> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Push sgas func");
         let push_processing_start = Instant::now();
         let push_processing_timer =
             self.get_timer(PUSH_PROCESSING_TIMER, cfg!(feature = "timers"))?;

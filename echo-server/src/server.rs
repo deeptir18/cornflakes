@@ -12,6 +12,7 @@ use std::{
 
 pub struct EchoServer<S, D> {
     serializer: S,
+    echo_pkt_mode: bool,
     _marker: PhantomData<D>,
 }
 
@@ -23,8 +24,13 @@ where
     pub fn new(serializer: S) -> EchoServer<S, D> {
         EchoServer {
             serializer: serializer,
+            echo_pkt_mode: false,
             _marker: PhantomData,
         }
+    }
+
+    pub fn set_echo_pkt_mode(&mut self) {
+        self.echo_pkt_mode = true;
     }
 }
 
@@ -50,6 +56,13 @@ where
         mut sgas: Vec<(ReceivedPkt<<Self as ServerSM>::Datapath>, Duration)>,
         conn: &mut D,
     ) -> Result<()> {
+        if self.echo_pkt_mode {
+            // echo the incoming received pkts
+            let outgoing_pkts: Vec<ReceivedPkt<Self::Datapath>> =
+                sgas.into_iter().map(|(pkt, _)| pkt).collect();
+            conn.echo(outgoing_pkts)?;
+            return Ok(());
+        }
         let mut out_sgas: Vec<(RcCornflake<D>, AddressInfo)> = Vec::with_capacity(sgas.len());
         let mut contexts: Vec<S::Ctx> = Vec::default();
         for (_i, (in_sga, _)) in sgas.iter().enumerate() {

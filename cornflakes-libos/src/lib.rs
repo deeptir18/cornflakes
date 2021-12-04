@@ -26,6 +26,12 @@ use std::{
 };
 use timing::HistogramWrapper;
 use utils::AddressInfo;
+
+#[cfg(feature = "profiler")]
+use perftools;
+#[cfg(feature = "profiler")]
+const PROFILER_DEPTH: usize = 10;
+
 pub static mut USING_REF_COUNTING: bool = true;
 pub type MsgID = u32;
 
@@ -523,6 +529,21 @@ where
         }
     }
 
+    #[inline]
+    pub fn get_inner(&self) -> &D::DatapathPkt {
+        &self.buf
+    }
+
+    #[inline]
+    pub fn get_len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    pub fn get_offset(&self) -> usize {
+        self.offset
+    }
+
     pub fn new_with_bounds(buf: &D::DatapathPkt, offset: usize, len: usize) -> Self {
         // increment the ref count of the datapath packet
         let owned_buf = buf.clone();
@@ -550,14 +571,6 @@ where
         buf.set_len(len);
         buf.set_offset(offset);
         Ok(buf)
-    }
-
-    pub fn get_offset(&self) -> usize {
-        self.offset
-    }
-
-    pub fn get_len(&self) -> usize {
-        self.len
     }
 
     pub fn get_buf(&self) -> D::DatapathPkt {
@@ -666,6 +679,9 @@ where
 pub trait RefCnt {
     // drops inner variable (for debugging)
     fn free_inner(&mut self);
+
+    // TODO: change implementation to get rid of CfBuf object completely
+    fn inner_offset(&self) -> usize;
 
     fn count_rc(&self) -> usize;
 
@@ -840,6 +856,18 @@ pub trait Datapath {
 
     /// Send a single buffer to the specified address.
     fn push_buf(&mut self, buf: (MsgID, &[u8]), addr: utils::AddressInfo) -> Result<()>;
+
+    /// Echo back a received packet.
+    fn echo(&mut self, _pkts: Vec<ReceivedPkt<Self>>) -> Result<()>
+    where
+        Self: Sized,
+    {
+        Ok(())
+    }
+
+    fn push_rc_sgas(&mut self, sga: &Vec<(RcCornflake<Self>, utils::AddressInfo)>) -> Result<()>
+    where
+        Self: Sized;
 
     /// Send a scatter-gather array to the specified address.
     fn push_sgas(&mut self, sga: &Vec<(impl ScatterGather, utils::AddressInfo)>) -> Result<()>;
@@ -1057,9 +1085,34 @@ pub trait ServerSM {
     /// * datapath - Object that implements Datapath trait, representing a connection using the
     /// underlying networking stack.
     fn run_state_machine(&mut self, datapath: &mut Self::Datapath) -> Result<()> {
+        // run profiler from here
+        #[cfg(feature = "profiler")]
+        perftools::profiler::reset();
+        let mut last_log: Instant = Instant::now();
+        let mut requests_processed = 0;
         loop {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Run state machine loop");
+
+            #[cfg(feature = "profiler")]
+            {
+                if last_log.elapsed() > Duration::from_secs(5) {
+                    let d = Instant::now() - last_log;
+                    tracing::info!(
+                        "Server processed {} # of reqs since last dump at rate of {:.2} reqs/s",
+                        requests_processed,
+                        requests_processed as f64 / d.as_secs_f64()
+                    );
+                    perftools::profiler::write(&mut std::io::stdout(), Some(PROFILER_DEPTH))
+                        .unwrap();
+                    perftools::profiler::reset();
+                    requests_processed = 0;
+                    last_log = Instant::now();
+                }
+            }
             let pkts = datapath.pop()?;
             if pkts.len() > 0 {
+                requests_processed += pkts.len();
                 // give ownership of the received packets to the app.
                 self.process_requests(pkts, datapath)?;
             }

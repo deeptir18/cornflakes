@@ -14,6 +14,9 @@ use cornflakes_libos::{
 use hashbrown::HashMap;
 use std::marker::PhantomData;
 
+#[cfg(feature = "profiler")]
+use perftools;
+
 // empty object
 pub struct CornflakesDynamicSerializer<D>
 where
@@ -38,12 +41,15 @@ where
     }
 
     fn handle_get<'a>(
-        &self,
+        &mut self,
         mut pkt: ReceivedPkt<D>,
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
         offset: usize,
     ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Handle get cornflakes");
+
         match num_values {
             0 => {
                 bail!("Number of get values cannot be 0");
@@ -51,16 +57,31 @@ where
             1 => {
                 // deserialize request
                 let mut get_request = kv_messages::GetReq::<D>::new();
-                get_request.deserialize(&pkt, offset)?;
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Deserialize pkt");
+                    get_request.deserialize(&pkt, offset)?;
+                }
                 tracing::debug!(
                     "Received get request for key: {:?}",
                     get_request.get_key().to_str()?
                 );
                 let key = get_request.get_key();
-                let value = match map.get(key.to_str()?) {
-                    Some(v) => v,
-                    None => {
-                        bail!("Cannot find value for key in KV store: {:?}", key);
+                let value = {
+                    let key_str = {
+                        #[cfg(feature = "profiler")]
+                        perftools::timer!("re-encode str");
+                        key.to_str()?
+                    };
+                    {
+                        #[cfg(feature = "profiler")]
+                        perftools::timer!("Query key");
+                        match map.get(key_str) {
+                            Some(v) => v,
+                            None => {
+                                bail!("Cannot find value for key in KV store: {:?}", key);
+                            }
+                        }
                     }
                 };
                 tracing::debug!("Found val for key {:?}: value {:?}", key.to_str()?, value);
@@ -68,34 +89,65 @@ where
                 // construct response
                 let mut response = kv_messages::GetResp::<D>::new();
                 response.set_id(get_request.get_id());
-                response.set_val_rc(value.clone());
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Set val rc");
+                    response.set_val_rc(value.clone());
+                }
 
                 // serialize response
-                let (header_vec, cf) = response.serialize(rte_memcpy)?;
+                let (header_vec, cf) = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Serialize resp");
+                    response.serialize(rte_memcpy)?
+                };
                 return Ok((header_vec, cf));
             }
             x => {
                 let mut getm_request = kv_messages::GetMReq::<D>::new();
-                getm_request.deserialize(&pkt, offset)?;
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Deserialize pkt");
+                    getm_request.deserialize(&pkt, offset)?;
+                }
                 let keys = getm_request.get_keys();
                 tracing::debug!("Handling getm request with {} values", x);
 
                 let mut getm_response = kv_messages::GetMResp::<D>::new();
                 getm_response.set_id(getm_request.get_id());
-                getm_response.init_vals(x);
+                getm_response.init_vals(num_values);
                 let values = getm_response.get_mut_vals();
                 for i in 0..x {
                     let key = &keys[i];
-                    let value = match map.get(key.to_str()?) {
-                        Some(v) => v,
-                        None => {
-                            bail!("Cannot find value for key in KV store: {:?}", key);
+                    let value = {
+                        let key_str = {
+                            #[cfg(feature = "profiler")]
+                            perftools::timer!("re-encode str");
+                            key.to_str()?
+                        };
+                        {
+                            #[cfg(feature = "profiler")]
+                            perftools::timer!("Query key 1");
+                            match map.get(key_str) {
+                                Some(v) => v,
+                                None => {
+                                    bail!("Cannot find value for key in KV store: {:?}", key);
+                                }
+                            }
                         }
                     };
-                    values.append(CFBytes::new_rc(value.clone()));
+                    {
+                        #[cfg(feature = "profiler")]
+                        perftools::timer!("Set val rc");
+                        values.append(CFBytes::new_rc(value.clone()));
+                    }
                 }
 
-                let (header_vec, cf) = getm_response.serialize(rte_memcpy)?;
+                let (header_vec, cf) = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Serialize resp");
+                    getm_response.serialize(rte_memcpy)?
+                };
                 if unsafe { !USING_REF_COUNTING } {
                     pkt.free_inner();
                 }

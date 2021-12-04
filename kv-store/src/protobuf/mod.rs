@@ -39,7 +39,7 @@ where
     }
 
     fn handle_get<'a>(
-        &self,
+        &mut self,
         pkt: ReceivedPkt<D>,
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,

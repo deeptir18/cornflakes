@@ -1020,6 +1020,10 @@ where
         }
     }
 
+    pub fn clear(&mut self) {
+        self.elts.clear();
+    }
+
     pub fn append(&mut self, val: T) {
         assert!(self.num_set < self.num_space);
         tracing::debug!("Appending to the list");
