@@ -794,6 +794,14 @@ where
     /// would span two segments).
     pub fn contiguous_slice(&self, offset: usize, len: usize) -> Result<&[u8]> {
         let (seg, seg_off) = self.index_at_offset(offset);
+        tracing::debug!(
+            off = offset,
+            len = len,
+            seg = seg,
+            seg_off = seg_off,
+            buf_len = self.index(seg).buf_size(),
+            "Params"
+        );
         ensure!(
             (self.index(seg).buf_size() - seg_off) >= len,
             "Given params cannot create a contiguous slice, would span two boundaries."
@@ -858,12 +866,9 @@ pub trait Datapath {
     fn push_buf(&mut self, buf: (MsgID, &[u8]), addr: utils::AddressInfo) -> Result<()>;
 
     /// Echo back a received packet.
-    fn echo(&mut self, _pkts: Vec<ReceivedPkt<Self>>) -> Result<()>
+    fn echo(&mut self, pkts: Vec<ReceivedPkt<Self>>) -> Result<()>
     where
-        Self: Sized,
-    {
-        Ok(())
-    }
+        Self: Sized;
 
     fn push_rc_sgas(&mut self, sga: &Vec<(RcCornflake<Self>, utils::AddressInfo)>) -> Result<()>
     where

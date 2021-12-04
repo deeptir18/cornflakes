@@ -56,6 +56,10 @@ impl DPDKBuffer {
             offset: data_offset,
         }
     }
+
+    fn get_mbuf(&self) -> *mut rte_mbuf {
+        self.mbuf
+    }
 }
 
 impl Default for DPDKBuffer {
@@ -635,6 +639,32 @@ impl Datapath for DPDKConnection {
             self.get_timer(TX_BURST_TIMER, cfg!(feature = "timers"))?,
         )?;
 
+        Ok(())
+    }
+
+    fn echo(&mut self, pkts: Vec<ReceivedPkt<Self>>) -> Result<()>
+    where
+        Self: Sized,
+    {
+        let ct = pkts.len();
+        for (i, pkt) in pkts.iter().enumerate() {
+            // need to obtain ptr to original mbuf
+            // TODO: assumes that received packet only has one pointer
+            let dpdk_buffer = pkt.index(0);
+            let mbuf = dpdk_buffer.get_mbuf();
+            dpdk_call!(flip_headers(mbuf));
+            self.send_mbufs[0][i] = mbuf;
+        }
+        // send out the scatter-gather array
+        let mbuf_ptr = &mut self.send_mbufs[0][0] as _;
+        timefunc(
+            &mut || {
+                wrapper::tx_burst(self.dpdk_port, self.queue_id, mbuf_ptr, ct as u16)
+                    .wrap_err(format!("Failed to send SGAs."))
+            },
+            cfg!(feature = "timers"),
+            self.get_timer(TX_BURST_TIMER, cfg!(feature = "timers"))?,
+        )?;
         Ok(())
     }
 

@@ -100,6 +100,8 @@ extern "C" {
         our_ip: u32,
     ) -> bool;
 
+    fn flip_headers_(mbuf: *mut rte_mbuf);
+
     fn switch_headers_(rx_mbuf: *mut rte_mbuf, tx_mbuf: *mut rte_mbuf, payload_length: usize);
 
     fn shinfo_init_(
@@ -394,6 +396,11 @@ pub unsafe fn parse_packet(
     let mut payload_len: usize = 0;
     let valid = parse_packet_(mbuf, &mut payload_len as _, our_eth, our_ip);
     (valid, payload_len)
+}
+
+#[inline]
+pub unsafe fn flip_headers(mbuf: *mut rte_mbuf) {
+    flip_headers_(mbuf);
 }
 
 #[inline]

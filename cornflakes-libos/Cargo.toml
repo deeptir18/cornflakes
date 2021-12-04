@@ -35,7 +35,7 @@ tracing-error = "*"
 rand = "0.7.3"
 
 [features]
-default = ["mlx5", "profiler"]
+default = ["mlx5"]
 mlx5 = []
 timers = []
 profiler = []

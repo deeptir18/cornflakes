@@ -507,6 +507,41 @@ bool parse_packet_(struct rte_mbuf *mbuf, size_t *payload_len, const struct rte_
     return true;
 }
 
+void flip_headers_(struct rte_mbuf *mbuf) {
+	struct rte_ether_hdr *ptr_mac_hdr;
+	struct rte_ether_addr src_addr;
+	struct rte_ipv4_hdr *ptr_ipv4_hdr;
+	uint32_t src_ip_addr;
+	struct rte_udp_hdr *rte_udp_hdr;
+	uint16_t tmp_port;    
+    
+    /* swap src and dst ether addresses */
+    ptr_mac_hdr = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
+    rte_ether_addr_copy(&ptr_mac_hdr->s_addr, &src_addr);
+	rte_ether_addr_copy(&ptr_mac_hdr->d_addr, &ptr_mac_hdr->s_addr);
+	rte_ether_addr_copy(&src_addr, &ptr_mac_hdr->d_addr);
+
+
+	/* swap src and dst IP addresses */
+	ptr_ipv4_hdr = rte_pktmbuf_mtod_offset(mbuf, struct rte_ipv4_hdr *, RTE_ETHER_HDR_LEN);
+	src_ip_addr = ptr_ipv4_hdr->src_addr;
+	ptr_ipv4_hdr->src_addr = ptr_ipv4_hdr->dst_addr;
+	ptr_ipv4_hdr->dst_addr = src_ip_addr;
+
+	/* swap UDP ports */
+	rte_udp_hdr = rte_pktmbuf_mtod_offset(mbuf, struct rte_udp_hdr *,
+                                            RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
+	tmp_port = rte_udp_hdr->src_port;
+	rte_udp_hdr->src_port = rte_udp_hdr->dst_port;
+	rte_udp_hdr->dst_port = tmp_port;
+
+	/* enable computation of IPv4 checksum in hardware */
+    ptr_ipv4_hdr->hdr_checksum = 0;
+    mbuf->l2_len = RTE_ETHER_HDR_LEN;
+	mbuf->l3_len = sizeof(struct rte_ipv4_hdr);
+    mbuf->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
+}
+
 void switch_headers_(struct rte_mbuf *rx_buf, struct rte_mbuf *tx_buf, size_t payload_length) {
     /* swap src and dst ether addresses */
     struct rte_ether_hdr *rx_ptr_mac_hdr = rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);

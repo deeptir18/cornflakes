@@ -153,7 +153,7 @@ where
         ctx: &'registered Self::Ctx,
         cornflake: &mut RcCornflake<'registered, D>,
     ) -> Result<()> {
-        cornflake.replace(0, RcCornPtr::RawRef(ctx.as_slice()));
+        cornflake.add_entry(RcCornPtr::RawRef(ctx.as_slice()));
         Ok(())
     }
 
@@ -163,6 +163,7 @@ where
     ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
         match self.message_type {
             SimpleMessageType::List(list_elts) => {
+                tracing::info!("Processing list {} twocopy", list_elts);
                 let mut ctx = vec![0u8; self.context_size];
                 let rc_cornflake = RcCornflake::<D>::with_capacity(1);
                 for i in 0..list_elts {
@@ -246,7 +247,7 @@ where
                 unimplemented!();
             }
         }
-        self.sga.replace(0, RcCornPtr::RawRef(ctx.as_slice()));
+        self.sga.add_entry(RcCornPtr::RawRef(ctx.as_slice()));
         Ok(())
     }
 

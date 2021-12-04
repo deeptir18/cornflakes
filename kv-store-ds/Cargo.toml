@@ -41,7 +41,7 @@ cornflakes-utils = { path = "../cornflakes-utils" }
 [features]
 mlx5 = []
 
-default = ["mlx5", "profiler"]
+default = ["mlx5"]
 profiler = ["cornflakes-libos/profiler"]
 
 
