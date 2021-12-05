@@ -326,20 +326,19 @@ class EchoBench(runner.Experiment):
                                     ret.append(it)
             elif total_args.loop_mode == "motivation":
                 for trial in range(utils.NUM_TRIALS):
-                    for serialization in ALL_SERIALIZATION_LIBRARIES:
+                    for serialization in MOTIVATION_SERIALIZATION_LIBRARIES:
                         for rate in rates:
                             client_rate = [(rate, NUM_CLIENTS)]
                             num_threads = NUM_THREADS
                             message_type = MOTIVATION_MESSAGE_TYPE
                             for size in MOTIVATION_SIZES_TO_LOOP:
-                                size = MOTIVATION_SIZE
                                 it = EchoBenchIteration(client_rate,
-                                                    size,
-                                                    serialization,
-                                                    message_type,
-                                                    num_threads,
-                                                    trial=trial,
-                                                    ref_counting=not(total_args.no_ref_counting))
+                                                        size,
+                                                        serialization,
+                                                        message_type,
+                                                        num_threads,
+                                                        trial=trial,
+                                                        ref_counting=not(total_args.no_ref_counting))
                                 ret.append(it)
             return ret
 
@@ -347,11 +346,11 @@ class EchoBench(runner.Experiment):
         parser.add_argument("-l", "--logfile",
                             help="logfile name",
                             default="latencies.log")
+        parser.add_argument("-nrc", "--no_ref_counting",
+                            dest="no_ref_counting",
+                            action='store_true',
+                            help="Turn off reference counting in server.")
         if namespace.exp_type == "individual":
-            parser.add_argument("-nrc", "--no_ref_counting",
-                                dest="no_ref_counting",
-                                action='store_true',
-                                help="Turn off reference counting in server.")
             parser.add_argument("-nt", "--num_threads",
                                 dest="num_threads",
                                 type=int,
@@ -550,7 +549,7 @@ class EchoBench(runner.Experiment):
                                        metric, "individual", message_type,
                                        str(size)]
 
-                 sh.run(total_plot_args)
+                    sh.run(total_plot_args)
 
         elif args.loop_mode == "eval":
             for metric in metrics:

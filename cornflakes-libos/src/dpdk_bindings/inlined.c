@@ -507,13 +507,21 @@ bool parse_packet_(struct rte_mbuf *mbuf, size_t *payload_len, const struct rte_
     return true;
 }
 
-void flip_headers_(struct rte_mbuf *mbuf) {
+uint32_t read_pkt_id_(struct rte_mbuf *mbuf) {
+    uint32_t *id_slice;
+    id_slice = rte_pktmbuf_mtod_offset(mbuf, uint32_t *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
+    printf("[read_pkt_id] mbuf %p, id pointer %p\n", mbuf, id_slice);
+    return ntohl(*id_slice);
+}
+
+void flip_headers_(struct rte_mbuf *mbuf, uint32_t id) {
 	struct rte_ether_hdr *ptr_mac_hdr;
 	struct rte_ether_addr src_addr;
 	struct rte_ipv4_hdr *ptr_ipv4_hdr;
 	uint32_t src_ip_addr;
 	struct rte_udp_hdr *rte_udp_hdr;
-	uint16_t tmp_port;    
+	uint16_t tmp_port;
+    uint32_t *id_ptr;
     
     /* swap src and dst ether addresses */
     ptr_mac_hdr = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
@@ -540,6 +548,10 @@ void flip_headers_(struct rte_mbuf *mbuf) {
     mbuf->l2_len = RTE_ETHER_HDR_LEN;
 	mbuf->l3_len = sizeof(struct rte_ipv4_hdr);
     mbuf->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
+
+    id_ptr = rte_pktmbuf_mtod_offset(mbuf, uint32_t *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
+    *id_ptr = htonl(id);
+
 }
 
 void switch_headers_(struct rte_mbuf *rx_buf, struct rte_mbuf *tx_buf, size_t payload_length) {

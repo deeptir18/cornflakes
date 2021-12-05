@@ -521,6 +521,9 @@ impl<D> CfBuf<D>
 where
     D: Datapath,
 {
+    pub fn free_inner(&mut self) {
+        self.buf.free_inner();
+    }
     pub fn new(buf: D::DatapathPkt) -> Self {
         CfBuf {
             len: buf.buf_size(),
@@ -925,6 +928,8 @@ pub trait Datapath {
     /// What is the transport header size for this datapath
     fn get_header_size(&self) -> usize;
 
+    fn allocate_tx(&self, len: usize) -> Result<Self::DatapathPkt>;
+
     /// Allocate a datapath buffer (registered) with this size and alignment.
     fn allocate(&self, size: usize, alignment: usize) -> Result<Self::DatapathPkt>;
 }
@@ -1093,31 +1098,31 @@ pub trait ServerSM {
         // run profiler from here
         #[cfg(feature = "profiler")]
         perftools::profiler::reset();
-        let mut last_log: Instant = Instant::now();
-        let mut requests_processed = 0;
+        let mut _last_log: Instant = Instant::now();
+        let mut _requests_processed = 0;
         loop {
             #[cfg(feature = "profiler")]
             perftools::timer!("Run state machine loop");
 
             #[cfg(feature = "profiler")]
             {
-                if last_log.elapsed() > Duration::from_secs(5) {
-                    let d = Instant::now() - last_log;
+                if _last_log.elapsed() > Duration::from_secs(5) {
+                    let d = Instant::now() - _last_log;
                     tracing::info!(
                         "Server processed {} # of reqs since last dump at rate of {:.2} reqs/s",
-                        requests_processed,
-                        requests_processed as f64 / d.as_secs_f64()
+                        _requests_processed,
+                        _requests_processed as f64 / d.as_secs_f64()
                     );
                     perftools::profiler::write(&mut std::io::stdout(), Some(PROFILER_DEPTH))
                         .unwrap();
                     perftools::profiler::reset();
-                    requests_processed = 0;
-                    last_log = Instant::now();
+                    _requests_processed = 0;
+                    _last_log = Instant::now();
                 }
             }
             let pkts = datapath.pop()?;
             if pkts.len() > 0 {
-                requests_processed += pkts.len();
+                _requests_processed += pkts.len();
                 // give ownership of the received packets to the app.
                 self.process_requests(pkts, datapath)?;
             }

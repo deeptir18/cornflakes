@@ -219,6 +219,7 @@ where
     fn process_msg<'registered>(
         &self,
         recved_message: &'registered ReceivedPkt<D>,
+        _conn: &mut D,
     ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
         let mut ctx = vec![0u8; self.context_size];
         match self.message_type {

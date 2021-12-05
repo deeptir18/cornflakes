@@ -351,6 +351,7 @@ where
     fn process_msg<'registered>(
         &self,
         recved_msg: &'registered ReceivedPkt<D>,
+        _conn: &mut D,
     ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
         tracing::debug!(
             "Received packet addr: {:?}",

@@ -44,6 +44,7 @@ where
     fn process_msg<'registered>(
         &self,
         _recved_msg: &'registered ReceivedPkt<D>,
+        _conn: &mut D,
     ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
         Ok(((), RcCornflake::default()))
     }
@@ -94,6 +95,7 @@ where
     fn process_msg<'registered>(
         &self,
         recved_msg: &'registered ReceivedPkt<D>,
+        _conn: &mut D,
     ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
         match self.message_type {
             SimpleMessageType::List(list_elts) => {
@@ -141,7 +143,7 @@ where
     type Ctx = Vec<u8>;
 
     fn new_context(&self) -> Self::Ctx {
-        vec![0u8; self.context_size]
+        unimplemented!();
     }
 
     fn message_type(&self) -> SimpleMessageType {
@@ -160,23 +162,28 @@ where
     fn process_msg<'registered>(
         &self,
         recved_msg: &'registered ReceivedPkt<D>,
+        _conn: &mut D,
     ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
         match self.message_type {
             SimpleMessageType::List(list_elts) => {
-                tracing::info!("Processing list {} twocopy", list_elts);
-                let mut ctx = vec![0u8; self.context_size];
+                tracing::debug!("Processing list {} twocopy", list_elts);
+                let mut ctx: Vec<u8> = Vec::with_capacity(self.context_size);
                 let rc_cornflake = RcCornflake::<D>::with_capacity(1);
                 for i in 0..list_elts {
                     let contiguous_slice =
                         recved_msg.contiguous_slice(i * self.chunk_size, self.chunk_size)?;
-                    unsafe {
+                    tracing::debug!("Copying {} at off {}", self.chunk_size, i * self.chunk_size);
+                    ctx.extend_from_slice(contiguous_slice);
+                    /*unsafe {
                         rte_memcpy(
-                            (ctx.as_mut_slice().as_mut_ptr()).offset((self.chunk_size * i) as isize)
+                            ctx.as_mut()
+                                .as_mut_ptr()
+                                .offset((i * self.chunk_size) as isize)
                                 as _,
                             contiguous_slice.as_ptr() as _,
                             self.chunk_size,
                         );
-                    }
+                    }*/
                 }
                 Ok((ctx, rc_cornflake))
             }

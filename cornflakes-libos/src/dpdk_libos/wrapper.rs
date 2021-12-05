@@ -964,6 +964,13 @@ pub fn rx_burst(
         match check_valid_packet(pkt, my_addr_info) {
             Some((id, hdr, size)) => {
                 valid_packets.insert(i as usize, (id, hdr, size));
+                /*tracing::info!(
+                    "Pkt index {}, c id {}, rust id {}, addr {:?}",
+                    i,
+                    dpdk_call!(read_pkt_id(pkt)),
+                    id,
+                    pkt
+                );*/
             }
             None => {
                 tracing::debug!("Queue {} received invalid packet", queue_id);
@@ -1027,7 +1034,6 @@ fn check_valid_packet(
     );
 
     let msg_id = utils::parse_msg_id(id_hdr_slice);
-
     Some((
         msg_id,
         (utils::AddressInfo::new(src_port, src_ip, src_eth)),

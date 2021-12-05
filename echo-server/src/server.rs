@@ -66,7 +66,7 @@ where
         let mut out_sgas: Vec<(RcCornflake<D>, AddressInfo)> = Vec::with_capacity(sgas.len());
         let mut contexts: Vec<S::Ctx> = Vec::default();
         for (_i, (in_sga, _)) in sgas.iter().enumerate() {
-            let (header_ctx, mut out_sga) = self.serializer.process_msg(&in_sga)?;
+            let (header_ctx, mut out_sga) = self.serializer.process_msg(&in_sga, conn)?;
             out_sga.set_id(in_sga.get_id());
             out_sgas.push((out_sga, in_sga.get_addr().clone()));
             contexts.push(header_ctx);

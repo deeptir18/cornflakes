@@ -437,6 +437,7 @@ where
     fn process_msg<'registered>(
         &self,
         recved_msg: &'registered ReceivedPkt<D>,
+        _conn: &mut D,
     ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
         let mut ctx = FlatBufferBuilder::new_with_capacity(self.context_size);
         let mut cf = Cornflake::with_capacity(1);

@@ -178,6 +178,7 @@ where
     fn process_msg<'registered>(
         &self,
         recved_msg: &'registered ReceivedPkt<D>,
+        _conn: &mut D,
     ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
         let mut ctx = Vec::default();
         let mut output_stream = CodedOutputStream::vec(&mut ctx);

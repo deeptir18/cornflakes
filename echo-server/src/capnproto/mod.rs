@@ -465,6 +465,7 @@ where
     fn process_msg<'registered>(
         &self,
         recved_msg: &'registered ReceivedPkt<D>,
+        _conn: &mut D,
     ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
         let (mut framing_vec, mut builder) = (vec![0u8; self.framing_size], Builder::new_default());
         let segment_array_vec = read_context(recved_msg);

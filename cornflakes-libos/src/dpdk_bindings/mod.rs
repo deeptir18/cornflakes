@@ -100,7 +100,9 @@ extern "C" {
         our_ip: u32,
     ) -> bool;
 
-    fn flip_headers_(mbuf: *mut rte_mbuf);
+    fn flip_headers_(mbuf: *mut rte_mbuf, id: u32);
+
+    fn read_pkt_id_(mbuf: *mut rte_mbuf) -> u32;
 
     fn switch_headers_(rx_mbuf: *mut rte_mbuf, tx_mbuf: *mut rte_mbuf, payload_length: usize);
 
@@ -399,8 +401,13 @@ pub unsafe fn parse_packet(
 }
 
 #[inline]
-pub unsafe fn flip_headers(mbuf: *mut rte_mbuf) {
-    flip_headers_(mbuf);
+pub unsafe fn read_pkt_id(mbuf: *mut rte_mbuf) -> u32 {
+    read_pkt_id_(mbuf)
+}
+
+#[inline]
+pub unsafe fn flip_headers(mbuf: *mut rte_mbuf, id: u32) {
+    flip_headers_(mbuf, id);
 }
 
 #[inline]

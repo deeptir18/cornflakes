@@ -60,6 +60,7 @@ where
     fn process_msg<'registered>(
         &self,
         recved_msg: &'registered ReceivedPkt<DatapathImpl>,
+        conn: &mut DatapathImpl,
     ) -> Result<(Self::Ctx, RcCornflake<'registered, DatapathImpl>)>;
 
     fn process_header<'registered>(
@@ -69,6 +70,10 @@ where
     ) -> Result<()>;
 
     fn new_context(&self) -> Self::Ctx;
+
+    fn _free_context<'registered>(&self, _ctx: &'registered mut Self::Ctx) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub trait CerealizeClient<'normal, DatapathImpl>
