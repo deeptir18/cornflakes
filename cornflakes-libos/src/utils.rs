@@ -41,7 +41,7 @@ impl TryFrom<u16> for EtherType2 {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, Eq, Hash)]
 pub struct AddressInfo {
     pub udp_port: u16,
     pub ipv4_addr: Ipv4Addr,

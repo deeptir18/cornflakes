@@ -898,6 +898,7 @@ pub fn fill_in_header(
 
     // Write per-packet-id in
     utils::write_pkt_id(id, id_hdr_slice)?;
+
     Ok(utils::TOTAL_HEADER_SIZE)
 }
 
@@ -960,25 +961,17 @@ pub fn rx_burst(
     let mut valid_packets: HashMap<usize, (MsgID, utils::AddressInfo, usize)> = HashMap::new();
     let num_received = dpdk_call!(rte_eth_rx_burst(port_id, queue_id, rx_pkts, nb_pkts));
     for i in 0..num_received {
-        let pkt = unsafe { *rx_pkts.offset(i as isize) };
+        let pkt = unsafe { *(rx_pkts.offset(i as isize)) };
         match check_valid_packet(pkt, my_addr_info) {
             Some((id, hdr, size)) => {
                 valid_packets.insert(i as usize, (id, hdr, size));
-                /*tracing::info!(
-                    "Pkt index {}, c id {}, rust id {}, addr {:?}",
-                    i,
-                    dpdk_call!(read_pkt_id(pkt)),
-                    id,
-                    pkt
-                );*/
             }
             None => {
-                tracing::debug!("Queue {} received invalid packet", queue_id);
+                tracing::debug!("Queue {} received invalid packet, idx {}", queue_id, i,);
                 dpdk_call!(rte_pktmbuf_free(pkt));
             }
         }
     }
-
     Ok(valid_packets)
 }
 
@@ -1027,13 +1020,7 @@ fn check_valid_packet(
         }
     };
 
-    let id_hdr_slice = mbuf_slice!(
-        pkt,
-        utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE + utils::UDP_HEADER2_SIZE,
-        4
-    );
-
-    let msg_id = utils::parse_msg_id(id_hdr_slice);
+    let msg_id = dpdk_call!(read_pkt_id(pkt));
     Some((
         msg_id,
         (utils::AddressInfo::new(src_port, src_ip, src_eth)),

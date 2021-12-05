@@ -191,6 +191,7 @@ pub struct DPDKConnection {
     send_mbufs: [[*mut rte_mbuf; wrapper::RECEIVE_BURST_SIZE as usize]; wrapper::MAX_SCATTERS],
     /// Mbufs used for rx_burst.
     recv_mbufs: [*mut rte_mbuf; wrapper::RECEIVE_BURST_SIZE as usize],
+
     /// For scatter-gather mode debugging: splits per chunk of data
     splits_per_chunk: usize,
 }
@@ -648,27 +649,22 @@ impl Datapath for DPDKConnection {
     {
         let ct = pkts.len();
         for (i, pkt) in pkts.iter().enumerate() {
+            // temporary: just free pkt
             // need to obtain ptr to original mbuf
             // TODO: assumes that received packet only has one pointer
             let dpdk_buffer = pkt.index(0);
             let mbuf = dpdk_buffer.get_mbuf();
-            tracing::info!(
+            tracing::debug!(
                 "Echoing packet with id {}, mbuf addr {:?}, refcnt {}",
                 pkt.get_id(),
                 mbuf,
                 wrapper::refcnt(mbuf)
             );
+            // increment ref count so that it does not get dropped here:
+            // OTHERWISE THERE IS A RACE
+            // CONDITION
             dpdk_call!(flip_headers(mbuf, pkt.get_id()));
-            // TODO: should not need to flip id. why is read id getting corrupted?
-            ensure!(
-                pkt.get_id() == dpdk_call!(read_pkt_id(mbuf)),
-                format!(
-                    "pkt id {}, read_id {} mbuf {:?}, not equal",
-                    pkt.get_id(),
-                    dpdk_call!(read_pkt_id(mbuf)),
-                    mbuf
-                )
-            );
+            dpdk_call!(rte_pktmbuf_refcnt_update_or_free(mbuf, 1));
             self.send_mbufs[0][i] = mbuf;
         }
         // send out the scatter-gather array
@@ -903,51 +899,20 @@ impl Datapath for DPDKConnection {
         )
         .wrap_err("Error on calling rte_eth_rx_burst.")?;
         let mut ret: Vec<(ReceivedPkt<Self>, Duration)> = Vec::new();
-        for (idx, (msg_id, _, _)) in received.iter() {
-            let pkt = self.recv_mbufs[*idx];
-            tracing::info!(
-                "[right after tx burst ] Pkt index {}, c id {}, rust id {}, addr {:?}",
-                idx,
-                dpdk_call!(read_pkt_id(pkt)),
-                msg_id,
-                pkt
-            );
-        }
 
         // Debugging end to end processing time
-        /*if cfg!(feature = "timers") && self.mode == AppMode::Server {
+        if cfg!(feature = "timers") && self.mode == AppMode::Server {
             for (_, (msg_id, addr_info, _data_len)) in received.iter() {
                 self.start_entry(PROCESSING_TIMER, *msg_id, addr_info.ipv4_addr.clone())?;
             }
-        }*/
-        for (idx, (msg_id, _, _)) in received.iter() {
-            let pkt = self.recv_mbufs[*idx];
-            tracing::info!(
-                "[before received len check ] Pkt index {}, c id {}, rust id {}, addr {:?}",
-                idx,
-                dpdk_call!(read_pkt_id(pkt)),
-                msg_id,
-                pkt
-            );
         }
 
         if received.len() > 0 {
-            for (idx, (msg_id, _, _)) in received.iter() {
-                let pkt = self.recv_mbufs[*idx];
-                tracing::info!(
-                    "[after received len check] Pkt index {}, c id {}, rust id {}, addr {:?}",
-                    idx,
-                    dpdk_call!(read_pkt_id(pkt)),
-                    msg_id,
-                    pkt
-                );
-            }
-
             tracing::debug!(queue_id = self.queue_id, "Received some packs");
-            /*let pop_processing_timer = self.get_timer(
+            let pop_processing_timer = self.get_timer(
                 POP_PROCESSING_TIMER,
                 cfg!(feature = "timers") && self.mode == AppMode::Server,
-            )?;*/
+            )?;
 
             let start = Instant::now();
             for (idx, (msg_id, addr_info, _data_len)) in received.iter() {
@@ -955,26 +920,6 @@ impl Datapath for DPDKConnection {
                 if mbuf.is_null() {
                     bail!("Mbuf for index {} in returned array is null.", idx);
                 }
-                tracing::info!(
-                    mbuf_addr =? mbuf,
-                    data_len = unsafe { (*mbuf).data_len as usize },
-                    id = *msg_id,
-                    read_id = dpdk_call!(read_pkt_id(mbuf)),
-                    pkt_len = unsafe { (*mbuf).pkt_len as usize },
-                    "Received pkt # {} in array",
-                    idx
-                );
-                // TODO: sometimes this check is failing for the raw packet echo.
-                // not clear why
-                ensure!(
-                    *msg_id == dpdk_call!(read_pkt_id(mbuf)),
-                    format!(
-                        "msg_id {} does not match read_id {} for mbuf {:?}",
-                        *msg_id,
-                        dpdk_call!(read_pkt_id(mbuf)),
-                        mbuf
-                    )
-                );
                 let received_buffer = vec![DPDKBuffer::new(
                     mbuf,
                     utils::TOTAL_HEADER_SIZE,
@@ -995,7 +940,7 @@ impl Datapath for DPDKConnection {
                 };
                 ret.push((received_pkt, duration));
             }
-            //record(pop_processing_timer, start.elapsed().as_nanos() as u64)?;
+            record(pop_processing_timer, start.elapsed().as_nanos() as u64)?;
         }
         Ok(ret)
     }

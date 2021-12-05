@@ -11,14 +11,15 @@ STRIP_THRESHOLD = 0.03
 # SIZES_TO_LOOP = [1024, 2048, 4096, 8192]
 NUM_THREADS = 4
 NUM_CLIENTS = 2
+NUM_CLIENTS_MOTIVATION = 3
 SIZES_TO_LOOP = [512, 4096]
 MESSAGE_TYPES = ["single"]
 MESSAGE_TYPES.extend(["list-1", "list-2", "list-4", "list-8",
                      "tree-2", "tree-1", "tree-3"])
-rates = [5000, 10000, 15000, 25000, 35000, 45000, 55000,
+rates = [2500, 5000, 10000, 15000, 25000, 35000, 45000, 55000,
          65000, 75000, 85000, 95000, 105000, 115000, 125000,
          135000, 145000, 155000, 165000,
-         175000, 185000, 200000]
+         175000, 185000, 200000, 220000, 240000, 280000, 300000, 320000, 360000, 400000]
 SERIALIZATION_LIBRARIES = ["cornflakes-dynamic",  # "cereal", "capnproto", "protobuf",
                            # "flatbuffers",  # "cornflakes-fixed",
                            # "cornflakes1c-fixed"]  # "cornflakes1c-fixed", "protobuf", "capnproto",
@@ -29,7 +30,7 @@ ALL_SERIALIZATION_LIBRARIES = ["ideal", "onecopy", "twocopy",
                                "cornflakes-dynamic", "cornflakes1c-dynamic",
                                "flatbuffers", "capnproto", "cereal", "protobuf"]
 MOTIVATION_MESSAGE_TYPE = "list-2"
-MOTIVATION_SIZES_TO_LOOP = [512, 1024, 2048, 4096]
+MOTIVATION_SIZES_TO_LOOP = [1024]
 
 
 def parse_client_time_and_pkts(line):
@@ -328,7 +329,7 @@ class EchoBench(runner.Experiment):
                 for trial in range(utils.NUM_TRIALS):
                     for serialization in MOTIVATION_SERIALIZATION_LIBRARIES:
                         for rate in rates:
-                            client_rate = [(rate, NUM_CLIENTS)]
+                            client_rate = [(rate, NUM_CLIENTS_MOTIVATION)]
                             num_threads = NUM_THREADS
                             message_type = MOTIVATION_MESSAGE_TYPE
                             for size in MOTIVATION_SIZES_TO_LOOP:
