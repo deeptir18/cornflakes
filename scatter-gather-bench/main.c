@@ -114,6 +114,8 @@ static char* latency_log = NULL;
 static char *threads_log = NULL;
 static int has_threads_log = 0;
 static int has_latency_log = 0;
+static pthread_t threads[MAX_THREADS];
+
 
 struct tx_pktmbuf_priv
 {
@@ -430,7 +432,6 @@ static size_t num_total_machines = 1;
 static size_t machine_id = 0;
 static uint64_t client_random_seed = 0;
 static size_t client_id = 0; // out of all the separate clients sending, which client am I
-static pthread_t threads[MAX_THREADS];
 static cpu_set_t cpusets[MAX_THREADS];
 static uint16_t dpdk_nbports;
 static uint8_t mode;
@@ -606,6 +607,8 @@ static void initialize_client_requests_common(size_t num_total_clients) {
 
 // initialize specific part of client header (per thread)
 static void initialize_client_header(uint32_t ip, uint16_t port, size_t client_id) {
+    static __thread int thread_id;
+    thread_id = client_id;
     size_t client_payload_size = sizeof(uint64_t) * (2 + (size_t)num_mbufs);
     size_t num_requests = (size_t)((float)seconds * rate * 1.20);
     // initialize timestamps for each thread
@@ -1180,7 +1183,7 @@ static int parse_packet(struct sockaddr_in *src,
     struct rte_ether_addr mac_addr = {};
 
     rte_eth_macaddr_get(our_dpdk_port_id, &mac_addr);
-    if (!rte_is_same_ether_addr(&mac_addr, &eth_hdr->d_addr) && !rte_is_same_ether_addr(&ether_broadcast, &eth_hdr->d_addr)) {
+    if (!rte_is_same_ether_addr(&mac_addr, &eth_hdr->d_addr)) {
         printf("Bad MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
             eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
@@ -1387,7 +1390,9 @@ static void * do_client(void *client) {
     int total_pkts_required = calculate_total_pkts_required(segment_size, num_mbufs);
     size_t header_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr);
     // todo: ends up getting padded to be 60 or something
-    size_t client_payload_size = sizeof(uint64_t) * (1 + num_mbufs);
+    size_t client_payload_size = sizeof(uint64_t) * (2 + num_mbufs);
+
+    NETPERF_INFO("About to enter sending loop\n");
     
     while (rte_get_timer_cycles_() < (start_time + seconds * rte_get_timer_hz_())) {
         NETPERF_DEBUG("Past cycle waiting, about to send");
@@ -1401,7 +1406,7 @@ static void * do_client(void *client) {
         current_request->timestamp = time_now(clock_offset);
         rte_memcpy((char *)ptr, (char *)&outgoing_headers[client_id], sizeof(OutgoingHeader));
         ptr += header_size;
-        rte_memcpy((char *)ptr, (char *)current_request + sizeof(uint64_t), client_payload_size);
+        rte_memcpy((char *)ptr, (char *)current_request + sizeof(uint64_t), client_payload_size - sizeof(uint64_t));
         
         /* extra dpdk metadata */
 
@@ -1470,6 +1475,7 @@ static void * do_client(void *client) {
     }
     end_time = rte_get_timer_cycles();
     float total_time = (float) (end_time - start_time) / rte_get_timer_hz(); 
+    NETPERF_INFO("Finished sending loop\n");
     printf("\nRan for %f seconds, sent %"PRIu64" packets.\n",
 			total_time, reqs);
     calculate_latencies(&packet_maps[client_id], &latency_dists[client_id], reqs, total_pkts_required);
@@ -1932,7 +1938,7 @@ static int spawn_client_threads() {
     initialize_client_requests_common(num_client_threads);
     static __thread int thread_id;
     int thread_results[MAX_THREADS];
-
+    
     // start a thread for each client 
     for (size_t i = 0; i < num_client_threads; i++) {
         thread_results[i] = pthread_create(&threads[i], NULL, do_client, (void *)i);
@@ -1985,6 +1991,7 @@ main(int argc, char **argv)
     }
 
     if (mode == MODE_UDP_CLIENT) {
+        printf("about to call spawn client threads\n");
         return spawn_client_threads();
     } else {
         // set up signal handler

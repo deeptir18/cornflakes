@@ -601,17 +601,17 @@ class ScatterGather(runner.Experiment):
         avg = utils.mean_func(sorted_latencies) / float(1000)
 
         if print_stats:
-            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, "
-            "achieved load: {:.4f} req/s | {:.4f} Gbps, "
-            "percentage achieved rate: {:.4f},"
-            "retries: {}, "
-            "avg latency: {:.4f} \u03BCs, p99: {:.4f} \u03BCs, p999: {:.4f}"
-            "\u03BCs, median: {:.4f} \u03BCs".format(
-                total_offered_load_pps, total_offered_load_gbps,
-                total_achieved_load_pps, total_achieved_load_gbps,
-                float(total_achieved_load_pps / total_offered_load_pps),
-                total_retries,
-                avg, p99, p999, median)
+            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, "\
+                "achieved load: {:.4f} req/s | {:.4f} Gbps, "\
+                "percentage achieved rate: {:.4f},"\
+                "retries: {}, "\
+                "avg latency: {:.4f} \u03BCs, p99: {:.4f} \u03BCs, p999: {:.4f}"\
+                "\u03BCs, median: {:.4f} \u03BCs".format(
+                    total_offered_load_pps, total_offered_load_gbps,
+                    total_achieved_load_pps, total_achieved_load_gbps,
+                    float(total_achieved_load_pps / total_offered_load_pps),
+                    total_retries,
+                    avg, p99, p999, median)
             utils.info("Total Stats: ", total_stats)
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)
