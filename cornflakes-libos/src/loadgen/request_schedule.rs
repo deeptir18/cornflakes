@@ -162,19 +162,25 @@ pub fn generate_schedules(
 pub fn find_idx_offset(times: Vec<u64>,
                        start_idx: usize,
                        partition: usize,
-                       last_offset: usize) -> (usize, usize) {
+                       last_offset: usize) -> Vec<usize> {
   /*find the appropriate start, end, and offset*/
-    let end_idx : usize = 0;
-    let new_offset : usize = 0;
+    let mut end_idx : usize = 0;
+    let mut new_offset : usize = 0;
+    let mut vec : Vec<usize> = Vec::new();
+    let mut cp_partition = partition;
     for i in start_idx..times.len() {
-      partition -= times[i] as usize; // 20 - 30 = -10
-      if partition <= 0 {
+      cp_partition -= times[i] as usize; // 20 - 30 = -10
+      if cp_partition <= 0 {
         end_idx = i;
-        new_offset = partition; // 20
-        return (end_idx, new_offset);
+        new_offset = cp_partition; // 20
+        vec.push(end_idx);
+        vec.push(new_offset);
+        return vec;
       }
     }
-    return (end_idx, new_offset);
+    vec.push(end_idx);
+    vec.push(new_offset);
+    return vec;
 }
 
 pub fn generate_twitter_schedules(
@@ -187,12 +193,14 @@ pub fn generate_twitter_schedules(
     sum += times[i] as usize;
   }
   // what if number of threads is greater than sum?
-  let partition : usize = sum/num_threads;
-  let start_idx : usize = 0;
-  let offset : usize = 0;
-  let new_offset : usize = 0;
-  let end_idx : usize = 0;
-  (end_idx, new_offset) = find_idx_offset(times.clone(), start_idx, partition, offset);
+  let mut partition : usize = sum/num_threads;
+  let mut start_idx : usize = 0;
+  let mut offset : usize = 0;
+  let mut new_offset : usize = 0;
+  let mut end_idx : usize = 0;
+  let mut ret : Vec<usize> = find_idx_offset(times.clone(), start_idx, partition, offset);
+  end_idx = ret[0];
+  new_offset = ret[1];
   for _i in 0..num_threads-1 {
       schedules.push(PacketSchedule::new_twitter(times.clone(), 
                                                  start_idx, 
@@ -201,7 +209,9 @@ pub fn generate_twitter_schedules(
                                                  partition)?);
       start_idx = end_idx;
       offset = new_offset;
-      (end_idx, new_offset) = find_idx_offset(times.clone(), start_idx, partition, offset);
+      ret = find_idx_offset(times.clone(), start_idx, partition, offset);
+      end_idx = ret[0];
+      new_offset = ret[1];
   }
   schedules.push(PacketSchedule::new_twitter(times.clone(), 
                                              start_idx, 

@@ -14,7 +14,7 @@ pub struct TwitterRequest<'a> {
 }
 
 impl<'a> TwitterRequest<'a> {
-    pub fn new(line: &'a str) -> Result<(TwitterRequest<'a>)> {
+    pub fn new(line: &'a str) -> Result<TwitterRequest<'a>> {
       let split: std::str::Split<&'a str> = line.split(",");
       let vec_gets : Vec<&str> = split.collect::<Vec<&str>>();
       let op = vec_gets[5];
