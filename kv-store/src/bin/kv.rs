@@ -139,7 +139,11 @@ struct Opt {
     start_cutoff: usize,
     #[structopt(long = "distribution", default_value = "exponential")]
     distribution: DistributionType,
-    #[structopt(long="trace_type", default_value="0")] // 0 = YCSB, 1 = Twitter
+    #[structopt(
+        short="tt", 
+        long="trace_type",
+        help="Trace type",
+        default_value="0")] // 0 = YCSB, 1 = Twitter
     trace_type: usize,
 }
 
