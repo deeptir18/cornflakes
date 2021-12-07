@@ -53,7 +53,7 @@ base_p99_plot <- function(data, y_cutoff) {
                         shape = serialization,
                         ymin = mp99 - sdp99,
                         ymax = mp99 + sdp99)) +
-            coord_cartesian(ylim=c(0, y_cutoff), xlim=c(0, 100)) +
+            coord_cartesian(ylim=c(0, y_cutoff), xlim=c(0, 100), expand = FALSE) +
     labs(x = "Offered Load (Gbps)", y = "p99 Latency (µs)")
     return(plot)
 }
@@ -73,18 +73,20 @@ base_median_plot <- function(data, y_cutoff) {
 
 label_plot <- function(plot) {
     plot <- plot +
-            geom_point(size=4) +
+            geom_point(size=5) +
             geom_line(size = 1, aes(color=serialization)) +
             scale_shape_manual(values = shape_values, labels = labels) +
             scale_color_manual(values = color_values ,labels = labels) +
             scale_fill_manual(values = color_values, labels = labels) +
             theme_light() +
             expand_limits(x = 0, y = 0) +
+            scale_x_continuous(n.breaks=5) +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
                   legend.title = element_blank(),
                   legend.key.size = unit(10, 'mm'),
                   legend.spacing.x = unit(0.1, 'cm'),
+                   legend.text=element_text(size=18),
                   axis.title=element_text(size=27,face="plain", colour="#000000"),
                   axis.text=element_text(size=27, colour="#000000"))
     return(plot)
