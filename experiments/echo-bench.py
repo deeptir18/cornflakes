@@ -30,7 +30,7 @@ ALL_SERIALIZATION_LIBRARIES = ["ideal", "onecopy", "twocopy",
                                "cornflakes-dynamic", "cornflakes1c-dynamic",
                                "flatbuffers", "capnproto", "cereal", "protobuf"]
 MOTIVATION_MESSAGE_TYPE = "list-2"
-MOTIVATION_SIZES_TO_LOOP = [1024]
+MOTIVATION_SIZES_TO_LOOP = [1024, 4096]
 
 
 def parse_client_time_and_pkts(line):

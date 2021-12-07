@@ -10,22 +10,28 @@ import os
 import parse
 import subprocess as sh
 STRIP_THRESHOLD = 0.03
-SEGMENT_SIZES_TO_LOOP = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
-# TOTAL_SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096, 8192]
+
+# used for array size experiment
+# L1 cache = 32K, L2 = 1024K, L3 = ~14080K
+
+# used for recv size experiment
+COMPLETE_RECV_SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096]
+RECV_SIZE_SEGMENTS_TO_LOOP = [2]
+
+# used for total size experiment
+COMPLETE_TOTAL_SIZES_TO_LOOP = [64, 128, 256, 512, 1024, 2048, 4096]
+
+# used for other experiments, which total sizes to check
 TOTAL_SIZES_TO_LOOP = [256, 4096]
-# TOTAL_SIZES_SMALLER_SET = [256, 4096]
-# NB_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16]
-NB_SEGMENTS_TO_LOOP = [2, 8]
-MAX_CLIENT_RATE_PPS = 200000
-MAX_RATE_GBPS = 5  # TODO: should be configured per machine
-MIN_RATE_PPS = 5000
-MAX_RATE_PPS = 200000
-MAX_PKT_SIZE = 8192
-MBUFS_MAX = 5
+
+# used for segment size experiment
+COMPLETE_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16]
+
+# used for other experiment, which segment amounts to check
+SEGMENTS_TO_LOOP = [2, 8]
+
 NUM_THREADS = 4
 NUM_CLIENTS = 3
-# L1 cache = 32K, L2 = 1024K, L3 = ~14080K
-ARRAY_SIZES_TO_LOOP = [65536, 819200, 4096000, 65536000, 655360000]
 rates = [5000, 10000, 50000, 100000, 200000,
          300000, 400000, 410000, 420000, 431000]
 # max rates to get "knee" (for smallest working set size, 0 extra busy work)
@@ -71,7 +77,7 @@ def parse_log_info(log):
 class ScatterGatherIteration(runner.Iteration):
     def __init__(self, client_rates, segment_size,
                  num_segments, with_copy, as_one, num_threads, trial=None,
-                 array_size=8192, busy_cycles=0):
+                 array_size=8192, busy_cycles=0, recv_pkt_size=0):
         """
         Arguments:
         * client_rates: Mapping from {int, int} specifying rates and how many
@@ -90,6 +96,7 @@ class ScatterGatherIteration(runner.Iteration):
         self.as_one = as_one
         self.array_size = array_size
         self.busy_cycles = busy_cycles
+        self.recv_pkt_size = recv_pkt_size
 
     def get_busy_cycles(self):
         return self.busy_cycles
@@ -105,6 +112,9 @@ class ScatterGatherIteration(runner.Iteration):
 
     def get_array_size(self):
         return self.array_size
+
+    def get_recv_pkt_size(self):
+        return self.recv_pkt_size
 
     def get_segment_size(self):
         return self.segment_size
@@ -169,6 +179,12 @@ class ScatterGatherIteration(runner.Iteration):
                         client_options))
             exit(1)
 
+    def get_recv_pkt_size_string(self):
+        if self.recv_pkt_size == 0:
+            return "recv_size_small"
+        else:
+            return "recv_size_{}".format(self.recv_pkt_size)
+
     def get_with_copy_string(self):
         if self.with_copy:
             if self.as_one:
@@ -211,6 +227,7 @@ class ScatterGatherIteration(runner.Iteration):
             "array size: {}," \
             "busy cycles us: {},"
         "num client threads: {}," \
+            "recv pkt size: {},"\
             " trial: {}".format(self.get_client_rate_string(),
                                 self.get_segment_size_string(),
                                 self.get_num_segments_string(),
@@ -218,6 +235,7 @@ class ScatterGatherIteration(runner.Iteration):
                                 self.get_array_size(),
                                 self.get_busy_cycles(),
                                 self.get_num_threads(),
+                                self.get_recv_pkt_size(),
                                 self.get_trial_string())
 
     def get_size_folder(self, high_level_folder):
@@ -229,6 +247,7 @@ class ScatterGatherIteration(runner.Iteration):
         path = Path(high_level_folder)
         return path / self.get_segment_size_string() /\
             self.get_num_segments_string() / self.get_array_size_string() /\
+            self.get_recv_pkt_size_string() /\
             self.get_busy_cycles_string() /\
             self.get_client_rate_string() / self.get_num_threads_string() / \
             self.get_with_copy_string()
@@ -298,8 +317,17 @@ class ScatterGatherIteration(runner.Iteration):
         ret["cornflakes_dir"] = config_yaml["cornflakes_dir"]
         ret["folder"] = str(folder)
         if program == "start_server":
+            if (self.recv_pkt_size != 0):
+                ret["read_pkt_str"] = " --read_incoming_packet"
+            else:
+                ret["read_pkt_str"] = ""
             pass
         elif program == "start_client":
+            if (self.recv_pkt_size != 0):
+                ret["send_packet_size_str"] = " --has_send_packet_size --send_packet_size={}".format(
+                    self.recv_pkt_size)
+            else:
+                ret["send_packet_size_str"] = ""
             # calculate client rate
             host_options = self.get_iteration_clients(
                 programs_metadata[program]["hosts"])
@@ -344,17 +372,91 @@ class ScatterGather(runner.Experiment):
                                         total_args.as_one,
                                         total_args.num_threads,
                                         array_size=total_args.array_size,
-                                        busy_cycles=total_args.busy_cycles)
+                                        busy_cycles=total_args.busy_cycles,
+                                        recv_pkt_size=total_args.recv_size)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             it.set_trial(num_trials_finished)
             return [it]
         else:
             ret = []
-            # for each array size, splits total size into various segments
-            if total_args.looping_variable == "array_total_size":
+            if total_args.looping_variable == "recv_size":
                 for trial in range(utils.NUM_TRIALS):
-                    for array_size in ARRAY_SIZES_TO_LOOP:
+                    array_size = 65536
+                    total_size = 4096
+                    for recv_size in COMPLETE_RECV_SIZES_TO_LOOP:
+                        max_rate = max_rates[total_size]
+                        for sampling in sample_percentages:
+                            rate = int(float(sampling/100) *
+                                       max_rate)
+                            for with_copy in [False, True]:
+                                for num_segments in RECV_SIZE_SEGMENTS_TO_LOOP:
+                                    segment_size = int(
+                                        total_size / num_segments)
+                                    as_one = False
+                                    it = ScatterGatherIteration([(rate,
+                                                                 NUM_CLIENTS)],
+                                                                segment_size,
+                                                                num_segments,
+                                                                with_copy,
+                                                                as_one,
+                                                                NUM_THREADS,
+                                                                trial=trial,
+                                                                array_size=array_size,
+                                                                recv_pkt_size=recv_size)
+            elif total_args.looping_variable == "total_size":
+                for trial in range(utils.NUM_TRIALS):
+                    array_size = 65536
+                    for total_size in COMPLETE_TOTAL_SIZES_TO_LOOP:
+                        max_rate = max_rates[total_size]
+                        for sampling in sample_percentages:
+                            rate = int(float(sampling/100) *
+                                       max_rate)
+                            for with_copy in [False, True]:
+                                for num_segments in SEGMENTS_TO_LOOP:
+                                    segment_size = int(
+                                        total_size / num_segments)
+                                    as_one = False
+                                    it = ScatterGatherIteration([(rate,
+                                                                 NUM_CLIENTS)],
+                                                                segment_size,
+                                                                num_segments,
+                                                                with_copy,
+                                                                as_one,
+                                                                NUM_THREADS,
+                                                                trial=trial,
+                                                                array_size=array_size)
+                                    ret.append(it)
+
+            elif total_args.looping_variable == "num_segments":
+                for trial in range(utils.NUM_TRIALS):
+                    array_size = 65536
+                    for total_size in TOTAL_SIZES_TO_LOOP:
+                        max_rate = max_rates[total_size]
+                        # sample 10 rates between minimum and max rate,
+                        # but sample more towards the max rate
+                        for sampling in sample_percentages:
+                            rate = int(float(sampling/100) *
+                                       max_rate)
+                            for with_copy in [False, True]:
+                                for num_segments in COMPLETE_SEGMENTS_TO_LOOP:
+                                    segment_size = int(
+                                        total_size / num_segments)
+                                    as_one = False
+                                    it = ScatterGatherIteration([(rate,
+                                                                 NUM_CLIENTS)],
+                                                                segment_size,
+                                                                num_segments,
+                                                                with_copy,
+                                                                as_one,
+                                                                NUM_THREADS,
+                                                                trial=trial,
+                                                                array_size=array_size)
+                                    ret.append(it)
+
+            elif total_args.looping_variable == "array_total_size":
+                for trial in range(utils.NUM_TRIALS):
+                    for array_size in COMPLETE_ARRAY_SIZES_TO_LOOP:
                         for total_size in TOTAL_SIZES_TO_LOOP:
                             max_rate = max_rates[total_size]
                             # sample 10 rates between minimum and max rate,
@@ -363,12 +465,12 @@ class ScatterGather(runner.Experiment):
                                 rate = int(float(sampling/100) *
                                            max_rate)
                                 for with_copy in [False, True]:
-                                    for num_segments in NB_SEGMENTS_TO_LOOP:
+                                    for num_segments in SEGMENTS_TO_LOOP:
                                         segment_size = int(
                                             total_size / num_segments)
                                         as_one = False
                                         it = ScatterGatherIteration([(rate,
-                                                                      NUM_CLIENTS)],
+                                                                     NUM_CLIENTS)],
                                                                     segment_size,
                                                                     num_segments,
                                                                     with_copy,
@@ -393,6 +495,11 @@ class ScatterGather(runner.Experiment):
                             type=int,
                             default=10000,
                             help="Array size")
+        parser.add_argument("-rs", "--recv_size",
+                            dest="recv_size",
+                            type=int,
+                            default=0,
+                            help="If set, receive packet size")
         parser.add_argument("-bc", "--busy_cycles",
                             dest="busy_cycles",
                             type=int,
@@ -427,8 +534,9 @@ class ScatterGather(runner.Experiment):
                                 default="summary.log")
             parser.add_argument("-lp", "--looping_variable",
                                 dest="looping_variable",
-                                choices=["array_total_size"],
-                                default="segment_size",
+                                choices=["array_total_size", "total_size",
+                                         "num_segments, recv_size"],
+                                default="array_total_size",
                                 help="What variable to loop over")
         args = parser.parse_args(namespace=namespace)
         return args
@@ -440,84 +548,119 @@ class ScatterGather(runner.Experiment):
         return self.config_yaml
 
     def get_logfile_header(self):
-        return "segment_size,num_segments,with_copy,as_one,array_size," \
-            "num_threads,num_clients,offered_load_pps,offered_load_gbps," \
-            "achieved_load_pps,achieved_load_gbps," \
-            "percent_achieved_rate," \
-            "avg,median,p99,p999"
+        return
+    "segment_size,num_segments,with_copy,as_one,array_size,busy_cycles,recv_pkt_size," \
+        "num_threads,num_clients,offered_load_pps,offered_load_gbps," \
+        "achieved_load_pps,achieved_load_gbps," \
+        "percent_achieved_rate," \
+        "avg,median,p99,p999"
+
+    def run_summary_analysis(self, df, out, array_size, recv_size, num_segments, segment_size, with_copy):
+        filtered_df = df[(df.array_size == array_size) &
+                         (df.recv_size == recv_size) &
+                         (df.num_segments == num_segments) &
+                         (df.segment_size == segment_size) &
+                         (df.with_copy == with_copy)]
+        # calculate lowest rate, get p99 and median
+        # stats
+        min_rate = filtered_df["offered_load_pps"].min()
+        latency_df = filtered_df[(filtered_df.offered_load_pps == min_rate)]
+        p99_mean = latency_df["p99"].mean()
+        p99_sd = latency_df["p99"].std()
+        median_mean = latency_df["median"].mean()
+        median_sd = latency_df["median"].std()
+        filtered_df = filtered_df[filtered_df["percent_achieved_rate"] >= .95]
+
+        def ourstd(x):
+            return np.std(x, ddof=0)
+
+        # CURRENT KNEE CALCULATION:
+        # just find maximum achieved rate across all rates
+        # group by array size, num segments, segment size,  # average
+        clustered_df = filtered_df.groupby(["array_size",
+                                            "num_segments", "segment_size", "with_copy",
+                                            "offered_load_pps",
+                                            "offered_load_gbps"],
+                                           as_index=False).agg(
+            achieved_load_pps_mean=pd.NamedAgg(column="achieved_load_pps",
+                                               aggfunc="mean"),
+            achieved_load_pps_sd=pd.NamedAgg(column="achieved_load_pps",
+                                             aggfunc=ourstd),
+            achieved_load_gbps_mean=pd.NamedAgg(column="achieved_load_gbps",
+                                                aggfunc="mean"),
+            achieved_load_gbps_sd=pd.NamedAgg(column="achieved_load_gbps",
+                                              aggfunc=ourstd))
+
+        max_achieved_pps = clustered_df["achieved_load_pps_mean"].max()
+        max_achieved_gbps = clustered_df["achieved_load_gbps_mean"].max()
+        std_achieved_pps = clustered_df.loc[clustered_df['achieved_load_pps_mean'].idxmax(),
+                                            'achieved_load_pps_sd']
+        std_achieved_gbps = clustered_df.loc[clustered_df['achieved_load_gbps_mean'].idxmax(),
+                                             'achieved_load_gbps_sd']
+        as_one = False
+        out.write(str(array_size) + "," + str(segment_size) + "," +
+                  str(num_segments) + "," + str(recv_size) +
+                  "," + str(with_copy) + "," +
+                  str(as_one) + "," + str(p99_mean) + "," +
+                  str(p99_sd) + "," + str(median_mean) +
+                  "," + str(median_sd) + "," +
+                  str(max_achieved_pps) + "," +
+                  str(max_achieved_gbps) + "," +
+                  str(std_achieved_pps) + "," +
+                  str(std_achieved_gbps) + os.linesep)
 
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
         # need to determine summary "p99 at low rate, median at low rate, knee
         # of the curve" for each situation
+        header_str = "array_size,segment_size,num_segments,recv_size,with_copy,as_one,mp99,p99sd,mmedian,mediansd,maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd" + os.linesep
+
         folder_path = Path(total_args.folder)
         out = open(folder_path / new_logfile, "w")
         df = pd.read_csv(folder_path / logfile)
-        if total_args.looping_variable == "array_total_size":
-            out.write(
-                "array_size,segment_size,num_segments,with_copy,as_one,mp99,p99sd,mmedian,mediansd,maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd" + os.linesep)
-            for array_size in ARRAY_SIZES_TO_LOOP:
+        out.write(header_str)
+
+        if total_args.looping_variable == "recv_size":
+            array_size = 65536
+            total_size = 4096
+            for recv_size in COMPLETE_RECV_SIZES_TO_LOOP:
+                for num_segments in RECV_SIZE_SEGMENTS_TO_LOOP:
+                    segment_size = int(total_segments / num_segments)
+                    for with_copy in [false, true]:
+                        self.run_summary_analysis(df, out,
+                                                  array_size, recv_size,
+                                                  num_segments, segment_size, with_copy)
+
+        elif total_args.looping_varialbe == "total_size":
+            array_size = 65536
+            recv_size = 0
+            for total_size in COMPLETE_TOTAL_SIZES_TO_LOOP:
+                for num_segments in [1, 2]:
+                    segment_size = int(total_segments / num_segments)
+                    for with_copy in [false, true]:
+                        self.run_summary_analysis(df, out,
+                                                  array_size, recv_size,
+                                                  num_segments, segment_size, with_copy)
+        elif total_args.looping_variable == "num_segments":
+            array_size = 65536
+            recv_size = 0
+            for num_segments in COMPLETE_SEGMENT_SIZES_TO_LOOP:
                 for total_size in TOTAL_SIZES_TO_LOOP:
-                    for num_segments in NB_SEGMENTS_TO_LOOP:
+                    segment_size = int(total_segments / num_segments)
+                    for with_copy in [False, True]:
+                        self.run_summary_analysis(df, out,
+                                                  array_size, recv_size,
+                                                  num_segments, segment_size, with_copy)
+
+        elif total_args.looping_variable == "array_total_size":
+            recv_size = 0
+            for array_size in COMPLETE_ARRAY_SIZES_TO_LOOP:
+                for total_size in TOTAL_SIZES_TO_LOOP:
+                    for num_segments in SEGMENTS_TO_LOOP:
                         segment_size = int(total_size / num_segments)
                         for with_copy in [False, True]:
-                            filtered_df = df[(df.array_size == array_size) &
-                                             (df.num_segments == num_segments) &
-                                             (df.segment_size == segment_size) &
-                                             (df.with_copy == with_copy)]
-                            # calculate lowest rate, get p99 and median
-                            # stats
-                            min_rate =\
-                                filtered_df["offered_load_pps"].min()
-                            latency_df =\
-                                filtered_df[(filtered_df.offered_load_pps ==
-                                             min_rate)]
-                            p99_mean = latency_df["p99"].mean()
-                            p99_sd = latency_df["p99"].std()
-                            median_mean = latency_df["median"].mean()
-                            median_sd = latency_df["median"].std()
-                            filtered_df =\
-                                filtered_df[filtered_df["percent_achieved_rate"]
-                                            >= .95]
-
-                            def ourstd(x):
-                                return np.std(x, ddof=0)
-
-                            # CURRENT KNEE CALCULATION:
-                            # just find maximum achieved rate across all rates
-                            # group by array size, num segments, segment size,
-                            # average
-                            clustered_df = filtered_df.groupby(["array_size",
-                                                                "num_segments", "segment_size", "with_copy",
-                                                                "offered_load_pps",
-                                                                "offered_load_gbps"],
-                                                               as_index=False).agg(
-                                achieved_load_pps_mean=pd.NamedAgg(column="achieved_load_pps",
-                                                                   aggfunc="mean"),
-                                achieved_load_pps_sd=pd.NamedAgg(column="achieved_load_pps",
-                                                                 aggfunc=ourstd),
-                                achieved_load_gbps_mean=pd.NamedAgg(column="achieved_load_gbps",
-                                                                    aggfunc="mean"),
-                                achieved_load_gbps_sd=pd.NamedAgg(column="achieved_load_gbps",
-                                                                  aggfunc=ourstd))
-
-                            max_achieved_pps = clustered_df["achieved_load_pps_mean"].max(
-                            )
-                            max_achieved_gbps = clustered_df["achieved_load_gbps_mean"].max(
-                            )
-                            std_achieved_pps = clustered_df.loc[clustered_df['achieved_load_pps_mean'].idxmax(),
-                                                                'achieved_load_pps_sd']
-                            std_achieved_gbps = clustered_df.loc[clustered_df['achieved_load_gbps_mean'].idxmax(),
-                                                                 'achieved_load_gbps_sd']
-                            as_one = False
-                            out.write(str(array_size) + "," + str(segment_size) + "," +
-                                      str(num_segments) + "," + str(with_copy) + "," +
-                                      str(as_one) + "," + str(p99_mean) + "," +
-                                      str(p99_sd) + "," + str(median_mean) +
-                                      "," + str(median_sd) + "," +
-                                      str(max_achieved_pps) + "," +
-                                      str(max_achieved_gbps) + "," +
-                                      str(std_achieved_pps) + "," +
-                                      str(std_achieved_gbps) + os.linesep)
+                            self.run_summary_analysis(df, out,
+                                                      array_size, recv_size,
+                                                      num_segments, segment_size, with_copy)
         out.close()
 
     def run_analysis_individual_trial(self,
@@ -616,22 +759,24 @@ class ScatterGather(runner.Experiment):
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)
 
-        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_segment_size(),
-                                                                            iteration.get_num_segments(),
-                                                                            iteration.get_with_copy(),
-                                                                            iteration.get_as_one(),
-                                                                            iteration.get_array_size(),
-                                                                            iteration.get_num_threads(),
-                                                                            iteration.get_num_clients(),
-                                                                            total_offered_load_pps,
-                                                                            total_offered_load_gbps,
-                                                                            total_achieved_load_pps,
-                                                                            total_achieved_load_gbps,
-                                                                            percent_acheived_load,
-                                                                            avg * 1000,
-                                                                            median * 1000,
-                                                                            p99 * 1000,
-                                                                            p999 * 1000)
+        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_segment_size(),
+                                                                                  iteration.get_num_segments(),
+                                                                                  iteration.get_with_copy(),
+                                                                                  iteration.get_as_one(),
+                                                                                  iteration.get_array_size(),
+                                                                                  iteration.get_busy_cycles(),
+                                                                                  iteration.get_recv_pkt_size(),
+                                                                                  iteration.get_num_threads(),
+                                                                                  iteration.get_num_clients(),
+                                                                                  total_offered_load_pps,
+                                                                                  total_offered_load_gbps,
+                                                                                  total_achieved_load_pps,
+                                                                                  total_achieved_load_gbps,
+                                                                                  percent_acheived_load,
+                                                                                  avg * 1000,
+                                                                                  median * 1000,
+                                                                                  p99 * 1000,
+                                                                                  p999 * 1000)
         return csv_line
 
     def graph_results(self, total_args, folder, logfile,

@@ -114,7 +114,6 @@ static char* latency_log = NULL;
 static char *threads_log = NULL;
 static int has_threads_log = 0;
 static int has_latency_log = 0;
-static pthread_t threads[MAX_THREADS];
 
 
 struct tx_pktmbuf_priv
@@ -421,6 +420,8 @@ enum {
     MODE_MEMCPY_BENCH
 };
 
+static pthread_t threads[MAX_THREADS];
+
 const struct rte_ether_addr ether_broadcast = {
     .addr_bytes = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 };
@@ -433,6 +434,8 @@ static size_t machine_id = 0;
 static uint64_t client_random_seed = 0;
 static size_t client_id = 0; // out of all the separate clients sending, which client am I
 static cpu_set_t cpusets[MAX_THREADS];
+static int has_send_packet_size = 0;
+static size_t send_packet_size = 256;
 static uint16_t dpdk_nbports;
 static uint8_t mode;
 static uint8_t memory_mode;
@@ -631,7 +634,7 @@ static void initialize_client_header(uint32_t ip, uint16_t port, size_t client_i
                                 server_ip,
                                 port,
                                 server_port,
-                                client_payload_size);
+                                send_packet_size);
 }
 
 static int str_to_mac(const char *s, struct rte_ether_addr *mac_out) {
@@ -697,7 +700,10 @@ static void custom_pkt_init_with_header(struct rte_mempool *mp __attribute__((un
     memset(s, 0, 46);
     p += 46;
     s = (char *)(p);
-    memset(s, 'a', 8950);
+    memset(s, 'a', 2048);
+    memset(s + 2048, 'b', 2048);
+    memset(s + 2048 * 2, 'c', 2048);
+    memset(s + 2048 * 3, 'd', 2048);
 }
 
 static void custom_pkt_init_whole(struct rte_mempool *mp __attribute__((unused)), void *opaque_arg __attribute__((unused)), void *m, unsigned i __attribute__((unused))) {
@@ -737,11 +743,13 @@ static int parse_args(int argc, char *argv[]) {
         {"num_machines", optional_argument, 0, 'w'},
         {"random_seed", optional_argument, 0, 'v'},
         {"machine_id", optional_argument, 0, 'j'},
+        {"send_packet_size", optional_argument, 0, 'd'},
         {"with_copy", no_argument, 0, 'k'},
+        {"has_send_packet_size", no_argument, 0, 'e'},
         {0,           0,                 0,  0   }
     };
     int long_index = 0;
-    while ((opt = getopt_long(argc, argv,"m:i:s:l:p:c:z:t:r:n:a:k:b:x:q:v:w:",
+    while ((opt = getopt_long(argc, argv,"m:i:s:l:p:c:z:t:r:n:a:k:b:x:q:v:w:d:e:",
                    long_options, &long_index )) != -1) {
         switch (opt) {
             case 'm':
@@ -824,6 +832,14 @@ static int parse_args(int argc, char *argv[]) {
                     exit(1);
                 }
                 break;
+            case 'd': // send_packet_size
+                str_to_long(optarg, &tmp);
+                send_packet_size = (size_t)tmp;
+                NETPERF_INFO("Setting send packet size as %lu", send_packet_size);
+                break;
+            case 'e': // has send packet size
+                has_send_packet_size = 1;
+                break;
             case 'x': // client id
                 str_to_long(optarg, &tmp);
                 client_id = (size_t)tmp;
@@ -856,6 +872,17 @@ static int parse_args(int argc, char *argv[]) {
     }
 
     if (mode == MODE_UDP_CLIENT) {
+        size_t min_packet_size = sizeof(uint64_t) * (num_mbufs + 2) + (sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
+        if (has_send_packet_size == 1) {
+            if (send_packet_size < min_packet_size) {
+                printf("send packet size too small; size %lu, min %lu\n", send_packet_size, min_packet_size);
+                exit(1);
+            }
+            send_packet_size = send_packet_size - (sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
+        } else {
+            // send packet size is just the normal client payload size
+            send_packet_size = min_packet_size;
+        }
         if (!has_server_ip) {
             printf("Server ip, -s, --server_ip=, required.\n");
             exit(EXIT_FAILURE);
@@ -1413,7 +1440,12 @@ static void * do_client(void *client) {
         pkt->l2_len = RTE_ETHER_HDR_LEN;
         pkt->l3_len = sizeof(struct rte_ipv4_hdr);
         pkt->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
-        pkt->data_len = header_size + client_payload_size;
+        if (has_send_packet_size) {
+            NETPERF_DEBUG("Sending packet with data len %lu\n", header_size + send_packet_size);
+            pkt->data_len = header_size + send_packet_size;
+        } else {
+            pkt->data_len = header_size + client_payload_size;
+        }
         pkt->pkt_len = pkt->data_len;
         pkt->nb_segs = 1;
 
