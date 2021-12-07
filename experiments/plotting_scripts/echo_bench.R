@@ -22,13 +22,13 @@ plot_type <- args[4]
 
 labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cereal" = "Cereal", "cornflakes-dynamic" = "Cornflakes (Hardware SG)", "cornflakes1c-dynamic" = "Cornflakes (1 Software Copy)", "ideal" = "Peak Single-Core", "onecopy" = "One Copy", "twocopy" = "Two Copies")
 
-shape_values <- c('protobuf' = 7, 'cereal' = 4, 'capnproto' = 18, 'flatbuffers' = 17, 'cornflakes1c-dynamic' = 15, 'cornflakes-dynamic' = 19, "ideal" = 20, "onecopy" = 21, "twocopy" = 22)
+shape_values <- c('protobuf' = 7, 'cereal' = 4, 'capnproto' = 18, 'flatbuffers' = 17, 'cornflakes1c-dynamic' = 15, 'cornflakes-dynamic' = 19, "ideal" = 20, "onecopy" = 1, "twocopy" = 10)
 
 color_values <- c('cornflakes-dynamic' = '#1b9e77', 
                     'cornflakes1c-dynamic' = '#d95f02',
-                    "ideal" = '#1b9e77',
-                    "onecopy" = '#d95f02',
-                    "twocopy" = "#e5692a",
+                    "ideal" = '#333333',
+                    "onecopy" = '#666666',
+                    "twocopy" = "#999999",
                     'flatbuffers' = '#7570b3',
                     'capnproto' = '#e7298a',
                     'cereal' = '#66a61e',
@@ -53,7 +53,7 @@ base_p99_plot <- function(data, y_cutoff) {
                         shape = serialization,
                         ymin = mp99 - sdp99,
                         ymax = mp99 + sdp99)) +
-            coord_cartesian(ylim=c(0, y_cutoff), expand = FALSE) +
+            coord_cartesian(ylim=c(0, y_cutoff), xlim=c(0, 100)) +
     labs(x = "Offered Load (Gbps)", y = "p99 Latency (µs)")
     return(plot)
 }
