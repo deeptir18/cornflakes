@@ -18,6 +18,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "profiler")]
+use perftools;
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct MempoolPtr(pub *mut rte_mempool);
 unsafe impl Send for MempoolPtr {}
@@ -66,6 +69,7 @@ pub fn get_mbuf_with_memcpy(
     buf: &[u8],
     id: MsgID,
 ) -> Result<*mut rte_mbuf> {
+    tracing::debug!(header_mempool_avail =? dpdk_call!(rte_mempool_avail_count(header_mempool)), "Number available in header_mempool");
     tracing::debug!(len = buf.len(), "Copying single buffer into mbuf");
     let header_mbuf =
         alloc_mbuf(header_mempool).wrap_err("Unable to allocate mbuf from mempool.")?;
@@ -160,7 +164,10 @@ impl Pkt {
         header_info: &utils::HeaderInfo,
         allocator: &MempoolAllocator,
         external_regions: &Vec<mem::MmapMetadata>,
+        splits_per_chunk: usize,
     ) -> Result<()> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Construct from sga with scatter-gather");
         // TODO: change this back
         // 1: allocate and add header mbuf
         mbufs[0][pkt_id] =
@@ -168,12 +175,12 @@ impl Pkt {
         self.add_header_mbuf(
             mbufs[0][pkt_id],
             (header_info, sga.data_len(), sga.get_id()),
-            sga.num_borrowed_segments() + 1,
+            sga.num_borrowed_segments() * splits_per_chunk + 1,
         )
         .wrap_err("Unable to initialize and add header mbuf.")?;
 
         // 2: allocate and add mbufs for external mbufs
-        for i in 1..sga.num_borrowed_segments() + 1 {
+        for i in 1..sga.num_borrowed_segments() * splits_per_chunk + 1 {
             let mbuf = alloc_mbuf(extbuf_mempool)
                 .wrap_err("Unable to allocate externally allocated mbuf.")?;
             mbufs[i][pkt_id] = mbuf;
@@ -186,9 +193,15 @@ impl Pkt {
         }
 
         // 3: copy the payloads from the sga into the mbufs
-        self.set_sga_payloads(mbufs, pkt_id, sga, allocator, external_regions)
-            .wrap_err("Error in copying payloads from sga to mbufs.")?;
-
+        self.set_sga_payloads(
+            mbufs,
+            pkt_id,
+            sga,
+            allocator,
+            external_regions,
+            splits_per_chunk,
+        )
+        .wrap_err("Error in copying payloads from sga to mbufs.")?;
         tracing::debug!(header_mempool_avail =? dpdk_call!(rte_mempool_count(header_mempool)), extbuf_mempool_avail =? dpdk_call!(rte_mempool_count(extbuf_mempool)), "Number available in header_mempool, in extbuf_mempool");
 
         Ok(())
@@ -235,7 +248,7 @@ impl Pkt {
         }
 
         // 3: copy the payloads from the sga into the mbufs
-        self.set_sga_payloads(mbufs, 0, sga, allocator, external_regions)
+        self.set_sga_payloads(mbufs, 0, sga, allocator, external_regions, 1)
             .wrap_err("Error in copying payloads from sga to mbufs.")?;
 
         Ok(())
@@ -289,14 +302,18 @@ impl Pkt {
         sga: &impl ScatterGather,
         allocator: &MempoolAllocator,
         external_regions: &Vec<mem::MmapMetadata>,
+        splits_per_chunk: usize,
     ) -> Result<()> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Set sga payloads func");
         let mut current_attached_idx = 0;
         for i in 0..sga.num_segments() {
             let cornptr = sga.index(i);
             // any attached mbufs will start at index 1 (1 after header)
             match cornptr.buf_type() {
                 CornType::Registered => {
-                    // TODO: uncomment this
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Processing registered");
                     current_attached_idx += 1;
                     self.set_external_payload(
                         mbufs,
@@ -306,10 +323,16 @@ impl Pkt {
                         allocator,
                         external_regions,
                         sga.get_id(),
+                        splits_per_chunk,
                     )
                     .wrap_err("Failed to set external payload into pkt list.")?;
+                    if splits_per_chunk > 1 {
+                        current_attached_idx += splits_per_chunk - 1;
+                    }
                 }
                 CornType::Normal => {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Processing copies");
                     if current_attached_idx > 0 {
                         bail!("Sga cannot have owned buffers after borrowed buffers; all owned buffers must be at the front.");
                     }
@@ -360,7 +383,11 @@ impl Pkt {
         allocator: &MempoolAllocator,
         external_regions: &Vec<mem::MmapMetadata>,
         sga_id: MsgID,
+        splits_per_chunk: usize,
     ) -> Result<()> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Set external payload func");
+
         debug!("The mbuf idx we're changing: {}", idx);
         // check whether the payload is in one of the memzones, or an external region
         tracing::debug!(
@@ -371,34 +398,35 @@ impl Pkt {
         let mut in_native_mempool = false;
         let mut in_external_pool = false;
         if let Some((original_mbuf_ptr, data_off)) = allocator.recover_mbuf_ptr(buf)? {
-            tracing::debug!(
-                "Pointer to current extbuf: {:?}, Pointer to original mbuf ptr: {:?}",
-                mbufs[idx][pkt_id],
-                original_mbuf_ptr
-            );
-            unsafe {
-                if (*original_mbuf_ptr).buf_addr == std::ptr::null_mut() {
-                    tracing::warn!(
-                        "Calculated incorrect ptr: {:?}, for buf: {:?} req id {}",
-                        original_mbuf_ptr,
-                        buf.as_ptr(),
-                        sga_id,
-                    );
+            let (buf_iova, buf_addr) =
+                unsafe { ((*original_mbuf_ptr).buf_iova, (*original_mbuf_ptr).buf_addr) };
+            let chunk_size = buf.len() / splits_per_chunk;
+            for chunk in 0..splits_per_chunk {
+                tracing::debug!(
+                    "Pointer to current extbuf: {:?}, Pointer to original mbuf ptr: {:?}",
+                    mbufs[idx + chunk][pkt_id],
+                    original_mbuf_ptr
+                );
+                unsafe {
+                    if (*original_mbuf_ptr).buf_addr == std::ptr::null_mut() {
+                        tracing::warn!(
+                            "Calculated incorrect ptr: {:?}, for buf: {:?} req id {}",
+                            original_mbuf_ptr,
+                            buf.as_ptr(),
+                            sga_id,
+                        );
+                    }
+                    (*mbufs[idx + chunk][pkt_id]).buf_iova = buf_iova;
+                    (*mbufs[idx + chunk][pkt_id]).buf_addr = buf_addr;
+                    // TODO: do we even need to modify buf_len here?
+                    //(*mbufs[idx + chunk][pkt_id]).buf_len = buf_len as _;
+                    (*mbufs[idx + chunk][pkt_id]).data_len = chunk_size as u16;
+                    (*mbufs[idx + chunk][pkt_id]).data_off = data_off + (chunk_size * chunk) as u16;
                 }
-                (*mbufs[idx][pkt_id]).buf_iova = (*original_mbuf_ptr).buf_iova;
-                (*mbufs[idx][pkt_id]).buf_addr = (*original_mbuf_ptr).buf_addr;
-                (*mbufs[idx][pkt_id]).buf_len = buf.len() as _;
-                (*mbufs[idx][pkt_id]).data_off = data_off as u16;
-            }
-            // set lkey of packet to be -1
-            dpdk_call!(set_lkey_not_present(mbufs[idx][pkt_id]));
-
-            // only set reference for last mbuf in the list.
-            if unsafe { (*mbufs[idx][pkt_id]).next == ptr::null_mut() } {
-                dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 1));
-                dpdk_call!(rte_pktmbuf_refcnt_update(original_mbuf_ptr, 1));
-            } else {
-                dpdk_call!(set_refers_to_another(mbufs[idx][pkt_id], 0));
+                // set lkey of packet to be -1
+                dpdk_call!(set_lkey_not_present(mbufs[idx + chunk][pkt_id]));
+                dpdk_call!(set_refers_to_another(mbufs[idx + chunk][pkt_id], 1));
+                dpdk_call!(rte_pktmbuf_refcnt_update_or_free(original_mbuf_ptr, 1));
             }
             in_native_mempool = true;
         }
@@ -415,6 +443,7 @@ impl Pkt {
                         (*mbufs[idx][pkt_id]).buf_len = buf.len() as _;
                         (*mbufs[idx][pkt_id]).data_off = 0;
                         debug!(iova =? (*mbufs[idx][pkt_id]).buf_iova, addr =? (*mbufs[idx][pkt_id]).buf_addr, len =? (*mbufs[idx][pkt_id]).buf_len, "Set packet fields.");
+                        (*mbufs[idx][pkt_id]).data_len = buf.len() as u16;
                     }
                     in_external_pool = true;
                     break;
@@ -426,11 +455,6 @@ impl Pkt {
             bail!("For buffer: {:?}, pkt_id: {}, mbuf list id: {}: could not find native mempool or external memory region.", buf.as_ptr(), pkt_id, idx);
         }
 
-        // update general packet metadata
-        tracing::debug!("[set external payload] Adding {:?} to buf", buf.len());
-        unsafe {
-            (*mbufs[idx][pkt_id]).data_len = buf.len() as u16;
-        }
         Ok(())
     }
 
@@ -821,6 +845,10 @@ pub fn dpdk_init(config_path: &str, num_cores: usize) -> Result<(Vec<*mut rte_me
 pub fn alloc_mbuf(mempool: *mut rte_mempool) -> Result<*mut rte_mbuf> {
     let mbuf = dpdk_call!(rte_pktmbuf_alloc(mempool));
     if mbuf.is_null() {
+        tracing::warn!(
+            avail_count = dpdk_call!(rte_mempool_avail_count(mempool)),
+            "Amount of mbufs available in mempool"
+        );
         bail!("Allocated null mbuf from rte_pktmbuf_alloc.");
     }
     Ok(mbuf)
@@ -870,6 +898,7 @@ pub fn fill_in_header(
 
     // Write per-packet-id in
     utils::write_pkt_id(id, id_hdr_slice)?;
+
     Ok(utils::TOTAL_HEADER_SIZE)
 }
 
@@ -932,18 +961,17 @@ pub fn rx_burst(
     let mut valid_packets: HashMap<usize, (MsgID, utils::AddressInfo, usize)> = HashMap::new();
     let num_received = dpdk_call!(rte_eth_rx_burst(port_id, queue_id, rx_pkts, nb_pkts));
     for i in 0..num_received {
-        let pkt = unsafe { *rx_pkts.offset(i as isize) };
+        let pkt = unsafe { *(rx_pkts.offset(i as isize)) };
         match check_valid_packet(pkt, my_addr_info) {
             Some((id, hdr, size)) => {
                 valid_packets.insert(i as usize, (id, hdr, size));
             }
             None => {
-                tracing::debug!("Queue {} received invalid packet", queue_id);
+                tracing::debug!("Queue {} received invalid packet, idx {}", queue_id, i,);
                 dpdk_call!(rte_pktmbuf_free(pkt));
             }
         }
     }
-
     Ok(valid_packets)
 }
 
@@ -992,14 +1020,7 @@ fn check_valid_packet(
         }
     };
 
-    let id_hdr_slice = mbuf_slice!(
-        pkt,
-        utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE + utils::UDP_HEADER2_SIZE,
-        4
-    );
-
-    let msg_id = utils::parse_msg_id(id_hdr_slice);
-
+    let msg_id = dpdk_call!(read_pkt_id(pkt));
     Some((
         msg_id,
         (utils::AddressInfo::new(src_port, src_ip, src_eth)),
@@ -1007,27 +1028,18 @@ fn check_valid_packet(
     ))
 }
 
+pub fn refcnt(pkt: *mut rte_mbuf) -> u16 {
+    dpdk_call!(rte_pktmbuf_refcnt_read(pkt))
+}
+
 /// Frees the mbuf, returns it to it's original mempool.
 /// Arguments:
 /// * pkt - *mut rte_mbuf to free.
 #[inline]
 pub fn free_mbuf(pkt: *mut rte_mbuf) {
-    let refcnt = dpdk_call!(rte_pktmbuf_refcnt_read(pkt));
-    tracing::debug!(packet =? pkt, cur_refcnt = refcnt, "Called free_mbuf on packet");
-    if refcnt == 1 || refcnt == 0 {
-        //tracing::debug!(packet =? pkt, "Actually freeing pkt: refcnt was 1 or 0");
-        dpdk_call!(rte_pktmbuf_free(pkt));
-    } else {
-        //tracing::debug!(pkt =? pkt, refcnt =? refcnt, "Decrementing refcnt");
-        dpdk_call!(rte_pktmbuf_refcnt_set(pkt, refcnt - 1));
-        //tracing::debug!(pkt =? pkt, refcnt =? dpdk_call!(rte_pktmbuf_refcnt_read(pkt)), "New refcnt");
-    }
+    tracing::debug!(packet =? pkt, cur_refcnt = dpdk_call!(rte_pktmbuf_refcnt_read(pkt)), "Called free_mbuf on packet");
+    dpdk_call!(rte_pktmbuf_refcnt_update_or_free(pkt, -1));
 }
-
-/*#[inline]
-pub fn free_mbuf_bare(pkt: *mut rte_mbuf) {
-    dpdk_call!(rte_pktmbuf_free(pkt));
-}*/
 
 #[inline]
 pub fn dpdk_register_extmem(

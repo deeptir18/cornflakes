@@ -8,6 +8,7 @@ use cornflakes_libos::{
         request_schedule::{generate_schedules, DistributionType, PacketSchedule},
     },
     timing::ManualHistogram,
+    turn_off_ref_counting,
     utils::AddressInfo,
     ClientSM, Datapath, ServerSM,
 };
@@ -16,16 +17,18 @@ use cornflakes_utils::{
     SimpleMessageType, TraceLevel,
 };
 use echo_server::{
+    baselines::{BaselineClient, IdealSerializer, OneCopySerializer, TwoCopySerializer},
     capnproto::{CapnprotoEchoClient, CapnprotoSerializer},
     cereal::{CerealEchoClient, CerealSerializer},
     client::EchoClient,
     cornflakes_dynamic::{CornflakesDynamicEchoClient, CornflakesDynamicSerializer},
-    cornflakes_fixed::{CornflakesFixedEchoClient, CornflakesFixedSerializer},
+    //cornflakes_fixed::{CornflakesFixedEchoClient, CornflakesFixedSerializer},
     flatbuffers::{FlatbuffersEchoClient, FlatbuffersSerializer},
     get_equal_fields,
     protobuf::{ProtobufEchoClient, ProtobufSerializer},
     server::EchoServer,
-    CerealizeClient, CerealizeMessage,
+    CerealizeClient,
+    CerealizeMessage,
 };
 use std::{
     net::Ipv4Addr,
@@ -102,8 +105,8 @@ struct Opt {
         default_value = "cornflakes-dynamic"
     )]
     serialization: SerializationType,
-    #[structopt(long = "no_retries", help = "Disable client retries.")]
-    no_retries: bool,
+    #[structopt(long = "retries", help = "Enable client retries.")]
+    retries: bool,
     #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
     logfile: Option<String>,
     #[structopt(long = "threadlog", help = "Logfile to log per thread statistics")]
@@ -125,9 +128,11 @@ struct Opt {
         help = "Total number of clients",
         default_value = "1"
     )]
-    num_clients: usize,
+    _num_clients: usize,
     #[structopt(long = "client_id", help = "ID of this client", default_value = "1")]
-    client_id: usize,
+    _client_id: usize,
+    #[structopt(long = "no_ref_counting", help = "Turn off ref counting")]
+    no_ref_counting: bool,
 }
 
 macro_rules! init_echo_server(
@@ -135,6 +140,9 @@ macro_rules! init_echo_server(
         let mut connection = $datapath_init?;
         let serializer = <$serializer>::new($opt.message, $opt.size);
         let mut echo_server = EchoServer::new(serializer);
+        if $opt.serialization == SerializationType::IdealBaseline {
+            echo_server.set_echo_pkt_mode();
+        }
         set_ctrlc_handler(&echo_server)?;
         echo_server.init(&mut connection)?;
         echo_server.run_state_machine(&mut connection)?;
@@ -157,6 +165,7 @@ macro_rules! init_echo_client(
             let per_thread_sizes = sizes.clone();
             let schedule = schedules[i].clone();
             threads.push(spawn(move || {
+                tracing::info!(ref_counting = unsafe {cornflakes_libos::USING_REF_COUNTING}, "Ref counting mode");
                 match set_thread_affinity(&vec![i+1]) {
                     Ok(_) => {}
                     Err(e) => {
@@ -202,6 +211,9 @@ macro_rules! init_echo_client(
 fn main() -> Result<()> {
     let opt = Opt::from_args();
     global_debug_init(opt.trace_level)?;
+    if opt.no_ref_counting {
+        turn_off_ref_counting();
+    }
 
     let dpdk_global_init = || -> Result<(u16, Vec<(<DPDKConnection as Datapath>::RxPacketAllocator, AddressInfo)>)> {
         dpdk_bindings::load_mlx5_driver();
@@ -245,17 +257,25 @@ fn main() -> Result<()> {
     match opt.mode {
         AppMode::Server => match (opt.datapath, opt.serialization) {
             (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
-                init_echo_server!(CornflakesDynamicSerializer, dpdk_datapath(true), opt);
+                init_echo_server!(
+                    CornflakesDynamicSerializer<DPDKConnection>,
+                    dpdk_datapath(true),
+                    opt
+                );
             }
-            (NetworkDatapath::DPDK, SerializationType::CornflakesFixed) => {
+            /*(NetworkDatapath::DPDK, SerializationType::CornflakesFixed) => {
                 init_echo_server!(CornflakesFixedSerializer, dpdk_datapath(true), opt);
-            }
+            }*/
             (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyDynamic) => {
-                init_echo_server!(CornflakesDynamicSerializer, dpdk_datapath(false), opt);
+                init_echo_server!(
+                    CornflakesDynamicSerializer<DPDKConnection>,
+                    dpdk_datapath(false),
+                    opt
+                );
             }
-            (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyFixed) => {
+            /*(NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyFixed) => {
                 init_echo_server!(CornflakesFixedSerializer, dpdk_datapath(false), opt);
-            }
+            }*/
             (NetworkDatapath::DPDK, SerializationType::Protobuf) => {
                 init_echo_server!(ProtobufSerializer, dpdk_datapath(false), opt);
             }
@@ -268,6 +288,15 @@ fn main() -> Result<()> {
             (NetworkDatapath::DPDK, SerializationType::Cereal) => {
                 init_echo_server!(CerealSerializer, dpdk_datapath(false), opt);
             }
+            (NetworkDatapath::DPDK, SerializationType::OneCopyBaseline) => {
+                init_echo_server!(OneCopySerializer, dpdk_datapath(false), opt);
+            }
+            (NetworkDatapath::DPDK, SerializationType::TwoCopyBaseline) => {
+                init_echo_server!(TwoCopySerializer, dpdk_datapath(false), opt);
+            }
+            (NetworkDatapath::DPDK, SerializationType::IdealBaseline) => {
+                init_echo_server!(IdealSerializer, dpdk_datapath(false), opt);
+            }
             _ => {
                 unimplemented!();
             }
@@ -275,14 +304,14 @@ fn main() -> Result<()> {
         AppMode::Client => match (opt.datapath, opt.serialization) {
             (NetworkDatapath::DPDK, SerializationType::CornflakesDynamic) => {
                 init_echo_client!(
-                    CornflakesDynamicEchoClient,
+                    CornflakesDynamicEchoClient<DPDKConnection>,
                     DPDKConnection,
                     dpdk_global_init(),
                     dpdk_per_thread_init,
                     opt
                 );
             }
-            (NetworkDatapath::DPDK, SerializationType::CornflakesFixed) => {
+            /*(NetworkDatapath::DPDK, SerializationType::CornflakesFixed) => {
                 init_echo_client!(
                     CornflakesFixedEchoClient,
                     DPDKConnection,
@@ -290,17 +319,17 @@ fn main() -> Result<()> {
                     dpdk_per_thread_init,
                     opt
                 );
-            }
+            }*/
             (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyDynamic) => {
                 init_echo_client!(
-                    CornflakesDynamicEchoClient,
+                    CornflakesDynamicEchoClient<DPDKConnection>,
                     DPDKConnection,
                     dpdk_global_init(),
                     dpdk_per_thread_init,
                     opt
                 );
             }
-            (NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyFixed) => {
+            /*(NetworkDatapath::DPDK, SerializationType::CornflakesOneCopyFixed) => {
                 init_echo_client!(
                     CornflakesFixedEchoClient,
                     DPDKConnection,
@@ -308,7 +337,7 @@ fn main() -> Result<()> {
                     dpdk_per_thread_init,
                     opt
                 );
-            }
+            }*/
             (NetworkDatapath::DPDK, SerializationType::Protobuf) => {
                 init_echo_client!(
                     ProtobufEchoClient,
@@ -345,7 +374,17 @@ fn main() -> Result<()> {
                     opt
                 );
             }
-
+            (NetworkDatapath::DPDK, SerializationType::OneCopyBaseline)
+            | (NetworkDatapath::DPDK, SerializationType::TwoCopyBaseline)
+            | (NetworkDatapath::DPDK, SerializationType::IdealBaseline) => {
+                init_echo_client!(
+                    BaselineClient<DPDKConnection>,
+                    DPDKConnection,
+                    dpdk_global_init(),
+                    dpdk_per_thread_init,
+                    opt
+                );
+            }
             _ => {
                 unimplemented!();
             }
@@ -384,16 +423,16 @@ where
         parse_server_port(&opt.config_file).wrap_err("Failed to parse server port")?;
     client.init(connection)?;
     let start_run = Instant::now();
-    let timeout = match opt.no_retries {
-        false => cornflakes_libos::high_timeout_at_start,
-        true => cornflakes_libos::no_retries_timeout,
+    let timeout = match opt.retries {
+        true => cornflakes_libos::high_timeout_at_start,
+        false => cornflakes_libos::no_retries_timeout,
     };
     client.run_open_loop(
         connection,
         schedule,
         opt.total_time,
         timeout,
-        opt.no_retries,
+        !opt.retries,
         &opt.server_ip,
         server_port,
     )?;

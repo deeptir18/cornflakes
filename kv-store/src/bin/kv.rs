@@ -1,5 +1,5 @@
 use affinity::*;
-use color_eyre::eyre::{bail, Result, WrapErr};
+use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_libos::{
     dpdk_bindings,
     dpdk_libos::connection::DPDKConnection,
@@ -8,6 +8,7 @@ use cornflakes_libos::{
         request_schedule::{generate_schedules, DistributionType, PacketSchedule},
     },
     timing::ManualHistogram,
+    turn_off_ref_counting,
     utils::AddressInfo,
     ClientSM, Datapath, ServerSM,
 };
@@ -104,7 +105,7 @@ struct Opt {
         default_value = "cornflakes-dynamic"
     )]
     serialization: SerializationType,
-    #[structopt(long = "retries", help = "Disable client retries.")]
+    #[structopt(long = "retries", help = "Enable client retries.")]
     retries: bool,
     #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
     logfile: Option<String>,
@@ -133,6 +134,14 @@ struct Opt {
     start_cutoff: usize,
     #[structopt(long = "distribution", default_value = "exponential")]
     distribution: DistributionType,
+    #[structopt(long = "no_ref_counting", help = "Turn off ref counting")]
+    no_ref_counting: bool,
+    #[structopt(
+        long = "splits_per_chunk",
+        help = "Divides each zero-copy entry into n splits, for debugging",
+        default_value = "1"
+    )]
+    splits_per_chunk: usize,
 }
 
 /// Given a path, calculates the number of lines in the file.
@@ -194,6 +203,7 @@ macro_rules! run_kv_client(
             let hist = ManualHistogram::new(num_rtts);
             let schedule = schedules[i].clone();
             threads.push(spawn(move || {
+                tracing::info!(ref_counting = unsafe {cornflakes_libos::USING_REF_COUNTING}, "Ref counting mode");
                 match set_thread_affinity(&vec![i+1]) {
                     Ok(_) => {}
                     Err(e) => {
@@ -202,7 +212,7 @@ macro_rules! run_kv_client(
                 }
                 let mut connection = $datapath_init(physical_port, i, rx_packet_allocator, addr, &per_thread_options)?;
                 let mut loadgen: YCSBClient<$serializer, $datapath> =
-                    YCSBClient::new(per_thread_options.client_id, per_thread_options.value_size, per_thread_options.num_values, &per_thread_options.queries, i, per_thread_options.num_threads, per_thread_options.num_clients, per_thread_options.server_ip, hist, per_thread_options.retries, per_thread_options.start_cutoff).wrap_err("Failed to initialize loadgen")?;
+                    YCSBClient::new(per_thread_options.client_id, per_thread_options.value_size, per_thread_options.num_values, &per_thread_options.queries, &per_thread_options.trace_file, i, per_thread_options.num_threads, per_thread_options.num_clients, per_thread_options.server_ip, hist, per_thread_options.retries, per_thread_options.start_cutoff).wrap_err("Failed to initialize loadgen")?;
                 run_client(i, &mut loadgen, &mut connection, &per_thread_options, schedule).wrap_err("Failed to run client")
             }));
         }
@@ -256,6 +266,9 @@ fn main() -> Result<()> {
     let opt = Opt::from_args();
     global_debug_init(opt.trace_level)?;
 
+    if opt.no_ref_counting {
+        turn_off_ref_counting();
+    }
     let dpdk_global_init = || -> Result<(u16, Vec<(<DPDKConnection as Datapath>::RxPacketAllocator, AddressInfo)>)> {
         dpdk_bindings::load_mlx5_driver();
         let remote_ip = match opt.mode {
@@ -295,6 +308,13 @@ fn main() -> Result<()> {
         let mut connection = DPDKConnection::new(&opt.config_file, opt.mode, use_scatter_gather)
             .wrap_err("Failed to initialize DPDK connection.")?;
         if opt.mode == AppMode::Server {
+            if opt.splits_per_chunk > 1 {
+                ensure!(
+                    use_scatter_gather,
+                    "Cannot set splits for chunk unless using scatter-gather"
+                );
+                connection.set_splits_per_chunk(opt.splits_per_chunk)?;
+            }
             // calculate the number of lines in the trace file
             let num_lines = lines_in_file(&opt.trace_file)?;
             connection

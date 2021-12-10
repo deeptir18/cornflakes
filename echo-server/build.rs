@@ -102,6 +102,23 @@ fn main() {
     // compile cornflakes dynamic
     let input_cf_path = echo_src_path.clone().join("cornflakes_dynamic");
     let input_cf_file = input_cf_path.clone().join("echo_cf_dynamic.proto");
+    let input_cf_file_refcnt = input_cf_path.clone().join("echo_cf_dynamic_rc.proto");
+    // with ref counting
+    match compile(
+        input_cf_file_refcnt.as_path().to_str().unwrap(),
+        &out_dir,
+        CompileOptions::new(HeaderType::LinearDeserializationRefCnt, Language::Rust),
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!(
+                "Cornflakes dynamic with ref counting codegen failed: {:?}",
+                e
+            );
+        }
+    }
+
+    // without ref counting
     match compile(
         input_cf_file.as_path().to_str().unwrap(),
         &out_dir,
@@ -109,7 +126,7 @@ fn main() {
     ) {
         Ok(_) => {}
         Err(e) => {
-            panic!("Cornflakes codegen failed: {:?}", e);
+            panic!("Cornflakes dynamic codegen failed: {:?}", e);
         }
     }
 

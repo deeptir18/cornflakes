@@ -13,7 +13,8 @@ use super::{
 };
 use color_eyre::eyre::Result;
 use cornflakes_libos::{
-    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPkt, ScatterGather,
+    mem::MmapMetadata, CornPtr, Cornflake, Datapath, RcCornPtr, RcCornflake, ReceivedPkt,
+    ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use echo_messages::echo_fb;
@@ -433,11 +434,12 @@ where
         self.message_type
     }
 
-    fn process_msg<'registered, 'normal: 'registered>(
+    fn process_msg<'registered>(
         &self,
         recved_msg: &'registered ReceivedPkt<D>,
-        ctx: &'normal mut Self::Ctx,
-    ) -> Result<Cornflake<'registered, 'normal>> {
+        _conn: &mut D,
+    ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
+        let mut ctx = FlatBufferBuilder::new_with_capacity(self.context_size);
         let mut cf = Cornflake::with_capacity(1);
         match self.message_type {
             SimpleMessageType::Single => {
@@ -446,7 +448,7 @@ where
                 let args = echo_fb::SingleBufferFBArgs {
                     message: Some(ctx.create_vector_direct::<u8>(object_deser.message().unwrap())),
                 };
-                let single_buffer_fb = echo_fb::SingleBufferFB::create(ctx, &args);
+                let single_buffer_fb = echo_fb::SingleBufferFB::create(&mut ctx, &args);
                 ctx.finish(single_buffer_fb, None);
                 cf.add_entry(CornPtr::Normal(ctx.finished_data()));
             }
@@ -461,54 +463,63 @@ where
                     .collect();
                 let vec: Vec<WIPOffset<echo_fb::SingleBufferFB>> = args_vec
                     .iter()
-                    .map(|args| echo_fb::SingleBufferFB::create(ctx, args))
+                    .map(|args| echo_fb::SingleBufferFB::create(&mut ctx, args))
                     .collect();
                 let list_args = echo_fb::ListFBArgs {
                     messages: Some(ctx.create_vector(vec.as_slice())),
                 };
-                let list_fb = echo_fb::ListFB::create(ctx, &list_args);
+                let list_fb = echo_fb::ListFB::create(&mut ctx, &list_args);
                 ctx.finish(list_fb, None);
                 cf.add_entry(CornPtr::Normal(ctx.finished_data()));
             }
             SimpleMessageType::Tree(depth) => match depth {
                 TreeDepth::One => {
                     let object_deser = get_root::<echo_fb::Tree1LFB>(&recved_msg.index(0).as_ref());
-                    let args = get_tree1l_args_from_tree1l(ctx, vec![object_deser]);
-                    let tree1l = echo_fb::Tree1LFB::create(ctx, &args[0]);
+                    let args = get_tree1l_args_from_tree1l(&mut ctx, vec![object_deser]);
+                    let tree1l = echo_fb::Tree1LFB::create(&mut ctx, &args[0]);
                     ctx.finish(tree1l, None);
                     cf.add_entry(CornPtr::Normal(ctx.finished_data()));
                 }
                 TreeDepth::Two => {
                     let object_deser = get_root::<echo_fb::Tree2LFB>(&recved_msg.index(0).as_ref());
-                    let args = get_tree2l_args_from_tree2l(ctx, vec![object_deser]);
-                    let tree2l = echo_fb::Tree2LFB::create(ctx, &args[0]);
+                    let args = get_tree2l_args_from_tree2l(&mut ctx, vec![object_deser]);
+                    let tree2l = echo_fb::Tree2LFB::create(&mut ctx, &args[0]);
                     ctx.finish(tree2l, None);
                     cf.add_entry(CornPtr::Normal(ctx.finished_data()));
                 }
                 TreeDepth::Three => {
                     let object_deser = get_root::<echo_fb::Tree3LFB>(&recved_msg.index(0).as_ref());
-                    let args = get_tree3l_args_from_tree3l(ctx, vec![object_deser]);
-                    let tree3l = echo_fb::Tree3LFB::create(ctx, &args[0]);
+                    let args = get_tree3l_args_from_tree3l(&mut ctx, vec![object_deser]);
+                    let tree3l = echo_fb::Tree3LFB::create(&mut ctx, &args[0]);
                     ctx.finish(tree3l, None);
                     cf.add_entry(CornPtr::Normal(ctx.finished_data()));
                 }
                 TreeDepth::Four => {
                     let object_deser = get_root::<echo_fb::Tree4LFB>(&recved_msg.index(0).as_ref());
-                    let args = get_tree4l_args_from_tree4l(ctx, vec![object_deser]);
-                    let tree4l = echo_fb::Tree4LFB::create(ctx, &args[0]);
+                    let args = get_tree4l_args_from_tree4l(&mut ctx, vec![object_deser]);
+                    let tree4l = echo_fb::Tree4LFB::create(&mut ctx, &args[0]);
                     ctx.finish(tree4l, None);
                     cf.add_entry(CornPtr::Normal(ctx.finished_data()));
                 }
                 TreeDepth::Five => {
                     let object_deser = get_root::<echo_fb::Tree5LFB>(&recved_msg.index(0).as_ref());
-                    let args = get_tree5l_args_from_tree5l(ctx, vec![object_deser]);
-                    let tree5l = echo_fb::Tree5LFB::create(ctx, &args[0]);
+                    let args = get_tree5l_args_from_tree5l(&mut ctx, vec![object_deser]);
+                    let tree5l = echo_fb::Tree5LFB::create(&mut ctx, &args[0]);
                     ctx.finish(tree5l, None);
                     cf.add_entry(CornPtr::Normal(ctx.finished_data()));
                 }
             },
         }
-        Ok(cf)
+        Ok((ctx, RcCornflake::with_capacity(1)))
+    }
+
+    fn process_header<'registered>(
+        &self,
+        ctx: &'registered Self::Ctx,
+        cornflake: &mut RcCornflake<'registered, D>,
+    ) -> Result<()> {
+        cornflake.add_entry(RcCornPtr::RawRef(ctx.finished_data()));
+        Ok(())
     }
 
     fn new_context(&self) -> Self::Ctx {

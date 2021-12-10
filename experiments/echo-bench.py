@@ -9,21 +9,28 @@ import copy
 STRIP_THRESHOLD = 0.03
 
 # SIZES_TO_LOOP = [1024, 2048, 4096, 8192]
-NUM_THREADS = [1, 2, 4, 8]
-SIZES_TO_LOOP = [2048, 4096, 8192]
+NUM_THREADS = 4
+NUM_CLIENTS = 2
+NUM_CLIENTS_MOTIVATION = 3
+SIZES_TO_LOOP = [512, 4096]
 MESSAGE_TYPES = ["single"]
-MESSAGE_TYPES.extend(["list-2", "list-4", "list-8", "list-12", "list-16",
+MESSAGE_TYPES.extend(["list-1", "list-2", "list-4", "list-8",
                      "tree-2", "tree-1", "tree-3"])
-# MESSAGE_TYPES.extend(["list-{}".format(i) for i in range(1, 5)])
-# MESSAGE_TYPES.extend(["tree-{}".format(i) for i in range(1, 4)])
-MAX_CLIENT_RATE_PPS = 60000
-NUM_CLIENTS = 3
-CLIENT_RATE_INCREMENT = 20000
-SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cereal", "capnproto", "protobuf",
-                           "flatbuffers",  # "cornflakes-fixed",
+rates = [2500, 5000, 10000, 15000, 25000, 35000, 45000, 55000,
+         65000, 75000, 85000, 95000, 105000, 115000, 125000,
+         135000, 145000, 155000, 165000,
+         175000, 185000, 200000, 220000, 240000, 280000, 300000, 320000, 360000, 400000]
+SERIALIZATION_LIBRARIES = ["cornflakes-dynamic",  # "cereal", "capnproto", "protobuf",
+                           # "flatbuffers",  # "cornflakes-fixed",
                            # "cornflakes1c-fixed"]  # "cornflakes1c-fixed", "protobuf", "capnproto",
                            "cornflakes1c-dynamic"]
-# "flatbuffers"]
+MOTIVATION_SERIALIZATION_LIBRARIES = ["ideal", "onecopy", "twocopy",
+                                      "flatbuffers", "capnproto", "cereal", "protobuf"]
+ALL_SERIALIZATION_LIBRARIES = ["ideal", "onecopy", "twocopy",
+                               "cornflakes-dynamic", "cornflakes1c-dynamic",
+                               "flatbuffers", "capnproto", "cereal", "protobuf"]
+MOTIVATION_MESSAGE_TYPE = "list-2"
+MOTIVATION_SIZES_TO_LOOP = [1024, 4096]
 
 
 def parse_client_time_and_pkts(line):
@@ -57,7 +64,8 @@ class EchoBenchIteration(runner.Iteration):
     def __init__(self, client_rates, size,
                  serialization, message_type,
                  num_threads,
-                 trial=None):
+                 trial=None,
+                 ref_counting=True):
         """
         Arguments:
         * client_rates: Mapping from {int, int} specifying rates and how many
@@ -76,6 +84,7 @@ class EchoBenchIteration(runner.Iteration):
         self.message_type = message_type
         self.trial = trial
         self.num_threads = num_threads
+        self.ref_counting = ref_counting
 
     def get_num_threads(self):
         return self.num_threads
@@ -94,6 +103,9 @@ class EchoBenchIteration(runner.Iteration):
 
     def set_trial(self, trial):
         self.trial = trial
+
+    def get_ref_counting(self):
+        return self.ref_counting
 
     def get_num_threads_string(self):
         return "{}_threads".format(self.num_threads)
@@ -143,6 +155,9 @@ class EchoBenchIteration(runner.Iteration):
     def get_size_string(self):
         return "size_{}".format(self.size)
 
+    def ref_counting_string(self):
+        return "ref_counting_{}".format(self.ref_counting)
+
     def get_trial_string(self):
         if self.trial == None:
             utils.error("TRIAL IS NOT SET FOR ITERATION.")
@@ -155,11 +170,13 @@ class EchoBenchIteration(runner.Iteration):
             "serialization: {}, " \
             "message_type: {}, " \
             "num_threads: {}, " \
+            "ref counting: {}," \
             "trial: {}".format(self.get_client_rate_string(),
                                self.get_size_string(),
                                self.serialization,
                                self.message_type,
                                self.num_threads,
+                               self.ref_counting,
                                self.get_trial_string())
 
     def get_serialization_folder(self, high_level_folder):
@@ -168,7 +185,9 @@ class EchoBenchIteration(runner.Iteration):
 
     def get_parent_folder(self, high_level_folder):
         path = Path(high_level_folder)
-        return path / self.serialization / self.message_type / self.get_size_string() / self.get_client_rate_string() / self.get_num_threads_string()
+        return path / self.serialization / self.message_type /\
+            self.get_size_string() / self.get_client_rate_string() /\
+            self.get_num_threads_string() / self.ref_counting_string()
 
     def get_folder_name(self, high_level_folder):
         return self.get_parent_folder(high_level_folder) / self.get_trial_string()
@@ -217,7 +236,10 @@ class EchoBenchIteration(runner.Iteration):
             ret["client-library"] = "cornflakes1c-fixed"
 
         if program == "start_server":
-            pass
+            if not(self.ref_counting):
+                ret["no_ref_counting"] = " --no_ref_counting"
+            else:
+                ret["no_ref_counting"] = ""
         elif program == "start_client":
             # calculate client rate
             host_options = self.get_iteration_clients(
@@ -266,7 +288,8 @@ class EchoBench(runner.Experiment):
                                     total_args.size,
                                     total_args.serialization,
                                     total_args.message_type,
-                                    total_args.num_threads)
+                                    total_args.num_threads,
+                                    ref_counting=not(total_args.no_ref_counting))
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             if total_args.analysis_only or total_args.graph_only:
@@ -282,31 +305,41 @@ class EchoBench(runner.Experiment):
         else:
             # loop over the options
             ret = []
-            for trial in range(utils.NUM_TRIALS):
-                for message_type in MESSAGE_TYPES:
-                    for size in SIZES_TO_LOOP:
-                        for serialization in SERIALIZATION_LIBRARIES:
-                            if size == 8192\
-                                and message_type == "tree-5"\
-                                and (serialization == "cornflakes-dynamic"
-                                     or serialization == "cornflakes-1cdynamic"):
-                                continue
-                            # TODO: just figure out how to do this in a better
-                            # way
-                            machine_threads = [
-                                (1, 1), (2, 1), (3, 1), (2, 2), (3, 2), (2, 4)]
-                            rates = [rate for rate in range(
-                                50000, 110000, 10000)]
-                            for (machine_thread, rate) in zip(machine_threads,
-                                                              rates):
-                                client_rate = [(rate, machine_thread[0])]
-                                num_threads = machine_thread[1]
+            if total_args.loop_mode == "eval":
+                for trial in range(utils.NUM_TRIALS):
+                    for serialization in SERIALIZATION_LIBRARIES:
+                        for rate in rates:
+                            client_rate = [(rate, NUM_CLIENTS)]
+                            num_threads = NUM_THREADS
+                            for size in SIZES_TO_LOOP:
+                                for message_type in MESSAGE_TYPES:
+                                    if size == 8192\
+                                            and message_type == "tree-5"\
+                                            and (serialization == "cornflakes-dynamic" or serialization == "cornflakes-1cdynamic"):
+                                        continue
+                                    it = EchoBenchIteration(client_rate,
+                                                            size,
+                                                            serialization,
+                                                            message_type,
+                                                            num_threads,
+                                                            trial=trial,
+                                                            ref_counting=not(total_args.no_ref_counting))
+                                    ret.append(it)
+            elif total_args.loop_mode == "motivation":
+                for trial in range(utils.NUM_TRIALS):
+                    for serialization in MOTIVATION_SERIALIZATION_LIBRARIES:
+                        for rate in rates:
+                            client_rate = [(rate, NUM_CLIENTS_MOTIVATION)]
+                            num_threads = NUM_THREADS
+                            message_type = MOTIVATION_MESSAGE_TYPE
+                            for size in MOTIVATION_SIZES_TO_LOOP:
                                 it = EchoBenchIteration(client_rate,
                                                         size,
                                                         serialization,
                                                         message_type,
                                                         num_threads,
-                                                        trial=trial)
+                                                        trial=trial,
+                                                        ref_counting=not(total_args.no_ref_counting))
                                 ret.append(it)
             return ret
 
@@ -314,6 +347,10 @@ class EchoBench(runner.Experiment):
         parser.add_argument("-l", "--logfile",
                             help="logfile name",
                             default="latencies.log")
+        parser.add_argument("-nrc", "--no_ref_counting",
+                            dest="no_ref_counting",
+                            action='store_true',
+                            help="Turn off reference counting in server.")
         if namespace.exp_type == "individual":
             parser.add_argument("-nt", "--num_threads",
                                 dest="num_threads",
@@ -339,8 +376,14 @@ class EchoBench(runner.Experiment):
                                 default=1)
             parser.add_argument("-ser", "--serialization",
                                 dest="serialization",
-                                choices=SERIALIZATION_LIBRARIES,
+                                choices=ALL_SERIALIZATION_LIBRARIES,
                                 required=True)
+        else:
+            parser.add_argument("-lm", "--loop_mode",
+                                dest="loop_mode",
+                                choices=["eval", "motivation"],
+                                default="eval",
+                                help="looping mode variable")
         args = parser.parse_args(namespace=namespace)
         return args
 
@@ -351,7 +394,7 @@ class EchoBench(runner.Experiment):
         return self.config_yaml
 
     def get_logfile_header(self):
-        return "serialization,message_type,size,"\
+        return "serialization,refcounting,message_type,size,"\
             "offered_load_pps,offered_load_gbps,"\
             "achieved_load_pps,achieved_load_gbps,"\
             "percent_acheived_rate,total_retries,"\
@@ -455,23 +498,77 @@ class EchoBench(runner.Experiment):
             utils.info("Total Stats: ", total_stats)
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)
-        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
-                                                                   iteration.get_message_type(),
-                                                                   iteration.get_size(),
-                                                                   total_offered_load_pps,
-                                                                   total_offered_load_gbps,
-                                                                   total_achieved_load_pps,
-                                                                   total_achieved_load_gbps,
-                                                                   percent_acheived_load,
-                                                                   total_retries,
-                                                                   avg,
-                                                                   median,
-                                                                   p99,
-                                                                   p999)
+        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
+                                                                      iteration.get_ref_counting(),
+                                                                      iteration.get_message_type(),
+                                                                      iteration.get_size(),
+                                                                      total_offered_load_pps,
+                                                                      total_offered_load_gbps,
+                                                                      total_achieved_load_pps,
+                                                                      total_achieved_load_gbps,
+                                                                      percent_acheived_load,
+                                                                      total_retries,
+                                                                      avg,
+                                                                      median,
+                                                                      p99,
+                                                                      p999)
         return csv_line
 
-    def graph_results(self, args, folder, logfile):
-        utils.warn("Graphing not implemented yet")
+    def graph_results(self, args, folder, logfile, post_process_logfile):
+        cornflakes_repo = self.config_yaml["cornflakes_dir"]
+        plot_path = Path(folder) / "plots"
+        plot_path.mkdir(exist_ok=True)
+        full_log = Path(folder) / logfile
+        post_process_log = Path(folder) / post_process_logfile
+        plotting_script = Path(cornflakes_repo) / \
+            "experiments" / "plotting_scripts" / "echo_bench.R"
+        base_args = [str(plotting_script), str(full_log)]
+        metrics = ["p99", "median"]
+
+        # make total plot
+        for metric in metrics:
+            utils.debug("Summary plot for ", metric)
+            total_pdf = plot_path / "summary_{}.pdf".format(metric)
+            total_plot_args = [str(plotting_script),
+                               str(full_log), str(total_pdf),
+                               metric, "full"]
+            sh.run(total_plot_args)
+        # make individual plots
+        if args.loop_mode == "motivation":
+            for metric in metrics:
+                for size in MOTIVATION_SIZES_TO_LOOP:
+                    message_type = MOTIVATION_MESSAGE_TYPE
+                    individual_plot_path = plot_path / \
+                        "size_{}".format(size) / \
+                        "msg_{}".format(message_type)
+                    individual_plot_path.mkdir(parents=True, exist_ok=True)
+                    pdf = individual_plot_path /\
+                        "size_{}_msg_{}_{}.pdf".format(
+                            size, message_type, metric)
+                    total_plot_args = [str(plotting_script),
+                                       str(full_log), str(pdf),
+                                       metric, "individual", message_type,
+                                       str(size)]
+
+                    sh.run(total_plot_args)
+
+        elif args.loop_mode == "eval":
+            for metric in metrics:
+                for size in SIZES_TO_LOOP:
+                    for message_type in MESSAGE_TYPES:
+                        individual_plot_path = plot_path / \
+                            "size_{}".format(size) / \
+                            "msg_{}".format(message_type)
+                        individual_plot_path.mkdir(parents=True, exist_ok=True)
+                        pdf = individual_plot_path /\
+                            "size_{}_msg_{}_{}.pdf".format(
+                                size, message_type, metric)
+                        total_plot_args = [str(plotting_script),
+                                           str(full_log), str(pdf),
+                                           metric, "individual", message_type,
+                                           str(size)]
+
+                        sh.run(total_plot_args)
 
 
 def main():

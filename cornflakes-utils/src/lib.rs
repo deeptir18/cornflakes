@@ -206,6 +206,12 @@ pub enum SerializationType {
     CornflakesOneCopyFixed,
     /// Cereal serialization library.
     Cereal,
+    /// Synthetic two-copy baseline,
+    TwoCopyBaseline,
+    /// Synthetic one-copy baseline,
+    OneCopyBaseline,
+    /// Synthetic Ideal Zero-Copy baseline.
+    IdealBaseline,
 }
 
 impl std::str::FromStr for SerializationType {
@@ -227,6 +233,9 @@ impl std::str::FromStr for SerializationType {
             | "CORNFLAKES1C-DYNAMIC"
             | "Cornflakes1C-Dynamic"
             | "Cornflakes1c-Dynamic" => SerializationType::CornflakesOneCopyDynamic,
+            "onecopy" | "one-copy" | "ONECOPY" | "OneCopy" => SerializationType::OneCopyBaseline,
+            "twocopy" | "two-copy" | "TWOCOPY" | "TwoCopy" => SerializationType::TwoCopyBaseline,
+            "ideal" | "Ideal" | "IDEAL" => SerializationType::IdealBaseline,
             x => {
                 bail!("{} serialization type unknown.", x);
             }

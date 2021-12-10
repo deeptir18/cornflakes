@@ -1,18 +1,21 @@
 pub mod hardcoded_cf;
 
-/*pub mod kv_messages {
+pub mod kv_messages {
     include!(concat!(env!("OUT_DIR"), "/kv_cf_dynamic.rs"));
-}*/
+}
 
 use super::{ycsb_parser::YCSBRequest, KVSerializer, MsgType, SerializedRequestGenerator};
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_codegen::utils::rc_dynamic_hdr::{CFBytes, CFString, HeaderRepr};
 use cornflakes_libos::{
     dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, CfBuf, Datapath, RcCornPtr, RcCornflake,
-    ReceivedPkt, ScatterGather,
+    ReceivedPkt, ScatterGather, USING_REF_COUNTING,
 };
 use hashbrown::HashMap;
 use std::marker::PhantomData;
+
+#[cfg(feature = "profiler")]
+use perftools;
 
 // empty object
 pub struct CornflakesDynamicSerializer<D>
@@ -38,64 +41,116 @@ where
     }
 
     fn handle_get<'a>(
-        &self,
-        pkt: ReceivedPkt<D>,
+        &mut self,
+        mut pkt: ReceivedPkt<D>,
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
         offset: usize,
     ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Handle get cornflakes");
+
         match num_values {
             0 => {
                 bail!("Number of get values cannot be 0");
             }
             1 => {
                 // deserialize request
-                let mut get_request = hardcoded_cf::GetReq::<D>::new();
-                get_request.deserialize(&pkt, offset)?;
+                let mut get_request = kv_messages::GetReq::<D>::new();
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Deserialize pkt");
+                    get_request.deserialize(&pkt, offset)?;
+                }
                 tracing::debug!(
                     "Received get request for key: {:?}",
                     get_request.get_key().to_str()?
                 );
                 let key = get_request.get_key();
-                let value = match map.get(key.to_str()?) {
-                    Some(v) => v,
-                    None => {
-                        bail!("Cannot find value for key in KV store: {:?}", key);
+                let value = {
+                    let key_str = {
+                        #[cfg(feature = "profiler")]
+                        perftools::timer!("re-encode str");
+                        key.to_str()?
+                    };
+                    {
+                        #[cfg(feature = "profiler")]
+                        perftools::timer!("Query key");
+                        match map.get(key_str) {
+                            Some(v) => v,
+                            None => {
+                                bail!("Cannot find value for key in KV store: {:?}", key);
+                            }
+                        }
                     }
                 };
                 tracing::debug!("Found val for key {:?}: value {:?}", key.to_str()?, value);
 
                 // construct response
-                let mut response = hardcoded_cf::GetResp::<D>::new();
+                let mut response = kv_messages::GetResp::<D>::new();
                 response.set_id(get_request.get_id());
-                response.set_val_rc(value.clone());
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Set val rc");
+                    response.set_val_rc(value.clone());
+                }
 
                 // serialize response
-                let (header_vec, cf) = response.serialize(rte_memcpy)?;
+                let (header_vec, cf) = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Serialize resp");
+                    response.serialize(rte_memcpy)?
+                };
                 return Ok((header_vec, cf));
             }
             x => {
-                let mut getm_request = hardcoded_cf::GetMReq::<D>::new();
-                getm_request.deserialize(&pkt, offset)?;
+                let mut getm_request = kv_messages::GetMReq::<D>::new();
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Deserialize pkt");
+                    getm_request.deserialize(&pkt, offset)?;
+                }
                 let keys = getm_request.get_keys();
                 tracing::debug!("Handling getm request with {} values", x);
 
-                let mut getm_response = hardcoded_cf::GetMResp::<D>::new();
+                let mut getm_response = kv_messages::GetMResp::<D>::new();
                 getm_response.set_id(getm_request.get_id());
-                getm_response.init_vals(x);
+                getm_response.init_vals(num_values);
                 let values = getm_response.get_mut_vals();
                 for i in 0..x {
                     let key = &keys[i];
-                    let value = match map.get(key.to_str()?) {
-                        Some(v) => v,
-                        None => {
-                            bail!("Cannot find value for key in KV store: {:?}", key);
+                    let value = {
+                        let key_str = {
+                            #[cfg(feature = "profiler")]
+                            perftools::timer!("re-encode str");
+                            key.to_str()?
+                        };
+                        {
+                            #[cfg(feature = "profiler")]
+                            perftools::timer!("Query key 1");
+                            match map.get(key_str) {
+                                Some(v) => v,
+                                None => {
+                                    bail!("Cannot find value for key in KV store: {:?}", key);
+                                }
+                            }
                         }
                     };
-                    values.append(CFBytes::new_rc(value.clone()));
+                    {
+                        #[cfg(feature = "profiler")]
+                        perftools::timer!("Set val rc");
+                        values.append(CFBytes::new_rc(value.clone()));
+                    }
                 }
 
-                let (header_vec, cf) = getm_response.serialize(rte_memcpy)?;
+                let (header_vec, cf) = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Serialize resp");
+                    getm_response.serialize(rte_memcpy)?
+                };
+                if unsafe { !USING_REF_COUNTING } {
+                    pkt.free_inner();
+                }
                 return Ok((header_vec, cf));
             }
         }
@@ -103,7 +158,7 @@ where
 
     fn handle_put<'a>(
         &self,
-        pkt: ReceivedPkt<D>,
+        mut pkt: ReceivedPkt<D>,
         map: &mut HashMap<String, CfBuf<D>>,
         num_values: usize,
         offset: usize,
@@ -115,7 +170,7 @@ where
             }
             1 => {
                 // deserialize request
-                let mut put_request = hardcoded_cf::PutReq::<D>::new();
+                let mut put_request = kv_messages::PutReq::<D>::new();
                 put_request.deserialize(&pkt, offset)?;
                 tracing::debug!(
                     "Put request key: {:?}; val: {:?}",
@@ -128,7 +183,7 @@ where
                 );
 
                 // construct response
-                let mut response = hardcoded_cf::PutResp::<D>::new();
+                let mut response = kv_messages::PutResp::new();
                 response.set_id(put_request.get_id());
 
                 // serialize response
@@ -136,7 +191,7 @@ where
                 return Ok((header_vec, cf));
             }
             x => {
-                let mut putm_request = hardcoded_cf::PutMReq::<D>::new();
+                let mut putm_request = kv_messages::PutMReq::new();
                 putm_request.deserialize(&pkt, offset)?;
                 let keys = putm_request.get_keys();
                 let vals = putm_request.get_vals();
@@ -146,10 +201,13 @@ where
                     map.insert(key.to_string()?, val.get_inner_rc()?);
                 }
 
-                let mut response = hardcoded_cf::PutResp::<D>::new();
+                let mut response = kv_messages::PutResp::new();
                 response.set_id(putm_request.get_id());
 
                 let (header_vec, cf) = response.serialize(rte_memcpy)?;
+                if unsafe { !USING_REF_COUNTING } {
+                    pkt.free_inner();
+                }
                 return Ok((header_vec, cf));
             }
         }
@@ -180,8 +238,29 @@ where
         pkt: &ReceivedPkt<D>,
         msg_type: MsgType,
         value_size: usize,
+        keys: Vec<String>,
+        hashmap: &HashMap<String, String>,
+        check_value: bool,
     ) -> Result<bool> {
         let id = pkt.get_id();
+        let values = match check_value {
+            true => {
+                let mut vals: Vec<String> = Vec::default();
+                for key in keys.iter() {
+                    match hashmap.get(key) {
+                        Some(v) => {
+                            vals.push(v.to_string());
+                        }
+
+                        None => {
+                            bail!("Request key {:?} does not have a value in the hashmap", key);
+                        }
+                    }
+                }
+                vals
+            }
+            false => Vec::default(),
+        };
         match msg_type {
             MsgType::Get(num_values) => {
                 match num_values {
@@ -190,7 +269,7 @@ where
                     }
                     1 => {
                         // deserialize into GetResp
-                        let mut get_resp = hardcoded_cf::GetResp::<D>::new();
+                        let mut get_resp = kv_messages::GetResp::<D>::new();
                         get_resp.deserialize(&pkt, 0)?;
                         ensure!(
                         get_resp.get_id() == id,
@@ -204,9 +283,16 @@ where
                         get_resp.get_val().len() == value_size,
                         format!("Deserialized value does not have the correct size, expected: {}, actual: {}", value_size, get_resp.get_val().len())
                     );
+                        if check_value {
+                            ensure!(
+                                get_resp.get_val().to_bytes_vec()
+                                    == values[0].as_str().as_bytes().to_vec(),
+                                "Value is not correct"
+                            );
+                        }
                     }
                     _ => {
-                        let mut getm_resp = hardcoded_cf::GetMResp::<D>::new();
+                        let mut getm_resp = kv_messages::GetMResp::<D>::new();
                         getm_resp.deserialize(&pkt, 0)?;
                         ensure!(
                             getm_resp.get_id() == id,
@@ -232,12 +318,19 @@ where
                                     val.len()
                                 )
                             );
+                            if check_value {
+                                ensure!(
+                                    vals[i].to_bytes_vec()
+                                        == values[i].as_str().as_bytes().to_vec(),
+                                    "Value is not correct"
+                                );
+                            }
                         }
                     }
                 }
             }
             MsgType::Put(_) => {
-                let mut put_resp = hardcoded_cf::PutResp::<D>::new();
+                let mut put_resp = kv_messages::PutResp::new();
                 put_resp.deserialize(&pkt, 0)?;
                 ensure!(put_resp.has_id(), "Received put response doesn't have id");
                 ensure!(
@@ -260,7 +353,7 @@ where
                     bail!("Msg size cannot be 0");
                 }
                 1 => {
-                    let mut get_req = hardcoded_cf::GetReq::<D>::new();
+                    let mut get_req = kv_messages::GetReq::<D>::new();
                     get_req.set_id(req.get_id());
                     let (key, _val) = req.get_next_kv()?;
                     get_req.set_key(&key);
@@ -281,7 +374,7 @@ where
                         request_keys.push(key);
                     }
 
-                    let mut getm_req = hardcoded_cf::GetMReq::<D>::new();
+                    let mut getm_req = kv_messages::GetMReq::<D>::new();
                     getm_req.set_id(req.get_id());
                     getm_req.init_keys(x);
                     let keys = getm_req.get_mut_keys();
@@ -305,7 +398,7 @@ where
                     bail!("Msg size cannot be 0");
                 }
                 1 => {
-                    let mut put_req = hardcoded_cf::PutReq::<D>::new();
+                    let mut put_req = kv_messages::PutReq::<D>::new();
                     put_req.set_id(req.get_id());
                     let (key, val) = req.get_next_kv()?;
                     put_req.set_key(&key);
@@ -326,7 +419,7 @@ where
                         request_keys.push(key);
                     }
 
-                    let mut putm_req = hardcoded_cf::PutMReq::<D>::new();
+                    let mut putm_req = kv_messages::PutMReq::<D>::new();
                     putm_req.set_id(req.get_id());
                     putm_req.init_keys(x);
                     putm_req.init_vals(x);

@@ -27,7 +27,19 @@ use std::{
 use timing::HistogramWrapper;
 use utils::AddressInfo;
 
+#[cfg(feature = "profiler")]
+use perftools;
+#[cfg(feature = "profiler")]
+const PROFILER_DEPTH: usize = 10;
+
+pub static mut USING_REF_COUNTING: bool = true;
 pub type MsgID = u32;
+
+pub fn turn_off_ref_counting() {
+    unsafe {
+        USING_REF_COUNTING = false;
+    }
+}
 
 /// Trait defining functionality any ``scatter-gather'' types should have,
 /// that datapaths can access or modify about these types,
@@ -509,12 +521,30 @@ impl<D> CfBuf<D>
 where
     D: Datapath,
 {
+    pub fn free_inner(&mut self) {
+        self.buf.free_inner();
+    }
     pub fn new(buf: D::DatapathPkt) -> Self {
         CfBuf {
             len: buf.buf_size(),
             buf: buf,
             offset: 0,
         }
+    }
+
+    #[inline]
+    pub fn get_inner(&self) -> &D::DatapathPkt {
+        &self.buf
+    }
+
+    #[inline]
+    pub fn get_len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    pub fn get_offset(&self) -> usize {
+        self.offset
     }
 
     pub fn new_with_bounds(buf: &D::DatapathPkt, offset: usize, len: usize) -> Self {
@@ -546,14 +576,6 @@ where
         Ok(buf)
     }
 
-    pub fn get_offset(&self) -> usize {
-        self.offset
-    }
-
-    pub fn get_len(&self) -> usize {
-        self.len
-    }
-
     pub fn get_buf(&self) -> D::DatapathPkt {
         self.buf.clone()
     }
@@ -569,10 +591,7 @@ where
     }
 
     pub fn allocate(conn: &mut D, size: usize, alignment: usize) -> Result<Self> {
-        let mut buf = conn.allocate(size, alignment)?;
-        // TODO: should we be allocating the ref count here?
-        // Or should the "datapath" be doing it
-        buf.increment_rc();
+        let buf = conn.allocate(size, alignment)?;
         Ok(CfBuf {
             len: buf.buf_size(),
             buf: buf,
@@ -661,6 +680,12 @@ where
 /// Some datapaths have their own ref counting schema,
 /// So this trait exposes ref counting over those schemes.
 pub trait RefCnt {
+    // drops inner variable (for debugging)
+    fn free_inner(&mut self);
+
+    // TODO: change implementation to get rid of CfBuf object completely
+    fn inner_offset(&self) -> usize;
+
     fn count_rc(&self) -> usize;
 
     fn change_rc(&mut self, amt: isize);
@@ -700,6 +725,12 @@ where
             pkts: pkts,
             id: id,
             addr: addr,
+        }
+    }
+
+    pub fn free_inner(&mut self) {
+        for pkt in self.pkts.iter_mut() {
+            pkt.free_inner();
         }
     }
 
@@ -766,6 +797,14 @@ where
     /// would span two segments).
     pub fn contiguous_slice(&self, offset: usize, len: usize) -> Result<&[u8]> {
         let (seg, seg_off) = self.index_at_offset(offset);
+        tracing::debug!(
+            off = offset,
+            len = len,
+            seg = seg,
+            seg_off = seg_off,
+            buf_len = self.index(seg).buf_size(),
+            "Params"
+        );
         ensure!(
             (self.index(seg).buf_size() - seg_off) >= len,
             "Given params cannot create a contiguous slice, would span two boundaries."
@@ -829,6 +868,15 @@ pub trait Datapath {
     /// Send a single buffer to the specified address.
     fn push_buf(&mut self, buf: (MsgID, &[u8]), addr: utils::AddressInfo) -> Result<()>;
 
+    /// Echo back a received packet.
+    fn echo(&mut self, pkts: Vec<ReceivedPkt<Self>>) -> Result<()>
+    where
+        Self: Sized;
+
+    fn push_rc_sgas(&mut self, sga: &Vec<(RcCornflake<Self>, utils::AddressInfo)>) -> Result<()>
+    where
+        Self: Sized;
+
     /// Send a scatter-gather array to the specified address.
     fn push_sgas(&mut self, sga: &Vec<(impl ScatterGather, utils::AddressInfo)>) -> Result<()>;
 
@@ -879,6 +927,8 @@ pub trait Datapath {
 
     /// What is the transport header size for this datapath
     fn get_header_size(&self) -> usize;
+
+    fn allocate_tx(&self, len: usize) -> Result<Self::DatapathPkt>;
 
     /// Allocate a datapath buffer (registered) with this size and alignment.
     fn allocate(&self, size: usize, alignment: usize) -> Result<Self::DatapathPkt>;
@@ -1045,9 +1095,34 @@ pub trait ServerSM {
     /// * datapath - Object that implements Datapath trait, representing a connection using the
     /// underlying networking stack.
     fn run_state_machine(&mut self, datapath: &mut Self::Datapath) -> Result<()> {
+        // run profiler from here
+        #[cfg(feature = "profiler")]
+        perftools::profiler::reset();
+        let mut _last_log: Instant = Instant::now();
+        let mut _requests_processed = 0;
         loop {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Run state machine loop");
+
+            #[cfg(feature = "profiler")]
+            {
+                if _last_log.elapsed() > Duration::from_secs(5) {
+                    let d = Instant::now() - _last_log;
+                    tracing::info!(
+                        "Server processed {} # of reqs since last dump at rate of {:.2} reqs/s",
+                        _requests_processed,
+                        _requests_processed as f64 / d.as_secs_f64()
+                    );
+                    perftools::profiler::write(&mut std::io::stdout(), Some(PROFILER_DEPTH))
+                        .unwrap();
+                    perftools::profiler::reset();
+                    _requests_processed = 0;
+                    _last_log = Instant::now();
+                }
+            }
             let pkts = datapath.pop()?;
             if pkts.len() > 0 {
+                _requests_processed += pkts.len();
                 // give ownership of the received packets to the app.
                 self.process_requests(pkts, datapath)?;
             }

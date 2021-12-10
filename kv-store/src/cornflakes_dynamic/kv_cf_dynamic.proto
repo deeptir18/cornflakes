@@ -1,22 +1,20 @@
 syntax = "proto3";
 package kv_cf_dynamic;
 
-// TODO: do we actually need the IDs here?
-// Given we put them in the header for efficient access on the client side.
 message GetReq {
     uint32 id = 1;
-    string key = 2;
+    ref_counted_string key = 2;
 }
 
 message GetResp {
     uint32 id = 1;
-    bytes val = 2;
+    ref_counted_bytes val = 2;
 }
 
 message PutReq {
     uint32 id = 1;
-    string key = 2;
-    bytes val = 3;
+    ref_counted_string key = 2;
+    ref_counted_bytes val = 3;
 }
 
 message PutResp {
@@ -25,18 +23,18 @@ message PutResp {
 
 message GetMReq {
     uint32 id = 1;
-    repeated string key = 2;
+    repeated ref_counted_string keys = 2;
 }
 
 message GetMResp {
     uint32 id = 1;
-    repeated bytes value = 2;
+    repeated ref_counted_bytes vals = 2;
 }
 
 message PutMReq {
     uint32 id = 1;
-    repeated string key = 2;
-    repeated bytes val = 3;
+    repeated ref_counted_string keys = 2;
+    repeated ref_counted_bytes vals = 3;
 }
 
 message PutMResp {

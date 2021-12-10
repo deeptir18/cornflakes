@@ -114,7 +114,7 @@ where
     }
 
     fn handle_get<'a>(
-        &self,
+        &mut self,
         pkt: ReceivedPkt<D>,
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
@@ -143,6 +143,7 @@ where
 
                 // construct response
                 let mut response = builder.init_root::<kv_capnp::get_resp::Builder>();
+                // TODO: value.as_ref() should directly be able to get the underlying data address
                 response.set_val(value.as_ref());
                 response.set_id(get_request.get_id());
                 let (context, num_segments) = fill_in_context(&builder);
@@ -173,6 +174,8 @@ where
                             bail!("Cannot find value for key in KV store: {:?}", key);
                         }
                     };
+                    // TODO: val.as_ref() should directly return the mbuf data addr, not need to
+                    // make an extra pointer deref to the CfBuf
                     list.set(i as u32, val.as_ref());
                 }
                 let (context, num_segments) = fill_in_context(&builder);
@@ -302,6 +305,9 @@ where
         pkt: &ReceivedPkt<D>,
         msg_type: MsgType,
         value_size: usize,
+        _keys: Vec<String>,
+        _hashmap: &HashMap<String, String>,
+        _check_value: bool,
     ) -> Result<bool> {
         let segment_array_vec = read_context(&pkt, 0)?;
         let segment_array = SegmentArray::new(&segment_array_vec.as_slice());

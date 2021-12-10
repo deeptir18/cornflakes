@@ -28,7 +28,7 @@ PKGCONF ?= pkg-config
 PC_FILE := $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --path libdpdk 2>/dev/null)
 CFLAGS += -O3 $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONF) --cflags libdpdk)
 ifeq ($(DEBUG), y)
-	CFLAGS += -D__DEBUG__
+	CFLAGS += -D__DEBUG__ # add -O0 -g -ggdb for debugging
 endif
 
 ifeq ($(TIMERS), y)

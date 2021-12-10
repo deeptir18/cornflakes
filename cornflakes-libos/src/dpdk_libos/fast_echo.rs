@@ -176,13 +176,12 @@ fn client_thread(
         }
     }
     let length = start_run.elapsed().as_nanos() as f64 / 1000000000.0;
-    let achieved_load = (histogram.count() as f64) / (rate as f64 * length);
+    let _achieved_load = (histogram.count() as f64) / (rate as f64 * length);
 
     let stats = ThreadStats {
         queue_id: queue_id,
         num_sent: sent,
         runtime: length,
-        achieved_load: achieved_load,
         histogram: histogram,
     };
 
@@ -193,7 +192,7 @@ struct ThreadStats {
     pub queue_id: u16,
     pub num_sent: usize,
     pub runtime: f64,
-    pub achieved_load: f64,
+    //pub achieved_load: f64,
     pub histogram: HistogramWrapper,
 }
 

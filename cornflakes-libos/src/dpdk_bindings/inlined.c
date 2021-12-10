@@ -72,6 +72,7 @@ inline void free_referred_mbuf(void *buf) {
             //printf("Freeing mbuf %p\n", ref_mbuf);
             rte_pktmbuf_free(ref_mbuf);
         } else {
+        //printf("[free_refered_mbuf_] Original extbuf buffer: %p; Pointer of referred mbuf: %p; refcnt being set to: %u\n", buf, ref_mbuf, (unsigned)ref_cnt - 1);
             rte_mbuf_refcnt_set(ref_mbuf, ref_cnt - 1);
         }
     }
@@ -263,9 +264,17 @@ int rte_mempool_count_(struct rte_mempool *mp) {
 	return ops->get_count(mp);
 }
 
-void rte_pktmbuf_refcnt_update_(struct rte_mbuf *packet, int16_t val) {
-    //printf("[rte_mbuf_refcnt_update_] Increasing refcnt of mbuf %p by val %d; currently %d\n", packet, val, rte_mbuf_refcnt_read(packet));
-    rte_mbuf_refcnt_update(packet, val);
+void rte_pktmbuf_refcnt_update_or_free_(struct rte_mbuf *packet, int16_t val) {
+    //printf("[rte_mbuf_refcnt_update_] Changing refcnt of mbuf %p by val %d; currently %d\n", packet, val, rte_mbuf_refcnt_read(packet));
+    uint16_t cur_rc = rte_mbuf_refcnt_read(packet);
+    if (((int16_t)cur_rc + val ) <= 0) {
+        //printf("[rte_pktmbuf_refcnt_update_or_free_] Freeing packet %p\n", packet);
+        rte_pktmbuf_free(packet);
+        return;
+    } else {
+        //rte_mbuf_refcnt_update(packet, cur_rc + val);
+        rte_mbuf_refcnt_set(packet, cur_rc + val);
+    }
     //printf("[rte_mbuf_refcnt_update_] Refcnt is now %d\n", rte_mbuf_refcnt_read(packet));
 }
 
@@ -393,7 +402,6 @@ void set_lkey_not_present_(struct rte_mbuf *packet) {
     struct tx_pktmbuf_priv *data = tx_pktmbuf_get_priv(packet);
     data->lkey = 0;
     data->lkey_present = 0;
-
 }
 
 void set_refers_to_another_(struct rte_mbuf *packet, uint16_t val) {
@@ -497,6 +505,53 @@ bool parse_packet_(struct rte_mbuf *mbuf, size_t *payload_len, const struct rte_
     *payload_len = mbuf->pkt_len - header_size;
     // printf("[parse_packet_] Received packet with %u pkt_len, %u data_Len, %u header_size, set payload_len to %u\n", (unsigned)mbuf->pkt_len, (unsigned)mbuf->data_len, (unsigned)header_size, (unsigned)*payload_len);
     return true;
+}
+
+uint32_t read_pkt_id_(struct rte_mbuf *mbuf) {
+    uint32_t *id_slice;
+    id_slice = rte_pktmbuf_mtod_offset(mbuf, uint32_t *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
+    //printf("[read_pkt_id] mbuf %p, id pointer %p\n", mbuf, id_slice);
+    return ntohl(*id_slice);
+}
+
+void flip_headers_(struct rte_mbuf *mbuf, uint32_t id) {
+	struct rte_ether_hdr *ptr_mac_hdr;
+	struct rte_ether_addr src_addr;
+	struct rte_ipv4_hdr *ptr_ipv4_hdr;
+	uint32_t src_ip_addr;
+	struct rte_udp_hdr *rte_udp_hdr;
+	uint16_t tmp_port;
+    uint32_t *id_ptr;
+    
+    /* swap src and dst ether addresses */
+    ptr_mac_hdr = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
+    rte_ether_addr_copy(&ptr_mac_hdr->s_addr, &src_addr);
+	rte_ether_addr_copy(&ptr_mac_hdr->d_addr, &ptr_mac_hdr->s_addr);
+	rte_ether_addr_copy(&src_addr, &ptr_mac_hdr->d_addr);
+
+
+	/* swap src and dst IP addresses */
+	ptr_ipv4_hdr = rte_pktmbuf_mtod_offset(mbuf, struct rte_ipv4_hdr *, RTE_ETHER_HDR_LEN);
+	src_ip_addr = ptr_ipv4_hdr->src_addr;
+	ptr_ipv4_hdr->src_addr = ptr_ipv4_hdr->dst_addr;
+	ptr_ipv4_hdr->dst_addr = src_ip_addr;
+
+	/* swap UDP ports */
+	rte_udp_hdr = rte_pktmbuf_mtod_offset(mbuf, struct rte_udp_hdr *,
+                                            RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
+	tmp_port = rte_udp_hdr->src_port;
+	rte_udp_hdr->src_port = rte_udp_hdr->dst_port;
+	rte_udp_hdr->dst_port = tmp_port;
+
+	/* enable computation of IPv4 checksum in hardware */
+    ptr_ipv4_hdr->hdr_checksum = 0;
+    mbuf->l2_len = RTE_ETHER_HDR_LEN;
+	mbuf->l3_len = sizeof(struct rte_ipv4_hdr);
+    mbuf->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
+
+    id_ptr = rte_pktmbuf_mtod_offset(mbuf, uint32_t *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
+    *id_ptr = htonl(id);
+
 }
 
 void switch_headers_(struct rte_mbuf *rx_buf, struct rte_mbuf *tx_buf, size_t payload_length) {

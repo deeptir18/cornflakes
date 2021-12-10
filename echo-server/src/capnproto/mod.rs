@@ -9,7 +9,8 @@ use capnp::message::{
 };
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
-    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPkt, ScatterGather,
+    mem::MmapMetadata, CornPtr, Cornflake, Datapath, RcCornPtr, RcCornflake, ReceivedPkt,
+    ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use std::slice;
@@ -461,12 +462,12 @@ where
         self.message_type
     }
 
-    fn process_msg<'registered, 'normal: 'registered>(
+    fn process_msg<'registered>(
         &self,
         recved_msg: &'registered ReceivedPkt<D>,
-        ctx: &'normal mut Self::Ctx,
-    ) -> Result<Cornflake<'registered, 'normal>> {
-        let (ref mut framing_vec, ref mut builder) = ctx;
+        _conn: &mut D,
+    ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
+        let (mut framing_vec, mut builder) = (vec![0u8; self.framing_size], Builder::new_default());
         let segment_array_vec = read_context(recved_msg);
         let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
         let message_reader = Reader::new(segment_array, ReaderOptions::default());
@@ -540,16 +541,30 @@ where
             },
         }
 
-        fill_in_context(framing_vec, &builder);
+        fill_in_context(&mut framing_vec, &builder);
         let segments = builder.get_segments_for_output();
-        let mut cf = Cornflake::with_capacity(segments.len() + 1);
+        let cf = RcCornflake::with_capacity(segments.len() + 1);
+        Ok(((framing_vec, builder), cf))
+    }
 
-        cf.add_entry(CornPtr::Normal(framing_vec.as_slice()));
-
+    fn process_header<'registered>(
+        &self,
+        ctx: &'registered Self::Ctx,
+        cornflake: &mut RcCornflake<'registered, D>,
+    ) -> Result<()> {
+        cornflake.add_entry(RcCornPtr::RawRef(&ctx.0.as_slice()));
+        tracing::debug!(len = ctx.0.as_slice().len(), addr=? &ctx.0.as_slice().as_ptr(), "Entry 1");
+        let segments = ctx.1.get_segments_for_output();
         for seg in segments.iter() {
-            cf.add_entry(CornPtr::Normal(seg));
+            tracing::debug!(len = seg.len(), addr =? &seg.as_ptr(), "Adding segment");
+            cornflake.add_entry(RcCornPtr::RawRef(&seg));
         }
-        Ok(cf)
+        tracing::debug!(
+            data_len = cornflake.data_len(),
+            num_segments = cornflake.num_segments(),
+            "Sending out cf"
+        );
+        Ok(())
     }
 
     fn new_context(&self) -> Self::Ctx {

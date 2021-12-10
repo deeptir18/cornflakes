@@ -3,7 +3,8 @@ use super::{
 };
 use color_eyre::eyre::Result;
 use cornflakes_libos::{
-    mem::MmapMetadata, CornPtr, Cornflake, Datapath, ReceivedPkt, ScatterGather,
+    mem::MmapMetadata, CornPtr, Cornflake, Datapath, RcCornPtr, RcCornflake, ReceivedPkt,
+    ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use cxx;
@@ -215,12 +216,12 @@ where
         self.message_type
     }
 
-    fn process_msg<'registered, 'normal: 'registered>(
+    fn process_msg<'registered>(
         &self,
         recved_message: &'registered ReceivedPkt<D>,
-        ctx: &'normal mut Self::Ctx,
-    ) -> Result<Cornflake<'registered, 'normal>> {
-        let mut cf = Cornflake::with_capacity(1);
+        _conn: &mut D,
+    ) -> Result<(Self::Ctx, RcCornflake<'registered, D>)> {
+        let mut ctx = vec![0u8; self.context_size];
         match self.message_type {
             SimpleMessageType::Single => {
                 tracing::debug!(buf=?recved_message.index(0).as_ref().as_ptr(), "In process msg for cereal");
@@ -273,8 +274,16 @@ where
                 }
             },
         }
-        cf.add_entry(CornPtr::Normal(ctx));
-        Ok(cf)
+        Ok((ctx, RcCornflake::with_capacity(1)))
+    }
+
+    fn process_header<'registered>(
+        &self,
+        ctx: &'registered Self::Ctx,
+        cornflake: &mut RcCornflake<'registered, D>,
+    ) -> Result<()> {
+        cornflake.add_entry(RcCornPtr::RawRef(ctx.as_slice()));
+        Ok(())
     }
 
     fn new_context(&self) -> Self::Ctx {

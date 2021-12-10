@@ -18,7 +18,7 @@ extern "C" {
     fn register_custom_extbuf_ops_() -> ::std::os::raw::c_int;
     fn set_custom_extbuf_ops_(mempool: *mut rte_mempool) -> ::std::os::raw::c_int;
     fn rte_mempool_count_(mempool: *mut rte_mempool) -> ::std::os::raw::c_int;
-    fn rte_pktmbuf_refcnt_update_(packet: *mut rte_mbuf, val: i16);
+    fn rte_pktmbuf_refcnt_update_or_free_(packet: *mut rte_mbuf, val: i16);
     fn rte_pktmbuf_refcnt_set_(packet: *mut rte_mbuf, val: u16);
     fn rte_pktmbuf_refcnt_get_(packet: *mut rte_mbuf) -> u16;
     fn rte_pktmbuf_free_(packet: *mut rte_mbuf);
@@ -99,6 +99,10 @@ extern "C" {
         our_eth: *mut rte_ether_addr,
         our_ip: u32,
     ) -> bool;
+
+    fn flip_headers_(mbuf: *mut rte_mbuf, id: u32);
+
+    fn read_pkt_id_(mbuf: *mut rte_mbuf) -> u32;
 
     fn switch_headers_(rx_mbuf: *mut rte_mbuf, tx_mbuf: *mut rte_mbuf, payload_length: usize);
 
@@ -218,8 +222,8 @@ pub unsafe fn rte_mempool_count(mempool: *mut rte_mempool) -> ::std::os::raw::c_
 }
 
 #[inline]
-pub unsafe fn rte_pktmbuf_refcnt_update(packet: *mut rte_mbuf, val: i16) {
-    rte_pktmbuf_refcnt_update_(packet, val);
+pub unsafe fn rte_pktmbuf_refcnt_update_or_free(packet: *mut rte_mbuf, val: i16) {
+    rte_pktmbuf_refcnt_update_or_free_(packet, val);
 }
 
 #[inline]
@@ -394,6 +398,16 @@ pub unsafe fn parse_packet(
     let mut payload_len: usize = 0;
     let valid = parse_packet_(mbuf, &mut payload_len as _, our_eth, our_ip);
     (valid, payload_len)
+}
+
+#[inline]
+pub unsafe fn read_pkt_id(mbuf: *mut rte_mbuf) -> u32 {
+    read_pkt_id_(mbuf)
+}
+
+#[inline]
+pub unsafe fn flip_headers(mbuf: *mut rte_mbuf, id: u32) {
+    flip_headers_(mbuf, id);
 }
 
 #[inline]

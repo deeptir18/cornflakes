@@ -5,6 +5,7 @@ use which::which;
 
 mod constant_codegen;
 mod linear_codegen;
+mod linear_codegen_rc;
 
 pub fn compile(repr: &ProtoReprInfo, output_folder: &str, options: CompileOptions) -> Result<()> {
     let mut compiler = SerializationCompiler::new();
@@ -16,6 +17,11 @@ pub fn compile(repr: &ProtoReprInfo, output_folder: &str, options: CompileOption
         HeaderType::LinearDeserialization => {
             linear_codegen::compile(repr, &mut compiler)
                 .wrap_err("Linear codegen failed to generate code.")?;
+        }
+
+        HeaderType::LinearDeserializationRefCnt => {
+            linear_codegen_rc::compile(repr, &mut compiler)
+                .wrap_err("Linear codegen refcnt failed to generate code.")?;
         }
     }
     compiler.flush(&repr.get_output_file(output_folder).as_path())?;
@@ -62,7 +68,7 @@ impl ArgInfo {
         if self.is_ref && !self.is_mut {
             match &self.lifetime {
                 Some(lifetime) => {
-                    format!("&'{} {}", lifetime, self.arg_name)
+                    format!("&{} {}", lifetime, self.arg_name)
                 }
                 None => {
                     format!("& {}", self.arg_name)
@@ -71,7 +77,7 @@ impl ArgInfo {
         } else if self.is_ref && self.is_mut {
             match &self.lifetime {
                 Some(lifetime) => {
-                    format!("&'{} mut {}", lifetime, self.arg_name)
+                    format!("&{} mut {}", lifetime, self.arg_name)
                 }
                 None => {
                     format!("&mut {}", self.arg_name)
@@ -169,7 +175,7 @@ impl ContextPop for FunctionContext {
                 false => "".to_string(),
             };
             let lifetime_str = match &self.func_lifetime {
-                Some(x) => format!("<'{}>", x),
+                Some(x) => format!("<{}>", x),
                 None => "".to_string(),
             };
 
@@ -193,19 +199,61 @@ impl ContextPop for FunctionContext {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub struct WherePair {
+    pub key: String,
+    pub name: String,
+}
+
+impl WherePair {
+    pub fn new(key: &str, name: &str) -> Self {
+        WherePair {
+            key: key.to_string(),
+            name: name.to_string(),
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        format!("{}: {}", self.key, self.name)
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+pub struct WhereClause {
+    pub pairs: Vec<WherePair>,
+    started: bool,
+}
+
+impl WhereClause {
+    pub fn new(pairs: Vec<WherePair>) -> Self {
+        WhereClause {
+            pairs: pairs,
+            started: false,
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        if self.pairs.len() == 0 {
+            return "".to_string();
+        }
+        let pair_strings: Vec<String> = self.pairs.iter().map(|x| x.to_string()).collect();
+        format!("where\n{}", pair_strings.join(", \n"))
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct StructContext {
-    name: String,
+    struct_name: StructName,
     derives_copy: bool,
-    lifetime: String,
+    where_clause: WhereClause,
     started: bool,
 }
 
 impl StructContext {
-    pub fn new(name: &str, derives_copy: bool, lifetime: &str) -> Self {
+    pub fn new(struct_name: StructName, derives_copy: bool, where_clause: WhereClause) -> Self {
         StructContext {
-            name: name.to_string(),
+            struct_name: struct_name,
             derives_copy: derives_copy,
-            lifetime: lifetime.to_string(),
+            where_clause: where_clause,
             started: false,
         }
     }
@@ -219,13 +267,15 @@ impl ContextPop for StructContext {
                 true => "Debug, Clone, PartialEq, Eq, Copy",
                 false => "Debug, Clone, PartialEq, Eq",
             };
-            Ok((
+            return Ok((
                 format!(
-                    "#[derive({})]\npub struct {}<'{}> {{",
-                    derives, self.name, self.lifetime
+                    "#[derive({})]\n pub struct {} {} {{",
+                    derives,
+                    self.struct_name.to_string(),
+                    self.where_clause.to_string(),
                 ),
                 false,
-            ))
+            ));
         } else {
             Ok(("}".to_string(), true))
         }
@@ -259,36 +309,100 @@ impl ContextPop for StructDefContext {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct ImplContext {
+pub struct StructName {
     pub struct_name: String,
-    pub trait_name: Option<String>,
-    pub struct_lifetime: Option<String>,
-    trait_lifetime: Option<String>,
+    pub type_annotation: Vec<String>,
+}
+
+impl StructName {
+    pub fn new(name: &str, type_annotation: Vec<String>) -> Self {
+        StructName {
+            struct_name: name.to_string(),
+            type_annotation: type_annotation,
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "{}{}",
+            self.struct_name,
+            bracket_type_vec(self.type_annotation.clone())
+        )
+    }
+
+    pub fn type_vec(&self) -> Vec<String> {
+        self.type_annotation.clone()
+    }
+
+    pub fn combined_type_vec(&self, trait_name: Option<TraitName>) -> Vec<String> {
+        let mut base = self.type_annotation.clone();
+        match trait_name {
+            Some(t) => {
+                for typ in t.type_vec().iter() {
+                    if !base.contains(&typ) {
+                        base.push(typ.to_string());
+                    }
+                }
+            }
+            None => {}
+        }
+        base
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TraitName {
+    pub trait_name: String,
+    pub type_annotation: Vec<String>,
+}
+
+impl TraitName {
+    pub fn new(name: &str, type_annotation: Vec<String>) -> Self {
+        TraitName {
+            trait_name: name.to_string(),
+            type_annotation: type_annotation,
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "{}{}",
+            self.trait_name,
+            bracket_type_vec(self.type_annotation.clone())
+        )
+    }
+
+    pub fn type_vec(&self) -> Vec<String> {
+        self.type_annotation.clone()
+    }
+}
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ImplContext {
+    pub struct_name: StructName,
+    pub trait_name: Option<TraitName>,
+    pub where_clause: WhereClause,
     started: bool,
 }
 
 impl ImplContext {
     pub fn new(
-        name: &str,
-        trait_name: Option<String>,
-        lifetime: &str,
-        trait_lifetime: &str,
+        struct_name: StructName,
+        trait_name: Option<TraitName>,
+        where_clause: WhereClause,
     ) -> Self {
-        let struct_lifetime: Option<String> = match lifetime {
-            "" => None,
-            x => Some(x.to_string()),
-        };
-        let tl: Option<String> = match trait_lifetime {
-            "" => None,
-            x => Some(x.to_string()),
-        };
         ImplContext {
-            struct_name: name.to_string(),
+            struct_name: struct_name,
             trait_name: trait_name,
-            struct_lifetime: struct_lifetime,
-            trait_lifetime: tl,
+            where_clause: where_clause,
             started: false,
         }
+    }
+}
+
+fn bracket_type_vec(vec: Vec<String>) -> String {
+    match vec.len() {
+        0 => "".to_string(),
+        _x => format!("<{}>", vec.join(", ")),
     }
 }
 
@@ -296,27 +410,25 @@ impl ContextPop for ImplContext {
     fn pop(&mut self) -> Result<(String, bool)> {
         if !self.started {
             self.started = true;
-            let lifetime_str = match &self.struct_lifetime {
-                Some(x) => format!("<'{}>", x),
-                None => "".to_string(),
-            };
-            let trait_lifetime_str = match &self.trait_lifetime {
-                Some(x) => format!("<'{}>", x),
-                None => "".to_string(),
-            };
+            let impl_type =
+                bracket_type_vec(self.struct_name.combined_type_vec(self.trait_name.clone()));
+
+            let type_str = self.struct_name.to_string();
+            let where_clause_string = self.where_clause.to_string();
+
             match &self.trait_name {
-                Some(t) => Ok((
+                Some(x) => Ok((
                     format!(
-                        "impl{} {}{} for {}{} {{",
-                        lifetime_str, t, trait_lifetime_str, self.struct_name, lifetime_str
+                        "impl{} {} for {} {} {{",
+                        impl_type,
+                        x.to_string(),
+                        type_str,
+                        where_clause_string,
                     ),
                     false,
                 )),
                 None => Ok((
-                    format!(
-                        "impl{} {}{} {{",
-                        lifetime_str, self.struct_name, lifetime_str
-                    ),
+                    format!("impl{} {} {} {{", impl_type, type_str, where_clause_string,),
                     false,
                 )),
             }
@@ -515,6 +627,12 @@ impl SerializationCompiler {
         Ok(())
     }
 
+    pub fn add_macro_call(&mut self, macro_name: &str, args: Vec<String>) -> Result<()> {
+        let line = format!("{}!({});", macro_name, args.join(", "));
+        self.add_line(&line)?;
+        Ok(())
+    }
+
     pub fn add_line(&mut self, line: &str) -> Result<()> {
         self.current_string
             .push_str(&("\t".repeat(self.current_indent_level())));
@@ -572,6 +690,23 @@ impl SerializationCompiler {
         Ok(())
     }
 
+    pub fn add_constant_def(
+        &mut self,
+        is_pub: bool,
+        left: &str,
+        typ: &str,
+        right: &str,
+    ) -> Result<()> {
+        let pub_str = match is_pub {
+            true => "pub ",
+            false => "",
+        };
+
+        let line = format!("{}const {}: {} = {};", pub_str, left, typ, right);
+        self.add_line(&line)?;
+        Ok(())
+    }
+
     pub fn add_def_with_let(
         &mut self,
         is_mut: bool,
@@ -615,13 +750,19 @@ impl SerializationCompiler {
         caller: Option<String>,
         func: &str,
         args: Vec<String>,
+        add_res: bool,
     ) -> Result<()> {
         let caller_str = match caller {
             Some(x) => format!("{}.", x),
             None => "".to_string(),
         };
 
-        let line = format!("{}{}({});", caller_str, func, args.join(", "));
+        let res = match add_res {
+            true => "?",
+            false => "",
+        };
+
+        let line = format!("{}{}({}){};", caller_str, func, args.join(", "), res);
         self.add_line(&line)?;
         Ok(())
     }

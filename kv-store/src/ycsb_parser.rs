@@ -78,6 +78,14 @@ impl<'a> YCSBRequest<'a> {
         self.cur_idx += 1;
         Ok((self.keys[self.cur_idx - 1].to_string(), self.val))
     }
+
+    pub fn get_keys_vec(&self) -> Vec<String> {
+        let mut ret = Vec::default();
+        for key in self.keys.iter() {
+            ret.push(key.to_string());
+        }
+        ret
+    }
 }
 
 impl<'a> Iterator for YCSBRequest<'a> {
