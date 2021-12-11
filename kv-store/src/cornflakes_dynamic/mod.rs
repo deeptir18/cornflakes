@@ -1,18 +1,19 @@
 pub mod hardcoded_cf;
 
-/*pub mod kv_messages {
-    include!(concat!(env!("OUT_DIR"), "/kv_cf_dynamic.rs"));
-}*/
+pub mod kv_messages {
+    include!("/proj/sosp21ae-PG0/user/murray22/cornflakes/kv-store/src/cornflakes_dynamic/hardcoded_cf.rs");
+    //include!(concat!(env!("OUT_DIR"), "/kv_cf_dynamic.rs"));
+}
 
-use super::{ycsb_parser::YCSBRequest, twitter_parser::TwitterRequest, KVSerializer, MsgType, SerializedRequestGenerator};
+use super::{ycsb_parser::YCSBRequest, twitter_parser::TwitterRequest, KVSerializer, MsgType, SerializedRequestGenerator, ALIGN_SIZE};
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_codegen::utils::rc_dynamic_hdr::{CFBytes, CFString, HeaderRepr};
 use cornflakes_libos::{
     dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, CfBuf, Datapath, RcCornPtr, RcCornflake,
-    ReceivedPkt, ScatterGather,
+    ReceivedPkt, ScatterGather
 };
 use hashbrown::HashMap;
-use std::marker::PhantomData;
+use std::{io::Write, marker::PhantomData};
 
 // empty object
 pub struct CornflakesDynamicSerializer<D>
@@ -122,9 +123,32 @@ where
                     put_request.get_key().to_str()?,
                     put_request.get_val()
                 );
+            /*let val = match put_request.get_val() {
+                    Some(v) => v,
+                    None => {
+                        bail!("Value not present in put request.");
+                    }
+                };*/
+                let val = put_request.get_val();
+                let raw_val = match val.get_raw() {
+                    Some(val) => val,
+                    None => {
+                        bail!("Value not present in put request.")
+                    }
+                };
+                let mut datapath_buffer = CfBuf::allocate(_connection, val.len(), ALIGN_SIZE)
+                            .wrap_err(
+                                format!("Failed to allocate CfBuf for put req # {}", 
+                                put_request.get_id())
+                            )?;
+                if datapath_buffer
+                        .write(raw_val)
+                        .wrap_err("Failed to write bytes into CfBuf.")? != val.len() {
+                      bail!("Failed to write all of the value bytes into CfBuf. for req {}", put_request.get_id());
+                }
                 map.insert(
                     put_request.get_key().to_string()?,
-                    put_request.get_val().get_inner_rc()?,
+                    datapath_buffer,//put_request.get_val().get_inner_rc()?,
                 );
 
                 // construct response
@@ -136,14 +160,29 @@ where
                 return Ok((header_vec, cf));
             }
             x => {
-                let mut putm_request = hardcoded_cf::PutMReq::<D>::new();
+                let mut putm_request = kv_messages::PutMReq::new();
                 putm_request.deserialize(&pkt, offset)?;
                 let keys = putm_request.get_keys();
                 let vals = putm_request.get_vals();
                 for i in 0..x {
                     let key = &keys[i];
-                    let val = &vals[i];
-                    map.insert(key.to_string()?, val.get_inner_rc()?);
+                    let val = &vals[i]; 
+                    let raw_val = match val.get_raw() {
+                        Some(val) => val,
+                        None => {
+                            bail!("Value not present in put request.");
+                        }
+                    };
+                    let mut datapath_buffer = CfBuf::allocate(_connection, val.len(), ALIGN_SIZE)
+                        .wrap_err(
+                            format!("Failed to allocate CfBuf for put req # {}", putm_request.get_id())
+                        )?;
+                    if datapath_buffer
+                        .write(raw_val)
+                        .wrap_err("Failed to write bytes into CfBuf.")? != val.len() {
+                      bail!("Failed to write all of the value bytes into CfBuf. for req {}", putm_request.get_id());
+                    }
+                    map.insert(key.to_string()?, datapath_buffer);
                 }
 
                 let mut response = hardcoded_cf::PutResp::<D>::new();

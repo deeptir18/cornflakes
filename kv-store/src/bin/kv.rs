@@ -201,6 +201,7 @@ macro_rules! init_kv_server(
 macro_rules! run_kv_client(
     ($serializer: ty, $datapath: ty, $datapath_global_init: expr, $datapath_init: ident, $opt: ident) => {
         let is_twitter = $opt.trace_type == 1;
+        tracing::debug!("The twitter is: {}", is_twitter);
         let num_rtts = get_num_requests(&$opt)?;
         tracing::debug!("Done getting the right number of requests!");
         let schedules;
@@ -235,7 +236,7 @@ macro_rules! run_kv_client(
                 run_client(i, &mut loadgen, &mut connection, &per_thread_options, schedule).wrap_err("Failed to run client")
             }));
         }
-
+        tracing::debug!("We reach this point!");
         let mut thread_results: Vec<ThreadStats> = Vec::default();
         for child in threads {
             let s = match child.join() {
@@ -549,7 +550,7 @@ where
         loadgen.get_num_recved(opt.start_cutoff),
         loadgen.get_num_retries(),
         exp_duration as _, // in nanos
-        opt.rate,
+        opt.rate, // TODO: PPS for each second
         opt.value_size * opt.num_values,
         loadgen.get_mut_rtts(),
         opt.start_cutoff,
