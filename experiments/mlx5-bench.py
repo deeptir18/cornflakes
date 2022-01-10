@@ -13,19 +13,22 @@ STRIP_THRESHOLD = 0.03
 
 # used for array size experiment
 # L1 cache = 32K, L2 = 1024K, L3 = ~14080K
+COMPLETE_ARRAY_SIZES_TO_LOOP = [65536, 819200, 4096000, 65536000, 655360000]
 
-# used for recv size experiment
+# used for recv size experiment (just do 1 size and 1 number of segments for
+# now)
 COMPLETE_RECV_SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096]
 RECV_SIZE_SEGMENTS_TO_LOOP = [2]
+RECV_SIZE_TOTAL_SIZES_TO_LOOP = [256, 4096]
 
 # used for total size experiment
-COMPLETE_TOTAL_SIZES_TO_LOOP = [64, 128, 256, 512, 1024, 2048, 4096]
+COMPLETE_TOTAL_SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096]
 
 # used for other experiments, which total sizes to check
 TOTAL_SIZES_TO_LOOP = [256, 4096]
 
 # used for segment size experiment
-COMPLETE_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16]
+COMPLETE_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16, 32]
 
 # used for other experiment, which segment amounts to check
 SEGMENTS_TO_LOOP = [2, 8]
@@ -220,13 +223,13 @@ class ScatterGatherIteration(runner.Iteration):
         return "trial_{}".format(self.trial)
 
     def __str__(self):
-        return "Iteration info: client rates: {}, " \
-            "segment size: {}, " \
-            " num_segments: {}, " \
-            " with_copy: {}," \
-            "array size: {}," \
-            "busy cycles us: {},"
-        "num client threads: {}," \
+        return "Iteration info: client rates: {}, "\
+            "segment size: {}, "\
+            " num_segments: {}, "\
+            " with_copy: {},"\
+            "array size: {},"\
+            "busy cycles us: {},"\
+            "num client threads: {},"\
             "recv pkt size: {},"\
             " trial: {}".format(self.get_client_rate_string(),
                                 self.get_segment_size_string(),
@@ -383,27 +386,28 @@ class ScatterGather(runner.Experiment):
             if total_args.looping_variable == "recv_size":
                 for trial in range(utils.NUM_TRIALS):
                     array_size = 65536
-                    total_size = 4096
-                    for recv_size in COMPLETE_RECV_SIZES_TO_LOOP:
-                        max_rate = max_rates[total_size]
-                        for sampling in sample_percentages:
-                            rate = int(float(sampling/100) *
-                                       max_rate)
-                            for with_copy in [False, True]:
-                                for num_segments in RECV_SIZE_SEGMENTS_TO_LOOP:
-                                    segment_size = int(
-                                        total_size / num_segments)
-                                    as_one = False
-                                    it = ScatterGatherIteration([(rate,
-                                                                 NUM_CLIENTS)],
-                                                                segment_size,
-                                                                num_segments,
-                                                                with_copy,
-                                                                as_one,
-                                                                NUM_THREADS,
-                                                                trial=trial,
-                                                                array_size=array_size,
-                                                                recv_pkt_size=recv_size)
+                    for total_size in RECV_SIZE_TOTAL_SIZES_TO_LOOP:
+                        for recv_size in COMPLETE_RECV_SIZES_TO_LOOP:
+                            max_rate = max_rates[total_size]
+                            for sampling in sample_percentages:
+                                rate = int(float(sampling/100) *
+                                           max_rate)
+                                for with_copy in [False, True]:
+                                    for num_segments in RECV_SIZE_SEGMENTS_TO_LOOP:
+                                        segment_size = int(
+                                            total_size / num_segments)
+                                        as_one = False
+                                        it = ScatterGatherIteration([(rate,
+                                                                      NUM_CLIENTS)],
+                                                                    segment_size,
+                                                                    num_segments,
+                                                                    with_copy,
+                                                                    as_one,
+                                                                    NUM_THREADS,
+                                                                    trial=trial,
+                                                                    array_size=array_size,
+                                                                    recv_pkt_size=recv_size)
+                                        ret.append(it)
             elif total_args.looping_variable == "total_size":
                 for trial in range(utils.NUM_TRIALS):
                     array_size = 65536
@@ -427,7 +431,6 @@ class ScatterGather(runner.Experiment):
                                                                 trial=trial,
                                                                 array_size=array_size)
                                     ret.append(it)
-
             elif total_args.looping_variable == "num_segments":
                 for trial in range(utils.NUM_TRIALS):
                     array_size = 65536
@@ -453,7 +456,6 @@ class ScatterGather(runner.Experiment):
                                                                 trial=trial,
                                                                 array_size=array_size)
                                     ret.append(it)
-
             elif total_args.looping_variable == "array_total_size":
                 for trial in range(utils.NUM_TRIALS):
                     for array_size in COMPLETE_ARRAY_SIZES_TO_LOOP:
@@ -535,7 +537,7 @@ class ScatterGather(runner.Experiment):
             parser.add_argument("-lp", "--looping_variable",
                                 dest="looping_variable",
                                 choices=["array_total_size", "total_size",
-                                         "num_segments, recv_size"],
+                                         "num_segments", "recv_size"],
                                 default="array_total_size",
                                 help="What variable to loop over")
         args = parser.parse_args(namespace=namespace)
@@ -548,12 +550,11 @@ class ScatterGather(runner.Experiment):
         return self.config_yaml
 
     def get_logfile_header(self):
-        return
-    "segment_size,num_segments,with_copy,as_one,array_size,busy_cycles,recv_pkt_size," \
-        "num_threads,num_clients,offered_load_pps,offered_load_gbps," \
-        "achieved_load_pps,achieved_load_gbps," \
-        "percent_achieved_rate," \
-        "avg,median,p99,p999"
+        return "segment_size,num_segments,with_copy,as_one,array_size,busy_cycles,recv_size," \
+            "num_threads,num_clients,offered_load_pps,offered_load_gbps," \
+            "achieved_load_pps,achieved_load_gbps," \
+            "percent_achieved_rate," \
+            "avg,median,p99,p999"
 
     def run_summary_analysis(self, df, out, array_size, recv_size, num_segments, segment_size, with_copy):
         filtered_df = df[(df.array_size == array_size) &
@@ -566,10 +567,10 @@ class ScatterGather(runner.Experiment):
         min_rate = filtered_df["offered_load_pps"].min()
         latency_df = filtered_df[(filtered_df.offered_load_pps == min_rate)]
         p99_mean = latency_df["p99"].mean()
-        p99_sd = latency_df["p99"].std()
+        p99_sd = latency_df["p99"].std(ddof=0)
         median_mean = latency_df["median"].mean()
-        median_sd = latency_df["median"].std()
-        filtered_df = filtered_df[filtered_df["percent_achieved_rate"] >= .95]
+        median_sd = latency_df["median"].std(ddof=0)
+        # filtered_df = filtered_df[filtered_df["percent_achieved_rate"] >= .95]
 
         def ourstd(x):
             return np.std(x, ddof=0)
@@ -579,17 +580,22 @@ class ScatterGather(runner.Experiment):
         # group by array size, num segments, segment size,  # average
         clustered_df = filtered_df.groupby(["array_size",
                                             "num_segments", "segment_size", "with_copy",
-                                            "offered_load_pps",
+                                            "recv_size",
+                                           "offered_load_pps",
                                             "offered_load_gbps"],
                                            as_index=False).agg(
             achieved_load_pps_mean=pd.NamedAgg(column="achieved_load_pps",
                                                aggfunc="mean"),
             achieved_load_pps_sd=pd.NamedAgg(column="achieved_load_pps",
                                              aggfunc=ourstd),
+            percent_achieved_rate=pd.NamedAgg(column="percent_achieved_rate",
+                                              aggfunc='mean'),
             achieved_load_gbps_mean=pd.NamedAgg(column="achieved_load_gbps",
                                                 aggfunc="mean"),
             achieved_load_gbps_sd=pd.NamedAgg(column="achieved_load_gbps",
                                               aggfunc=ourstd))
+        clustered_df = clustered_df[clustered_df["percent_achieved_rate"] >=
+                                    .95]
 
         max_achieved_pps = clustered_df["achieved_load_pps_mean"].max()
         max_achieved_gbps = clustered_df["achieved_load_gbps_mean"].max()
@@ -612,6 +618,7 @@ class ScatterGather(runner.Experiment):
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
         # need to determine summary "p99 at low rate, median at low rate, knee
         # of the curve" for each situation
+        utils.info("Running post process analysis")
         header_str = "array_size,segment_size,num_segments,recv_size,with_copy,as_one,mp99,p99sd,mmedian,mediansd,maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd" + os.linesep
 
         folder_path = Path(total_args.folder)
@@ -621,31 +628,31 @@ class ScatterGather(runner.Experiment):
 
         if total_args.looping_variable == "recv_size":
             array_size = 65536
-            total_size = 4096
-            for recv_size in COMPLETE_RECV_SIZES_TO_LOOP:
-                for num_segments in RECV_SIZE_SEGMENTS_TO_LOOP:
-                    segment_size = int(total_segments / num_segments)
-                    for with_copy in [false, true]:
-                        self.run_summary_analysis(df, out,
-                                                  array_size, recv_size,
-                                                  num_segments, segment_size, with_copy)
+            for total_size in RECV_SIZE_TOTAL_SIZES_TO_LOOP:
+                for recv_size in COMPLETE_RECV_SIZES_TO_LOOP:
+                    for num_segments in RECV_SIZE_SEGMENTS_TO_LOOP:
+                        segment_size = int(total_size / num_segments)
+                        for with_copy in [False, True]:
+                            self.run_summary_analysis(df, out,
+                                                      array_size, recv_size,
+                                                      num_segments, segment_size, with_copy)
 
-        elif total_args.looping_varialbe == "total_size":
+        elif total_args.looping_variable == "total_size":
             array_size = 65536
             recv_size = 0
             for total_size in COMPLETE_TOTAL_SIZES_TO_LOOP:
-                for num_segments in [1, 2]:
-                    segment_size = int(total_segments / num_segments)
-                    for with_copy in [false, true]:
+                for num_segments in SEGMENTS_TO_LOOP:
+                    segment_size = int(total_size / num_segments)
+                    for with_copy in [False, True]:
                         self.run_summary_analysis(df, out,
                                                   array_size, recv_size,
                                                   num_segments, segment_size, with_copy)
         elif total_args.looping_variable == "num_segments":
             array_size = 65536
             recv_size = 0
-            for num_segments in COMPLETE_SEGMENT_SIZES_TO_LOOP:
+            for num_segments in COMPLETE_SEGMENTS_TO_LOOP:
                 for total_size in TOTAL_SIZES_TO_LOOP:
-                    segment_size = int(total_segments / num_segments)
+                    segment_size = int(total_size / num_segments)
                     for with_copy in [False, True]:
                         self.run_summary_analysis(df, out,
                                                   array_size, recv_size,
@@ -653,6 +660,7 @@ class ScatterGather(runner.Experiment):
 
         elif total_args.looping_variable == "array_total_size":
             recv_size = 0
+            df["recv_size"] = recv_size  # for the data we ran with
             for array_size in COMPLETE_ARRAY_SIZES_TO_LOOP:
                 for total_size in TOTAL_SIZES_TO_LOOP:
                     for num_segments in SEGMENTS_TO_LOOP:
@@ -779,8 +787,20 @@ class ScatterGather(runner.Experiment):
                                                                                   p999 * 1000)
         return csv_line
 
+    def run_plot_cmd(self, args):
+        try:
+            print(" ".join(args))
+            sh.run(args)
+        except:
+            utils.warn(
+                "Failed to run plot command: {}".format(args))
+            exit(1)
+
     def graph_results(self, total_args, folder, logfile,
                       post_process_logfile):
+        factor_name = total_args.looping_variable
+        if total_args.looping_variable == "array_total_size":
+            factor_name = "array_size"
         cornflakes_repo = self.config_yaml["cornflakes_dir"]
         plot_path = Path(folder) / "plots"
         plot_path.mkdir(exist_ok=True)
@@ -789,23 +809,81 @@ class ScatterGather(runner.Experiment):
 
         plotting_script = Path(cornflakes_repo) /\
             "experiments" / "plotting_scripts" / "sg_bench.R"
-        if total_args.looping_variable == "array_total_size":
-            metrics = ["median", "p99", "tput"]
-            for metric in metrics:
-                output_file = plot_path / "summary_{}.pdf".format(metric)
-                args = [str(plotting_script), str(full_log), str(post_process_log), str(output_file),
-                        metric, "full"]
-                try:
-                    print(" ".join(args))
-                    sh.run(args)
-                except:
-                    utils.warn(
-                        "Failed to run plot command: {}".format(args))
-                    exit(1)
 
+        # metrics = ["median", "p99", "tput"]
+        metrics = ["tput"]
+
+        if factor_name == "array_size" or factor_name == "recv_size":
+            # run SUMMARY
+            for metric in metrics:
+                output_file = plot_path /\
+                    "summary_{}_{}.pdf".format(factor_name, metric)
+                args = [str(plotting_script), str(full_log), str(post_process_log), str(output_file),
+                        metric, "full", factor_name]
+                self.run_plot_cmd(args)
+
+        if total_args.looping_variable == "total_size":
+            for metric in metrics:
+                for num_segments in SEGMENTS_TO_LOOP:
+                    individual_plot_path = plot_path /\
+                        "numsegments_{}".format(num_segments)
+                    individual_plot_path.mkdir(
+                        parents=True, exist_ok=True)
+
+                    metric_name = metric
+                    if metric_name == "tput":
+                        metric_name = "tput_gbps"
+                    pdf = individual_plot_path /\
+                        "numsegments_{}_{}.pdf".format(num_segments, metric)
+                    total_plot_args = [str(plotting_script), str(full_log),
+                                       str(post_process_log), str(pdf),
+                                       metric_name, "individual", factor_name,
+                                       "foo", str(num_segments)]
+                    self.run_plot_cmd(total_plot_args)
+
+                    for total_size in COMPLETE_TOTAL_SIZES_TO_LOOP:
+                        if metric == "tput":
+                            continue
+                        segment_size = int(total_size / num_segments)
+                        individual_plot_path = plot_path /\
+                            "numsegments_{}".format(num_segments) /\
+                            "totalsize_{}".format(total_size)
+                        individual_plot_path.mkdir(
+                            parents=True, exist_ok=True)
+                        pdf = individual_plot_path /\
+                            "total_size_{}_numsegments_{}_{}.pdf".format(
+                                total_size, num_segments, metric)
+                        total_plot_args = [str(plotting_script), str(full_log),
+                                           str(post_process_log), str(pdf),
+                                           metric, "tput_latency", factor_name,
+                                           str(total_size), str(num_segments)]
+                        self.run_plot_cmd(total_plot_args)
+
+        elif total_args.looping_variable == "num_segments":
             for metric in metrics:
                 for total_size in TOTAL_SIZES_TO_LOOP:
-                    for num_segments in NB_SEGMENTS_TO_LOOP:
+                    individual_plot_path = plot_path /\
+                        "totalsize_{}".format(total_size)
+
+                    individual_plot_path.mkdir(
+                        parents=True, exist_ok=True)
+
+                    pdf = individual_plot_path /\
+                        "totalsize_{}_{}.pdf".format(total_size,
+                                                     metric)
+
+                    metric_name = metric
+                    if metric_name == "tput":
+                        metric_name = "tput_gbps"
+                    total_plot_args = [str(plotting_script), str(full_log),
+                                       str(post_process_log), str(pdf),
+                                       metric_name, "individual", factor_name,
+                                       str(total_size), "foo"]
+                    self.run_plot_cmd(total_plot_args)
+
+                    for num_segments in COMPLETE_SEGMENTS_TO_LOOP:
+                        if metric == "tput":
+                            continue
                         segment_size = int(total_size / num_segments)
                         individual_plot_path = plot_path /\
                             "totalsize_{}".format(total_size) /\
@@ -817,18 +895,85 @@ class ScatterGather(runner.Experiment):
                                                                         num_segments, metric)
                         total_plot_args = [str(plotting_script), str(full_log),
                                            str(post_process_log), str(pdf),
-                                           metric, "individual", str(
+                                           metric, "tput_latency", factor_name, str(
                             total_size),
                             str(num_segments)]
-                        try:
-                            print(" ".join(total_plot_args))
-                            sh.run(total_plot_args)
-                        except:
-                            utils.warn(
-                                "Failed to run plot command: {}".format(args))
+                        self.run_plot_cmd(total_plot_args)
+
+        elif total_args.looping_variable == "recv_size":
+            for metric in metrics:
+                for total_size in RECV_SIZE_TOTAL_SIZES_TO_LOOP:
+                    for num_segments in RECV_SIZE_SEGMENTS_TO_LOOP:
+                        segment_size = int(total_size / num_segments)
+                        individual_plot_path = plot_path /\
+                            "totalsize_{}".format(total_size) /\
+                            "numsegments_{}".format(num_segments)
+                        individual_plot_path.mkdir(
+                            parents=True, exist_ok=True)
+                        pdf = individual_plot_path /\
+                            "totalsize_{}_numsegments_{}_{}.pdf".format(total_size,
+                                                                        num_segments, metric)
+
+                        metric_name = metric
+                        if metric_name == "tput":
+                            metric_name = "tput_pps"
+                        total_plot_args = [str(plotting_script), str(full_log),
+                                           str(post_process_log), str(pdf),
+                                           metric_name, "individual", factor_name, str(
+                            total_size),
+                            str(num_segments)]
+                        self.run_plot_cmd(total_plot_args)
+
+                        # tput latency for each recv size
+                        for recv_size in COMPLETE_RECV_SIZES_TO_LOOP:
+                            if metric == "tput":
+                                continue
+                            individual_plot_path = plot_path /\
+                                "totalsize_{}".format(total_size) /\
+                                "numsegments_{}".format(num_segments) /\
+                                "recvsize_{}".format(recv_size)
+                            individual_plot_path.mkdir(
+                                parents=True, exist_ok=True)
+                            pdf = individual_plot_path /\
+                                "totalsize_{}_numsegments_{}_recvsize_{}_{}.pdf".format(total_size,
+                                                                                        num_segments,
+                                                                                        recv_size, metric)
+
+                            total_plot_args = [str(plotting_script),
+                                               str(full_log),
+                                               str(post_process_log), str(pdf),
+                                               metric, "tput_latency",
+                                               factor_name, str(
+                                total_size),
+                                str(num_segments),
+                                str(recv_size)]
+                            self.run_plot_cmd(total_plot_args)
+
+        elif total_args.looping_variable == "array_total_size":
+            for metric in metrics:
+                for total_size in TOTAL_SIZES_TO_LOOP:
+                    for num_segments in SEGMENTS_TO_LOOP:
+                        segment_size = int(total_size / num_segments)
+                        individual_plot_path = plot_path /\
+                            "totalsize_{}".format(total_size) /\
+                            "numsegments_{}".format(num_segments)
+                        individual_plot_path.mkdir(
+                            parents=True, exist_ok=True)
+                        pdf = individual_plot_path /\
+                            "totalsize_{}_numsegments_{}_{}.pdf".format(total_size,
+                                                                        num_segments, metric)
+                        metric_name = metric
+                        if metric_name == "tput":
+                            metric_name = "tput_pps"
+                        total_plot_args = [str(plotting_script), str(full_log),
+                                           str(post_process_log), str(pdf),
+                                           metric_name, "individual", factor_name, str(
+                            total_size),
+                            str(num_segments)]
+                        self.run_plot_cmd(total_plot_args)
+
                         # for each array size, plot an individual tput latency
-                        # curve
-                        for array_size in ARRAY_SIZES_TO_LOOP:
+                        for array_size in COMPLETE_ARRAY_SIZES_TO_LOOP:
                             if metric == "tput":
                                 continue
                             individual_plot_path = plot_path /\
@@ -845,16 +990,12 @@ class ScatterGather(runner.Experiment):
                             total_plot_args = [str(plotting_script),
                                                str(full_log),
                                                str(post_process_log), str(pdf),
-                                               metric, "tput_latency_arraysize", str(
+                                               metric, "tput_latency",
+                                               factor_name, str(
                                 total_size),
                                 str(num_segments),
                                 str(array_size)]
-                            try:
-                                print(" ".join(total_plot_args))
-                                sh.run(total_plot_args)
-                            except:
-                                utils.warn(
-                                    "Failed to run plot command: {}".format(args))
+                            self.run_plot_cmd(total_plot_args)
 
 
 def main():

@@ -261,6 +261,7 @@ where
         ctx: &'registered Self::Ctx,
         cornflake: &mut RcCornflake<'registered, D>,
     ) -> Result<()> {
+        tracing::debug!("context size: {}", ctx.len());
         cornflake.add_entry(RcCornPtr::RawRef(ctx.as_slice()));
         Ok(())
     }

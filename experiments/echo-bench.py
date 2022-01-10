@@ -6,6 +6,8 @@ import os
 import parse
 import subprocess as sh
 import copy
+import pandas as pd
+import numpy as np
 STRIP_THRESHOLD = 0.03
 
 # SIZES_TO_LOOP = [1024, 2048, 4096, 8192]
@@ -14,7 +16,7 @@ NUM_CLIENTS = 2
 NUM_CLIENTS_MOTIVATION = 3
 SIZES_TO_LOOP = [512, 4096]
 MESSAGE_TYPES = ["single"]
-MESSAGE_TYPES.extend(["list-1", "list-2", "list-4", "list-8",
+MESSAGE_TYPES.extend(["list-2", "list-4", "list-8",
                      "tree-2", "tree-1", "tree-3"])
 rates = [2500, 5000, 10000, 15000, 25000, 35000, 45000, 55000,
          65000, 75000, 85000, 95000, 105000, 115000, 125000,
@@ -26,9 +28,8 @@ SERIALIZATION_LIBRARIES = ["cornflakes-dynamic",  # "cereal", "capnproto", "prot
                            "cornflakes1c-dynamic"]
 MOTIVATION_SERIALIZATION_LIBRARIES = ["ideal", "onecopy", "twocopy",
                                       "flatbuffers", "capnproto", "cereal", "protobuf"]
-ALL_SERIALIZATION_LIBRARIES = ["ideal", "onecopy", "twocopy",
-                               "cornflakes-dynamic", "cornflakes1c-dynamic",
-                               "flatbuffers", "capnproto", "cereal", "protobuf"]
+ALL_SERIALIZATION_LIBRARIES = [
+    "cornflakes-dynamic", "cornflakes1c-dynamic", "flatbuffers", "capnproto", "cereal", "protobuf"]
 MOTIVATION_MESSAGE_TYPE = "list-2"
 MOTIVATION_SIZES_TO_LOOP = [1024, 4096]
 
@@ -397,11 +398,71 @@ class EchoBench(runner.Experiment):
         return "serialization,refcounting,message_type,size,"\
             "offered_load_pps,offered_load_gbps,"\
             "achieved_load_pps,achieved_load_gbps,"\
-            "percent_acheived_rate,total_retries,"\
+            "percent_achieved_rate,total_retries,"\
             "avg,median,p99,p999"
 
+    def run_summary_analysis(self, df, out, size, message_type, serialization):
+        filtered_df = df[(df["serialization"] == serialization) &
+                         (df["size"] == size) &
+                         (df["message_type"] == message_type)]
+        print(size, message_type, serialization)
+        # calculate lowest rate, get p99 and median
+        # filtered_df = filtered_df[filtered_df["percent_achieved_rate"] >= .95]
+
+        def ourstd(x):
+            return np.std(x, ddof=0)
+
+        # CURRENT KNEE CALCULATION:
+        # just find maximum achieved rate across all rates
+        # group by array size, num segments, segment size,  # average
+        clustered_df = filtered_df.groupby(["serialization",
+                                            "size", "message_type",
+                                           "offered_load_pps",
+                                            "offered_load_gbps"],
+                                           as_index=False).agg(
+            achieved_load_pps_mean=pd.NamedAgg(column="achieved_load_pps",
+                                               aggfunc="mean"),
+            achieved_load_pps_sd=pd.NamedAgg(column="achieved_load_pps",
+                                             aggfunc=ourstd),
+            achieved_load_gbps_mean=pd.NamedAgg(column="achieved_load_gbps",
+                                                aggfunc="mean"),
+            percent_achieved_rate=pd.NamedAgg(column="percent_achieved_rate",
+                                              aggfunc="mean"),
+            achieved_load_gbps_sd=pd.NamedAgg(column="achieved_load_gbps",
+                                              aggfunc=ourstd))
+
+        clustered_df = clustered_df[clustered_df["percent_achieved_rate"] >= 0.95]
+        max_achieved_pps = clustered_df["achieved_load_pps_mean"].max()
+        max_achieved_gbps = clustered_df["achieved_load_gbps_mean"].max()
+        std_achieved_pps = clustered_df.loc[clustered_df['achieved_load_pps_mean'].idxmax(),
+                                            'achieved_load_pps_sd']
+        std_achieved_gbps = clustered_df.loc[clustered_df['achieved_load_gbps_mean'].idxmax(),
+                                             'achieved_load_gbps_sd']
+        as_one = False
+        out.write(str(serialization) + "," + str(message_type) + "," +
+                  str(size) + "," +
+                  str(max_achieved_pps) + "," +
+                  str(max_achieved_gbps) + "," +
+                  str(std_achieved_pps) + "," +
+                  str(std_achieved_gbps) + os.linesep)
+
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
-        pass
+        if total_args.loop_mode == "motivation":
+            return
+        # need to determine: just knee of curve for each situation
+        header_str = "serialization,message_type,size,"\
+            "maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd" + os.linesep
+        folder_path = Path(total_args.folder)
+        out = open(folder_path / new_logfile, "w")
+        df = pd.read_csv(folder_path / logfile)
+        out.write(header_str)
+
+        for size in SIZES_TO_LOOP:
+            for message_type in MESSAGE_TYPES:
+                for serialization in ALL_SERIALIZATION_LIBRARIES:
+                    self.run_summary_analysis(
+                        df, out, size, message_type, serialization)
+        out.close()
 
     def run_analysis_individual_trial(self,
                                       higher_level_folder,
@@ -530,8 +591,11 @@ class EchoBench(runner.Experiment):
             utils.debug("Summary plot for ", metric)
             total_pdf = plot_path / "summary_{}.pdf".format(metric)
             total_plot_args = [str(plotting_script),
-                               str(full_log), str(total_pdf),
+                               str(full_log),
+                               str(post_process_log),
+                               str(total_pdf),
                                metric, "full"]
+            print(" ".join(total_plot_args))
             sh.run(total_plot_args)
         # make individual plots
         if args.loop_mode == "motivation":
@@ -546,13 +610,34 @@ class EchoBench(runner.Experiment):
                         "size_{}_msg_{}_{}.pdf".format(
                             size, message_type, metric)
                     total_plot_args = [str(plotting_script),
-                                       str(full_log), str(pdf),
-                                       metric, "individual", message_type,
+                                       str(full_log),
+                                       str(post_process_log),
+                                       str(pdf),
+                                       metric, "motivation", message_type,
                                        str(size)]
+                    utils.info("Running: {}".format(" ".join(total_plot_args)))
 
                     sh.run(total_plot_args)
 
         elif args.loop_mode == "eval":
+            # make summary plots
+            for size in SIZES_TO_LOOP:
+                for summary_type in ["tree-compare", "list-compare"]:
+                    individual_plot_path = plot_path / \
+                        "size_{}".format(size)
+                    individual_plot_path.mkdir(parents=True, exist_ok=True)
+                    pdf = individual_plot_path /\
+                        "size_{}_{}_tput.pdf".format(size, summary_type)
+                    total_plot_args = [str(plotting_script),
+                                       str(full_log),
+                                       str(post_process_log),
+                                       str(pdf),
+                                       "foo", summary_type, str(size)
+                                       ]
+                    utils.info("Running: {}".format(" ".join(total_plot_args)))
+                    sh.run(total_plot_args)
+            # just return here for now
+            return
             for metric in metrics:
                 for size in SIZES_TO_LOOP:
                     for message_type in MESSAGE_TYPES:
@@ -564,10 +649,13 @@ class EchoBench(runner.Experiment):
                             "size_{}_msg_{}_{}.pdf".format(
                                 size, message_type, metric)
                         total_plot_args = [str(plotting_script),
-                                           str(full_log), str(pdf),
+                                           str(full_log),
+                                           str(post_process_log),
+                                           str(pdf),
                                            metric, "individual", message_type,
                                            str(size)]
 
+                        print(" ".join(total_plot_args))
                         sh.run(total_plot_args)
 
 

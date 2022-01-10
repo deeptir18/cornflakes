@@ -7,6 +7,8 @@ import parse
 import subprocess as sh
 import copy
 import time
+import pandas as pd
+import numpy as np
 STRIP_THRESHOLD = 0.03
 NUM_CLIENTS = 2
 NUM_THREADS = 4
@@ -174,8 +176,8 @@ class KVIteration(runner.Iteration):
     def get_parent_folder(self, high_level_folder):
         path = Path(high_level_folder)
         return path / self.serialization / self.get_size_string() /\
-            self.get_num_values_string() / self.get_splits_per_chunk_string() / self.get_client_rate_string() /\
-            self.get_num_threads_string() / self.ref_counting_string()
+            self.get_num_values_string() / self.get_client_rate_string() /\
+            self.get_num_threads_string()
 
     def get_folder_name(self, high_level_folder):
         return self.get_parent_folder(high_level_folder) / self.get_trial_string()
@@ -326,16 +328,17 @@ class KVBench(runner.Experiment):
         parser.add_argument("-qt", "--access_trace",
                             dest="access_trace",
                             required=True)
+        parser.add_argument("-nrc", "--no_ref_counting",
+                            dest="no_ref_counting",
+                            action='store_true',
+                            help="Turn off reference counting in server.")
+        parser.add_argument("-spc", "--splits_per_chunk",
+                            dest="splits_per_chunk",
+                            type=int,
+                            default=1,
+                            help="Number of chunks to split values into.")
         if namespace.exp_type == "individual":
-            parser.add_argument("-spc", "--splits_per_chunk",
-                                dest="splits_per_chunk",
-                                type=int,
-                                default=1,
-                                help="Number of chunks to split values into.")
-            parser.add_argument("-nrc", "--no_ref_counting",
-                                dest="no_ref_counting",
-                                action='store_true',
-                                help="Turn off reference counting in server.")
+
             parser.add_argument("-nt", "--num_threads",
                                 dest="num_threads",
                                 type=int,
@@ -373,14 +376,75 @@ class KVBench(runner.Experiment):
         return self.config_yaml
 
     def get_logfile_header(self):
-        return "serialization,refcounting,splits_per_chunk,value_size,num_values,"\
+        return "serialization,value_size,num_values,"\
             "offered_load_pps,offered_load_gbps,"\
             "achieved_load_pps,achieved_load_gbps,"\
             "percent_achieved_rate,total_retries,"\
             "avg,median,p99,p999"
 
+    def run_summary_analysis(self, df, out, serialization, num_values, size):
+        filtered_df = df[(df["serialization"] == serialization) &
+                         (df["value_size"] == size) &
+                         (df["num_values"] == num_values)]
+        total_size = int(size * num_values)
+        print(serialization, num_values, size)
+
+        def ourstd(x):
+            return np.std(x, ddof=0)
+
+        # CURRENT KNEE CALCULATION:
+        # just find maximum achieved rate across all rates
+        # group by array size, num segments, segment size,  # average
+        clustered_df = filtered_df.groupby(["serialization",
+                                            "value_size", "num_values",
+                                           "offered_load_pps",
+                                            "offered_load_gbps"],
+                                           as_index=False).agg(
+            achieved_load_pps_mean=pd.NamedAgg(column="achieved_load_pps",
+                                               aggfunc="mean"),
+            achieved_load_pps_sd=pd.NamedAgg(column="achieved_load_pps",
+                                             aggfunc=ourstd),
+            achieved_load_gbps_mean=pd.NamedAgg(column="achieved_load_gbps",
+                                                aggfunc="mean"),
+            percent_achieved_rate=pd.NamedAgg(column="percent_achieved_rate",
+                                              aggfunc="mean"),
+            achieved_load_gbps_sd=pd.NamedAgg(column="achieved_load_gbps",
+                                              aggfunc=ourstd))
+        clustered_df = clustered_df[clustered_df["percent_achieved_rate"] >=
+                                    0.95]
+
+        max_achieved_pps = clustered_df["achieved_load_pps_mean"].max()
+        max_achieved_gbps = clustered_df["achieved_load_gbps_mean"].max()
+        std_achieved_pps = clustered_df.loc[clustered_df['achieved_load_pps_mean'].idxmax(),
+                                            'achieved_load_pps_sd']
+        percent_achieved = clustered_df.loc[clustered_df['achieved_load_pps_mean'].idxmax(),
+                                            'percent_achieved_rate']
+        std_achieved_gbps = clustered_df.loc[clustered_df['achieved_load_gbps_mean'].idxmax(),
+                                             'achieved_load_gbps_sd']
+        as_one = False
+        out.write(str(serialization) + "," + str(total_size) + "," +
+                  str(num_values) + "," +
+                  str(max_achieved_pps) + "," +
+                  str(max_achieved_gbps) + "," +
+                  str(std_achieved_pps) + "," +
+                  str(std_achieved_gbps) + "," + str(percent_achieved) + os.linesep)
+
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
-        pass
+        # need to determine knee of the curve for each situation
+        header_str = "serialization,total_size,num_values,"\
+            "maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd,percentachieved" + os.linesep
+        folder_path = Path(total_args.folder)
+        out = open(folder_path / new_logfile, "w")
+        df = pd.read_csv(folder_path / logfile)
+        out.write(header_str)
+
+        for serialization in SERIALIZATION_LIBRARIES:
+            for num_values in NUM_VALUES_TO_LOOP:
+                for total_size in SIZES_TO_LOOP:
+                    value_size = int(total_size / num_values)
+                    self.run_summary_analysis(df, out, serialization,
+                                              num_values, value_size)
+        out.close()
 
     def run_analysis_individual_trial(self,
                                       higher_level_folder,
@@ -478,21 +542,19 @@ class KVBench(runner.Experiment):
             utils.info("Total Stats: ", total_stats)
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)
-        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
-                                                                         iteration.get_ref_counting(),
-                                                                         iteration.get_splits_per_chunk(),
-                                                                         iteration.get_size(),
-                                                                         iteration.get_num_values(),
-                                                                         total_offered_load_pps,
-                                                                         total_offered_load_gbps,
-                                                                         total_achieved_load_pps,
-                                                                         total_achieved_load_gbps,
-                                                                         percent_acheived_load,
-                                                                         total_retries,
-                                                                         avg,
-                                                                         median,
-                                                                         p99,
-                                                                         p999)
+        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
+                                                                   iteration.get_size(),
+                                                                   iteration.get_num_values(),
+                                                                   total_offered_load_pps,
+                                                                   total_offered_load_gbps,
+                                                                   total_achieved_load_pps,
+                                                                   total_achieved_load_gbps,
+                                                                   percent_acheived_load,
+                                                                   total_retries,
+                                                                   avg,
+                                                                   median,
+                                                                   p99,
+                                                                   p999)
         utils.debug("Returning csv line: {} in {}".format(csv_line, time.time()
                     - start))
         return csv_line
@@ -506,15 +568,37 @@ class KVBench(runner.Experiment):
             "experiments" / "plotting_scripts" / "kv_bench.R"
         base_args = [str(plotting_script), str(full_log)]
         metrics = ["p99", "median"]
+        post_process_log = Path(folder) / post_process_logfile
 
         # make total plot
         for metric in metrics:
             utils.debug("Summary plot for ", metric)
             total_pdf = plot_path / "summary_{}.pdf".format(metric)
             total_plot_args = [str(plotting_script),
-                               str(full_log), str(total_pdf),
+                               str(full_log),
+                               str(post_process_log),
+                               str(total_pdf),
                                metric, "full"]
+            print(" ".join(total_plot_args))
             sh.run(total_plot_args)
+
+        # make summary plots
+        for total_size in SIZES_TO_LOOP:
+            individual_plot_path = plot_path
+            individual_plot_path.mkdir(parents=True, exist_ok=True)
+            pdf = individual_plot_path /\
+                "summary_{}_tput.pdf".format(total_size)
+            total_plot_args = [str(plotting_script),
+                               str(full_log),
+                               str(post_process_log),
+                               str(pdf),
+                               "foo",
+                               "summary",
+                               str(total_size)
+                               ]
+            print(" ".join(total_plot_args))
+            sh.run(total_plot_args)
+
         # make individual plots
         for metric in metrics:
             for value_size in SIZES_TO_LOOP:
@@ -527,9 +611,12 @@ class KVBench(runner.Experiment):
                         "size_{}_batch_{}_{}.pdf".format(value_size, batch_size,
                                                          metric)
                     total_plot_args = [str(plotting_script),
-                                       str(full_log), str(pdf),
+                                       str(full_log),
+                                       str(post_process_log),
+                                       str(pdf),
                                        metric, "individual", str(value_size),
                                        str(batch_size)]
+                    print(" ".join(total_plot_args))
 
                     sh.run(total_plot_args)
 

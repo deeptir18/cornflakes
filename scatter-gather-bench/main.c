@@ -773,12 +773,12 @@ static int parse_args(int argc, char *argv[]) {
                 break;
             case 'l':
                 has_latency_log = 1;
-                latency_log = (char *)malloc(strlen(optarg));
+                latency_log = (char *)malloc(strlen(optarg) + 1);
                 strcpy(latency_log, optarg);
                 break;
             case 'q':
                 has_threads_log = 1;
-                threads_log = (char *)malloc(strlen(optarg));
+                threads_log = (char *)malloc(strlen(optarg) + 1);
                 strcpy(threads_log, optarg);
                 break;
             case 'p':
@@ -861,6 +861,7 @@ static int parse_args(int argc, char *argv[]) {
         }
     }
     
+    fprintf(stderr, "done with argparse\n");
     if (mode == MODE_MEMCPY_BENCH) {
         // just initialize payload to copy
         payload_to_copy = rte_malloc("region", array_size, 0);
@@ -1068,6 +1069,7 @@ static int global_init(size_t num_queues) {
     // for each "queue", initialize a tx and rx pool.
     // attach rx pool to the queue.
     // create a pool of memory for ring buffers
+    fprintf(stderr, "In global_init\n");
     for (size_t i = 0; i < num_queues; i++) {
         NETPERF_INFO("Initializing tx pool %s", tx_pool_names[i]);
         struct rte_mempool *tx_mbuf_pool = rte_pktmbuf_pool_create(
@@ -1080,12 +1082,14 @@ static int global_init(size_t num_queues) {
         if (tx_mbuf_pool == NULL) {
             printf("Failed to initialize tx mempool\n");
         }
+        fprintf(stderr, "Initialized tx pool\n");
         if (rte_mempool_obj_iter(
             tx_mbuf_pool,
             &custom_init_priv,
             NULL) != (NUM_MBUFS * dpdk_nbports)) {
                 return 1;
         }
+        fprintf(stderr, "Ran custom init priv\n");
         if (rte_mempool_obj_iter(
             tx_mbuf_pool,
             &custom_pkt_init_with_header,
@@ -1094,6 +1098,7 @@ static int global_init(size_t num_queues) {
         }
         tx_mbuf_pools[i] = tx_mbuf_pool;
 
+        fprintf(stderr, "set tx mbuf pool\n");
         // rx mbuf pool
         struct rte_mempool *rx_mbuf_pool = rte_pktmbuf_pool_create(
                         rx_pool_names[i],
@@ -1106,12 +1111,14 @@ static int global_init(size_t num_queues) {
             return 1;
             printf("Failed to initialize rx mempool\n");
         }
+        fprintf(stderr, "allocated rx pool\n");
         if (rte_mempool_obj_iter(
             rx_mbuf_pool,
             &custom_init_priv,
             NULL) != (NUM_MBUFS * dpdk_nbports)) {
                 return 1;
         }
+        fprintf(stderr, "ran custom init prov on rx pool\n");
         if (rte_mempool_obj_iter(
             rx_mbuf_pool,
             &custom_pkt_init_with_header,
@@ -1120,6 +1127,7 @@ static int global_init(size_t num_queues) {
         }
         rx_mbuf_pools[i] = rx_mbuf_pool;
     } 
+    fprintf(stderr, "about to do port init\n");
     // initialize all ports
     uint16_t i = 0;
     uint16_t port_id = 0;

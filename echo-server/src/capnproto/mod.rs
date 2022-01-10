@@ -426,6 +426,7 @@ fn context_framing_size(message_type: SimpleMessageType, size: usize) -> usize {
     }
     // initialize sga from builder
     let segments = builder.get_segments_for_output();
+    tracing::debug!("Segments alone: {}", segments.len());
     (segments.len() + 1) * FRAMING_ENTRY_SIZE
 }
 
@@ -444,9 +445,11 @@ pub struct CapnprotoSerializer {
 
 impl CapnprotoSerializer {
     pub fn new(message_type: SimpleMessageType, size: usize) -> CapnprotoSerializer {
+        let framing_size = context_framing_size(message_type, size);
+        tracing::debug!("context framing size: {}", framing_size);
         CapnprotoSerializer {
             message_type: message_type,
-            framing_size: context_framing_size(message_type, size),
+            framing_size: framing_size,
         }
     }
 }

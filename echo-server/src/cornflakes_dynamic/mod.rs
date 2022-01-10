@@ -321,9 +321,11 @@ where
     D: Datapath,
 {
     pub fn new(message_type: SimpleMessageType, size: usize) -> CornflakesDynamicSerializer<D> {
+        let context_size_var = context_size::<D>(message_type, size);
+        tracing::debug!("Context size var: {}", context_size_var);
         CornflakesDynamicSerializer {
             message_type: message_type,
-            context_size: context_size::<D>(message_type, size),
+            context_size: context_size_var,
             _phantom_data: PhantomData,
         }
     }

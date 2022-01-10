@@ -814,6 +814,8 @@ impl Datapath for DPDKConnection {
                     .zip(pkts.iter_mut())
                     .enumerate()
                 {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Construct from sga");
                     if use_scatter_gather {
                         pkt.construct_from_sga(
                             &mut self.send_mbufs,
@@ -831,6 +833,8 @@ impl Datapath for DPDKConnection {
                             sga.get_id()
                         ))?;
                     } else {
+                        #[cfg(feature = "profiler")]
+                        perftools::timer!("Construct from sga without scatter-gather");
                         pkt.construct_from_sga_without_scatter_gather(
                             &mut self.send_mbufs,
                             i,
@@ -872,15 +876,19 @@ impl Datapath for DPDKConnection {
         }
 
         // send out the scatter-gather array
-        let mbuf_ptr = &mut self.send_mbufs[0][0] as _;
-        timefunc(
-            &mut || {
-                wrapper::tx_burst(self.dpdk_port, self.queue_id, mbuf_ptr, sgas.len() as u16)
-                    .wrap_err(format!("Failed to send SGAs."))
-            },
-            cfg!(feature = "timers"),
-            self.get_timer(TX_BURST_TIMER, cfg!(feature = "timers"))?,
-        )?;
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("dpdk processing");
+            let mbuf_ptr = &mut self.send_mbufs[0][0] as _;
+            timefunc(
+                &mut || {
+                    wrapper::tx_burst(self.dpdk_port, self.queue_id, mbuf_ptr, sgas.len() as u16)
+                        .wrap_err(format!("Failed to send SGAs."))
+                },
+                cfg!(feature = "timers"),
+                self.get_timer(TX_BURST_TIMER, cfg!(feature = "timers"))?,
+            )?;
+        }
 
         Ok(())
     }

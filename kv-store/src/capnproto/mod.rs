@@ -11,6 +11,8 @@ use cornflakes_libos::{CfBuf, Datapath, RcCornPtr, RcCornflake, ReceivedPkt, Sca
 use hashbrown::HashMap;
 use std::{io::Write, marker::PhantomData};
 const FRAMING_ENTRY_SIZE: usize = 8;
+#[cfg(feature = "profiler")]
+use perftools;
 
 pub struct CapnprotoSerializer<D>
 where
@@ -153,14 +155,22 @@ where
             }
             x => {
                 // deserialize multi get request
-                let getm_request = message_reader
-                    .get_root::<kv_capnp::get_m_req::Reader>()
-                    .wrap_err("Failed to deserialize GetMReq.")?;
+                let getm_request = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Deserialize pkt");
+                    message_reader
+                        .get_root::<kv_capnp::get_m_req::Reader>()
+                        .wrap_err("Failed to deserialize GetMReq.")?
+                };
                 let keys = getm_request
                     .get_keys()
                     .wrap_err("Failed to run get_keys on deserialized GetMRequest.")?;
 
-                let mut response = builder.init_root::<kv_capnp::get_m_resp::Builder>();
+                let mut response = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Construct response buffer");
+                    builder.init_root::<kv_capnp::get_m_resp::Builder>()
+                };
                 response.set_id(getm_request.get_id());
                 let mut list = response.init_vals(x as u32);
                 for i in 0..x {
@@ -168,17 +178,29 @@ where
                         "Failed to get entry # {} from deserialized GetMRequest.",
                         i
                     ))?;
-                    let val = match map.get(key) {
-                        Some(v) => v,
-                        None => {
-                            bail!("Cannot find value for key in KV store: {:?}", key);
+                    let val = {
+                        #[cfg(feature = "profiler")]
+                        perftools::timer!("Query key 1");
+                        match map.get(key) {
+                            Some(v) => v,
+                            None => {
+                                bail!("Cannot find value for key in KV store: {:?}", key);
+                            }
                         }
                     };
                     // TODO: val.as_ref() should directly return the mbuf data addr, not need to
                     // make an extra pointer deref to the CfBuf
-                    list.set(i as u32, val.as_ref());
+                    {
+                        #[cfg(feature = "profiler")]
+                        perftools::timer!("set value");
+                        list.set(i as u32, val.as_ref());
+                    }
                 }
-                let (context, num_segments) = fill_in_context(&builder);
+                let (context, num_segments) = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("write in additional context");
+                    fill_in_context(&builder)
+                };
 
                 let cf = RcCornflake::with_capacity(num_segments + 1);
                 Ok(((context, builder), cf))
@@ -276,10 +298,14 @@ where
     ) -> Result<()> {
         cornflake.add_entry(RcCornPtr::RawRef(&ctx.0.as_slice()));
         tracing::debug!(len = ctx.0.as_slice().len(), addr=? &ctx.0.as_slice().as_ptr(), "Entry 1");
-        let segments = ctx.1.get_segments_for_output();
-        for seg in segments.iter() {
-            tracing::debug!(len = seg.len(), addr =? &seg.as_ptr(), "Adding segment");
-            cornflake.add_entry(RcCornPtr::RawRef(&seg));
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("frame context");
+            let segments = ctx.1.get_segments_for_output();
+            for seg in segments.iter() {
+                tracing::debug!(len = seg.len(), addr =? &seg.as_ptr(), "Adding segment");
+                cornflake.add_entry(RcCornPtr::RawRef(&seg));
+            }
         }
         tracing::debug!(
             data_len = cornflake.data_len(),

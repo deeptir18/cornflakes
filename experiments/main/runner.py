@@ -171,6 +171,8 @@ class Experiment(metaclass=abc.ABCMeta):
         if logfile is None:
             return
         if logfile is not None:
+            # run post process analysis if required
+            self.run_post_process_analysis(total_args, logfile)
             post_process_logfile = utils.get_postprocess_logfile(logfile)
             self.graph_results(total_args, folder, logfile,
                                post_process_logfile)
@@ -216,9 +218,6 @@ class Experiment(metaclass=abc.ABCMeta):
                     f.write(ret + os.linesep)
         if f is not None:
             f.close()
-
-        # run post process analysis if required
-        self.run_post_process_analysis(total_args, logfile)
 
     def run_iterations(self, total_args, iterations, print_stats=False):
         """
@@ -506,12 +505,13 @@ class Iteration(metaclass=abc.ABCMeta):
                 utils.debug("Starting program {} on host {}, args: {}".format(
                     program_name, host, program_args))
                 proc.start()
+                #input('press enter to cont.')
+
                 if kill_cmd == None:
                     programs_to_join_immediately[host] = program_counter
                 else:
                     programs_to_kill[host] = (program_counter,
                                               kill_cmd)
-                #input("Press Enter to continue...")
 
         any_failed = False
         # now join all of the joining programs

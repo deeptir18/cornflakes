@@ -416,9 +416,11 @@ pub struct FlatbuffersSerializer<'fbb> {
 
 impl<'fbb> FlatbuffersSerializer<'fbb> {
     pub fn new(message_type: SimpleMessageType, size: usize) -> FlatbuffersSerializer<'fbb> {
+        let context_size_var = context_size(message_type, size);
+        tracing::debug!("context size: {}", context_size_var);
         FlatbuffersSerializer {
             message_type: message_type,
-            context_size: context_size(message_type, size),
+            context_size: context_size_var,
             _phantom_data: PhantomData,
         }
     }
