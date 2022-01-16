@@ -646,7 +646,7 @@ pub fn create_mempool(
     num_values: usize,
 ) -> Result<*mut rte_mempool> {
     let name_str = CString::new(name)?;
-    tracing::info!("Name: {}", name);
+    //tracing::info!("Name: {}", name);
     /*let mut mbp_priv_uninit: MaybeUninit<rte_pktmbuf_pool_private> = MaybeUninit::zeroed();
     unsafe {
         (*mbp_priv_uninit.as_mut_ptr()).mbuf_data_room_size = data_size as u16;
@@ -705,9 +705,9 @@ pub fn create_mempool(
             print_error()
         );
     }*/
-    tracing::info!("Num values * Nb Ports: {}", num_values);
-    tracing::info!("Num elements in mempool: {}", ((num_values as u16 * nb_ports) as u32));
-    tracing::info!("Data size: {}", data_size);
+    //tracing::info!("Num values * Nb Ports: {}", num_values);
+    //tracing::info!("Num elements in mempool: {}", ((num_values as u16 * nb_ports) as u32));
+    //tracing::info!("Data size: {}", data_size);
     let mbuf_pool = dpdk_call!(rte_pktmbuf_pool_create(
         name_str.as_ptr(),
         (num_values as u16 * nb_ports) as u32,

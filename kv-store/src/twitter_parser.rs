@@ -10,6 +10,7 @@ pub struct TwitterRequest<'a> {
     pub key_size: usize,
     pub val_size: usize,
     pub second: u64,
+    pub client_id: u64,
     pub req_type: MsgType,
 }
 
@@ -22,10 +23,11 @@ impl<'a> TwitterRequest<'a> {
       match op {
         "get" => Ok(TwitterRequest{
             key: vec_gets[1],
-            val: "",
+            val: "",//vec_gets[vec_gets.len() - 1],
             key_size: vec_gets[2].parse::<usize>().unwrap(),
             val_size: vec_gets[3].parse::<usize>().unwrap(),
             second: vec_gets[0].parse::<u64>().unwrap(),
+            client_id: vec_gets[4].parse::<u64>().unwrap(),
             req_type: MsgType::Get(1),
         }),
         _ => Ok(TwitterRequest{
@@ -34,6 +36,7 @@ impl<'a> TwitterRequest<'a> {
             key_size: vec_gets[2].parse::<usize>().unwrap(),
             val_size: vec_gets[3].parse::<usize>().unwrap(),
             second: vec_gets[0].parse::<u64>().unwrap(),
+            client_id: vec_gets[4].parse::<u64>().unwrap(),
             req_type: MsgType::Put(1),
         })
       }
@@ -51,12 +54,11 @@ impl<'a> TwitterRequest<'a> {
     }
 
     pub fn get_val(&self) -> &'a str {
-       /* let mut val = String::new();
-        for i in 0..self.val_size {
-          val.push('a');
-        }
-        &val*/
         self.val
+    }
+
+    pub fn get_client(&self) -> u64 {
+        self.client_id
     }
 
     pub fn get_val_size(&self) -> usize {

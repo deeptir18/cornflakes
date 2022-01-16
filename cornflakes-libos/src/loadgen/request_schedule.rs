@@ -1,6 +1,7 @@
 use color_eyre::eyre::{bail, Result, WrapErr};
 use rand::thread_rng;
 use rand_distr::{Distribution, Exp};
+use std::collections::HashMap;
 
 #[inline]
 pub fn rate_pps_to_interarrival_nanos(rate: u64) -> f64 {
@@ -88,6 +89,20 @@ impl PacketSchedule {
         Ok(PacketSchedule { packets: packets })
     }
 
+    pub fn full_twitter_schedule (times: Vec<u64>, sum: u64) -> Vec<u64> {
+        let mut packets: Vec<u64> = vec![0; sum as usize];
+        let mut base = 0;
+        for i in 0..times.len() {
+            let time_lapse : u64 = 1000000000/times[i];
+            tracing::info!("Time lapse: {}, Number of vals: {}", time_lapse, times[i]);
+            for j in 0..times[i] {
+                packets[i + j as usize] = base;
+                base += time_lapse;
+            }
+        }
+        return packets;
+    }
+
     pub fn new_twitter (times: Vec<u64>,
                         start_idx: usize,
                         end_idx: usize,
@@ -136,6 +151,9 @@ impl PacketSchedule {
         deficit_cycles: u64,
     ) -> u64 {
         let intersend = self.get(idx);
+        if intersend != 0 {
+            tracing::info!("Intersend is {}", intersend);
+        }
         let add = nanos_to_hz(hz, intersend);
         if deficit_cycles > add {
             return last_cycle;
@@ -186,13 +204,34 @@ pub fn find_idx_offset(times: Vec<u64>,
 pub fn generate_twitter_schedules(
     times: Vec<u64>,
     num_threads: usize,
+    clients: HashMap<u64, Vec<String>>,
+    thread_cli_map: HashMap<u64, Vec<u64>>,
+    client_to_line : HashMap<u64, Vec<u64>>,
 ) -> Result<Vec<PacketSchedule>> {
   let mut schedules : Vec<PacketSchedule> = Vec::default();
-  let mut sum : usize = 0;
+  let mut sum : u64 = 0;
   for i in 0..times.len() {
-    sum += times[i] as usize;
+    sum += times[i];
+  }
+  let packet_time_vec : Vec<u64> = PacketSchedule::full_twitter_schedule(times.clone(), sum);
+  for (key,val) in thread_cli_map.iter() {
+      let mut packets : Vec<Packet> = Vec::new();
+      for i in 0..val.len() {
+          let mini_vec = client_to_line[&val[i]].clone();
+          for line_no in mini_vec {
+              packets.push(Packet { time_since_last: packet_time_vec[line_no as usize] });
+          }
+      }
+      tracing::info!("Packets for thread {}: {}", key, packets.len());
+      packets.sort_by(|a, b| a.time_since_last.cmp(&b.time_since_last));
+      schedules.push(PacketSchedule {packets : packets});
   }
   // what if number of threads is greater than sum?
+  /*let mut schedules : Vec<PacketSchedule> = Vec::default();
+    let mut sum : usize = 0;
+    for i in 0..times.len() {
+        sum += times[i] as usize;
+          }
   let mut partition : usize = sum/num_threads;
   let mut start_idx : usize = 0;
   let mut offset : usize = 0;
@@ -218,5 +257,6 @@ pub fn generate_twitter_schedules(
                                              end_idx,
                                              offset,
                                              sum - partition*(num_threads-1))?);
+  */
   Ok(schedules)
 }

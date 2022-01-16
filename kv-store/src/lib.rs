@@ -38,7 +38,8 @@ mod kv_capnp {
 pub const REQ_TYPE_SIZE: usize = 4;
 pub const MAX_REQ_SIZE: usize = 9216;
 pub const ALIGN_SIZE: usize = 256;
-
+static mut LEVELS: u64 = 0;
+static mut COUNTER: u64 = 0;
 fn read_msg_framing<D>(in_sga: &ReceivedPkt<D>) -> Result<MsgType>
 where
     D: Datapath,
@@ -126,6 +127,7 @@ impl Iterator for QueryIterator {
                 if let Some(parsed_line_res) = self.lines.next() {
                     match parsed_line_res {
                         Ok(s) => {
+                            //tracing::info!("Thread ID: {}, Parsed Line: {}", self.get_thread_id(), s);
                             self.increment();
                             return Some(Ok(s));
                         }
@@ -476,7 +478,10 @@ where
             } else {
                 bail!("Received ID not in in flight map: {}", sga.get_id());
             }
-        }
+        }unsafe {
+        COUNTER += 1;
+            tracing::info!("# OF RECEIVED PACKETS: {}", COUNTER);
+        }tracing::info!("RTTS NANOS: {}", rtt.as_nanos());
         self.rtts.record(rtt.as_nanos() as u64);
         Ok(())
     }
@@ -684,7 +689,7 @@ where
                 self.value_size,
                 (self.last_sent_id - 1) as MsgID,
             )?;
-            tracing::debug!("About to send: {:?}", req);
+            tracing::info!("About to send: {:?}", req);
             let size = self
                 .serializer
                 .write_next_framed_request(&mut self.request_data.as_mut_slice(), &mut req)?;
@@ -752,6 +757,7 @@ where
                 bail!("Received ID not in in flight map: {}", sga.get_id());
             }
         }
+        tracing::info!("Record the nanos for thread {}: {}", self.thread_id, rtt.as_nanos() as u64);
         self.rtts.record(rtt.as_nanos() as u64);
         Ok(())
     }
@@ -977,9 +983,13 @@ where
         ) -> Result<()> {
         let file = File::open(twitter_trace)?;
         let buf_reader = BufReader::new(file);
+        let mut books = HashSet::new();
         for line_q in buf_reader.lines() {
           let line = line_q?;
           let twitter_req = TwitterRequest::new(&line)?;
+          if !books.contains(&twitter_req.get_client()) {
+              books.insert(twitter_req.get_client());
+          }
           let mut added = HashSet::new();
           match twitter_req.get_type() {
             MsgType::Get(_) => {
@@ -1011,6 +1021,7 @@ where
             }
           }
         }
+        tracing::info!("THE NUMER OF RAW UNIQUE CLIENTS IS HEREEEEEEE: {}", books.len());
         Ok(())
     }
 
@@ -1041,6 +1052,7 @@ where
         sgas: Vec<(ReceivedPkt<<Self as ServerSM>::Datapath>, Duration)>,
         conn: &mut D,
     ) -> Result<()> {
+        tracing::debug!("We are processing a request");
         let mut out_sgas: Vec<(RcCornflake<D>, AddressInfo)> = Vec::with_capacity(sgas.len());
         let mut contexts: Vec<S::HeaderCtx> = Vec::default();
         for (in_sga, _) in sgas.into_iter() {
@@ -1068,10 +1080,14 @@ where
             let (cf, _addr) = &mut out_sgas[i];
             let ctx = &contexts[i];
             self.serializer.process_header(ctx, cf)?;
+            unsafe {LEVELS += 1;}
         }
-
+        tracing::debug!("Got it!");
         conn.push_sgas(&out_sgas)
             .wrap_err("Unable to send response sgas in datapath.")?;
+        unsafe {
+        tracing::info!("Request # {}", LEVELS);
+        }
         Ok(())
     }
 
@@ -1087,6 +1103,6 @@ where
     D: Datapath,
 {
     fn drop(&mut self) {
-        tracing::debug!("In drop for KV Server");
+        tracing::info!("In drop for KV Server");
     }
 }

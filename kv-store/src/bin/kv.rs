@@ -29,7 +29,10 @@ use std::{
     time::Instant,
     io::BufReader,
     io::BufRead,
+    io::Write,
+    io::prelude::*,
     fs::File,
+    fs,
     collections::HashMap,
     convert::TryInto,
 };
@@ -155,13 +158,14 @@ fn lines_in_file(path: &str) -> Result<usize> {
         .arg(path)
         .output()
         .wrap_err(format!("Failed to run wc on path: {:?}", path))?;
+    tracing::info!("{:?}", output.stdout);
     let stdout = String::from_utf8(output.stdout).wrap_err("Not able to get string from stdout")?;
     let mut stdout_split = stdout.split(" ");
     let num = match stdout_split.next() {
         Some(x) => {
             let num = x
                 .parse::<usize>()
-                .wrap_err(format!("Could not turn wc output into usize: {:?}", stdout))?;
+                .wrap_err(format!("Could not turn wc output into usize: {:?} and {:?}", stdout, path))?;
             num
         }
         None => {
@@ -201,16 +205,23 @@ macro_rules! init_kv_server(
 macro_rules! run_kv_client(
     ($serializer: ty, $datapath: ty, $datapath_global_init: expr, $datapath_init: ident, $opt: ident) => {
         let is_twitter = $opt.trace_type == 1;
-        tracing::debug!("The twitter is: {}", is_twitter);
+        tracing::info!("The twitter is: {}", is_twitter);
         let num_rtts = get_num_requests(&$opt)?;
         tracing::debug!("Done getting the right number of requests!");
         let schedules;
+        let mut thread_files : Vec<String> = Vec::new();
         if $opt.trace_type != 1 {
             schedules = generate_schedules(num_rtts, $opt.rate, $opt.distribution, $opt.num_threads)?;
         } else {
-            let client_hash = create_client_hash(&$opt.queries)?;
+            tracing::info!("Here processing the input!");
+            let mut clients : HashMap<u64, Vec<String>> = HashMap::new();
+            let mut client_to_lineno: HashMap<u64, Vec<u64>> = HashMap::new();
+            let mut client_hash = create_client_hash(&$opt.queries, &mut clients, &mut client_to_lineno)?;
+            let mut thread_cli_map : HashMap<u64, Vec<u64>> = map_threads_to_clients($opt.num_threads, clients.clone())?;
             let time = get_times(client_hash)?;
-            schedules = generate_twitter_schedules(time, $opt.num_threads)?;
+            thread_files = create_thread_files(thread_cli_map.clone(), clients.clone())?;
+            tracing::info!("Going to create the schedules now!");
+            schedules = generate_twitter_schedules(time, $opt.num_threads, clients.clone(), thread_cli_map.clone(), client_to_lineno.clone())?;
         }
         // do global init
         let (port, per_thread_info) = $datapath_global_init?;
@@ -223,6 +234,7 @@ macro_rules! run_kv_client(
             let per_thread_options = $opt.clone();
             let hist = ManualHistogram::new(num_rtts);
             let schedule = schedules[i].clone();
+            let thread_file_name = thread_files[i].clone();
             threads.push(spawn(move || {
                 match set_thread_affinity(&vec![i+1]) {
                     Ok(_) => {}
@@ -230,9 +242,8 @@ macro_rules! run_kv_client(
                         bail!("Could not set thread affinity for thread {} on core {}: {:?}", i, i+1, e);
                     }
                 }
-                
                 let mut connection = $datapath_init(physical_port, i, rx_packet_allocator, addr, &per_thread_options)?;
-                let mut loadgen: YCSBClient<$serializer, $datapath> = YCSBClient::new(per_thread_options.client_id, per_thread_options.value_size, per_thread_options.num_values, &per_thread_options.queries, i, per_thread_options.num_threads, per_thread_options.num_clients, per_thread_options.server_ip, hist, per_thread_options.retries, per_thread_options.start_cutoff, is_twitter).wrap_err("Failed to initialize loadgen")?;
+                let mut loadgen: YCSBClient<$serializer, $datapath> = YCSBClient::new(per_thread_options.client_id, per_thread_options.value_size, per_thread_options.num_values, &per_thread_options.queries /*&thread_file_name*/, i, per_thread_options.num_threads, per_thread_options.num_clients, per_thread_options.server_ip, hist, per_thread_options.retries, per_thread_options.start_cutoff, is_twitter).wrap_err("Failed to initialize loadgen")?;
                 run_client(i, &mut loadgen, &mut connection, &per_thread_options, schedule).wrap_err("Failed to run client")
             }));
         }
@@ -262,6 +273,27 @@ macro_rules! run_kv_client(
 
 );
 
+fn map_threads_to_clients(num_threads: usize, clients: HashMap<u64, Vec<String>>) -> Result<HashMap<u64, Vec<u64>>> {
+    let mut thread_to_cli_map : HashMap<u64, Vec<u64>> = HashMap::new();
+    for i in 0..num_threads {
+      let new_vec : Vec<u64> = Vec::new();
+      thread_to_cli_map.insert(i as u64, new_vec);
+    }
+    let mut client_vec : Vec<u64> = Vec::new();
+    for client in clients.keys() {
+        client_vec.push(*client);
+    }
+    while client_vec.len() > 0 {
+      for (key, val) in thread_to_cli_map.iter_mut() {
+        if client_vec.len() == 0 {
+          break;
+        }
+        (*val).push(client_vec.pop().unwrap());
+      }
+    }
+    Ok(thread_to_cli_map)
+}
+
 fn get_times(client_hash: HashMap<u64, Vec<String>>) -> Result<Vec<u64>> {
     let mut ret_vec : Vec<u64> = Vec::new();
     for key in client_hash.keys() {
@@ -270,13 +302,48 @@ fn get_times(client_hash: HashMap<u64, Vec<String>>) -> Result<Vec<u64>> {
     Ok(ret_vec)
 }
 
-fn create_client_hash(twitter_trace: &str) -> Result<HashMap<u64, Vec<String>>> {
+fn create_thread_files(thread_to_cli: HashMap<u64, Vec<u64>>, clients: HashMap<u64, Vec<String>>) -> Result<Vec<String>> {
+  let mut thread_files = Vec::new();
+  for (key, val) in thread_to_cli.iter() {
+    let filename = format!("thread_file_{}", key);
+    let mut file = File::create(filename.clone())?;
+    for cli in val {
+      for line in clients[&cli].iter() {
+        write!(file, "{}\n", line);
+      }
+    }
+    thread_files.push(filename);
+  }
+  Ok(thread_files)
+}
+
+fn create_client_hash(twitter_trace: &str, 
+                      clients: &mut HashMap<u64, Vec<String>>, 
+                      client_to_lineno: &mut HashMap<u64, Vec<u64>>) -> Result<HashMap<u64, Vec<String>>> {
     let mut client_hash = HashMap::<u64, Vec<String>>::new();
     let file = File::open(twitter_trace)?;
     let buf_reader = BufReader::new(file);
+    let mut line_no = 0;
     for line_q in buf_reader.lines() {
         let line = line_q?;
         let twitter_line = TwitterRequest::new(&line)?;
+        if !clients.contains_key(&twitter_line.get_client()) {
+            //tracing::info!("New client: {}", twitter_line.get_client());
+            let mut new_vec : Vec<u64> = Vec::new();
+            let mut twitter_vec : Vec<String> = Vec::new();
+            new_vec.push(line_no);
+            twitter_vec.push(line.clone());
+            clients.insert(twitter_line.get_client(), twitter_vec);
+            client_to_lineno.insert(twitter_line.get_client(), new_vec);
+        } else {
+            if let Some(vec) = clients.get_mut(&twitter_line.get_client()) {
+              vec.push(line.clone());
+            }
+            if let Some(vec) = client_to_lineno.get_mut(&twitter_line.get_client()) {
+              vec.push(line_no);
+            }
+        }
+        line_no += 1;
         if client_hash.contains_key(&twitter_line.get_second()) {
             if let Some(line_vec) = client_hash.get_mut(&twitter_line.get_second()) {
                 line_vec.push(line.to_string());
@@ -287,6 +354,12 @@ fn create_client_hash(twitter_trace: &str) -> Result<HashMap<u64, Vec<String>>> 
         vec.push(line.to_string());
         client_hash.insert(twitter_line.get_second().try_into().unwrap(), vec);
     }
+    let mut len = 0;
+    for (key, val) in client_to_lineno.iter() {
+        //tracing::info!("Client: {}, Num of val: {}", key, val.len());
+        len += val.len();
+    }
+    tracing::info!("Number of lines: {}", len);
     Ok(client_hash)
 }
 

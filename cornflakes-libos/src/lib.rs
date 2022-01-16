@@ -996,7 +996,7 @@ pub trait ClientSM {
             let last_sent = datapath.current_cycles();
             deficit = last_sent - next;
             next = schedule.get_next_in_cycles(idx, last_sent, freq, deficit);
-
+            tracing::debug!("Next amount to wait: {} and Idx: {}", next, idx);
             while datapath.current_cycles() <= next {
                 let recved_pkts = datapath.pop()?;
                 for (pkt, rtt) in recved_pkts.into_iter() {
@@ -1008,6 +1008,7 @@ pub trait ClientSM {
                 }
 
                 if !no_retries {
+                    tracing::info!("ARe we timing out here??");
                     for id in datapath.timed_out(time_out(self.received_so_far()))?.iter() {
                         datapath.push_buf(self.msg_timeout_cb(*id)?, addr_info.clone())?;
                     }

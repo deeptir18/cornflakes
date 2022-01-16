@@ -14,6 +14,10 @@ fn rolling_avg(avg: f64, val: f64, idx: usize) -> f64 {
     avg + (val - avg) / idx as f64
 }
 
+fn twitter_percent_successful(sent: f64, received: f64) -> f64 {
+    received/sent * 100 as f64
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Copy)]
 pub struct ThreadLatencies {
     pub num_threads: usize,

@@ -209,7 +209,7 @@ impl MempoolAllocator {
      let name : &str = "kv_bufpool";
      let mempool_name = format!("{}_{}_{}", name, bytes, self.cur_idx);
      self.cur_idx += 1;
-     tracing::info!("Create new mempool with properties {}, {}, and {}", mempool_name, bytes, num_values);
+     //tracing::info!("Create new mempool with properties {}, {}, and {}", mempool_name, bytes, num_values);
      let mempool = wrapper::create_mempool(
             &mempool_name,
             1,

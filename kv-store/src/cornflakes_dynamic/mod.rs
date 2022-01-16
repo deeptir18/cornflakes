@@ -123,14 +123,8 @@ where
                     put_request.get_key().to_str()?,
                     put_request.get_val()
                 );
-            /*let val = match put_request.get_val() {
-                    Some(v) => v,
-                    None => {
-                        bail!("Value not present in put request.");
-                    }
-                };*/
                 let val = put_request.get_val();
-                let raw_val = match val.get_raw() {
+                /*let raw_val = match val.get_raw() {
                     Some(val) => val,
                     None => {
                         bail!("Value not present in put request.")
@@ -145,10 +139,10 @@ where
                         .write(raw_val)
                         .wrap_err("Failed to write bytes into CfBuf.")? != val.len() {
                       bail!("Failed to write all of the value bytes into CfBuf. for req {}", put_request.get_id());
-                }
+                }*/
                 map.insert(
                     put_request.get_key().to_string()?,
-                    datapath_buffer,//put_request.get_val().get_inner_rc()?,
+                    val.get_inner_rc()?.clone(),
                 );
 
                 // construct response
@@ -167,7 +161,7 @@ where
                 for i in 0..x {
                     let key = &keys[i];
                     let val = &vals[i]; 
-                    let raw_val = match val.get_raw() {
+                    /*let raw_val = match val.get_raw() {
                         Some(val) => val,
                         None => {
                             bail!("Value not present in put request.");
@@ -181,8 +175,8 @@ where
                         .write(raw_val)
                         .wrap_err("Failed to write bytes into CfBuf.")? != val.len() {
                       bail!("Failed to write all of the value bytes into CfBuf. for req {}", putm_request.get_id());
-                    }
-                    map.insert(key.to_string()?, datapath_buffer);
+                    }*/
+                    map.insert(key.to_string()?, val.get_inner_rc()?.clone());
                 }
 
                 let mut response = hardcoded_cf::PutResp::<D>::new();
