@@ -1,6 +1,7 @@
 use color_eyre::eyre::{bail, Result, WrapErr};
 use rand::thread_rng;
 use rand_distr::{Distribution, Exp};
+use std::collections::HashMap;
 
 #[inline]
 pub fn rate_pps_to_interarrival_nanos(rate: u64) -> f64 {
@@ -93,6 +94,56 @@ impl PacketSchedule {
         Ok(PacketSchedule { packets: packets })
     }
 
+    pub fn full_twitter_schedule (times: Vec<u64>, sum: u64) -> Vec<u64> {
+        let mut packets: Vec<u64> = vec![0; sum as usize];
+        let mut base = 0;
+        for i in 0..times.len() {
+            let time_lapse : u64 = 1000000000/times[i];
+            tracing::info!("Time lapse: {}, Number of vals: {}", time_lapse, times[i]);
+            for j in 0..times[i] {
+                packets[i + j as usize] = base;
+                base += time_lapse;
+            }
+        }
+        return packets;
+    }
+
+    pub fn new_twitter (times: Vec<u64>,
+                        start_idx: usize,
+                        end_idx: usize,
+                        last_entry: usize,
+                        packet_entries: usize) -> Result<Self> {
+        let mut packets: Vec<Packet> = vec![Packet::default(); packet_entries as usize];
+        let mut index : usize = 0;
+        let mut num_entries : usize = 0;
+        for i in start_idx..end_idx+1 {
+            let nanosec : u64 = 1000000000;
+            let time_lapse = nanosec/times[i];
+            let mut base : u64 = i as u64;
+            if i == start_idx {
+                for j in last_entry..times[i] as usize {
+                  if num_entries == packet_entries {
+                    return Ok(PacketSchedule{ packets : packets});
+                  }
+                  packets[(index + (j as usize))] = Packet{ time_since_last: base };
+                  base += time_lapse;
+                  num_entries += 1;
+                }
+                continue;
+            }
+            for j in 0..times[i] {
+                if num_entries == packet_entries {
+                    return Ok(PacketSchedule{ packets : packets});
+                }
+                packets[(index + (j as usize))] = Packet{ time_since_last: base };
+                base += time_lapse;
+                num_entries += 1;
+            }
+            index += times[i] as usize;
+        }
+        return Ok(PacketSchedule { packets: packets });
+    }
+
     fn get(&self, idx: usize) -> u64 {
         self.packets[idx].time_since_last
     }
@@ -105,6 +156,9 @@ impl PacketSchedule {
         deficit_cycles: u64,
     ) -> u64 {
         let intersend = self.get(idx);
+        if intersend != 0 {
+            tracing::info!("Intersend is {}", intersend);
+        }
         let add = nanos_to_hz(hz, intersend);
         if deficit_cycles > add {
             return last_cycle;
@@ -124,4 +178,90 @@ pub fn generate_schedules(
         schedules.push(PacketSchedule::new(requests, rate_pps, dist)?);
     }
     Ok(schedules)
+}
+
+// {30, 10} => 0: 
+// Partition: 20
+pub fn find_idx_offset(times: Vec<u64>,
+                       start_idx: usize,
+                       partition: usize,
+                       last_offset: usize) -> Vec<usize> {
+  /*find the appropriate start, end, and offset*/
+    let mut end_idx : usize = 0;
+    let mut new_offset : usize = 0;
+    let mut vec : Vec<usize> = Vec::new();
+    let mut cp_partition = partition;
+    for i in start_idx..times.len() {
+      cp_partition -= times[i] as usize; // 20 - 30 = -10
+      if cp_partition <= 0 {
+        end_idx = i;
+        new_offset = cp_partition; // 20
+        vec.push(end_idx);
+        vec.push(new_offset);
+        return vec;
+      }
+    }
+    vec.push(end_idx);
+    vec.push(new_offset);
+    return vec;
+}
+
+pub fn generate_twitter_schedules(
+    times: Vec<u64>,
+    num_threads: usize,
+    clients: HashMap<u64, Vec<String>>,
+    thread_cli_map: HashMap<u64, Vec<u64>>,
+    client_to_line : HashMap<u64, Vec<u64>>,
+) -> Result<Vec<PacketSchedule>> {
+  let mut schedules : Vec<PacketSchedule> = Vec::default();
+  let mut sum : u64 = 0;
+  for i in 0..times.len() {
+    sum += times[i];
+  }
+  let packet_time_vec : Vec<u64> = PacketSchedule::full_twitter_schedule(times.clone(), sum);
+  for (key,val) in thread_cli_map.iter() {
+      let mut packets : Vec<Packet> = Vec::new();
+      for i in 0..val.len() {
+          let mini_vec = client_to_line[&val[i]].clone();
+          for line_no in mini_vec {
+              packets.push(Packet { time_since_last: packet_time_vec[line_no as usize] });
+          }
+      }
+      tracing::info!("Packets for thread {}: {}", key, packets.len());
+      packets.sort_by(|a, b| a.time_since_last.cmp(&b.time_since_last));
+      schedules.push(PacketSchedule {packets : packets});
+  }
+  // what if number of threads is greater than sum?
+  /*let mut schedules : Vec<PacketSchedule> = Vec::default();
+    let mut sum : usize = 0;
+    for i in 0..times.len() {
+        sum += times[i] as usize;
+          }
+  let mut partition : usize = sum/num_threads;
+  let mut start_idx : usize = 0;
+  let mut offset : usize = 0;
+  let mut new_offset : usize = 0;
+  let mut end_idx : usize = 0;
+  let mut ret : Vec<usize> = find_idx_offset(times.clone(), start_idx, partition, offset);
+  end_idx = ret[0];
+  new_offset = ret[1];
+  for _i in 0..num_threads-1 {
+      schedules.push(PacketSchedule::new_twitter(times.clone(), 
+                                                 start_idx, 
+                                                 end_idx,
+                                                 offset,
+                                                 partition)?);
+      start_idx = end_idx;
+      offset = new_offset;
+      ret = find_idx_offset(times.clone(), start_idx, partition, offset);
+      end_idx = ret[0];
+      new_offset = ret[1];
+  }
+  schedules.push(PacketSchedule::new_twitter(times.clone(), 
+                                             start_idx, 
+                                             end_idx,
+                                             offset,
+                                             sum - partition*(num_threads-1))?);
+  */
+  Ok(schedules)
 }

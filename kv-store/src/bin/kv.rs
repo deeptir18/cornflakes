@@ -5,7 +5,7 @@ use cornflakes_libos::{
     dpdk_libos::connection::DPDKConnection,
     loadgen::{
         client_threads::{dump_thread_stats, ThreadStats},
-        request_schedule::{generate_schedules, DistributionType, PacketSchedule},
+        request_schedule::{generate_schedules, generate_twitter_schedules, DistributionType, PacketSchedule},
     },
     timing::ManualHistogram,
     turn_off_ref_counting,
@@ -19,7 +19,7 @@ use cornflakes_utils::{
 use kv_store::{
     capnproto::CapnprotoSerializer, cornflakes_dynamic::CornflakesDynamicSerializer,
     flatbuffers::FlatBufferSerializer, protobuf::ProtobufSerializer, KVSerializer, KVServer,
-    SerializedRequestGenerator, YCSBClient,
+    SerializedRequestGenerator, YCSBClient, twitter_parser::TwitterRequest,
 };
 use std::{
     net::Ipv4Addr,
@@ -28,8 +28,17 @@ use std::{
     process::Command,
     thread::{spawn, JoinHandle},
     time::Instant,
+    io::BufReader,
+    io::BufRead,
+    io::Write,
+    io::prelude::*,
+    fs::File,
+    fs,
+    collections::HashMap,
+    convert::TryInto,
 };
 use structopt::StructOpt;
+use tracing::debug;
 
 #[derive(Debug, StructOpt, Clone)]
 #[structopt(name = "KV Store App.", about = "KV store server and client.")]
@@ -142,6 +151,12 @@ struct Opt {
         default_value = "1"
     )]
     splits_per_chunk: usize,
+    #[structopt(
+        short="tt", 
+        long="trace_type",
+        help="Trace type",
+        default_value="0")] // 0 = YCSB, 1 = Twitter
+    trace_type: usize,
 }
 
 /// Given a path, calculates the number of lines in the file.
@@ -152,13 +167,14 @@ fn lines_in_file(path: &str) -> Result<usize> {
         .arg(path)
         .output()
         .wrap_err(format!("Failed to run wc on path: {:?}", path))?;
+    tracing::info!("{:?}", output.stdout);
     let stdout = String::from_utf8(output.stdout).wrap_err("Not able to get string from stdout")?;
     let mut stdout_split = stdout.split(" ");
     let num = match stdout_split.next() {
         Some(x) => {
             let num = x
                 .parse::<usize>()
-                .wrap_err(format!("Could not turn wc output into usize: {:?}", stdout))?;
+                .wrap_err(format!("Could not turn wc output into usize: {:?} and {:?}", stdout, path))?;
             num
         }
         None => {
@@ -177,20 +193,45 @@ fn get_num_requests(opt: &Opt) -> Result<usize> {
 #[macro_export]
 macro_rules! init_kv_server(
     ($serializer: ty, $datapath: ty, $datapath_init: expr, $opt: ident) => {
+        tracing::info!("Initializing the KV server!");
         let mut connection = $datapath_init?;
+        tracing::info!("Done creating the datapath connection!");
         let mut kv_server: KVServer<$serializer,$datapath> = KVServer::new($opt.use_native_buffers)?;
         set_ctrlc_handler(&kv_server)?;
         // load values into kv store
         kv_server.init(&mut connection)?;
-        kv_server.load(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;
+        if $opt.trace_type == 1 {
+          kv_server.load_twitter(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;   
+          //kv_server.print_hash_map();
+          debug!("Loaded in the twitter trace!");
+        } else {
+            kv_server.load(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;
+        }
         kv_server.run_state_machine(&mut connection)?;
     }
 );
 
 macro_rules! run_kv_client(
     ($serializer: ty, $datapath: ty, $datapath_global_init: expr, $datapath_init: ident, $opt: ident) => {
+        let is_twitter = $opt.trace_type == 1;
+        tracing::info!("The twitter is: {}", is_twitter);
         let num_rtts = get_num_requests(&$opt)?;
-        let schedules = generate_schedules(num_rtts, $opt.rate, $opt.distribution, $opt.num_threads)?;
+        tracing::debug!("Done getting the right number of requests!");
+        let schedules;
+        let mut thread_files : Vec<String> = Vec::new();
+        if $opt.trace_type != 1 {
+            schedules = generate_schedules(num_rtts, $opt.rate, $opt.distribution, $opt.num_threads)?;
+        } else {
+            tracing::info!("Here processing the input!");
+            let mut clients : HashMap<u64, Vec<String>> = HashMap::new();
+            let mut client_to_lineno: HashMap<u64, Vec<u64>> = HashMap::new();
+            let mut client_hash = create_client_hash(&$opt.queries, &mut clients, &mut client_to_lineno)?;
+            let mut thread_cli_map : HashMap<u64, Vec<u64>> = map_threads_to_clients($opt.num_threads, clients.clone())?;
+            let time = get_times(client_hash)?;
+            thread_files = create_thread_files(thread_cli_map.clone(), clients.clone())?;
+            tracing::info!("Going to create the schedules now!");
+            schedules = generate_twitter_schedules(time, $opt.num_threads, clients.clone(), thread_cli_map.clone(), client_to_lineno.clone())?;
+        }
         // do global init
         let (port, per_thread_info) = $datapath_global_init?;
         let mut threads: Vec<JoinHandle<Result<ThreadStats>>> = vec![];
@@ -202,6 +243,7 @@ macro_rules! run_kv_client(
             let per_thread_options = $opt.clone();
             let hist = ManualHistogram::new(num_rtts);
             let schedule = schedules[i].clone();
+            let thread_file_name = thread_files[i].clone();
             threads.push(spawn(move || {
                 tracing::info!(ref_counting = unsafe {cornflakes_libos::USING_REF_COUNTING}, "Ref counting mode");
                 match set_thread_affinity(&vec![i+1]) {
@@ -216,7 +258,7 @@ macro_rules! run_kv_client(
                 run_client(i, &mut loadgen, &mut connection, &per_thread_options, schedule).wrap_err("Failed to run client")
             }));
         }
-
+        tracing::debug!("We reach this point!");
         let mut thread_results: Vec<ThreadStats> = Vec::default();
         for child in threads {
             let s = match child.join() {
@@ -242,6 +284,96 @@ macro_rules! run_kv_client(
 
 );
 
+fn map_threads_to_clients(num_threads: usize, clients: HashMap<u64, Vec<String>>) -> Result<HashMap<u64, Vec<u64>>> {
+    let mut thread_to_cli_map : HashMap<u64, Vec<u64>> = HashMap::new();
+    for i in 0..num_threads {
+      let new_vec : Vec<u64> = Vec::new();
+      thread_to_cli_map.insert(i as u64, new_vec);
+    }
+    let mut client_vec : Vec<u64> = Vec::new();
+    for client in clients.keys() {
+        client_vec.push(*client);
+    }
+    while client_vec.len() > 0 {
+      for (key, val) in thread_to_cli_map.iter_mut() {
+        if client_vec.len() == 0 {
+          break;
+        }
+        (*val).push(client_vec.pop().unwrap());
+      }
+    }
+    Ok(thread_to_cli_map)
+}
+
+fn get_times(client_hash: HashMap<u64, Vec<String>>) -> Result<Vec<u64>> {
+    let mut ret_vec : Vec<u64> = Vec::new();
+    for key in client_hash.keys() {
+      ret_vec.push(client_hash[key].len().try_into().unwrap());
+    }
+    Ok(ret_vec)
+}
+
+fn create_thread_files(thread_to_cli: HashMap<u64, Vec<u64>>, clients: HashMap<u64, Vec<String>>) -> Result<Vec<String>> {
+  let mut thread_files = Vec::new();
+  for (key, val) in thread_to_cli.iter() {
+    let filename = format!("thread_file_{}", key);
+    let mut file = File::create(filename.clone())?;
+    for cli in val {
+      for line in clients[&cli].iter() {
+        write!(file, "{}\n", line);
+      }
+    }
+    thread_files.push(filename);
+  }
+  Ok(thread_files)
+}
+
+fn create_client_hash(twitter_trace: &str, 
+                      clients: &mut HashMap<u64, Vec<String>>, 
+                      client_to_lineno: &mut HashMap<u64, Vec<u64>>) -> Result<HashMap<u64, Vec<String>>> {
+    let mut client_hash = HashMap::<u64, Vec<String>>::new();
+    let file = File::open(twitter_trace)?;
+    let buf_reader = BufReader::new(file);
+    let mut line_no = 0;
+    for line_q in buf_reader.lines() {
+        let line = line_q?;
+        let twitter_line = TwitterRequest::new(&line)?;
+        if !clients.contains_key(&twitter_line.get_client()) {
+            //tracing::info!("New client: {}", twitter_line.get_client());
+            let mut new_vec : Vec<u64> = Vec::new();
+            let mut twitter_vec : Vec<String> = Vec::new();
+            new_vec.push(line_no);
+            twitter_vec.push(line.clone());
+            clients.insert(twitter_line.get_client(), twitter_vec);
+            client_to_lineno.insert(twitter_line.get_client(), new_vec);
+        } else {
+            if let Some(vec) = clients.get_mut(&twitter_line.get_client()) {
+              vec.push(line.clone());
+            }
+            if let Some(vec) = client_to_lineno.get_mut(&twitter_line.get_client()) {
+              vec.push(line_no);
+            }
+        }
+        line_no += 1;
+        if client_hash.contains_key(&twitter_line.get_second()) {
+            if let Some(line_vec) = client_hash.get_mut(&twitter_line.get_second()) {
+                line_vec.push(line.to_string());
+            }
+            continue;
+        }
+        let mut vec = Vec::new();
+        vec.push(line.to_string());
+        client_hash.insert(twitter_line.get_second().try_into().unwrap(), vec);
+    }
+    let mut len = 0;
+    for (key, val) in client_to_lineno.iter() {
+        //tracing::info!("Client: {}, Num of val: {}", key, val.len());
+        len += val.len();
+    }
+    tracing::info!("Number of lines: {}", len);
+    Ok(client_hash)
+}
+
 fn set_ctrlc_handler<S, D>(server: &KVServer<S, D>) -> Result<()>
 where
     S: KVSerializer<D>,
@@ -263,6 +395,7 @@ where
 }
 
 fn main() -> Result<()> {
+    tracing::info!("Starting the KV app!");
     let opt = Opt::from_args();
     global_debug_init(opt.trace_level)?;
 
@@ -317,9 +450,16 @@ fn main() -> Result<()> {
             }
             // calculate the number of lines in the trace file
             let num_lines = lines_in_file(&opt.trace_file)?;
-            connection
-                .add_mempool("kv_buffer_pool", opt.value_size, num_lines * opt.num_values)
-                .wrap_err("Could not add mempool to DPDK conneciton")?;
+            tracing::info!("Number of lines in the trace file: {}", num_lines);
+            if opt.trace_type == 1 {
+                connection
+                  .add_twitter_mempool("twitter_kv_bufpool", num_lines)
+                  .wrap_err("Could not add Twitter mempool to DPDK connection")?;
+            } else {
+                connection
+                  .add_mempool("kv_buffer_pool", opt.value_size, num_lines * opt.num_values)
+                  .wrap_err("Could not add mempool to DPDK connection")?;
+            }
         }
         Ok(connection)
     };
@@ -505,7 +645,7 @@ where
         loadgen.get_num_recved(opt.start_cutoff),
         loadgen.get_num_retries(),
         exp_duration as _, // in nanos
-        opt.rate,
+        opt.rate, // TODO: PPS for each second
         opt.value_size * opt.num_values,
         loadgen.get_mut_rtts(),
         opt.start_cutoff,

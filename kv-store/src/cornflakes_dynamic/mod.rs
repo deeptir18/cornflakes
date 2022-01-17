@@ -2,9 +2,10 @@ pub mod hardcoded_cf;
 
 pub mod kv_messages {
     include!(concat!(env!("OUT_DIR"), "/kv_cf_dynamic.rs"));
+    // include!("/proj/sosp21ae-PG0/user/murray22/cornflakes/kv-store/src/cornflakes_dynamic/hardcoded_cf.rs");
 }
 
-use super::{ycsb_parser::YCSBRequest, KVSerializer, MsgType, SerializedRequestGenerator};
+use super::{ycsb_parser::YCSBRequest, twitter_parser::TwitterRequest, KVSerializer, MsgType, SerializedRequestGenerator, ALIGN_SIZE};
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_codegen::utils::rc_dynamic_hdr::{CFBytes, CFString, HeaderRepr};
 use cornflakes_libos::{
@@ -12,7 +13,7 @@ use cornflakes_libos::{
     ReceivedPkt, ScatterGather, USING_REF_COUNTING,
 };
 use hashbrown::HashMap;
-use std::marker::PhantomData;
+use std::{io::Write, marker::PhantomData};
 
 #[cfg(feature = "profiler")]
 use perftools;
@@ -177,9 +178,26 @@ where
                     put_request.get_key().to_str()?,
                     put_request.get_val()
                 );
+                let val = put_request.get_val();
+                /*let raw_val = match val.get_raw() {
+                    Some(val) => val,
+                    None => {
+                        bail!("Value not present in put request.")
+                    }
+                };
+                let mut datapath_buffer = CfBuf::allocate(_connection, val.len(), ALIGN_SIZE)
+                            .wrap_err(
+                                format!("Failed to allocate CfBuf for put req # {}", 
+                                put_request.get_id())
+                            )?;
+                if datapath_buffer
+                        .write(raw_val)
+                        .wrap_err("Failed to write bytes into CfBuf.")? != val.len() {
+                      bail!("Failed to write all of the value bytes into CfBuf. for req {}", put_request.get_id());
+                }*/
                 map.insert(
                     put_request.get_key().to_string()?,
-                    put_request.get_val().get_inner_rc()?,
+                    val.get_inner_rc()?.clone(),
                 );
 
                 // construct response
@@ -197,8 +215,23 @@ where
                 let vals = putm_request.get_vals();
                 for i in 0..x {
                     let key = &keys[i];
-                    let val = &vals[i];
-                    map.insert(key.to_string()?, val.get_inner_rc()?);
+                    let val = &vals[i]; 
+                    /*let raw_val = match val.get_raw() {
+                        Some(val) => val,
+                        None => {
+                            bail!("Value not present in put request.");
+                        }
+                    };
+                    let mut datapath_buffer = CfBuf::allocate(_connection, val.len(), ALIGN_SIZE)
+                        .wrap_err(
+                            format!("Failed to allocate CfBuf for put req # {}", putm_request.get_id())
+                        )?;
+                    if datapath_buffer
+                        .write(raw_val)
+                        .wrap_err("Failed to write bytes into CfBuf.")? != val.len() {
+                      bail!("Failed to write all of the value bytes into CfBuf. for req {}", putm_request.get_id());
+                    }*/
+                    map.insert(key.to_string()?, val.get_inner_rc()?.clone());
                 }
 
                 let mut response = kv_messages::PutResp::new();
@@ -420,6 +453,107 @@ where
                     }
 
                     let mut putm_req = kv_messages::PutMReq::<D>::new();
+                    putm_req.set_id(req.get_id());
+                    putm_req.init_keys(x);
+                    putm_req.init_vals(x);
+                    let keys = putm_req.get_mut_keys();
+                    for i in 0..x {
+                        keys.append(CFString::new(&request_keys[i]));
+                    }
+
+                    let vals = putm_req.get_mut_vals();
+                    for _i in 0..x {
+                        vals.append(CFBytes::new_raw(req.get_val().as_bytes()));
+                    }
+
+                    // serialize the data into the buffer
+                    let written =
+                        putm_req
+                            .serialize_into_buffer(buf, rte_memcpy)
+                            .wrap_err(format!(
+                                "Unable to serialize req # {} into buffer",
+                                req.get_id()
+                            ))?;
+                    return Ok(written);
+                }
+            },
+        }
+    }
+
+    fn write_next_twitter_request<'a>(&self, buf: &mut [u8], req: &mut TwitterRequest<'a>) -> Result<usize> {
+        match req.get_type() {
+            MsgType::Get(size) => match size {
+                0 => {
+                    bail!("Msg size cannot be 0");
+                }
+                1 => {
+                    let mut get_req = hardcoded_cf::GetReq::<D>::new();
+                    get_req.set_id(req.get_id());
+                    let (key, _val) = req.get_next_kv()?;
+                    get_req.set_key(&key);
+
+                    // serialize the data into the buffer
+                    let written =
+                        get_req
+                            .serialize_into_buffer(buf, rte_memcpy)
+                            .wrap_err(format!(
+                                "Unable to serialize req # {} into buffer",
+                                req.get_id()
+                            ))?;
+                    return Ok(written);
+                }
+                x => {
+                    let mut request_keys: Vec<String> = Vec::with_capacity(x);
+                    while let Some((key, _val)) = req.next() {
+                        request_keys.push(key);
+                    }
+
+                    let mut getm_req = hardcoded_cf::GetMReq::<D>::new();
+                    getm_req.set_id(req.get_id());
+                    getm_req.init_keys(x);
+                    let keys = getm_req.get_mut_keys();
+                    for i in 0..x {
+                        keys.append(CFString::new(&request_keys[i]));
+                    }
+
+                    // serialize the data into the buffer
+                    let written =
+                        getm_req
+                            .serialize_into_buffer(buf, rte_memcpy)
+                            .wrap_err(format!(
+                                "Unable to serialize req # {} into buffer",
+                                req.get_id()
+                            ))?;
+                    return Ok(written);
+                }
+            },
+            MsgType::Put(size) => match size {
+                0 => {
+                    bail!("Msg size cannot be 0");
+                }
+                1 => {
+                    let mut put_req = hardcoded_cf::PutReq::<D>::new();
+                    put_req.set_id(req.get_id());
+                    let (key, val) = req.get_next_kv()?;
+                    put_req.set_key(&key);
+                    put_req.set_val(val.as_bytes());
+                    // serialize the data into the buffer
+                    let written =
+                        put_req
+                            .serialize_into_buffer(buf, rte_memcpy)
+                            .wrap_err(format!(
+                                "Unable to serialize req # {} into buffer",
+                                req.get_id()
+                            ))?;
+                    return Ok(written);
+                }
+                x => {
+                    let mut request_keys: Vec<String> = Vec::with_capacity(x);
+                    while let Some((key, _val)) = req.next() {
+                        request_keys.push(key);
+                    }
+
+                    let mut putm_req = hardcoded_cf::PutMReq::<D>::new();
                     putm_req.set_id(req.get_id());
                     putm_req.init_keys(x);
                     putm_req.init_vals(x);

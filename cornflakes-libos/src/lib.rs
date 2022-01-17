@@ -931,7 +931,7 @@ pub trait Datapath {
     fn allocate_tx(&self, len: usize) -> Result<Self::DatapathPkt>;
 
     /// Allocate a datapath buffer (registered) with this size and alignment.
-    fn allocate(&self, size: usize, alignment: usize) -> Result<Self::DatapathPkt>;
+    fn allocate(&mut self, size: usize, alignment: usize) -> Result<Self::DatapathPkt>;
 }
 
 pub fn high_timeout_at_start(received: usize) -> Duration {
@@ -1046,7 +1046,7 @@ pub trait ClientSM {
             let last_sent = datapath.current_cycles();
             deficit = last_sent - next;
             next = schedule.get_next_in_cycles(idx, last_sent, freq, deficit);
-
+            tracing::debug!("Next amount to wait: {} and Idx: {}", next, idx);
             while datapath.current_cycles() <= next {
                 let recved_pkts = datapath.pop()?;
                 for (pkt, rtt) in recved_pkts.into_iter() {
@@ -1058,6 +1058,7 @@ pub trait ClientSM {
                 }
 
                 if !no_retries {
+                    tracing::info!("ARe we timing out here??");
                     for id in datapath.timed_out(time_out(self.received_so_far()))?.iter() {
                         datapath.push_buf(self.msg_timeout_cb(*id)?, addr_info.clone())?;
                     }

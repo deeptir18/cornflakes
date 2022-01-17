@@ -5,6 +5,9 @@ use super::{
 };
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use hashbrown::HashMap;
+
+const MAGIC_NUMBER : usize = 10000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MempoolInfo {
     handle: *mut rte_mempool,
@@ -141,6 +144,7 @@ impl Drop for MempoolInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MempoolAllocator {
     mempools: HashMap<usize, Vec<MempoolInfo>>,
+    cur_idx: usize,
 }
 
 impl MempoolAllocator {
@@ -153,6 +157,7 @@ impl MempoolAllocator {
             let info_vec = vec![mempool_info];
             self.mempools.insert(obj_size, info_vec);
         }
+        self.cur_idx += 1;
         Ok(())
     }
 
@@ -160,7 +165,7 @@ impl MempoolAllocator {
     // given size
     // There could be multiple of the same size: for now, just iterate until we find one which has
     // available space
-    pub fn allocate(&self, alloc_size: usize, _alignment: usize) -> Result<*mut rte_mbuf> {
+    pub fn allocate(&mut self, alloc_size: usize, _alignment: usize) -> Result<*mut rte_mbuf> {
         let mut min_size = std::f64::INFINITY;
         for size in self.mempools.keys() {
             if alloc_size <= *size {
@@ -188,11 +193,38 @@ impl MempoolAllocator {
             }
         }
 
+        let mbuf = dpdk_call!(rte_pktmbuf_alloc(self.create_new_mempool(alloc_size)?));
+        if !mbuf.is_null() {
+            return Ok(mbuf);
+        }
         bail!(
-            "No space in mempools to allocate buffer of size {}",
-            alloc_size
+            "Mbuf is null!"
+            //"No space in mempools to allocate buffer of size {}",
         );
     }
+
+   fn create_new_mempool(&mut self, alloc_size: usize) -> Result<*mut rte_mempool> {
+     let log2 = (alloc_size as f64).log2().ceil() as u32;
+     let bytes = usize::pow(2, log2) as usize;
+     let num_values = 100; //TODO: MAGIC NUMBER ALERT!!!!!
+     let name : &str = "kv_bufpool";
+     let mempool_name = format!("{}_{}_{}", name, bytes, self.cur_idx);
+     self.cur_idx += 1;
+     //tracing::info!("Create new mempool with properties {}, {}, and {}", mempool_name, bytes, num_values);
+     let mempool = wrapper::create_mempool(
+            &mempool_name,
+            1,
+            bytes + super::dpdk_bindings::RTE_PKTMBUF_HEADROOM as usize,
+            249999, //TODO: MAGIC NUMBER ALERT!!!!!
+     ).wrap_err(format!(
+             "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}", 
+             name, bytes, num_values))?;
+     self.add_mempool(mempool, bytes)
+         .wrap_err(format!(
+                    "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}",
+                    name, bytes, num_values))?;
+     return Ok(mempool);
+   }
 
     pub fn recover_mbuf_ptr(&self, buf: &[u8]) -> Result<Option<(*mut rte_mbuf, u16)>> {
         for mempools in self.mempools.values() {

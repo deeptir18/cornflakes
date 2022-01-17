@@ -8,7 +8,7 @@ pub mod kv_messages {
     include!(concat!(env!("OUT_DIR"), "/kv_proto.rs"));
 }
 use super::{
-    ycsb_parser::YCSBRequest, KVSerializer, MsgType, SerializedRequestGenerator, ALIGN_SIZE,
+    ycsb_parser::YCSBRequest, twitter_parser::TwitterRequest, KVSerializer, MsgType, SerializedRequestGenerator, ALIGN_SIZE,
 };
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_libos::{CfBuf, Datapath, RcCornPtr, RcCornflake, ReceivedPkt};
@@ -355,4 +355,91 @@ where
         }
         Ok(output_vec.len())
     }
+
+    fn write_next_twitter_request<'a>(
+        &self,
+        mut buf: &mut [u8],
+        req: &mut TwitterRequest<'a>,
+    ) -> Result<usize> {
+        let mut output_vec = Vec::default();
+        let mut output_stream = CodedOutputStream::vec(&mut output_vec);
+        match req.get_type() {
+            MsgType::Get(size) => match size {
+                0 => {
+                    bail!("Msg size cannot be 0");
+                }
+                1 => {
+                    let (key, _val) = req.get_next_kv()?;
+                    let mut get_req = kv_messages::GetReq::new();
+                    get_req.set_id(req.get_id());
+                    get_req.set_key(key.to_string());
+                    get_req
+                        .write_to(&mut output_stream)
+                        .wrap_err("Failed to write into CodedOutputStream for GetReq proto")?;
+                }
+                x => {
+                    let mut request_keys: Vec<String> = Vec::with_capacity(x);
+                    while let Some((key, _val)) = req.next() {
+                        request_keys.push(key);
+                    }
+                    let mut getm_req = kv_messages::GetMReq::new();
+                    getm_req.set_id(req.get_id());
+                    let keys = getm_req.mut_keys();
+                    for i in 0..x {
+                        keys.push(request_keys[i].to_string());
+                    }
+                    tracing::debug!("Constructed get request with length {}", keys.len());
+                    tracing::debug!("Proto's keys length: {}", getm_req.get_keys().len());
+                    getm_req
+                        .write_to(&mut output_stream)
+                        .wrap_err("Failed to write into CodedOutputStream for GetMReq proto")?;
+                }
+            },
+            MsgType::Put(size) => match size {
+                0 => {
+                    bail!("Msg size cannot be 0");
+                }
+                1 => {
+                    let (key, val) = req.get_next_kv()?;
+                    let mut put_req = kv_messages::PutReq::new();
+                    put_req.set_id(req.get_id());
+                    put_req.set_key(key.to_string());
+                    put_req.set_val(val.as_bytes().to_vec());
+                    put_req
+                        .write_to(&mut output_stream)
+                        .wrap_err("Failed to write into CodedOutputStream for PutReq proto")?;
+                }
+                x => {
+                    let mut request_keys: Vec<String> = Vec::with_capacity(x);
+                    while let Some((key, _val)) = req.next() {
+                        request_keys.push(key);
+                    }
+                    let mut putm_req = kv_messages::PutMReq::new();
+                    putm_req.set_id(req.get_id());
+                    let keys = putm_req.mut_keys();
+                    for i in 0..x {
+                        keys.push(request_keys[i].to_string());
+                    }
+                    let vals = putm_req.mut_vals();
+                    for _i in 0..x {
+                        vals.push(req.get_val().as_bytes().to_vec());
+                    }
+                    putm_req
+                        .write_to(&mut output_stream)
+                        .wrap_err("Failed to write into CodedOutputStream for PutMReq proto")?;
+                }
+            },
+        }
+
+        // copy from output stream into buf
+        output_stream
+            .flush()
+            .wrap_err("Failed to flush output stream.")?;
+        tracing::debug!("Output vec len: {}", output_vec.len());
+        if buf.write(output_vec.as_slice())? != output_vec.len() {
+            bail!("Failed to copy from output vector into buffer");
+        }
+        Ok(output_vec.len())
+    }
+
 }

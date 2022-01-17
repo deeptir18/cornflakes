@@ -7,6 +7,9 @@ Cargo.lock
 **/results
 experiments/Rplots.pdf
 experiments/tmp.pdf
-
+**/dpdk
+**/flatbuffers
+**/capnproto-c++-0.9.1
+**/experiments/**
 experiments/main/__pycache__
 scatter-gather-bench/build/

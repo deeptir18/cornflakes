@@ -1,5 +1,6 @@
 use super::{
-    kv_capnp, ycsb_parser::YCSBRequest, KVSerializer, MsgType, SerializedRequestGenerator,
+    kv_capnp, ycsb_parser::YCSBRequest, twitter_parser::TwitterRequest,
+    KVSerializer, MsgType, SerializedRequestGenerator,
     ALIGN_SIZE,
 };
 use byteorder::{ByteOrder, LittleEndian};
@@ -455,4 +456,80 @@ where
             },
         }
     }
+
+    fn write_next_twitter_request<'a>(&self, buf: &mut [u8], req: &mut TwitterRequest<'a>) -> Result<usize> {
+        let mut builder = Builder::new_default();
+        match req.get_type() {
+            MsgType::Get(size) => match size {
+                0 => {
+                    bail!("Msg size cannot be 0");
+                }
+                1 => {
+                    let (key, _val) = req.get_next_kv()?;
+                    let mut get_req = builder.init_root::<kv_capnp::get_req::Builder>();
+                    get_req.set_key(&key);
+                    get_req.set_id(req.get_id());
+                    let (context, _num_segments) = fill_in_context(&builder);
+                    let written = copy_into_buf(buf, &context, &builder)?;
+                    return Ok(written);
+                }
+                x => {
+                    let mut request_keys: Vec<String> = Vec::with_capacity(x);
+                    while let Some((key, _val)) = req.next() {
+                        request_keys.push(key);
+                    }
+
+                    let mut getm_req = builder.init_root::<kv_capnp::get_m_req::Builder>();
+                    getm_req.set_id(req.get_id());
+                    let mut keys = getm_req.init_keys(x as u32);
+                    for i in 0..x {
+                        keys.set(i as u32, &request_keys[i]);
+                    }
+                    let (context, _num_segments) = fill_in_context(&builder);
+                    let written = copy_into_buf(buf, &context, &builder)?;
+                    return Ok(written);
+                }
+            },
+            MsgType::Put(size) => match size {
+                0 => {
+                    bail!("Msg size cannot be 0");
+                }
+                1 => {
+                    let (key, val) = req.get_next_kv()?;
+                    let mut put_req = builder.init_root::<kv_capnp::put_req::Builder>();
+                    put_req.set_key(&key);
+                    put_req.set_val(&val.as_bytes());
+                    put_req.set_id(req.get_id());
+                    let (context, _num_segments) = fill_in_context(&builder);
+                    let written = copy_into_buf(buf, &context, &builder)?;
+                    return Ok(written);
+                }
+                x => {
+                    let mut request_keys: Vec<String> = Vec::with_capacity(x);
+                    while let Some((key, _val)) = req.next() {
+                        request_keys.push(key);
+                    }
+
+                    let mut putm_req = builder.init_root::<kv_capnp::put_m_req::Builder>();
+                    putm_req.set_id(req.get_id());
+                    {
+                        let mut keys = putm_req.reborrow().init_keys(x as u32);
+                        for i in 0..x {
+                            keys.set(i as u32, &request_keys[i]);
+                        }
+                    }
+                    {
+                        let mut vals = putm_req.reborrow().init_vals(x as u32);
+                        for i in 0..x {
+                            vals.set(i as u32, &req.get_val().as_bytes());
+                        }
+                    }
+                    let (context, _num_segments) = fill_in_context(&builder);
+                    let written = copy_into_buf(buf, &context, &builder)?;
+                    return Ok(written);
+                }
+            },
+        }
+    }
+
 }
