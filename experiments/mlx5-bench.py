@@ -31,7 +31,8 @@ TOTAL_SIZES_TO_LOOP = [256, 4096]
 COMPLETE_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16, 32]
 
 # used for other experiment, which segment amounts to check
-SEGMENTS_TO_LOOP = [2, 8]
+# SEGMENTS_TO_LOOP = [2, 8]
+SEGMENTS_TO_LOOP = [1]
 
 NUM_THREADS = 4
 NUM_CLIENTS = 3
@@ -810,8 +811,8 @@ class ScatterGather(runner.Experiment):
         plotting_script = Path(cornflakes_repo) /\
             "experiments" / "plotting_scripts" / "sg_bench.R"
 
-        # metrics = ["median", "p99", "tput"]
-        metrics = ["tput"]
+        metrics = ["median", "p99", "tput"]
+        # metrics = ["tput"]
 
         if factor_name == "array_size" or factor_name == "recv_size":
             # run SUMMARY

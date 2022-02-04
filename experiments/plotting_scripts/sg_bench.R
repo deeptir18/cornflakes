@@ -75,8 +75,6 @@ d_postprocess$mmedian <- d_postprocess$mmedian / 1000.0
 d_postprocess$mediansd <- d_postprocess$mediansd / 1000.0
 d_postprocess$maxtputpps <- d_postprocess$maxtputpps / 1000000.0
 d_postprocess$maxtputppssd <- d_postprocess$maxtputppssd / 1000000.0
-d$offered_load_pps <- d$offered_load_pps / 1000000.0
-d$achieved_load_pps <- d$achieved_load_pps / 1000000.0
 
 labels <- c("scatter_gather" = "Scatter-Gather", "copy_each_segment" = "Copy Segments")
 
@@ -199,28 +197,28 @@ label_plot <- function(plot) {
 base_p99_tput_latency <- function(data, y_cutoff) {
     # print(data)
     plot <- ggplot(data,
-                    aes(x = offered_load_pps,
+                    aes(x = machieved_load_pps,
                         y = mp99,
                         color = system_name,
                         shape = system_name,
                         ymin = mp99 - p99sd,
                         ymax = mp99 + p99sd)) +
                 coord_cartesian(ylim = c(0, y_cutoff), expand = FALSE) +
-    labs(x = "Throughput (100K Requests/sec)", y = "p99 Latency (µs)")
+    labs(x = "Achieved Load (100K Requests/sec)", y = "p99 Latency (µs)")
     return(plot)
 }
 
 base_median_tput_latency <- function(data, y_cutoff) {
     # print(data)
     plot <- ggplot(data,
-                    aes(x = offered_load_pps,
+                    aes(x = machieved_load_pps,
                         y = mmedian,
                         color = system_name,
                         shape = system_name,
                         ymin = mmedian - mediansd,
                         ymax = mmedian + mediansd)) +
                 coord_cartesian(ylim = c(0, y_cutoff), expand = FALSE) +
-    labs(x = "Throughput (100K Requests/sec)", y = "Median Latency (µs)")
+    labs(x = "Achieved Load (100K Requests/sec)", y = "Median Latency (µs)")
     return(plot)
 
 }
