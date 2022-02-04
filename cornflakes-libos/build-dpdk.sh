@@ -7,7 +7,7 @@ pushd $DPDK
 INSTALL_DIR="$DPDK/install"
 meson --prefix=$INSTALL_DIR build 
 pushd build
-ninja
+EXTRA_CFLAGS=-mno-rdrnd ninja
 ninja install
 popd
 popd

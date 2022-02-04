@@ -5,10 +5,12 @@
 //!  1. An interface for datapaths to implement.
 //!  2. DPDK bindings, which are used to implement the DPDK datapath.
 //!  3. A DPDK based datapath.
+pub mod datapath;
 pub mod dpdk_bindings;
 pub mod dpdk_libos;
 pub mod loadgen;
 pub mod mem;
+pub mod serialize;
 pub mod timing;
 pub mod utils;
 
@@ -34,6 +36,7 @@ const PROFILER_DEPTH: usize = 10;
 
 pub static mut USING_REF_COUNTING: bool = true;
 pub type MsgID = u32;
+pub type ConnID = usize;
 
 pub fn turn_off_ref_counting() {
     unsafe {
@@ -285,6 +288,103 @@ impl<'registered, 'normal> Cornflake<'registered, 'normal> {
             self.entries.len()
         );
         Ok(&self.entries[idx])
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Default)]
+pub struct Sge<'a> {
+    addr: &'a [u8],
+}
+
+#[derive(Debug, PartialEq, Eq, Default)]
+pub struct Sga<'a> {
+    entries: Vec<Sge<'a>>,
+}
+
+impl<'a> Sge<'a> {
+    pub fn new(addr: &'a [u8]) -> Self {
+        Sge { addr: addr }
+    }
+
+    pub fn addr(&self) -> &'a [u8] {
+        self.addr
+    }
+}
+
+impl<'a> Sga<'a> {
+    pub fn with_capacity(size: usize) -> Self {
+        Sga {
+            entries: Vec::with_capacity(size),
+        }
+    }
+
+    pub fn add_entry(&mut self, entry: Sge<'a>) {
+        self.entries.push(entry);
+    }
+
+    pub fn replace(&mut self, idx: usize, entry: Sge<'a>) {
+        self.entries[idx] = entry;
+    }
+
+    pub fn get(&self, idx: usize) -> &Sge<'a> {
+        &self.entries[idx]
+    }
+
+    pub fn iter(&self) -> Iter<Sge<'a>> {
+        self.entries.iter()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RcSge<'a, D>
+where
+    D: datapath::Datapath,
+{
+    RawRef(&'a [u8]),
+    RefCounted(D::DatapathMetadata),
+}
+
+impl<'a, D> Default for RcSge<'a, D>
+where
+    D: datapath::Datapath,
+{
+    fn default() -> Self {
+        RcSge::RawRef(&[])
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Default)]
+pub struct RcSga<'a, D>
+where
+    D: datapath::Datapath,
+{
+    entries: Vec<RcSge<'a, D>>,
+}
+
+impl<'a, D> RcSga<'a, D>
+where
+    D: datapath::Datapath,
+{
+    pub fn with_capacity(num_entries: usize) -> Self {
+        RcSga {
+            entries: Vec::with_capacity(num_entries),
+        }
+    }
+
+    pub fn add_entry(&mut self, entry: RcSge<'a, D>) {
+        self.entries.push(entry);
+    }
+
+    pub fn replace(&mut self, idx: usize, entry: RcSge<'a, D>) {
+        self.entries[idx] = entry;
+    }
+
+    pub fn get(&self, idx: usize) -> &RcSge<'a, D> {
+        &self.entries[idx]
+    }
+
+    pub fn iter(&self) -> Iter<RcSge<'a, D>> {
+        self.entries.iter()
     }
 }
 
@@ -829,6 +929,44 @@ where
 /// Datapaths must be able to send a receive packets,
 /// as well as optionally keep track of per-packet timeouts.
 pub trait Datapath {
+    // Performance debugging of why ECHO is SOOOO much better:
+    //  - It doesn't need to allocate any outgoing buffer (just flips buffer on incoming packet)
+    //  - Experiment:
+    //      - Echo of incoming packet with flip of header vs. allocating + copying (1 copy manual)
+    //      - This is a separate issue from just writing a new datapath
+    // We want to add:
+    // ``serialize_and_send``: takes an object that implements some serialization trait (?)
+    // serializes it into a datapath packet (whatever that looks like) and send it
+    // We can try two modes for the applications:
+    //      - inlining header into the PCIe request (not possible with some datapaths)
+    //      - use 2 mbufs for header and non-header when using zero-copy (or 1 mbuf with data
+    //      copied in)
+    //  Is there some overhead from parsing addr into struct and responding?
+    //          - Can we pass the incoming packet in as "reference" for the address buffer?
+    //          - This probably isn't adding that much overhead?
+    //  Do we need to ALLOCATE any outgoing buffer -- for the inlining case -- we don't need to
+    //  allocate any buffer at all and can directly write in the header into the
+    //  What does the object need to implement?
+    //      - Either: processes zero-copy because the enum expicitly says if it's zero-copy or not
+    //      - Or: just has a raw address -- and the datapath figures out how to increment the
+    //      reference count once?
+    //          - For "set_val" do we need the length of the field?
+    //          - For "get_val" --> should the reference count of the object increase? YES: this is
+    //          "correctness" -- so perhaps the fact that the metadata is just laid out separately
+    //          / contiguously from the data is helpful
+    //          - So the API NEEDS to change in one of two ways:
+    //              - set_field() either needs to explicitly pass in the field and the handle to
+    //              the datapath object where things will be sent -- so the metadata can be queried
+    //              - OR set_field() explicitly passes in either a reference or a pointer to
+    //              PinnedMetadata
+    //          - But why is serialize and send optimal?
+    //              - The datapath can make all sorts of optimizations:
+    //                  - Directly write in the object header either into an mbuf or into the pci
+    //                  request if inlined (don't need to separate allocate a vec and write into
+    //                  the vec, which is copied into the mbuf
+    //  So the object needs to implement:
+    // pub fn serialize_and_send(&mut self, object: impl some trait, addr: outgoing address to
+    // send)
     /// Base datapath buffer type.
     type DatapathPkt: AsRef<[u8]>
         + AsMut<[u8]>

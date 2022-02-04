@@ -6,6 +6,7 @@ members = ["cornflakes-codegen",
             "cornflakes-utils",
             "data-structure-query",
             "kv-store",
+            "mlx5-datapath",
             "kv-store-ds"]
             #"data-shuffle"]
 
