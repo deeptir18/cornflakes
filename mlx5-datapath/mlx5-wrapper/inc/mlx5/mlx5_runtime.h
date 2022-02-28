@@ -78,9 +78,22 @@ int mlx5_gather_rx(struct mlx5_rxq *v,
                     
 
 /* 
+ * Refills the rxqueue by allocating new buffers.
+ * Arguments:
+ * @v - Receive queue
+ * @rx_cnt - Number of packets to reallocate / fill
+ * @rx_mempool - Receive metadata and data mempool to allocate from.
+ *
+ * Returns:
+ * 0 on success, error if error ocurred.
+ * */
+int mlx5_refill_rxqueue(struct mlx5_rxq *v, size_t rx_cnt, struct registered_mempool *rx_mempool);
+/* 
  * Starts the next transmission by writing in the header segment.
  * Args:
  * v - transmission queue
+ * num_wqes - Number of wqes required to transmit this inline length and number
+ * of segments.
  * inline_len - Amount of data to inline in this segment
  * num_segs - Number of non-contiguous segments to transmit
  * tx_flags - Flags to set in cs_flags field in ethernet segment
@@ -95,6 +108,7 @@ int mlx5_gather_rx(struct mlx5_rxq *v,
  *
  * */
 struct mlx5_wqe_ctrl_seg *fill_in_hdr_segment(struct mlx5_txq *v,
+                            size_t num_wqes,
                             size_t inline_len,
                             size_t num_segs,
                             int tx_flags);
@@ -216,6 +230,7 @@ struct mlx5_wqe_data_seg *add_dpseg(struct mlx5_txq *v,
                 size_t data_off,
                 size_t data_len);
 
+
 /* 
  * Records completion info in completion ring buffer.
  * Arguments:
@@ -231,13 +246,24 @@ struct transmission_info *add_completion_info(struct mlx5_txq *v,
                 struct mbuf *m);
 
 /* 
- * Refills the rxqueue by allocating new buffers.
+ * finish_one_transmission - Finishes a single transmission.
  * Arguments:
- * @v - Receive queue
- * @rx_cnt - Number of packets to reallocate / fill
- * @rx_mempool - Receive metadata and data mempool to allocate from.
- *
- * Returns:
- * 0 on success, error if error ocurred.
+ * @v - transmission queue
+ * @inline_len - Amount of data to be inlined.
+ * @num_segs - Number of data segments.
  * */
-int mlx5_refill_rxqueue(struct mlx5_rxq *v, size_t rx_cnt, struct registered_mempool *rx_mempool);
+int finish_single_transmission(struct mlx5_txq *v,
+                                size_t num_wqes);
+
+/* 
+ * post_transmissions - Rings doorbell and posts new transmissions for the nic
+ * to transmit.
+ * Arguments:
+ * @v - transmission queue.
+ * @first_ctrl - Control segment of the first transmission. Possibly required
+ * for bluefield register.
+ * */
+int post_transmissions(struct mlx5_txq *v,
+                        struct mlx5_wqe_ctrl_seg *first_ctrl);
+                        
+

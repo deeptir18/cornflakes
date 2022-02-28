@@ -126,7 +126,43 @@ int mlx5_gather_rx(struct mlx5_rxq *v,
 }
                     
 
+int mlx5_refill_rxqueue(struct mlx5_rxq *v, 
+                            size_t rx_cnt, 
+                            struct registered_mempool *rx_mempool) {
+    unsigned int i;
+    uint32_t index;
+    struct mlx5_wqe_data_seg *seg;
+
+    struct mlx5dv_rwq *wq = &v->rx_wq_dv;
+
+    NETPERF_ASSERT(wraps_lte(rx_cnt + v->wq_head, v->consumer_idx + wq->wqe_cnt), "Wraparound assertion failed");
+    
+    for (i = 0; i < rx_cnt; i++) {
+        // allocate data mbuf
+        struct mbuf *metadata_mbuf = allocate_data_and_metadata_mbuf(rx_mempool);
+        struct ibv_mr *mr = rx_mempool->mr;
+
+        if (!metadata_mbuf) {
+            NETPERF_WARN("Not able to allocate rx mbuf to refill pool");
+            return -ENOMEM;
+        }
+
+        index = POW2MOD(v->wq_head, wq->wqe_cnt);
+        seg = wq->buf + (index << v->rx_wq_log_stride);
+        seg->lkey = htobe32(mr->lkey);
+        seg->byte_count = htobe32(metadata_mbuf->data_buf_len);
+        seg->addr = htobe64((unsigned long)metadata_mbuf->buf_addr);
+        v->buffers[index] = metadata_mbuf;
+        v->wq_head++;
+    }
+
+    udma_to_device_barrier();
+    wq->dbrec[0] = htobe32(v->wq_head & 0xffff); 
+    return 0;
+}
+
 struct mlx5_wqe_ctrl_seg *fill_in_hdr_segment(struct mlx5_txq *v,
+                                                size_t num_wqes,
                                                 size_t inline_len,
                                                 size_t num_segs,
                                                 int tx_flags) {
@@ -143,7 +179,6 @@ struct mlx5_wqe_ctrl_seg *fill_in_hdr_segment(struct mlx5_txq *v,
     
     current_segment_ptr = get_work_request(v, current_idx);
     current_completion_info = get_completion_segment(v, current_idx);
-    size_t num_wqes = num_wqes_required(inline_len, num_segs);
     current_completion_info->info.metadata.num_wqes = (uint32_t)num_wqes;
     current_completion_info->info.metadata.num_mbufs = (uint32_t)num_segs;
 
@@ -151,7 +186,7 @@ struct mlx5_wqe_ctrl_seg *fill_in_hdr_segment(struct mlx5_txq *v,
     *(uint32_t *)(current_segment_ptr + 8) = 0;
     ctrl->imm = 0;
     ctrl->fm_ce_se = MLX5_WQE_CTRL_CQ_UPDATE;
-    ctrl->qpn_ds = htobe32((num_wqes_required(inline_len, num_segs)) | (v->tx_qp->qp_num << 8) );
+    ctrl->qpn_ds = htobe32( (num_wqes) | (v->tx_qp->qp_num << 8) );
     ctrl->opmod_idx_opcode = htobe32( ((v->sq_head * 0xffff) << 8) | MLX5_OPCODE_SEND);
     current_segment_ptr += sizeof(ctrl);
     
@@ -205,39 +240,27 @@ struct transmission_info *add_completion_info(struct mlx5_txq *v,
     return incr_transmission_info(v, transmission_info);
 }
 
-// TODO: finish this
-int mlx5_refill_rxqueue(struct mlx5_rxq *v, 
-                            size_t rx_cnt, 
-                            struct registered_mempool *rx_mempool) {
-    unsigned int i;
-    uint32_t index;
-    struct mlx5_wqe_data_seg *seg;
+int finish_single_transmission(struct mlx5_txq *v,
+                                size_t num_wqes) {
+    v->sq_head += num_wqes;
+    return 0;
+}
 
-    struct mlx5dv_rwq *wq = &v->rx_wq_dv;
-
-    NETPERF_ASSERT(wraps_lte(rx_cnt + v->wq_head, v->consumer_idx + wq->wqe_cnt), "Wraparound assertion failed");
-    
-    for (i = 0; i < rx_cnt; i++) {
-        // allocate data mbuf
-        struct mbuf *metadata_mbuf = allocate_data_and_metadata_mbuf(rx_mempool);
-        struct ibv_mr *mr = rx_mempool->mr;
-
-        if (!metadata_mbuf) {
-            NETPERF_WARN("Not able to allocate rx mbuf to refill pool");
-            return -ENOMEM;
-        }
-
-        index = POW2MOD(v->wq_head, wq->wqe_cnt);
-        seg = wq->buf + (index << v->rx_wq_log_stride);
-        seg->lkey = htobe32(mr->lkey);
-        seg->byte_count = htobe32(metadata_mbuf->data_buf_len);
-        seg->addr = htobe64((unsigned long)metadata_mbuf->buf_addr);
-        v->buffers[index] = metadata_mbuf;
-        v->wq_head++;
-    }
-
+int post_transmissions(struct mlx5_txq *v,
+                        struct mlx5_wqe_ctrl_seg *first_ctrl) {
+    // post next unused wqe to doorbell
     udma_to_device_barrier();
-    wq->dbrec[0] = htobe32(v->wq_head & 0xffff); 
+    v->tx_qp_dv.dbrec[MLX5_SND_DBR] = htobe32(v->sq_head & 0xffff);
+
+    // blue field doorbell
+    mmio_wc_start();
+    mmio_write64_be(v->tx_qp_dv.bf.reg, *(__be64 *)first_ctrl);
+    mmio_flush_writes();
+
+    // check for completions
+    if (nr_inflight_tx(v) >= SQ_CLEAN_THRESH) {
+        int compl = mlx5_process_completions(v, SQ_CLEAN_MAX);
+    }
     return 0;
 }
 
