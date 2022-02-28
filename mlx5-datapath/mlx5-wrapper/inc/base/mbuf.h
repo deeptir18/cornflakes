@@ -109,7 +109,10 @@ static inline void mbuf_free(struct mbuf *m) {
     // 1. There is a data pointer.
     // 2. This is NOT an indirect mbuf.
     if (m->data_mempool != NULL && m->indirect_mbuf_ptr == NULL) {
+        // calculate the index this mbuf is in the mempool
+        int index = mempool_find_index(m->data_mempool, m->buf_addr);
         mempool_free(m->data_mempool, m->buf_addr);
+        mempool_free_by_idx(m->metadata_mempool, (void *)m, (size_t)index);
         mempool_free(m->metadata_mempool, (void *)m);
     } else {
         mempool_free(m->metadata_mempool, (void *)m);

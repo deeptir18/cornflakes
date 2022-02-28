@@ -65,6 +65,22 @@ static inline void deregister_mempool(struct mempool *mempool) {
 }
 
 /**
+ * mempool_find_index - Finds the allocated index of an item from the pool.
+ * @m: the memory pool
+ * @item: the object to find the index of.
+ *
+ * Returns index of item; -1 if item not within bounds of pool.
+ */
+static inline int mempool_find_index(struct mempool *m, void *item) {
+    if ((char *)item < (char *)m->buf && (char *)item >= ((char *)m->buf + m->len)) {
+        return -1;
+    }
+
+    // TODO: check that item is aligned?
+    return (int)((char *)item - (char *)m->buf) / m->item_len;
+}
+
+/**
  * mempool_alloc - allocates an item from the pool
  * @m: the memory pool to allocate from
  *
@@ -80,6 +96,22 @@ static inline void *mempool_alloc(struct mempool *m)
 	return item;
 }
 
+static inline void *mempool_alloc_by_idx(struct mempool *m, size_t idx)
+{
+    void *item;
+    if (unlikely(m->allocated >= m->capacity)) {
+        return NULL;
+    }
+    if (idx >= m->capacity) {
+        return NULL;
+    }
+    item = m->free_items[idx];
+    m->free_items[idx] = NULL;
+    m->allocated++;
+	__mempool_alloc_debug_check(m, item);
+    return item;
+}
+
 /* 
  * mempool_free - returns an item to the pool
  * @m: the memory pool the item was allocated from
@@ -93,6 +125,19 @@ static inline void mempool_free(struct mempool *m, void *item) {
     }
     m->free_items[--m->allocated] = item;
     NETPERF_ASSERT(m->allocated <= m->capacity, "Overflow in mempool"); /* ensure no overflow */
+}
+
+static inline void mempool_free_by_idx(struct mempool *m, void *item, size_t idx) {
+	__mempool_free_debug_check(m, item);
+    if (m->allocated == 0) {
+        NETPERF_WARN("Freeing item %p item back into mempool %p with mem allocated 0.\n", m, item);
+        return;
+    }
+    NETPERF_ASSERT(idx <= m->capacity, "Idx out of bounds");
+    m->free_items[idx] = item;
+    m->allocated--;
+    NETPERF_ASSERT(m->allocated <= m->capacity, "Overflow in mempool"); /* Ensure no overflow */
+
 }
 
 extern int mempool_create(struct mempool *m,

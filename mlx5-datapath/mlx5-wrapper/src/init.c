@@ -42,6 +42,11 @@ void free_global_context(struct mlx5_global_context *context) {
     free(context);
 }
 
+struct mlx5_per_thread_context *get_per_thread_context(struct mlx5_global_context *context, size_t idx) {
+    NETPERF_ASSERT(idx < context->num_threads, "Accessing thread greater than total allocated threads.");
+    return context->thread_contexts[idx];
+}
+
 struct mbuf *allocate_data_and_metadata_mbuf(struct registered_mempool *mempool) {
     void *data = mempool_alloc(&mempool->data_mempool);
     if (data == NULL) {
@@ -49,8 +54,8 @@ struct mbuf *allocate_data_and_metadata_mbuf(struct registered_mempool *mempool)
         NETPERF_WARN("Could not allocate data mbuf");
         return NULL;
     }
-
-    struct mbuf *metadata = (struct mbuf *)(mempool_alloc(&mempool->metadata_mempool));
+    int index = mempool_find_index(&mempool->data_mempool, data);
+    struct mbuf *metadata = (struct mbuf *)(mempool_alloc_by_idx(&mempool->metadata_mempool, (size_t)index));
     if (metadata == NULL) {
         mempool_free(&mempool->data_mempool, data);
         NETPERF_WARN("Could not allocate metadata mbuf");
@@ -66,29 +71,30 @@ struct mbuf *allocate_data_and_metadata_mbuf(struct registered_mempool *mempool)
 int allocate_mempool(struct registered_mempool *mempool,
                     size_t item_len,
                     size_t num_items,
-                    size_t pgsize) {
+                    size_t data_pgsize,
+                    size_t metadata_pgsize) {
     int ret = 0;
     size_t total_data_len = item_len * num_items;
-    if (total_data_len % pgsize != 0) {
-        NETPERF_ERROR("Invalid params to create mempool: (%lu x %lu) not aligned to pgsize %lu", item_len, num_items, pgsize);           
+    if (total_data_len % data_pgsize != 0) {
+        NETPERF_ERROR("Invalid params to create mempool: (%lu x %lu) not aligned to pgsize %lu", item_len, num_items, data_pgsize);           
         return -EINVAL;
     }
 
     size_t total_metadata_len = sizeof(struct mbuf) * num_items;
-    if (total_metadata_len % pgsize != 0) {
-        NETPERF_ERROR("Invalid params to create metadata mempool: (size of mbuf (%lu) x %lu) not aligned to pgsize %lu", sizeof(struct mbuf), num_items, pgsize);
+    if (total_metadata_len % metadata_pgsize != 0) {
+        NETPERF_ERROR("Invalid params to create metadata mempool: (size of mbuf (%lu) x %lu) not aligned to pgsize %lu", sizeof(struct mbuf), num_items,  metadata_pgsize);
         return -EINVAL;
     }
 
     // create the data mempool
-    ret = mempool_create(&mempool->data_mempool, total_data_len, pgsize, item_len);
+    ret = mempool_create(&mempool->data_mempool, total_data_len, data_pgsize, item_len);
     if (ret != 0) {
         NETPERF_ERROR("Data Mempool create failed: %s", strerror(-ret));
         return ret;
     }
 
     // create metadata pool
-    ret = mempool_create(&mempool->metadata_mempool, total_metadata_len, pgsize, sizeof(struct mbuf));
+    ret = mempool_create(&mempool->metadata_mempool, total_metadata_len, metadata_pgsize, sizeof(struct mbuf));
     if (ret != 0) {
         NETPERF_ERROR("Metadata mempool create failed: %s", strerror(-ret));
         RETURN_ON_ERR(deregister_and_free_register_registered_mempool(mempool), "Dereg and free of mempool failed");
@@ -115,12 +121,13 @@ int create_and_register_mempool(struct mlx5_global_context *context,
                                     struct registered_mempool *mempool,
                                     size_t item_len,
                                     size_t num_items,
-                                    size_t pgsize,
+                                    size_t data_pgsize,
+                                    size_t metadata_pgsize,
                                     int registry_flags) {
     int ret = 0;
 
     // allocate data and metadata portions of mempool
-    ret = allocate_mempool(mempool, item_len, num_items, pgsize);
+    ret = allocate_mempool(mempool, item_len, num_items, data_pgsize, metadata_pgsize);
     if (ret != 0) {
         NETPERF_ERROR("Mempool creation failed: %s", strerror(-ret));
         return ret;
@@ -174,12 +181,17 @@ int deregister_and_free_registered_mempool(struct registered_mempool *mempool) {
     return 0;
 }
 
-int init_rx_mempools(struct mlx5_global_context *context, size_t item_len, size_t num_items, size_t pgsize, int registry_flags) {
+int init_rx_mempools(struct mlx5_global_context *context, 
+                        size_t item_len, 
+                        size_t num_items, 
+                        size_t data_pgsize, 
+                        size_t metadata_pgsize, 
+                        int registry_flags) {
     int ret = 0;
     for (int i = 0; i < context->num_threads; i++) {
         struct mlx5_per_thread_context *thread_context = get_per_thread_context(context, i);
         struct registered_mempool *mempool = &thread_context->rx_mempool;
-        ret = create_and_register_mempool(context, mempool, item_len, num_items, pgsize, registry_flags);
+        ret = create_and_register_mempool(context, mempool, item_len, num_items, data_pgsize, metadata_pgsize, registry_flags);
         if (ret != 0) {
             NETPERF_ERROR("Creation of rx mempool for thread %d failed: %s", i, strerror(-ret));
             RETURN_ON_ERR(free_rx_mempools(context, i), "Cleanup of rx mempools failed");
@@ -223,14 +235,13 @@ int init_external_mempools(struct mlx5_global_context *context, size_t num_pages
     return 0;
 }
 
-struct registered_mempool *alloc_tx_pool(struct mlx5_global_context *context,
-                                                size_t idx,
+struct registered_mempool *alloc_tx_pool(struct mlx5_per_thread_context *per_thread_context,
                                                 size_t item_len,
-                                                size_t num_pages,
-                                                size_t pgsize) {
+                                                size_t num_items,
+                                                size_t data_pgsize,
+                                                size_t metadata_pgsize) {
 
     int ret = 0;
-    struct mlx5_per_thread_context *per_thread_context = get_per_thread_context(context, idx);
     struct registered_mempool *mempool = (struct registered_mempool *)(malloc(sizeof(struct registered_mempool)));
     if (mempool == NULL) {
         NETPERF_WARN("no memory to malloc registered mempool node");
@@ -238,7 +249,7 @@ struct registered_mempool *alloc_tx_pool(struct mlx5_global_context *context,
         return NULL;
     }
 
-    ret = allocate_mempool(mempool, item_len, num_pages, pgsize);
+    ret = allocate_mempool(mempool, item_len, num_items, data_pgsize, metadata_pgsize);
     if (ret != 0) {
         NETPERF_WARN("Failed to allocate mempool: %s", strerror(-ret));
         errno = ret;
@@ -258,21 +269,21 @@ struct registered_mempool *alloc_tx_pool(struct mlx5_global_context *context,
     return mempool;
 }
 
-struct registered_mempool *alloc_and_register_tx_pool(struct mlx5_global_context *context, 
-                                                        size_t idx,
+struct registered_mempool *alloc_and_register_tx_pool(struct mlx5_per_thread_context *per_thread_context,
                                                         size_t item_len,
-                                                        size_t num_pages,
-                                                        size_t pgsize,
+                                                        size_t num_items,
+                                                        size_t data_pgsize,
+                                                        size_t metadata_pgsize,
                                                         int registry_flags) {
     int ret = 0;
-    struct registered_mempool *mempool = alloc_tx_pool(context, idx, item_len, num_pages, pgsize);
+    struct registered_mempool *mempool = alloc_tx_pool(per_thread_context, item_len, num_items, data_pgsize, metadata_pgsize);
     if (mempool == NULL) {
         NETPERF_WARN("Could not allocate registered mempool: %s", strerror(-errno));
         return NULL;
     }
 
     // register this newly created mempool
-    ret = register_memory_pool(context, mempool, registry_flags);
+    ret = register_memory_pool(per_thread_context->global_context, mempool, registry_flags);
     if (ret != 0) {
         NETPERF_WARN("Failed to register tx memory pool: %s", strerror(-ret));
         errno = ret;
@@ -281,9 +292,7 @@ struct registered_mempool *alloc_and_register_tx_pool(struct mlx5_global_context
     return mempool;
 }
 
-int deallocate_tx_pool(struct mlx5_global_context *context, size_t idx, struct registered_mempool *mempool) {
-    // first, try to find this mempool in the linked list
-    struct mlx5_per_thread_context *per_thread_context = get_per_thread_context(context, idx);
+int deallocate_tx_pool(struct mlx5_per_thread_context *per_thread_context, struct registered_mempool *mempool) {
     struct registered_mempool *tx_mempool = per_thread_context->tx_mempools;
     struct registered_mempool *prev = NULL;
     while (tx_mempool != NULL) {
@@ -299,7 +308,7 @@ int deallocate_tx_pool(struct mlx5_global_context *context, size_t idx, struct r
         }
     }
 
-    NETPERF_WARN("Could not find input registered_mempool in tx mempool linked list for thread %lu", idx);
+    NETPERF_WARN("Could not find input registered_mempool in tx mempool linked list for thread %lu", per_thread_context->thread_id);
     return -EINVAL;
     
 }
@@ -331,6 +340,7 @@ int teardown(struct mlx5_per_thread_context *per_thread_context) {
 
     // free the buffers allocated in the txq and rxq
     free((&per_thread_context->txq)->buffers);
+    free((&per_thread_context->txq)->pending_transmissions);
     free((&per_thread_context->rxq)->buffers);
 
     return 0;
@@ -756,6 +766,15 @@ int mlx5_init_txq(struct mlx5_per_thread_context *thread_context) {
     v->buffers = aligned_alloc(CACHE_LINE_SIZE, v->tx_qp_dv.sq.wqe_cnt * sizeof(*v->buffers));
     if (!v->buffers) {
         NETPERF_WARN("Could not alloc tx wqe buffers");
+        return -ENOMEM;
+    }
+
+    // completion information ring buffer. should be same size as the ring
+    // buffer.
+    v->pending_transmissions = aligned_alloc(CACHE_LINE_SIZE, v->tx_qp_dv.sq.wqe_cnt * v->tx_qp_dv.sq.stride);
+
+    if (!v->pending_transmissions) {
+        NETPERF_WARN("Could not alloc completion info array");
         return -ENOMEM;
     }
 

@@ -1,14 +1,34 @@
 #include <base/mempool.h>
 #include <base/mbuf.h>
 #include <base/rte_memcpy.h>
+#include <base/time.h>
 #include <mlx5/mlx5.h>
+#include <errno.h>
 
-static inline void *alloc_buf_(struct mempool *mempool) {
-    return (void *)(mempool_alloc(mempool));
+static inline uint64_t cycles_to_ns_(uint64_t a) {
+    return cycles_to_us(a);
 }
 
-static inline struct mbuf *alloc_metadata_(struct mempool *mempool) {
-    return (struct mbuf *)(mempool_alloc(mempool));
+static inline uint64_t current_cycles_() {
+    return microcycles();
+}
+
+static inline char *strerror_(int no) {
+    return strerror(no);
+}
+
+static inline void *alloc_data_buf_(struct registered_mempool *mempool) {
+    return (void *)(mempool_alloc(&(mempool->data_mempool)));
+}
+
+static inline struct mbuf *alloc_metadata_(struct registered_mempool *mempool, void *data_buf) {
+    int index = mempool_find_index(&(mempool->data_mempool), data_buf);
+    if (index == -1) {
+        return NULL;
+    } else {
+        return (struct mbuf *)(mempool_alloc_by_idx(&(mempool->metadata_mempool), (size_t)index));
+    }
+    
 }
 
 static inline void init_metadata_(struct mbuf *m, void *buf, struct mempool *data_mempool, struct mempool *metadata_mempool, size_t data_len, size_t offset) {
@@ -46,6 +66,14 @@ static inline void mbuf_free_(struct mbuf *mbuf) {
     mbuf_free(mbuf);
 }
 
+static inline void mempool_free_(void *item, struct mempool *mempool) {
+    mempool_free(mempool, item);
+}
+
 static inline struct mbuf *mbuf_at_index_(struct mempool *mempool, size_t index) {
     return (struct mbuf *)((char *)mempool->buf + index * mempool->item_len);
+}
+
+static inline void rte_memcpy_(void *dst, const void *src, size_t n) {
+    rte_memcpy(dst, src, n);
 }

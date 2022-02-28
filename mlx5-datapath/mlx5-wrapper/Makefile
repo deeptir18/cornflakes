@@ -27,10 +27,12 @@ MLX5_LIBS +=  -lmlx5 -libverbs -lrdma_util -lccan -lnl-3 -lnl-route-3  -lpthread
 ifeq ($(CONFIG_MLX5),y)
 CFLAGS += -DMLX5
 LDFLAGS_STATIC += $(MLX5_LIBS)
+LDFLAGS_SHARED += $(MLX5_LIBS)
 INC += $(MLX5_INC)
 endif
 
 LDFLAGS_STATIC += -lstdc++
+LDFLAGS_SHARED += -ldstc++
 
 # library name
 LIB = libmlx5wrapper
@@ -43,8 +45,11 @@ all: static
 
 static: build $(LIB).a
 
-$(LIB).a: init.o build/mempool.o build/mem.o
-	ar rcs build/$@ build/$^
+$(LIB).a: runtime.o init.o mempool.o mem.o
+	ar rcs build/$@ build/runtime.o build/init.o build/mempool.o build/mem.o
+
+runtime.o:
+	$(CC) $(CFLAGS) src/runtime.c -c -o build/$@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_STATIC)
 
 init.o:
 	$(CC) $(CFLAGS) src/init.c -c -o build/$@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_STATIC)

@@ -1,14 +1,14 @@
 use super::{serialize::Serializable, utils::AddressInfo, ConnID, MsgID, RcSga, Sga};
-use color_eyre::eyre::{ensure, Result, WrapErr};
+use color_eyre::eyre::Result;
 use std::{io::Write, net::Ipv4Addr, time::Duration};
 
 pub struct ReceivedPkt<D>
 where
     D: Datapath,
 {
-    pkts: Vec<D::DatapathMetadata>,
-    id: MsgID,
-    conn: ConnID,
+    _pkts: Vec<D::DatapathMetadata>,
+    _id: MsgID,
+    _conn: ConnID,
 }
 
 impl<D> ReceivedPkt<D>
@@ -17,9 +17,9 @@ where
 {
     pub fn new(pkts: Vec<D::DatapathMetadata>, id: MsgID, conn_id: ConnID) -> Self {
         ReceivedPkt {
-            pkts: pkts,
-            id: id,
-            conn: conn_id,
+            _pkts: pkts,
+            _id: id,
+            _conn: conn_id,
         }
     }
 }
@@ -61,7 +61,12 @@ pub trait Datapath {
     /// Given a remote IP address, compute a source IP and port for each queue
     /// Such that receiving a packet with that IP and port as the destination,
     /// and remote_ip as source, will be hashed to that queue ID.
-    fn compute_affinity(num_queues: usize, remote_ip: Ipv4Addr) -> Result<Vec<AddressInfo>>;
+    fn compute_affinity(
+        datapath_params: &Self::DatapathSpecificParams,
+        num_queues: usize,
+        remote_ip: Ipv4Addr,
+        app_mode: cornflakes_utils::AppMode,
+    ) -> Result<Vec<AddressInfo>>;
 
     /// Any global initialization required by this datapath.
     /// Initialization might include: memory registration per queue,
@@ -71,7 +76,8 @@ pub trait Datapath {
     /// @datapath_params: Parsed datapath parameters.
     fn global_init(
         num_queues: usize,
-        datapath_params: Self::DatapathSpecificParams,
+        datapath_params: &mut Self::DatapathSpecificParams,
+        addresses: Vec<AddressInfo>,
     ) -> Result<(Self::GlobalContext, Vec<Self::PerThreadContext>)>;
 
     /// Any global teardown required by this datapath.
@@ -83,7 +89,12 @@ pub trait Datapath {
     /// Args:
     /// @config_file: Configuration information in YAML format.
     /// @context: Specific, per thread context for this queue.
-    fn per_thread_init(context: Self::PerThreadContext) -> Result<Self>
+    fn per_thread_init(
+        datapath_params: Self::DatapathSpecificParams,
+        context: Self::PerThreadContext,
+        mode: cornflakes_utils::AppMode,
+        use_scatter_gather: bool,
+    ) -> Result<Self>
     where
         Self: Sized;
 
@@ -143,23 +154,23 @@ pub trait Datapath {
     /// Args:
     /// @size: minimum size of buffer to be allocated.
     /// @alignment: alignment size to align up to.
-    fn allocate(&self, size: usize, alignment: usize) -> Result<Option<Self::DatapathBuffer>>;
+    fn allocate(&mut self, size: usize, alignment: usize) -> Result<Option<Self::DatapathBuffer>>;
 
     /// Consume a datapath buffer and returns a metadata object that owns the underlying
     /// buffer.
     /// Args:
     /// @buf: Datapath buffer object.
-    fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Self::DatapathMetadata>;
+    fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>>;
 
     /// Elastically add a memory pool with a particular size.
     /// Will add a new region of memory registered with the NIC.
     /// Args:
     /// @size: element size
     /// @min_elts: minimum number of elements in the memory pool.
-    fn add_memory_pool(&self, size: usize, min_elts: usize) -> Result<()>;
+    fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<()>;
 
-    /// Number of cycles per second.
-    fn timer_hz(&self) -> u64;
+    /// Convert cycles to ns.
+    fn cycles_to_ns(&self, t: u64) -> u64;
 
     /// Current cycles.
     fn current_cycles(&self) -> u64;

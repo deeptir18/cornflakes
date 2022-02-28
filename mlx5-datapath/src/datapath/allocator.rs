@@ -1,6 +1,10 @@
-use super::super::{access, mlx5_bindings::*};
-use color_eyre::eyre::{bail, ensure, Result, WrapErr};
-use std::collections::HashMap;
+use super::{
+    super::{access, mlx5_bindings::*},
+    connection::Mlx5Buffer,
+    sizes::align_up,
+};
+use color_eyre::eyre::{ensure, Result};
+use hashbrown::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataMempool {
@@ -19,14 +23,31 @@ impl DataMempool {
     }
 
     #[inline]
-    pub unsafe fn alloc(&self) -> Result<*mut mbuf> {
-        let mbuf = allocate_data_and_metadata_mbuf(self.mempool);
-        ensure!(!mbuf.is_null(), "Allocated mbuf from metadata pool is null");
-        Ok(mbuf)
+    pub unsafe fn get_data_mempool(&self) -> *mut mempool {
+        get_data_mempool(self.mempool)
     }
 
     #[inline]
-    pub unsafe fn item_size(&self) -> usize {
+    pub unsafe fn get_metadata_mempool(&self) -> *mut mempool {
+        get_metadata_mempool(self.mempool)
+    }
+
+    #[inline]
+    pub unsafe fn check_mempool(&self, mempool: *mut mempool) -> bool {
+        get_data_mempool(self.mempool) == mempool
+    }
+
+    pub unsafe fn alloc_data(&mut self) -> Result<Option<Mlx5Buffer>> {
+        let buf = alloc_data_buf(self.mempool);
+        if buf.is_null() {
+            return Ok(None);
+        } else {
+            return Ok(Some(Mlx5Buffer::new(buf, self.mempool, 0)));
+        }
+    }
+
+    /*#[inline]
+    pub unsafe fn item_len(&self) -> usize {
         access!(get_data_mempool(self.mempool), item_len) as _
     }
 
@@ -34,7 +55,7 @@ impl DataMempool {
     pub unsafe fn available(&self) -> usize {
         let data_pool = get_data_mempool(self.mempool);
         access!(data_pool, capacity, usize) - access!(data_pool, allocated, usize)
-    }
+    }*/
 
     #[inline]
     pub unsafe fn is_within_bounds(&self, buf: &[u8]) -> bool {
@@ -79,7 +100,44 @@ impl Default for MemoryAllocator {
 }
 
 impl MemoryAllocator {
-    pub fn add_mempool(&mut self, obj_size: usize, alignment: usize) -> Result<()> {
+    pub fn add_mempool(
+        &mut self,
+        item_len: usize,
+        registered_mempool: *mut registered_mempool,
+    ) -> Result<()> {
+        let data_mempool = DataMempool::new(registered_mempool)?;
+        if self.mempools.contains_key(&item_len) {
+            let mempool_list = self.mempools.get_mut(&item_len).unwrap();
+            mempool_list.push(data_mempool);
+        } else {
+            self.mempools.insert(item_len, vec![data_mempool]);
+        }
         Ok(())
+    }
+
+    pub fn allocate_data_buffer(
+        &mut self,
+        size: usize,
+        alignment: usize,
+    ) -> Result<Option<Mlx5Buffer>> {
+        let min_item_size = align_up(size, alignment);
+        let mut mempool_size: usize = std::usize::MAX;
+        for (item_len, _) in self.mempools.iter() {
+            if *item_len < mempool_size && *item_len >= min_item_size {
+                mempool_size = *item_len;
+            }
+        }
+        if mempool_size == std::usize::MAX {
+            return Ok(None);
+        }
+        for mempool in self.mempools.get_mut(&mempool_size).unwrap().iter_mut() {
+            match unsafe { mempool.alloc_data()? } {
+                Some(buf) => {
+                    return Ok(Some(buf));
+                }
+                None => {}
+            }
+        }
+        return Ok(None);
     }
 }

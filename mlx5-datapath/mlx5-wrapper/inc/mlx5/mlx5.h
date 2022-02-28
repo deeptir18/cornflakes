@@ -15,11 +15,38 @@
 #define SQ_CLEAN_MAX			SQ_CLEAN_THRESH
 #define MAX_TX_MEMPOOLS_PER_THREAD 64 /* Maximum number of 'extra mempools' a thread can have. */
 #define POW2MOD(num, size) ((num & (size - 1)))
-#define get_segment(v, idx) ((v->tx_qp_dv.sq.buf + (idx << v->tx_sq_log_stride)))
+#define current_segment(v) (POW2MOD(v->sq_head, v->tx_qp_dv.sq.wqe_cnt))
+
+#define work_requests_size(v)(v->tx_qp_dv.sq.wqe_cnt * v->tx_qp_dv.sq.stride)
+#define work_requests_start(v)((char *)v->tx_qp_dv.sq.buf)
+#define work_requests_end(v)((char *)(work_requests_start(v) + work_requests_size(v)))
+#define get_work_request(v, idx)((char *)(v->tx_qp_dv.sq.buf + (idx << v->tx_sq_log_stride)))
+
+#define completion_buffer_start(v)((char *)(v->pending_transmissions[0]))
+#define completion_buffer_end(v)(completion_buffer_start(v) + work_requests_size(v))
+#define get_completion_segment(v, idx)((struct transmission_info *)(v->pending_transmissions[idx * 8]))
+
+#define incr_ring_buffer(ptr, start, end, type, ptr_type) \
+    ((((char *)ptr + sizeof(type)) == end) ? ((ptr_type)start) : ((ptr_type)((char *)ptr + (sizeof(type)))) )
 
 /*
  * Direct hardware queue support
  */
+
+struct __attribute__((__packed__)) transmission_info {
+    union {
+        struct __attribute__((__packed__)) transmission_metadata {
+            uint32_t num_wqes; // number of descriptors used by this transmission
+            uint32_t num_mbufs; // number of mbufs to decrease the reference count on
+        } metadata;
+        struct mbuf *mbuf;
+    } info;
+};
+
+
+#define incr_dpseg(v, dpseg) (incr_ring_buffer(dpseg,  work_requests_start(v), work_requests_end(v), struct mlx5_wqe_data_seg, struct mlx5_wqe_data_seg *))
+
+#define incr_transmission_info(v, transmission) (incr_ring_buffer(transmission, completion_buffer_start(v), completion_buffer_end(v), struct transmission_info, struct transmission_info *))
 
 struct hardware_q {
 	void		*descriptor_table;
@@ -52,6 +79,8 @@ struct mlx5_rxq {
 	struct ibv_wq *rx_wq;
 	struct ibv_rwq_ind_table *rwq_ind_table;
 	struct ibv_qp *qp;
+
+    size_t rx_hw_drop;
 } __aligned(CACHE_LINE_SIZE);
 
 struct mlx5_txq {
@@ -60,6 +89,8 @@ struct mlx5_txq {
 
 	/* direct verbs qp */
 	struct mbuf **buffers; // pending DMA
+    struct transmission_info **pending_transmissions; // completion info for pending transmissions
+
 	struct mlx5dv_qp tx_qp_dv;
 	uint32_t sq_head;
 	uint32_t tx_sq_log_stride;
@@ -73,13 +104,6 @@ struct mlx5_txq {
 	struct ibv_cq_ex *tx_cq;
 	struct ibv_qp *tx_qp;
 };
-
-// Each thread needs an rx memory pool & region to receive packets (and perhaps
-// send ``copied'' packets. This can be stored 
-// But what about additional memory pools to send stuff?
-//      Where is the data for these regions allocated?
-//      Where is the mempool struct itself stored / allocated?
-//
 
 /* A registered memory pool. 
  * TODO: is it right for each mempool to have a unique registered / MR region.
@@ -125,10 +149,7 @@ struct mlx5_per_thread_context {
 };
 
 /* Given index into threads array, get per thread context. */
-inline struct mlx5_per_thread_context *get_per_thread_context(struct mlx5_global_context *context, size_t idx) {
-    NETPERF_ASSERT(idx < context->num_threads, "Accessing thread greater than total allocated threads.");
-    return context->thread_contexts[idx];
-}
+struct mlx5_per_thread_context *get_per_thread_context(struct mlx5_global_context *context, size_t idx);
 
 /* Clears state in per thread context. */
 inline void clear_per_thread_context(struct mlx5_global_context *context, size_t idx) {

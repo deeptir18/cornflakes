@@ -8,9 +8,18 @@ include!(concat!(env!("OUT_DIR"), "/mlx5_bindings.rs"));
 
 #[link(name = "inlined")]
 extern "C" {
-    fn alloc_buf_(mempool: *mut mempool) -> *mut ::std::os::raw::c_void;
+    fn cycles_to_ns_(a: u64) -> u64;
 
-    fn alloc_metadata_(mempool: *mut mempool) -> *mut mbuf;
+    fn current_cycles_() -> u64;
+
+    fn strerror_(no: ::std::os::raw::c_int) -> *const ::std::os::raw::c_char;
+
+    fn alloc_data_buf_(mempool: *mut registered_mempool) -> *mut ::std::os::raw::c_void;
+
+    fn alloc_metadata_(
+        mempool: *mut registered_mempool,
+        data_buf: *mut ::std::os::raw::c_void,
+    ) -> *mut mbuf;
 
     fn init_metadata_(
         mbuf: *mut mbuf,
@@ -33,17 +42,39 @@ extern "C" {
 
     fn mbuf_free_(mbuf: *mut mbuf);
 
+    fn mempool_free_(item: *mut ::std::os::raw::c_void, mempool: *mut mempool);
+
     fn mbuf_at_index_(mempool: *mut mempool, index: usize) -> *mut mbuf;
+
+    fn rte_memcpy_(dst: *mut ::std::os::raw::c_void, src: *const ::std::os::raw::c_void, n: usize);
 }
 
 #[inline]
-pub unsafe fn alloc_buf(mempool: *mut mempool) -> *mut ::std::os::raw::c_void {
-    alloc_buf_(mempool)
+pub unsafe fn cycles_to_ns(a: u64) -> u64 {
+    cycles_to_ns_(a)
 }
 
 #[inline]
-pub unsafe fn alloc_metadata(mempool: *mut mempool) -> *mut mbuf {
-    alloc_metadata_(mempool)
+pub unsafe fn current_cycles() -> u64 {
+    current_cycles_()
+}
+
+#[inline]
+pub unsafe fn err_to_str(no: ::std::os::raw::c_int) -> *const ::std::os::raw::c_char {
+    strerror_(no)
+}
+
+#[inline]
+pub unsafe fn alloc_data_buf(mempool: *mut registered_mempool) -> *mut ::std::os::raw::c_void {
+    alloc_data_buf_(mempool)
+}
+
+#[inline]
+pub unsafe fn alloc_metadata(
+    mempool: *mut registered_mempool,
+    data_buf: *mut ::std::os::raw::c_void,
+) -> *mut mbuf {
+    alloc_metadata_(mempool, data_buf)
 }
 
 #[inline]
@@ -88,6 +119,20 @@ pub unsafe fn mbuf_free(mbuf: *mut mbuf) {
 }
 
 #[inline]
+pub unsafe fn mempool_free(item: *mut ::std::os::raw::c_void, mempool: *mut mempool) {
+    mempool_free_(item, mempool);
+}
+
+#[inline]
 pub unsafe fn mbuf_at_index(mempool: *mut mempool, index: usize) -> *mut mbuf {
     mbuf_at_index_(mempool, index)
+}
+
+#[inline]
+pub unsafe fn rte_memcpy(
+    dst: *mut ::std::os::raw::c_void,
+    src: *const ::std::os::raw::c_void,
+    n: usize,
+) {
+    rte_memcpy_(dst, src, n);
 }

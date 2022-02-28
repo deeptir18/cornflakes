@@ -1,6 +1,7 @@
 #pragma once
 #include <stdlib.h>
 #include <stdio.h>
+#include <base/time.h>
 
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
@@ -99,6 +100,24 @@ enum {
 			__builtin_unreachable();		\
 		}						\
 	} while (0)
+
+/* Rate limited debug. */
+#define NETPERF_DEBUG_RATE_LIMITED(fmt, ...) ({							\
+	static uint64_t __last_us = 0;			\
+	static uint64_t __suppressed = 0;		\
+	uint64_t __cur_us = microtime();		\
+	if (__cur_us - __last_us >= ONE_SECOND) {	\
+		if (__suppressed) {			\
+			NETPERF_DEBUG("%s:%d %s() suppressed %ld times", \
+			     __FILE__, __LINE__, __func__, __suppressed); \
+			__suppressed = 0;		\
+		}					\
+        NETPERF_DEBUG(fmt, ##__VA_ARGS__); \
+		__last_us = __cur_us;			\
+	} else {						\
+		__suppressed++;				\
+    }                               \
+})
 
 /***************************************************************/
 #endif /* NETPERF_DEBUG_ */
