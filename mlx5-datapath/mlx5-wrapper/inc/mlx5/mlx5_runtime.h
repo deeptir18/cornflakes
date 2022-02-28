@@ -236,5 +236,8 @@ struct transmission_info *add_completion_info(struct mlx5_txq *v,
  * @v - Receive queue
  * @rx_cnt - Number of packets to reallocate / fill
  * @rx_mempool - Receive metadata and data mempool to allocate from.
+ *
+ * Returns:
+ * 0 on success, error if error ocurred.
  * */
 int mlx5_refill_rxqueue(struct mlx5_rxq *v, size_t rx_cnt, struct registered_mempool *rx_mempool);

@@ -78,6 +78,7 @@ int mlx5_gather_rx(struct mlx5_rxq *v,
     uint8_t opcode;
     uint16_t wqe_idx;
     int rx_cnt;
+    int ret;
 	
 	struct mlx5dv_rwq *wq = &v->rx_wq_dv;
 	struct mlx5dv_cq *cq = &v->rx_cq_dv;
@@ -105,7 +106,7 @@ int mlx5_gather_rx(struct mlx5_rxq *v,
 		wqe_idx = be16toh(cqe->wqe_counter) & (wq->wqe_cnt - 1);
 		m = v->buffers[wqe_idx];
         // set length to be actual data length received
-        // TODO: required to reset length here?
+        // TODO: necessary to reset the buf address here?
         m->data_len = be32toh(cqe->byte_cnt);
         m->rss_hash = mlx5_get_rss_result(cqe);
 		ms[rx_cnt] = m;
@@ -115,11 +116,13 @@ int mlx5_gather_rx(struct mlx5_rxq *v,
 		return rx_cnt;
 
 	cq->dbrec[0] = htobe32(v->consumer_idx & 0xffffff);
-	mlx5_refill_rxqueue(v, rx_cnt, rx_mempool);
+	ret = mlx5_refill_rxqueue(v, rx_cnt, rx_mempool);
+    if (ret != 0) {
+        NETPERF_WARN("Error filling rxqueue");
+        return ret;
+    }
 
 	return rx_cnt;
-
-    return 0;
 }
                     
 
