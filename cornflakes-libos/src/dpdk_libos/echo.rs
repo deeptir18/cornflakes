@@ -197,7 +197,7 @@ impl EchoServer {
         }
         match self.histograms.get(name) {
             Some(h) => Ok(Some(h.clone())),
-            None => bail!("Timer {} not in histograms."),
+            None => bail!("Timer {} not in histograms.", name),
         }
     }
 }
