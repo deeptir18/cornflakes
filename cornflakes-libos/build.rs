@@ -42,14 +42,12 @@ fn main() {
     for flag in cflags.split(' ') {
         if flag.starts_with("-I") {
             let header_location = &flag[2..];
-            header_locations.push(header_location);
+            header_locations.push(header_location.trim());
         }
     }
 
-    // extra header for memory constants in bindings folder
     let dpdk_bindings_folder = Path::new(&cargo_dir).join("src").join("dpdk_bindings");
-    header_locations.push(dpdk_bindings_folder.to_str().unwrap());
-
+    header_locations.push(dpdk_bindings_folder.to_str().unwrap().trim());
     let ldflags_bytes = Command::new("pkg-config")
         .env("PKG_CONFIG_PATH", &pkg_config_path)
         .args(&["--libs", "libdpdk"])
@@ -91,8 +89,10 @@ fn main() {
 
     let mut builder = Builder::default();
     for header_location in &header_locations {
-        builder = builder.clang_arg(&format!("-I{}", header_location));
+        println!("Adding header location {}", header_location);
+        builder = builder.clang_arg(&format!("-I{}", header_location.trim()));
     }
+    println!("Builder args: {:?}", builder.command_line_flags());
     let bindings = builder
         .header(header_path.to_str().unwrap())
         .blacklist_type("rte_arp_ipv4")
@@ -119,8 +119,9 @@ fn main() {
         .join("dpdk_bindings")
         .join("inlined.c");
     compiler.file(inlined_file.to_str().unwrap());
+    // extra header for memory constants in bindings folder
     for header_location in &header_locations {
-        compiler.include(header_location);
+        compiler.include(header_location.trim());
     }
     compiler.compile("inlined");
 }

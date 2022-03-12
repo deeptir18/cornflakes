@@ -31,7 +31,8 @@ submodules:
 	# apply the DPDK patch
 	git -C cornflakes-libos/3rdparty/dpdk apply ../../dpdk-mlx.patch
 	# build DPDK
-	cornflakes-libos/build-dpdk.sh cornflakes-libos/3rdparty/dpdk
+	cornflakes-libos/build-dpdk.sh $(PWD)/cornflakes-libos/3rdparty/dpdk
+
 	
 	
 
