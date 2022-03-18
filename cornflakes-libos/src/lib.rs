@@ -16,6 +16,7 @@ pub mod utils;
 
 use color_eyre::eyre::{ensure, Result, WrapErr};
 use cornflakes_utils::AppMode;
+use datapath::MetadataOps;
 use loadgen::request_schedule::PacketSchedule;
 use mem::MmapMetadata;
 use std::{
@@ -309,6 +310,10 @@ impl<'a> Sge<'a> {
     pub fn addr(&self) -> &'a [u8] {
         self.addr
     }
+
+    pub fn len(&self) -> usize {
+        self.addr.len()
+    }
 }
 
 impl<'a> Sga<'a> {
@@ -320,6 +325,18 @@ impl<'a> Sga<'a> {
 
     pub fn add_entry(&mut self, entry: Sge<'a>) {
         self.entries.push(entry);
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn data_len(&self) -> usize {
+        let mut sum = 0;
+        for entry in self.entries.iter() {
+            sum += entry.len();
+        }
+        sum
     }
 
     pub fn replace(&mut self, idx: usize, entry: Sge<'a>) {
@@ -353,6 +370,44 @@ where
     }
 }
 
+impl<'a, D> RcSge<'a, D>
+where
+    D: datapath::Datapath,
+{
+    pub fn len(&self) -> usize {
+        match self {
+            RcSge::RawRef(buf) => buf.len(),
+            RcSge::RefCounted(metadata) => metadata.data_len(),
+        }
+    }
+
+    pub fn addr(&self) -> &[u8] {
+        match self {
+            RcSge::RawRef(buf) => buf,
+            RcSge::RefCounted(metadata) => metadata.as_ref(),
+        }
+    }
+
+    pub fn inner_datapath_pkt(&self) -> Option<&D::DatapathMetadata> {
+        match self {
+            RcSge::RawRef(_) => None,
+            RcSge::RefCounted(m) => Some(m),
+        }
+    }
+}
+
+impl<'a, D> AsRef<[u8]> for RcSge<'a, D>
+where
+    D: datapath::Datapath,
+{
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            RcSge::RawRef(buf) => buf,
+            RcSge::RefCounted(metadata) => metadata.as_ref(),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Default)]
 pub struct RcSga<'a, D>
 where
@@ -369,6 +424,18 @@ where
         RcSga {
             entries: Vec::with_capacity(num_entries),
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn data_len(&self) -> usize {
+        let mut ret = 0;
+        for entry in self.entries.iter() {
+            ret += entry.len();
+        }
+        ret
     }
 
     pub fn add_entry(&mut self, entry: RcSge<'a, D>) {

@@ -17,8 +17,10 @@ pub const IPV4_VERSION: u8 = 4;
 pub const IPDEFTTL: u8 = 64;
 pub const IPPROTO_UDP: u8 = 17;
 pub const HEADER_PADDING_SIZE: usize = 0;
-pub const TOTAL_HEADER_SIZE: usize =
-    ETHERNET2_HEADER2_SIZE + IPV4_HEADER2_SIZE + UDP_HEADER2_SIZE + 4 + HEADER_PADDING_SIZE;
+pub const HEADER_ID_SIZE: usize = 4;
+pub const TOTAL_UDP_HEADER_SIZE: usize =
+    ETHERNET2_HEADER2_SIZE + IPV4_HEADER2_SIZE + UDP_HEADER2_SIZE;
+pub const TOTAL_HEADER_SIZE: usize = TOTAL_UDP_HEADER_SIZE + HEADER_ID_SIZE + HEADER_PADDING_SIZE;
 
 #[repr(u16)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -150,10 +152,7 @@ pub fn write_pkt_id(id: MsgID, buf: &mut [u8]) -> Result<()> {
 }
 
 #[inline]
-pub fn check_eth_hdr(
-    hdr_buf: &mut [u8],
-    my_ether: &MacAddress,
-) -> Result<(MacAddress, MacAddress)> {
+pub fn check_eth_hdr(hdr_buf: &[u8], my_ether: &MacAddress) -> Result<(MacAddress, MacAddress)> {
     let dst_addr = MacAddress::from_bytes(&hdr_buf[0..6])?;
     let src_addr = MacAddress::from_bytes(&hdr_buf[6..12])?;
     let ether_type = EtherType2::try_from(NetworkEndian::read_u16(&hdr_buf[12..14]))?;
@@ -173,7 +172,7 @@ pub fn check_eth_hdr(
 }
 
 #[inline]
-pub fn check_ipv4_hdr(hdr_buf: &mut [u8], my_ip: &Ipv4Addr) -> Result<(Ipv4Addr, Ipv4Addr)> {
+pub fn check_ipv4_hdr(hdr_buf: &[u8], my_ip: &Ipv4Addr) -> Result<(Ipv4Addr, Ipv4Addr)> {
     let src_addr = Ipv4Addr::from(NetworkEndian::read_u32(&hdr_buf[12..16]));
     let dst_addr = Ipv4Addr::from(NetworkEndian::read_u32(&hdr_buf[16..20]));
     if hdr_buf[9] != IPPROTO_UDP {
@@ -197,7 +196,7 @@ pub fn check_ipv4_hdr(hdr_buf: &mut [u8], my_ip: &Ipv4Addr) -> Result<(Ipv4Addr,
 }
 
 #[inline]
-pub fn check_udp_hdr(hdr_buf: &mut [u8], my_udp_port: u16) -> Result<(u16, u16, usize)> {
+pub fn check_udp_hdr(hdr_buf: &[u8], my_udp_port: u16) -> Result<(u16, u16, usize)> {
     let src_port = NetworkEndian::read_u16(&hdr_buf[0..2]);
     let dst_port = NetworkEndian::read_u16(&hdr_buf[2..4]);
     let data_len = NetworkEndian::read_u16(&hdr_buf[4..6]) as usize;

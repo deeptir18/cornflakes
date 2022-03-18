@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <base/pci.h>
 #include <base/debug.h>
 #include <base/mempool.h>
 #include <mlx5/mlx5.h>

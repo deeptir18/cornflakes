@@ -8,6 +8,8 @@ include!(concat!(env!("OUT_DIR"), "/mlx5_bindings.rs"));
 
 #[link(name = "inlined")]
 extern "C" {
+    fn free_mbuf_(mbuf: *mut mbuf);
+
     fn cycles_to_ns_(a: u64) -> u64;
 
     fn current_cycles_() -> u64;
@@ -47,6 +49,28 @@ extern "C" {
     fn mbuf_at_index_(mempool: *mut mempool, index: usize) -> *mut mbuf;
 
     fn rte_memcpy_(dst: *mut ::std::os::raw::c_void, src: *const ::std::os::raw::c_void, n: usize);
+
+    fn fill_in_hdrs_(
+        hdr_buffer: *mut ::std::os::raw::c_void,
+        hdr: *const ::std::os::raw::c_void,
+        id: u32,
+        data_len: usize,
+    );
+
+    fn completion_start_(context: *mut mlx5_per_thread_context) -> *mut transmission_info;
+
+    fn dpseg_start_(
+        context: *mut mlx5_per_thread_context,
+        inline_off: usize,
+    ) -> *mut mlx5_wqe_data_seg;
+
+    fn flip_headers_(metadata_mbuf: *mut mbuf);
+
+}
+
+#[inline]
+pub unsafe fn free_mbuf(mbuf: *mut mbuf) {
+    free_mbuf_(mbuf);
 }
 
 #[inline]
@@ -135,4 +159,32 @@ pub unsafe fn rte_memcpy(
     n: usize,
 ) {
     rte_memcpy_(dst, src, n);
+}
+
+#[inline]
+pub unsafe fn fill_in_hdrs(
+    hdr_buffer: *mut ::std::os::raw::c_void,
+    hdr: *const ::std::os::raw::c_void,
+    id: u32,
+    data_len: usize,
+) {
+    fill_in_hdrs_(hdr_buffer, hdr, id, data_len);
+}
+
+#[inline]
+pub unsafe fn completion_start(context: *mut mlx5_per_thread_context) -> *mut transmission_info {
+    completion_start_(context)
+}
+
+#[inline]
+pub unsafe fn dpseg_start(
+    context: *mut mlx5_per_thread_context,
+    inline_off: usize,
+) -> *mut mlx5_wqe_data_seg {
+    dpseg_start_(context, inline_off)
+}
+
+#[inline]
+pub unsafe fn flip_headers(metadata_mbuf: *mut mbuf) {
+    flip_headers_(metadata_mbuf);
 }

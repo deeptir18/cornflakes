@@ -6,9 +6,9 @@ pub struct ReceivedPkt<D>
 where
     D: Datapath,
 {
-    _pkts: Vec<D::DatapathMetadata>,
-    _id: MsgID,
-    _conn: ConnID,
+    pkts: Vec<D::DatapathMetadata>,
+    id: MsgID,
+    conn: ConnID,
 }
 
 impl<D> ReceivedPkt<D>
@@ -17,15 +17,39 @@ where
 {
     pub fn new(pkts: Vec<D::DatapathMetadata>, id: MsgID, conn_id: ConnID) -> Self {
         ReceivedPkt {
-            _pkts: pkts,
-            _id: id,
-            _conn: conn_id,
+            pkts: pkts,
+            id: id,
+            conn: conn_id,
         }
+    }
+
+    pub fn conn_id(&self) -> ConnID {
+        self.conn
+    }
+
+    pub fn msg_id(&self) -> MsgID {
+        self.id
+    }
+
+    pub fn num_segs(&self) -> usize {
+        self.pkts.len()
+    }
+
+    pub fn seg(&self, idx: usize) -> &D::DatapathMetadata {
+        &self.pkts[idx]
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<D::DatapathMetadata> {
+        self.pkts.iter()
     }
 }
 
 /// Functionality accessible to higher level application on top of datapath metadata objects.
 pub trait MetadataOps {
+    fn offset(&self) -> usize;
+
+    fn data_len(&self) -> usize;
+
     fn set_offset(&mut self, off: usize) -> Result<()>;
 
     fn set_data_len(&mut self, data_len: usize) -> Result<()>;
@@ -89,11 +113,11 @@ pub trait Datapath {
     /// Args:
     /// @config_file: Configuration information in YAML format.
     /// @context: Specific, per thread context for this queue.
+    /// @mode: Server or client mode.
     fn per_thread_init(
         datapath_params: Self::DatapathSpecificParams,
         context: Self::PerThreadContext,
         mode: cornflakes_utils::AppMode,
-        use_scatter_gather: bool,
     ) -> Result<Self>
     where
         Self: Sized;
@@ -106,7 +130,7 @@ pub trait Datapath {
     /// Send multiple buffers to the specified address.
     /// Args:
     /// @pkts: Vector of (msg id, buffer, connection id) to send.
-    fn push_buffers(&mut self, pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()>;
+    fn push_buffers_with_copy(&mut self, pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()>;
 
     /// Echo the specified packet back to the  source.
     /// Args:
@@ -148,7 +172,12 @@ pub trait Datapath {
         Self: Sized;
 
     /// Check if any outstanding packets have timed out.
-    fn timed_out(&self, time_out: Duration) -> Result<Vec<MsgID>>;
+    fn timed_out(&self, time_out: Duration) -> Result<Vec<(MsgID, ConnID)>>;
+
+    /// Checks whether input buffer is registered.
+    /// Args:
+    /// @buf: slice to check if address is registered or not.
+    fn is_registered(&self, buf: &[u8]) -> bool;
 
     /// Allocate a datapath buffer with the given size and alignment.
     /// Args:

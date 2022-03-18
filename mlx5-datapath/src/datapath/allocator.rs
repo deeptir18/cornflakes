@@ -1,9 +1,9 @@
 use super::{
     super::{access, mlx5_bindings::*},
-    connection::Mlx5Buffer,
+    connection::{MbufMetadata, Mlx5Buffer},
     sizes::align_up,
 };
-use color_eyre::eyre::{ensure, Result};
+use color_eyre::eyre::{bail, ensure, Result};
 use hashbrown::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,7 +22,7 @@ impl DataMempool {
         })
     }
 
-    #[inline]
+    /*#[inline]
     pub unsafe fn get_data_mempool(&self) -> *mut mempool {
         get_data_mempool(self.mempool)
     }
@@ -30,12 +30,12 @@ impl DataMempool {
     #[inline]
     pub unsafe fn get_metadata_mempool(&self) -> *mut mempool {
         get_metadata_mempool(self.mempool)
-    }
+    }*/
 
-    #[inline]
+    /*#[inline]
     pub unsafe fn check_mempool(&self, mempool: *mut mempool) -> bool {
         get_data_mempool(self.mempool) == mempool
-    }
+    }*/
 
     pub unsafe fn alloc_data(&mut self) -> Result<Option<Mlx5Buffer>> {
         let buf = alloc_data_buf(self.mempool);
@@ -73,14 +73,17 @@ impl DataMempool {
     /// Given an arbitrary data pointer, returns the metadata pointer.
     /// Assumes that the data pointer is within bounds of the memory pool.
     #[inline]
-    pub unsafe fn recover_mbuf_metadata(&self, ptr: *const u8) -> *mut mbuf {
+    pub unsafe fn recover_mbuf_metadata(&self, buf: &[u8]) -> (*mut mbuf, usize) {
+        let ptr = buf.as_ptr();
         let data_pool = get_data_mempool(self.mempool);
         let metadata_pool = get_metadata_mempool(self.mempool);
         let mempool_start = access!(data_pool, buf, *const u8) as usize;
         let item_len = access!(data_pool, item_len, usize);
         let offset_within_alloc = (ptr as usize - mempool_start) % item_len;
         let index = ((ptr as usize - offset_within_alloc) - mempool_start) / item_len;
-        mbuf_at_index(metadata_pool, index)
+        let mbuf = mbuf_at_index(metadata_pool, index);
+        let offset = ptr as usize - access!(mbuf, buf_addr, *const u8) as usize;
+        (mbuf, offset)
     }
 }
 
@@ -113,6 +116,36 @@ impl MemoryAllocator {
             self.mempools.insert(item_len, vec![data_mempool]);
         }
         Ok(())
+    }
+
+    pub fn recover_mbuf(&self, buf: &[u8]) -> Result<MbufMetadata> {
+        for (size, mempool_arr) in self.mempools.iter() {
+            if buf.len() > *size {
+                continue;
+            }
+            for mempool in mempool_arr.iter() {
+                if unsafe { mempool.is_within_bounds(buf) } {
+                    let (mbuf, offset) = unsafe { mempool.recover_mbuf_metadata(buf) };
+                    let mbuf_metadata = MbufMetadata::new(mbuf, offset, Some(buf.len()));
+                    return Ok(mbuf_metadata);
+                }
+            }
+        }
+        bail!("Mbuf not recovered");
+    }
+
+    pub fn is_registered(&self, buf: &[u8]) -> bool {
+        for (size, mempool_arr) in self.mempools.iter() {
+            if buf.len() > *size {
+                continue;
+            }
+            for mempool in mempool_arr.iter() {
+                if unsafe { mempool.is_within_bounds(buf) } {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     pub fn allocate_data_buffer(

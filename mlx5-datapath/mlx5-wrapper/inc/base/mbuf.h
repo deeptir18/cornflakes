@@ -39,7 +39,7 @@ struct __attribute__((packed, aligned(1))) mbuf {
 #define mbuf_offset(mbuf, off, t) \
     (t)(mbuf_offset_ptr(mbuf, off))
 
-static inline unsigned char *mbuf_offset_ptr(struct mbuf *m, size_t off) {
+static inline unsigned char *mbuf_offset_ptr(const struct mbuf *m, size_t off) {
     return (unsigned char *)m->buf_addr + m->offset + off;
 }
 

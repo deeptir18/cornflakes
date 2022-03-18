@@ -37,8 +37,9 @@ void process_completion(uint16_t wqe_idx, struct mlx5_txq *v) {
     v->true_cq_head += transmission->info.metadata.num_wqes;
 }
 
-int mlx5_process_completions(struct mlx5_txq *v,
+int mlx5_process_completions(struct mlx5_per_thread_context *per_thread_context,
                                 unsigned int budget) {
+    struct mlx5_txq *v = &per_thread_context->txq;
     unsigned int compl_cnt;
     uint8_t opcode;
     uint16_t wqe_idx;
@@ -71,10 +72,11 @@ int mlx5_process_completions(struct mlx5_txq *v,
     return compl_cnt;
 }
 
-int mlx5_gather_rx(struct mlx5_rxq *v,
+int mlx5_gather_rx(struct mlx5_per_thread_context *per_thread_context,
                     struct mbuf **ms,
-                    unsigned int budget,
-                    struct registered_mempool *rx_mempool) {
+                    unsigned int budget) {
+    struct registered_mempool *rx_mempool = &per_thread_context->rx_mempool;
+    struct mlx5_rxq *v = &per_thread_context->rxq;
     uint8_t opcode;
     uint16_t wqe_idx;
     int rx_cnt;
@@ -116,7 +118,7 @@ int mlx5_gather_rx(struct mlx5_rxq *v,
 		return rx_cnt;
 
 	cq->dbrec[0] = htobe32(v->consumer_idx & 0xffffff);
-	ret = mlx5_refill_rxqueue(v, rx_cnt, rx_mempool);
+	ret = mlx5_refill_rxqueue(per_thread_context, rx_cnt, rx_mempool);
     if (ret != 0) {
         NETPERF_WARN("Error filling rxqueue");
         return ret;
@@ -126,9 +128,10 @@ int mlx5_gather_rx(struct mlx5_rxq *v,
 }
                     
 
-int mlx5_refill_rxqueue(struct mlx5_rxq *v, 
+int mlx5_refill_rxqueue(struct mlx5_per_thread_context *per_thread_context,
                             size_t rx_cnt, 
                             struct registered_mempool *rx_mempool) {
+    struct mlx5_rxq *v = &per_thread_context->rxq;
     unsigned int i;
     uint32_t index;
     struct mlx5_wqe_data_seg *seg;
@@ -161,18 +164,35 @@ int mlx5_refill_rxqueue(struct mlx5_rxq *v,
     return 0;
 }
 
-struct mlx5_wqe_ctrl_seg *fill_in_hdr_segment(struct mlx5_txq *v,
+size_t num_wqes_required(size_t inline_len, size_t num_segs) {
+    size_t num_hdr_segs = sizeof(struct mlx5_wqe_ctrl_seg) / 16
+                            + (offsetof(struct mlx5_wqe_eth_seg, inline_hdr)) / 16;
+    if (inline_len > 2) {
+        num_hdr_segs += ((inline_len - 2) + 15) / 16;
+    }
+    size_t num_dpsegs = (sizeof(struct mlx5_wqe_data_seg) * num_segs) / 16;
+    return (num_hdr_segs + num_dpsegs + 3) / 4;
+}
+
+int tx_descriptors_available(struct mlx5_per_thread_context *per_thread_context,
+                                size_t num_wqes_required) {
+    struct mlx5_txq *v = &per_thread_context->txq;
+    return unlikely((v->tx_qp_dv.sq.wqe_cnt - nr_inflight_tx(v)) < num_wqes_required);
+}
+
+struct mlx5_wqe_ctrl_seg *fill_in_hdr_segment(struct mlx5_per_thread_context *per_thread_context,
                                                 size_t num_wqes,
                                                 size_t inline_len,
                                                 size_t num_segs,
                                                 int tx_flags) {
+    struct mlx5_txq *v = &per_thread_context->txq;
     struct mlx5_wqe_ctrl_seg *ctrl;
     struct mlx5_wqe_eth_seg *eseg;
     char *current_segment_ptr;
     struct transmission_info *current_completion_info;
     
     uint32_t current_idx = current_segment(v);
-    if (!tx_descriptors_available(v, inline_len, num_segs)) {
+    if (!tx_descriptors_available(per_thread_context, num_wqes)) {
         errno = -ENOMEM;
         return NULL;
     }
@@ -198,7 +218,8 @@ struct mlx5_wqe_ctrl_seg *fill_in_hdr_segment(struct mlx5_txq *v,
     return ctrl;
 }
 
-size_t copy_inline_data(struct mlx5_txq *v, size_t inline_offset, char *src, size_t copy_len, size_t inline_size) {
+size_t copy_inline_data(struct mlx5_per_thread_context *per_thread_context, size_t inline_offset, const char *src, size_t copy_len, size_t inline_size) {
+    struct mlx5_txq *v = &per_thread_context->txq;
     char *end_ptr = work_requests_end(v);
     // check for out of bounds
     if ((inline_offset + copy_len) > inline_size) {
@@ -222,32 +243,69 @@ size_t copy_inline_data(struct mlx5_txq *v, size_t inline_offset, char *src, siz
     return copy_len; 
 }
 
-struct mlx5_wqe_data_seg *add_dpseg(struct mlx5_txq *v,
+void inline_eth_hdr(struct mlx5_per_thread_context *per_thread_context, struct eth_hdr *eth, size_t total_inline_size) {
+    copy_inline_data(per_thread_context, 0, (char *)eth, sizeof(struct eth_hdr), total_inline_size);
+}
+
+void inline_ipv4_hdr(struct mlx5_per_thread_context *per_thread_context, struct ip_hdr *ipv4, size_t payload_size, size_t total_inline_size) {
+    uint16_t original_len = ipv4->len;
+    uint16_t original_checksum = ipv4->chksum;
+    ipv4->len = htons(sizeof(struct ip_hdr) + sizeof(struct udp_hdr) + payload_size);
+    ipv4->chksum = 0;
+    ipv4->chksum = get_chksum(ipv4);
+    copy_inline_data(per_thread_context, sizeof(struct eth_hdr), (char *)ipv4, sizeof(struct ip_hdr), total_inline_size);
+    ipv4->len = original_len;
+    ipv4->chksum = original_checksum;
+}
+
+void inline_udp_hdr(struct mlx5_per_thread_context *per_thread_context, struct udp_hdr *udp, size_t payload_size, size_t total_inline_size) {
+    uint16_t original_len = udp->len;
+    uint16_t original_checksum = udp->chksum;
+    udp->len = htons(sizeof(struct udp_hdr) + payload_size);
+    udp->chksum = get_chksum(udp);
+    copy_inline_data(per_thread_context, sizeof(struct eth_hdr) + sizeof(struct ip_hdr), (char *)udp, sizeof(struct udp_hdr), total_inline_size);
+    udp->len = original_len;
+    udp->chksum = original_checksum;
+}
+
+void inline_packet_id(struct mlx5_per_thread_context *per_thread_context, uint32_t packet_id) {
+    struct mlx5_txq *v = &per_thread_context->txq;
+    char *cur_inline_off = work_request_inline_off(v, sizeof(struct eth_hdr) + sizeof(struct ip_hdr) + sizeof(struct udp_hdr), 0);
+    // can be written in little endian order
+    *(uint32_t *)cur_inline_off = packet_id;
+}
+
+
+struct mlx5_wqe_data_seg *add_dpseg(struct mlx5_per_thread_context *per_thread_context,
                 struct mlx5_wqe_data_seg *dpseg,
                 struct mbuf *m, 
                 size_t data_off,
                 size_t data_len) {
+    struct mlx5_txq *v = &per_thread_context->txq;
     dpseg->byte_count = htobe32(data_len);
     dpseg->addr = htobe64(mbuf_offset(m, data_off, uint64_t));
     dpseg->lkey = htobe32(m->lkey);
     return incr_dpseg(v, dpseg);
 }
 
-struct transmission_info *add_completion_info(struct mlx5_txq *v,
+struct transmission_info *add_completion_info(struct mlx5_per_thread_context *per_thread_context,
             struct transmission_info *transmission_info,
             struct mbuf *m) {
+    struct mlx5_txq *v = &per_thread_context->txq;
     transmission_info->info.mbuf = m;
     return incr_transmission_info(v, transmission_info);
 }
 
-int finish_single_transmission(struct mlx5_txq *v,
+int finish_single_transmission(struct mlx5_per_thread_context *per_thread_context,
                                 size_t num_wqes) {
+    struct mlx5_txq *v = &per_thread_context->txq;
     v->sq_head += num_wqes;
     return 0;
 }
 
-int post_transmissions(struct mlx5_txq *v,
+int post_transmissions(struct mlx5_per_thread_context *per_thread_context,
                         struct mlx5_wqe_ctrl_seg *first_ctrl) {
+    struct mlx5_txq *v = &per_thread_context->txq;
     // post next unused wqe to doorbell
     udma_to_device_barrier();
     v->tx_qp_dv.dbrec[MLX5_SND_DBR] = htobe32(v->sq_head & 0xffff);
@@ -259,7 +317,7 @@ int post_transmissions(struct mlx5_txq *v,
 
     // check for completions
     if (nr_inflight_tx(v) >= SQ_CLEAN_THRESH) {
-        int compl = mlx5_process_completions(v, SQ_CLEAN_MAX);
+        mlx5_process_completions(per_thread_context, SQ_CLEAN_MAX);
     }
     return 0;
 }
