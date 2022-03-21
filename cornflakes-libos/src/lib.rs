@@ -11,6 +11,7 @@ pub mod dpdk_libos;
 pub mod loadgen;
 pub mod mem;
 pub mod serialize;
+pub mod state_machine;
 pub mod timing;
 pub mod utils;
 

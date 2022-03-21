@@ -2,6 +2,16 @@ use super::{serialize::Serializable, utils::AddressInfo, ConnID, MsgID, RcSga, S
 use color_eyre::eyre::Result;
 use std::{io::Write, net::Ipv4Addr, time::Duration};
 
+/// Represents if app is using:
+/// (1) Scatter-gather API without manual ref counting
+/// (2) Manually Reference counted scatter-gather API
+/// (3) Pushing a single buffer to be copied
+pub enum PushBufType {
+    Sga,
+    RcSga,
+    SingleBuf,
+}
+
 pub struct ReceivedPkt<D>
 where
     D: Datapath,
