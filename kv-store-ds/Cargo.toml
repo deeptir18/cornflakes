@@ -24,7 +24,7 @@ protobuf = "2.*.*"
 hashbrown = "0.11.*"
 affinity = "0.1.1"
 cxx = "1.0"
-perftools = {git = "https://github.com/demikernel/perftools", rev = "94031ae" }
+perftools = {git = "https://github.com/demikernel/perftools", rev = "94031ae", optional = true}
 
 
 [build-dependencies]

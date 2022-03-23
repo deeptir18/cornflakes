@@ -1,4 +1,6 @@
-# Update
+/bin/bash
+
+# currently works on debian systems (with access to apt-get)
 sudo apt-get update
 
 # Required for DPDK
@@ -13,6 +15,7 @@ sudo apt-get install libnuma-dev valgrind
 sudo apt-get install -y libhiredis-dev # for redis experiments
 sudo apt-get install libsystemd-dev pandoc cython
 sudo apt-get install build-essential cmake gcc libudev-dev libnl-3-dev libnl-route-3-dev ninja-build pkg-config valgrind python3-dev cython3 python3-docutils pandoc
+sudo apt-get install libnuma-dev
 
 # Required for RDMA core (for mellanox datapath)
 sudo apt-get install build-essential cmake gcc libudev-dev libnl-3-dev libnl-route-3-dev ninja-build pkg-config valgrind python3-dev cython3 python3-docutils pandoc
@@ -26,12 +29,4 @@ pip3 install parse
 pip3 install fabric # for some reason this fails
 pip3 install setuptools_rust # and then you need to install this
 pip3 install fabric # and try this again
-
-# Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup component add rustfmt
-
-
-# Installing the mellanox drivers
-
 
