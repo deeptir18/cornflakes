@@ -10,6 +10,8 @@ include!(concat!(env!("OUT_DIR"), "/mlx5_bindings.rs"));
 extern "C" {
     fn free_mbuf_(mbuf: *mut mbuf);
 
+    fn ns_to_cycles_(a: u64) -> u64;
+
     fn cycles_to_ns_(a: u64) -> u64;
 
     fn current_cycles_() -> u64;
@@ -71,6 +73,11 @@ extern "C" {
 #[inline]
 pub unsafe fn free_mbuf(mbuf: *mut mbuf) {
     free_mbuf_(mbuf);
+}
+
+#[inline]
+pub unsafe fn ns_to_cycles(a: u64) -> u64 {
+    ns_to_cycles_(a)
 }
 
 #[inline]

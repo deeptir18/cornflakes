@@ -1684,6 +1684,10 @@ impl Datapath for Mlx5Connection {
         Ok(())
     }
 
+    fn timer_hz(&self) -> u64 {
+        unsafe { ns_to_cycles(1_000_000_000) }
+    }
+
     fn cycles_to_ns(&self, t: u64) -> u64 {
         unsafe { cycles_to_ns(t) }
     }

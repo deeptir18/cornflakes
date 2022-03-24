@@ -9,6 +9,14 @@
 #include <net/ip.h>
 #include <net/udp.h>
 
+static inline void free_mbuf_(struct mbuf *metadata_mbuf) {
+    mbuf_free(metadata_mbuf);
+}
+
+static inline uint64_t ns_to_cycles_(uint64_t a) {
+    return ns_to_cycles(a);
+}
+
 static inline uint64_t cycles_to_ns_(uint64_t a) {
     return cycles_to_us(a);
 }

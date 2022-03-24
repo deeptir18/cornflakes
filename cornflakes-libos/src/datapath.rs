@@ -208,6 +208,9 @@ pub trait Datapath {
     /// @min_elts: minimum number of elements in the memory pool.
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<()>;
 
+    /// Number of cycles in a second
+    fn timer_hz(&self) -> u64;
+
     /// Convert cycles to ns.
     fn cycles_to_ns(&self, t: u64) -> u64;
 
