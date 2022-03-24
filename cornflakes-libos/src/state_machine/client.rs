@@ -11,6 +11,22 @@ use std::time::{Duration, Instant};
 pub trait ClientSM {
     type Datapath: Datapath;
 
+    fn uniq_received_so_far(&self) -> usize;
+
+    fn uniq_sent_so_far(&self) -> usize;
+
+    fn num_retried(&self) -> usize;
+
+    fn num_timed_out(&self) -> usize;
+
+    fn increment_uniq_received(&mut self);
+
+    fn increment_uniq_sent(&mut self);
+
+    fn increment_num_retried(&mut self);
+
+    fn increment_num_timed_out(&mut self);
+
     fn server_addr(&self) -> AddressInfo;
 
     fn get_next_msg(&mut self) -> Result<Option<(MsgID, &[u8])>>;
@@ -34,14 +50,6 @@ pub trait ClientSM {
     fn record_rtt(&mut self, rtt: Duration) {
         self.get_mut_rtts().record(rtt.as_nanos() as u64);
     }
-
-    fn uniq_received_so_far(&self) -> usize;
-
-    fn uniq_sent_so_far(&self) -> usize;
-
-    fn num_retried(&self) -> usize;
-
-    fn num_timed_out(&self) -> usize;
 
     fn num_sent_cutoff(&self, cutoff: usize) -> usize {
         self.uniq_sent_so_far() - cutoff
@@ -100,6 +108,7 @@ pub trait ClientSM {
                 break;
             }
             datapath.push_buffers_with_copy(vec![(id, conn_id, msg)])?;
+            self.increment_uniq_sent();
             let recved_pkts = loop {
                 let pkts = datapath.pop_with_durations()?;
                 if pkts.len() > 0 {
@@ -109,6 +118,8 @@ pub trait ClientSM {
                     .timed_out(time_out(self.uniq_received_so_far()))?
                     .iter()
                 {
+                    self.increment_num_retried();
+                    self.increment_num_timed_out();
                     datapath.push_buffers_with_copy(vec![(
                         *id,
                         *conn,
@@ -124,6 +135,7 @@ pub trait ClientSM {
                     "Error in processing received response for pkt {}.",
                     msg_id
                 ))?;
+                self.increment_uniq_received();
                 recved += 1;
             }
         }
@@ -159,6 +171,7 @@ pub trait ClientSM {
             // Send the next message
             tracing::debug!(time = ?time_start.elapsed(), "About to send next packet");
             datapath.push_buffers_with_copy(vec![(id, conn_id, msg)])?;
+            self.increment_uniq_sent();
             idx += 1;
             let last_sent = datapath.current_cycles();
             deficit = last_sent - next;
@@ -173,6 +186,7 @@ pub trait ClientSM {
                         "Error in processing received response for pkt {}.",
                         msg_id
                     ))?;
+                    self.increment_uniq_received();
                 }
 
                 if !no_retries {
@@ -180,6 +194,8 @@ pub trait ClientSM {
                         .timed_out(time_out(self.uniq_received_so_far()))?
                         .iter()
                     {
+                        self.increment_num_retried();
+                        self.increment_num_timed_out();
                         datapath.push_buffers_with_copy(vec![(
                             *id,
                             *conn,

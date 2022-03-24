@@ -52,6 +52,16 @@ where
     pub fn iter(&self) -> std::slice::Iter<D::DatapathMetadata> {
         self.pkts.iter()
     }
+
+    pub fn flatten(&self) -> Vec<u8> {
+        let bytes: Vec<u8> = self
+            .pkts
+            .iter()
+            .map(|pkt| pkt.as_ref().to_vec())
+            .flatten()
+            .collect();
+        bytes
+    }
 }
 
 /// Functionality accessible to higher level application on top of datapath metadata objects.
