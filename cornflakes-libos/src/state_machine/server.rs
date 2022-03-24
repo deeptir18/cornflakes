@@ -1,10 +1,5 @@
-use super::super::{
-    datapath::{Datapath, PushBufType, ReceivedPkt},
-    utils::AddressInfo,
-    MsgID,
-};
+use super::super::datapath::{Datapath, PushBufType, ReceivedPkt};
 use color_eyre::eyre::Result;
-use std::time::Duration;
 pub trait ServerSM {
     type Datapath: Datapath;
 

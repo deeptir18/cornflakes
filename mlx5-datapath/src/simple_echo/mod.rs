@@ -35,6 +35,7 @@ impl FromStr for RequestShape {
         let mut pattern: Vec<usize> = Vec::with_capacity(pattern_length);
         for i in 2..(pattern_length + 2) {
             let size: usize = split[i].parse::<usize>()?;
+            pattern.push(size);
         }
         Ok(RequestShape::new(num_repeats, pattern))
     }
@@ -48,12 +49,25 @@ impl RequestShape {
         }
     }
 
+    pub fn range_vec(&self) -> Vec<(usize, usize)> {
+        let mut ret: Vec<(usize, usize)> = Vec::default();
+        // TODO: this code assumes the entire range fits in a single jumbo frame
+        let mut offset = 0;
+        for _ in 0..self.num_repeats {
+            for size in self.pattern.iter() {
+                ret.push((offset, *size));
+                offset += size;
+            }
+        }
+        ret
+    }
+
     // generate a series of bytes with a specific pattern.
     pub fn generate_bytes(&self) -> Vec<Vec<u8>> {
         let alphabet = "abcdefghijklmnopqrstuvwqyz";
         let mut ret: Vec<Vec<u8>> = Vec::default();
         let mut alph_index = 0;
-        for i in 0..self.num_repeats {
+        for _ in 0..self.num_repeats {
             for size in self.pattern.iter() {
                 let l = alphabet.chars().nth(alph_index % alphabet.len()).unwrap();
                 let chars: String = std::iter::repeat(())

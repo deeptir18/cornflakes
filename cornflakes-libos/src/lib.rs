@@ -324,6 +324,10 @@ impl<'a> Sga<'a> {
         }
     }
 
+    pub fn with_entries(entries: Vec<Sge<'a>>) -> Self {
+        Sga { entries: entries }
+    }
+
     pub fn add_entry(&mut self, entry: Sge<'a>) {
         self.entries.push(entry);
     }
@@ -425,6 +429,10 @@ where
         RcSga {
             entries: Vec::with_capacity(num_entries),
         }
+    }
+
+    pub fn with_entries(entries: Vec<RcSge<'a, D>>) -> Self {
+        RcSga { entries: entries }
     }
 
     pub fn len(&self) -> usize {

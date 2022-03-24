@@ -1,11 +1,8 @@
 use super::{super::datapath::connection::Mlx5Connection, RequestShape};
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::Result;
 use cornflakes_libos::{
-    datapath::{Datapath, ReceivedPkt},
-    state_machine::client::ClientSM,
-    timing::ManualHistogram,
-    utils::AddressInfo,
-    MsgID,
+    datapath::ReceivedPkt, state_machine::client::ClientSM, timing::ManualHistogram,
+    utils::AddressInfo, MsgID,
 };
 use std::iter::Iterator;
 
@@ -112,7 +109,7 @@ impl ClientSM for SimpleEchoClient {
         Ok(())
     }
 
-    fn msg_timeout_cb(&mut self, id: MsgID) -> Result<(&[u8])> {
+    fn msg_timeout_cb(&mut self, id: MsgID) -> Result<&[u8]> {
         tracing::info!(id, last_sent = self.last_sent_id, "Retry callback");
         Ok(&self.bytes_to_transmit.as_slice())
     }

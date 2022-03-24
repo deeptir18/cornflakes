@@ -84,6 +84,13 @@ pub trait ClientSM {
         );
         self.get_mut_rtts()
             .dump(&format!("End-to-end client stats for {}: ", app_name))?;
+
+        match path {
+            Some(p) => {
+                self.get_mut_rtts().log_to_file(&p)?;
+            }
+            None => {}
+        }
         Ok(())
     }
 

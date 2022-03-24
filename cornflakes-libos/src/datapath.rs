@@ -6,6 +6,7 @@ use std::{io::Write, net::Ipv4Addr, time::Duration};
 /// (1) Scatter-gather API without manual ref counting
 /// (2) Manually Reference counted scatter-gather API
 /// (3) Pushing a single buffer to be copied
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum PushBufType {
     Sga,
     RcSga,
@@ -33,6 +34,11 @@ where
         }
     }
 
+    pub fn data_len(&self) -> usize {
+        let sum: usize = self.pkts.iter().map(|pkt| pkt.data_len()).sum();
+        sum
+    }
+
     pub fn conn_id(&self) -> ConnID {
         self.conn
     }
@@ -51,6 +57,58 @@ where
 
     pub fn iter(&self) -> std::slice::Iter<D::DatapathMetadata> {
         self.pkts.iter()
+    }
+
+    /// Given a start index and length, return a datapath metadata object referring to the given
+    /// contiguous slice within the packet if it exists.
+    /// Arguments:
+    /// @start - start index into received packet bytes.
+    /// @len - length of desired contiguous slice
+    pub fn contiguous_datapath_metadata(
+        &self,
+        start: usize,
+        len: usize,
+    ) -> Option<D::DatapathMetadata> {
+        let mut cur_seg_offset = 0;
+        for idx in 0..self.pkts.len() {
+            if start >= cur_seg_offset && start < (cur_seg_offset + self.pkts[idx].data_len()) {
+                if (start + len) > (cur_seg_offset + self.pkts[idx].data_len()) {
+                    // bounds not a contiguous slice
+                    return None;
+                } else {
+                    let slice_offset = start - cur_seg_offset;
+                    let mut cloned_metadata = self.pkts[idx].clone();
+                    cloned_metadata.set_offset(cloned_metadata.offset() + slice_offset);
+                    cloned_metadata.set_data_len(len);
+                    return Some(cloned_metadata);
+                }
+            }
+            // TODO: is there a "we've gotten past this slice" condition we can check?
+            cur_seg_offset += self.pkts[idx].data_len();
+        }
+        return None;
+    }
+
+    /// Given a start index and length, returns a contiguous slice within the packet if it exists.
+    /// Arguments:
+    /// @start - start index into received packet bytes.
+    /// @len - length of desired contiguous slice.
+    pub fn contiguous_slice(&self, start: usize, len: usize) -> Option<&[u8]> {
+        let mut cur_seg_offset = 0;
+        for idx in 0..self.pkts.len() {
+            if start >= cur_seg_offset && start < (cur_seg_offset + self.pkts[idx].data_len()) {
+                if (start + len) > (cur_seg_offset + self.pkts[idx].data_len()) {
+                    // bounds not a contiguous slice
+                    return None;
+                } else {
+                    let slice_offset = start - cur_seg_offset;
+                    return Some(&self.pkts[idx].as_ref()[slice_offset..(slice_offset + len)]);
+                }
+            }
+            cur_seg_offset += self.pkts[idx].data_len();
+        }
+
+        return None;
     }
 
     pub fn flatten(&self) -> Vec<u8> {
