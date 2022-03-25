@@ -1,4 +1,4 @@
-use super::{super::datapath::connection::Mlx5Connection, RequestShape};
+use super::RequestShape;
 use color_eyre::eyre::Result;
 use cornflakes_libos::{
     datapath::{Datapath, ReceivedPkt},
@@ -7,9 +7,12 @@ use cornflakes_libos::{
     utils::AddressInfo,
     MsgID,
 };
-use std::iter::Iterator;
+use std::{iter::Iterator, marker::PhantomData};
 
-pub struct SimpleEchoClient {
+pub struct SimpleEchoClient<D>
+where
+    D: Datapath,
+{
     last_sent_id: MsgID,
     received: usize,
     num_retried: usize,
@@ -17,14 +20,18 @@ pub struct SimpleEchoClient {
     bytes_to_transmit: Vec<u8>,
     server_addr: AddressInfo,
     rtts: ManualHistogram,
+    _datapath: PhantomData<D>,
 }
 
-impl SimpleEchoClient {
+impl<D> SimpleEchoClient<D>
+where
+    D: Datapath,
+{
     pub fn new(
         server_addr: AddressInfo,
         request_shape: RequestShape,
         max_num_requests: usize,
-    ) -> SimpleEchoClient {
+    ) -> SimpleEchoClient<D> {
         SimpleEchoClient {
             last_sent_id: 0,
             received: 0,
@@ -37,12 +44,16 @@ impl SimpleEchoClient {
                 .collect(),
             server_addr: server_addr,
             rtts: ManualHistogram::new(max_num_requests),
+            _datapath: PhantomData::default(),
         }
     }
 }
 
-impl ClientSM for SimpleEchoClient {
-    type Datapath = Mlx5Connection;
+impl<D> ClientSM for SimpleEchoClient<D>
+where
+    D: Datapath,
+{
+    type Datapath = D;
 
     fn increment_uniq_received(&mut self) {
         self.received += 1;

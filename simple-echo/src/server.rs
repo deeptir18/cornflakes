@@ -1,4 +1,4 @@
-use super::{super::datapath::connection::Mlx5Connection, RequestShape};
+use super::RequestShape;
 use bytes::{BufMut, Bytes, BytesMut};
 use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::{
@@ -6,25 +6,37 @@ use cornflakes_libos::{
     state_machine::server::ServerSM,
     ConnID, MsgID, RcSga, RcSge, Sga, Sge,
 };
+use std::marker::PhantomData;
 
-pub struct SimpleEchoServer {
+pub struct SimpleEchoServer<D>
+where
+    D: Datapath,
+{
     push_mode: PushBufType,
     range_vec: Vec<(usize, usize)>,
     response_data_len: usize,
+    _datapath: PhantomData<D>,
 }
 
-impl SimpleEchoServer {
-    pub fn new(push_mode: PushBufType, request_shape: RequestShape) -> SimpleEchoServer {
+impl<D> SimpleEchoServer<D>
+where
+    D: Datapath,
+{
+    pub fn new(push_mode: PushBufType, request_shape: RequestShape) -> SimpleEchoServer<D> {
         SimpleEchoServer {
             push_mode: push_mode,
             range_vec: request_shape.range_vec(),
             response_data_len: request_shape.total_data_len(),
+            _datapath: PhantomData::default(),
         }
     }
 }
 
-impl ServerSM for SimpleEchoServer {
-    type Datapath = Mlx5Connection;
+impl<D> ServerSM for SimpleEchoServer<D>
+where
+    D: Datapath,
+{
+    type Datapath = D;
 
     fn push_buf_type(&self) -> PushBufType {
         self.push_mode

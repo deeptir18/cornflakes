@@ -1,5 +1,5 @@
-mod client;
-mod server;
+pub mod client;
+pub mod server;
 
 use color_eyre::eyre::{bail, Result};
 use std::str::FromStr;

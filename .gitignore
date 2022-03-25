@@ -7,7 +7,7 @@ Cargo.lock
 **/results
 experiments/Rplots.pdf
 experiments/tmp.pdf
-mlx5-datapath/mlx5-wrapper/build/
+mlx5-datapath/mlx5-wrapper/build/*
 
 experiments/main/__pycache__
 scatter-gather-bench/build/
