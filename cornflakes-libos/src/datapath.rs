@@ -68,25 +68,25 @@ where
         &self,
         start: usize,
         len: usize,
-    ) -> Option<D::DatapathMetadata> {
+    ) -> Result<Option<D::DatapathMetadata>> {
         let mut cur_seg_offset = 0;
         for idx in 0..self.pkts.len() {
             if start >= cur_seg_offset && start < (cur_seg_offset + self.pkts[idx].data_len()) {
                 if (start + len) > (cur_seg_offset + self.pkts[idx].data_len()) {
                     // bounds not a contiguous slice
-                    return None;
+                    return Ok(None);
                 } else {
                     let slice_offset = start - cur_seg_offset;
                     let mut cloned_metadata = self.pkts[idx].clone();
-                    cloned_metadata.set_offset(cloned_metadata.offset() + slice_offset);
-                    cloned_metadata.set_data_len(len);
-                    return Some(cloned_metadata);
+                    cloned_metadata.set_offset(cloned_metadata.offset() + slice_offset)?;
+                    cloned_metadata.set_data_len(len)?;
+                    return Ok(Some(cloned_metadata));
                 }
             }
             // TODO: is there a "we've gotten past this slice" condition we can check?
             cur_seg_offset += self.pkts[idx].data_len();
         }
-        return None;
+        return Ok(None);
     }
 
     /// Given a start index and length, returns a contiguous slice within the packet if it exists.
@@ -275,6 +275,8 @@ pub trait Datapath {
     /// @size: element size
     /// @min_elts: minimum number of elements in the memory pool.
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<()>;
+
+    fn header_size(&self) -> usize;
 
     /// Number of cycles in a second
     fn timer_hz(&self) -> u64;

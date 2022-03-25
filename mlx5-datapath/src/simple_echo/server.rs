@@ -1,4 +1,5 @@
 use super::{super::datapath::connection::Mlx5Connection, RequestShape};
+use bytes::{BufMut, Bytes, BytesMut};
 use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::{
     datapath::{Datapath, PushBufType, ReceivedPkt},
@@ -9,6 +10,7 @@ use cornflakes_libos::{
 pub struct SimpleEchoServer {
     push_mode: PushBufType,
     range_vec: Vec<(usize, usize)>,
+    response_data_len: usize,
 }
 
 impl SimpleEchoServer {
@@ -16,6 +18,7 @@ impl SimpleEchoServer {
         SimpleEchoServer {
             push_mode: push_mode,
             range_vec: request_shape.range_vec(),
+            response_data_len: request_shape.total_data_len(),
         }
     }
 }
@@ -59,7 +62,7 @@ impl ServerSM for SimpleEchoServer {
             .map(|pkt| {
                 let rc_sge_results: Result<Vec<RcSge<<Self as ServerSM>::Datapath>>> =
                     self.range_vec.iter().map(|range| {
-                        match pkt.contiguous_datapath_metadata(range.0, range.1) {
+                        match pkt.contiguous_datapath_metadata(range.0, range.1)? {
                             Some(d) => Ok(RcSge::RefCounted(d)),
                             None => {
                                 bail!(format!("Could not get contiguous datapath metadata out of received pkt length {} for range [{}, {}]", pkt.data_len(), range.0, range.1));
@@ -81,14 +84,48 @@ impl ServerSM for SimpleEchoServer {
 
     fn process_requests_single_buf(
         &mut self,
-        sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
         datapath: &mut Self::Datapath,
     ) -> Result<()> {
+        let outgoing_bufs_result: Result<Vec<(MsgID, ConnID, Bytes)>> = pkts
+            .iter()
+            .map(|pkt| {
+                let mut bytes = BytesMut::with_capacity(self.response_data_len);
+                for range in self.range_vec.iter() {
+                    let slice = match pkt.contiguous_slice(range.0, range.1) {
+                        Some(s) => s,
+                        None => {
+                            bail!(format!("Could not get contiguous slice in received pkt of total len {} for range  [{}, {}]", pkt.data_len(), range.0, range.1));
+                        }
+                    };
+                    bytes.put(slice);
+                }
+                Ok((pkt.msg_id(), pkt.conn_id(), bytes.freeze()))
+            })
+            .collect();
+        let outgoing_bufs = outgoing_bufs_result?;
+        let outgoing_pkts: Vec<(MsgID, ConnID, &[u8])> = outgoing_bufs
+            .iter()
+            .map(|(msg, conn, bytes)| (*msg, *conn, bytes.as_ref()))
+            .collect();
+        datapath
+            .push_buffers_with_copy(outgoing_pkts)
+            .wrap_err("Failed to push buffers with copy to the datapath")?;
         Ok(())
     }
 
-    fn init(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
-        // TODO: do we need to add a transmit memory pool?
+    fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
+        let max_data_size = self.response_data_len + connection.header_size();
+        let mut buf_size = 256;
+        let min_elts = 8192;
+        loop {
+            // add a tx pool with buf size
+            connection.add_memory_pool(buf_size, min_elts)?;
+            buf_size *= 2;
+            if buf_size > max_data_size {
+                break;
+            }
+        }
         Ok(())
     }
 

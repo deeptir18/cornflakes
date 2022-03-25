@@ -49,6 +49,16 @@ impl RequestShape {
         }
     }
 
+    pub fn total_data_len(&self) -> usize {
+        let mut sum = 0;
+        for _ in 0..self.num_repeats {
+            for size in self.pattern.iter() {
+                sum += *size;
+            }
+        }
+        sum
+    }
+
     pub fn range_vec(&self) -> Vec<(usize, usize)> {
         let mut ret: Vec<(usize, usize)> = Vec::default();
         // TODO: this code assumes the entire range fits in a single jumbo frame

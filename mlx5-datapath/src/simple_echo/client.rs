@@ -1,8 +1,11 @@
 use super::{super::datapath::connection::Mlx5Connection, RequestShape};
 use color_eyre::eyre::Result;
 use cornflakes_libos::{
-    datapath::ReceivedPkt, state_machine::client::ClientSM, timing::ManualHistogram,
-    utils::AddressInfo, MsgID,
+    datapath::{Datapath, ReceivedPkt},
+    state_machine::client::ClientSM,
+    timing::ManualHistogram,
+    utils::AddressInfo,
+    MsgID,
 };
 use std::iter::Iterator;
 
@@ -100,8 +103,8 @@ impl ClientSM for SimpleEchoClient {
         Ok(())
     }
 
-    fn init(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
-        // TODO: do we need to add a transmit memory pool?
+    fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
+        connection.add_memory_pool(self.bytes_to_transmit.len() * 2, 8192)?;
         Ok(())
     }
 

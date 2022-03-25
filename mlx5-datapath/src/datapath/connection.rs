@@ -1684,6 +1684,10 @@ impl Datapath for Mlx5Connection {
         Ok(())
     }
 
+    fn header_size(&self) -> usize {
+        cornflakes_libos::utils::TOTAL_HEADER_SIZE
+    }
+
     fn timer_hz(&self) -> u64 {
         unsafe { ns_to_cycles(1_000_000_000) }
     }
