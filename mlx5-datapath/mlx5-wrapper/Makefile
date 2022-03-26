@@ -45,8 +45,8 @@ all: static
 
 static: build $(LIB).a
 
-$(LIB).a: runtime.o init.o mempool.o mem.o
-	ar rcs build/$@ build/runtime.o build/init.o build/mempool.o build/mem.o
+$(LIB).a: runtime.o init.o mempool.o mem.o time.o
+	ar rcs build/$@ build/runtime.o build/init.o build/mempool.o build/mem.o build/time.o
 
 runtime.o:
 	$(CC) $(CFLAGS) src/runtime.c -c -o build/$@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_STATIC)
@@ -59,6 +59,10 @@ mempool.o:
 
 mem.o:
 	$(CC) $(CFLAGS) src/mem.c -c -o build/$@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_STATIC)
+
+time.o:
+	$(CC) $(CFLAGS) src/time.c -c -o build/$@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_STATIC)
+
 build:
 	@mkdir -p $@
 

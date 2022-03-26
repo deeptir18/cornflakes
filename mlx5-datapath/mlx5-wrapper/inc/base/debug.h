@@ -47,7 +47,7 @@ enum {
 #endif
 #ifdef __DEBUG__
 #define NETPERF_ASSERT(cond, msg, ...) \
-    if (!(cond)) {  \
+    if (unlikely(!cond)) {  \
         printf(RED "[%s, %s, line %d] *NETPERF Assertion failed**: \n" RESET, __FILE__, __FUNCTION__, __LINE__); \
         printf("\t\u2192 "); \
         printf(msg, ##__VA_ARGS__); \
@@ -100,6 +100,15 @@ enum {
 			__builtin_unreachable();		\
 		}						\
 	} while (0)
+
+#define NETPERF_PANIC_ON_TRUE(cond, msg, ...) \
+    if (unlikely(cond)) {  \
+        printf(RED "[%s, %s, line %d] *NETPERF Assertion failed**: \n" RESET, __FILE__, __FUNCTION__, __LINE__); \
+        printf("\t\u2192 "); \
+        printf(msg, ##__VA_ARGS__); \
+        printf("\n"); \
+        exit(1); \
+    }
 
 /* Rate limited debug. */
 #define NETPERF_DEBUG_RATE_LIMITED(fmt, ...) ({							\

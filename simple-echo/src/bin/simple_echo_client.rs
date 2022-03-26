@@ -1,12 +1,13 @@
 use color_eyre::eyre::Result;
 use cornflakes_libos::{
     datapath::{Datapath, PushBufType},
+    dpdk_bindings,
     loadgen::request_schedule::DistributionType,
     state_machine::client::ClientSM,
 };
-use cornflakes_utils::{AppMode, TraceLevel};
-use mlx5_datapath::datapath::connection::Mlx5Connection;
-use simple_echo::client::SimpleEchoClient;
+use cornflakes_utils::{global_debug_init, AppMode, NetworkDatapath, TraceLevel};
+//use mlx5_datapath::datapath::connection::Mlx5Connection;
+use simple_echo::{client::SimpleEchoClient, RequestShape};
 use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
@@ -29,15 +30,13 @@ struct Opt {
         help = "Folder containing shared config information."
     )]
     config_file: String,
-    #[structopt(long = "mode", help = "Echo server or client mode.")]
-    mode: AppMode,
     #[structopt(
-        short = "t",
-        long = "time",
-        help = "Time to run the benchmark for in seconds.",
-        default_value = "1"
+        short = "dp",
+        long = "datapath",
+        help = "Datapath to use",
+        default_value = "dpdk"
     )]
-    total_time: u64,
+    datapath: NetworkDatapath,
     #[structopt(
         short = "ip",
         long = "server_ip",
@@ -52,6 +51,13 @@ struct Opt {
         default_value = "2000"
     )]
     rate: u64,
+    #[structopt(
+        short = "t",
+        long = "time",
+        help = "Time to run the benchmark for in seconds.",
+        default_value = "1"
+    )]
+    total_time: u64,
     #[structopt(long = "retries", help = "Enable client retries.")]
     retries: bool,
     #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
@@ -78,8 +84,19 @@ struct Opt {
     _num_clients: usize,
     #[structopt(long = "client_id", help = "ID of this client", default_value = "1")]
     _client_id: usize,
+    #[structopt(
+        long = "request_shape",
+        help = "Request Shape Pattern; 1-4-256 = pattern of length 1 of [256], repeated four times.",
+        default_value = "1-4-256"
+    )]
+    request_shape: RequestShape,
 }
 
 fn main() -> Result<()> {
+    let opt = Opt::from_args();
+    global_debug_init(opt.trace_level)?;
+    if opt.datapath == NetworkDatapath::DPDK {
+        dpdk_bindings::load_mlx5_driver();
+    }
     Ok(())
 }

@@ -16,8 +16,6 @@ extern "C" {
 
     fn current_cycles_() -> u64;
 
-    fn strerror_(no: ::std::os::raw::c_int) -> *const ::std::os::raw::c_char;
-
     fn alloc_data_buf_(mempool: *mut registered_mempool) -> *mut ::std::os::raw::c_void;
 
     fn alloc_metadata_(
@@ -66,7 +64,7 @@ extern "C" {
         inline_off: usize,
     ) -> *mut mlx5_wqe_data_seg;
 
-    fn flip_headers_(metadata_mbuf: *mut mbuf);
+    fn flip_headers_mlx5_(metadata_mbuf: *mut mbuf);
 
 }
 
@@ -88,11 +86,6 @@ pub unsafe fn cycles_to_ns(a: u64) -> u64 {
 #[inline]
 pub unsafe fn current_cycles() -> u64 {
     current_cycles_()
-}
-
-#[inline]
-pub unsafe fn err_to_str(no: ::std::os::raw::c_int) -> *const ::std::os::raw::c_char {
-    strerror_(no)
 }
 
 #[inline]
@@ -193,5 +186,5 @@ pub unsafe fn dpseg_start(
 
 #[inline]
 pub unsafe fn flip_headers(metadata_mbuf: *mut mbuf) {
-    flip_headers_(metadata_mbuf);
+    flip_headers_mlx5_(metadata_mbuf);
 }

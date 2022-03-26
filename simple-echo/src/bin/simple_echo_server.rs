@@ -1,12 +1,13 @@
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
     datapath::{Datapath, PushBufType},
+    dpdk_bindings,
     loadgen::request_schedule::DistributionType,
     state_machine::server::ServerSM,
 };
-use cornflakes_utils::{AppMode, TraceLevel};
-use mlx5_datapath::datapath::connection::Mlx5Connection;
-use simple_echo::server::SimpleEchoServer;
+use cornflakes_utils::{global_debug_init, AppMode, NetworkDatapath, TraceLevel};
+use mlx5_datapath::datapath::connection::{InlineMode, Mlx5Connection};
+use simple_echo::{server::SimpleEchoServer, RequestShape};
 use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
@@ -29,15 +30,6 @@ struct Opt {
         help = "Folder containing shared config information."
     )]
     config_file: String,
-    #[structopt(long = "mode", help = "Echo server or client mode.")]
-    mode: AppMode,
-    #[structopt(
-        short = "t",
-        long = "time",
-        help = "Time to run the benchmark for in seconds.",
-        default_value = "1"
-    )]
-    total_time: u64,
     #[structopt(
         short = "ip",
         long = "server_ip",
@@ -46,40 +38,80 @@ struct Opt {
     )]
     server_ip: Ipv4Addr,
     #[structopt(
-        short = "r",
-        long = "rate",
-        help = "Rate of client (in pkts/sec)",
-        default_value = "2000"
+        short = "dp",
+        long = "datapath",
+        help = "Datapath to use",
+        default_value = "mlx5"
     )]
-    rate: u64,
-    #[structopt(long = "retries", help = "Enable client retries.")]
-    retries: bool,
-    #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
-    logfile: Option<String>,
-    #[structopt(long = "threadlog", help = "Logfile to log per thread statistics")]
-    thread_log: Option<String>,
+    datapath: NetworkDatapath,
     #[structopt(
-        long = "distribution",
-        help = "Arrival distribution",
-        default_value = "exponential"
+        short = "api",
+        long = "push_api",
+        help = "Whether to use Sga, RcSga, or Copy to single buf API"
     )]
-    distribution: DistributionType,
+    push_buf_type: PushBufType,
     #[structopt(
-        long = "num_threads",
-        help = "Total number of threads",
-        default_value = "1"
+        short = "inline",
+        long = "inline_mode",
+        help = "For Mlx5 datapath, which inline mode to use. Note this can't be set for DPDK datapath.",
+        default_value = "nothing"
     )]
-    num_threads: usize,
+    inline_mode: InlineMode,
     #[structopt(
-        long = "num_clients",
-        help = "Total number of clients",
-        default_value = "1"
+        short = "copy_thresh",
+        long = "copy_threshold",
+        help = "Datapath copy threshold. Copies everything below this threshold. If set to infinity, tries to use zero-copy for everything. If set to 0, uses zero-copy for nothing.",
+        default_value = "256"
     )]
-    _num_clients: usize,
-    #[structopt(long = "client_id", help = "ID of this client", default_value = "1")]
-    _client_id: usize,
+    copying_threshold: usize,
+    #[structopt(
+        long = "request_shape",
+        help = "Request Shape Pattern; 1-4-256 = pattern of length 1 of [256], repeated four times.",
+        default_value = "1-4-256"
+    )]
+    request_shape: RequestShape,
 }
 
 fn main() -> Result<()> {
+    let opt = Opt::from_args();
+    global_debug_init(opt.trace_level)?;
+    if opt.datapath == NetworkDatapath::DPDK {
+        if opt.inline_mode != InlineMode::Nothing {
+            bail!("DPDK datapath does not support inlining");
+        }
+        dpdk_bindings::load_mlx5_driver();
+    }
+
+    match opt.datapath {
+        NetworkDatapath::DPDK => {
+            unimplemented!();
+        }
+        NetworkDatapath::MLX5 => {
+            let mut datapath_params = <Mlx5Connection as Datapath>::parse_config_file(
+                &opt.config_file,
+                Some(opt.server_ip.clone()),
+            )?;
+            let addresses = <Mlx5Connection as Datapath>::compute_affinity(
+                &datapath_params,
+                1,
+                None,
+                AppMode::Server,
+            )?;
+            let (global_context, per_thread_contexts) =
+                <Mlx5Connection as Datapath>::global_init(1, &mut datapath_params, addresses)?;
+            let mut connection = <Mlx5Connection as Datapath>::per_thread_init(
+                datapath_params,
+                per_thread_contexts.into_iter().nth(0).unwrap(),
+                AppMode::Server,
+            )?;
+
+            // set command line parameters on copying threshold
+            connection.set_copying_threshold(opt.copying_threshold);
+            connection.set_inline_mode(opt.inline_mode);
+
+            <Mlx5Connection as Datapath>::global_teardown(global_context, 1)?;
+        }
+    }
+
     Ok(())
 }

@@ -48,6 +48,8 @@ struct __attribute__((__packed__)) transmission_info {
 
 #define incr_transmission_info(v, transmission) (incr_ring_buffer(transmission, completion_buffer_start(v), completion_buffer_end(v), struct transmission_info, struct transmission_info *))
 
+const char *err_to_str(int no);
+
 struct hardware_q {
 	void		*descriptor_table;
 	uint32_t	*consumer_idx;

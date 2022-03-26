@@ -24,6 +24,7 @@ use std::{
     net::Ipv4Addr,
     path::Path,
     ptr,
+    str::FromStr,
     time::{Duration, Instant},
 };
 use yaml_rust::{Yaml, YamlLoader};
@@ -45,6 +46,25 @@ pub enum InlineMode {
 impl Default for InlineMode {
     fn default() -> Self {
         InlineMode::Nothing
+    }
+}
+
+impl FromStr for InlineMode {
+    type Err = color_eyre::eyre::Error;
+
+    fn from_str(s: &str) -> Result<InlineMode> {
+        match s {
+            "nothing" | "Nothing" | "0" | "NOTHING" => Ok(InlineMode::Nothing),
+            "packetheader" | "PacketHeader" | "PACKETHEADER" | "packet_header" => {
+                Ok(InlineMode::PacketHeader)
+            }
+            "firstentry" | "first_entry" | "FIRSTENTRY" | "FirstEntry" => {
+                Ok(InlineMode::FirstEntry)
+            }
+            x => {
+                bail!("Unknown inline mode: {:?}", x);
+            }
+        }
     }
 }
 
@@ -1093,7 +1113,7 @@ impl Datapath for Mlx5Connection {
     fn compute_affinity(
         datapath_params: &Self::DatapathSpecificParams,
         num_queues: usize,
-        _remote_ip: Ipv4Addr,
+        _remote_ip: Option<Ipv4Addr>,
         app_mode: AppMode,
     ) -> Result<Vec<AddressInfo>> {
         // TODO: how do we compute affinity for more than one queue for mlx5
@@ -1188,7 +1208,13 @@ impl Datapath for Mlx5Connection {
         Ok((global_context, per_thread_contexts))
     }
 
-    fn global_teardown(context: Self::GlobalContext) -> Result<()> {
+    fn global_teardown(context: Self::GlobalContext, num_threads: usize) -> Result<()> {
+        for i in 0..num_threads {
+            let per_thread_context = unsafe { get_per_thread_context(context.get_ptr(), i as _) };
+            unsafe {
+                teardown(per_thread_context);
+            }
+        }
         // free the global context
         unsafe {
             free_global_context(context.get_ptr());

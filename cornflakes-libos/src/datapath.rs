@@ -1,6 +1,6 @@
 use super::{serialize::Serializable, utils::AddressInfo, ConnID, MsgID, RcSga, Sga};
-use color_eyre::eyre::Result;
-use std::{io::Write, net::Ipv4Addr, time::Duration};
+use color_eyre::eyre::{bail, Result};
+use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
 
 /// Represents if app is using:
 /// (1) Scatter-gather API without manual ref counting
@@ -11,6 +11,21 @@ pub enum PushBufType {
     Sga,
     RcSga,
     SingleBuf,
+}
+
+impl FromStr for PushBufType {
+    type Err = color_eyre::eyre::Error;
+
+    fn from_str(s: &str) -> Result<PushBufType> {
+        match s {
+            "sga" | "SGA" | "Sga" => Ok(PushBufType::Sga),
+            "rcsga" | "RcSga" | "RCSGA" => Ok(PushBufType::RcSga),
+            "singlebuf" | "single_buf" | "SingleBuf" | "SINGLEBUF" => Ok(PushBufType::SingleBuf),
+            x => {
+                bail!("Unknown push buf type: {:?}", x);
+            }
+        }
+    }
 }
 
 pub struct ReceivedPkt<D>
@@ -166,7 +181,7 @@ pub trait Datapath {
     fn compute_affinity(
         datapath_params: &Self::DatapathSpecificParams,
         num_queues: usize,
-        remote_ip: Ipv4Addr,
+        remote_ip: Option<Ipv4Addr>,
         app_mode: cornflakes_utils::AppMode,
     ) -> Result<Vec<AddressInfo>>;
 
@@ -185,7 +200,8 @@ pub trait Datapath {
     /// Any global teardown required by this datapath.
     /// Args:
     /// @global_context: Global context object returned by global_init.
-    fn global_teardown(context: Self::GlobalContext) -> Result<()>;
+    /// @num_threads: Number of threads used.
+    fn global_teardown(context: Self::GlobalContext, num_threads: usize) -> Result<()>;
 
     /// Per thread initialization for a particular queue.
     /// Args:

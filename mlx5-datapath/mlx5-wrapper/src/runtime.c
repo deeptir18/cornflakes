@@ -56,7 +56,7 @@ int mlx5_process_completions(struct mlx5_per_thread_context *per_thread_context,
             break;
         }
 
-        PANIC_ON_TRUE(opcode != MLX5_CQE_REQ, "Wrong opcode, cqe_format: %d, cqe_format equals 0x3: %d, opcode: %d, wqe counter: %d, syndrome: %d", 
+        NETPERF_PANIC_ON_TRUE(opcode != MLX5_CQE_REQ, "Wrong opcode, cqe_format: %d, cqe_format equals 0x3: %d, opcode: %d, wqe counter: %d, syndrome: %d", 
                 mlx5_get_cqe_format(cqe), 
                 mlx5_get_cqe_format(cqe) == 0x3, 
                 mlx5_get_cqe_opcode(cqe), 
@@ -104,7 +104,7 @@ int mlx5_gather_rx(struct mlx5_per_thread_context *per_thread_context,
         v->rx_hw_drop += be32toh(cqe->sop_drop_qpn) >> 24;
 		//STAT(RX_HW_DROP) += be32toh(cqe->sop_drop_qpn) >> 24;
 
-		PANIC_ON_TRUE(mlx5_get_cqe_format(cqe) == 0x3i, "Wrong cqe format"); // not compressed
+		NETPERF_PANIC_ON_TRUE(mlx5_get_cqe_format(cqe) == 0x3i, "Wrong cqe format"); // not compressed
 		wqe_idx = be16toh(cqe->wqe_counter) & (wq->wqe_cnt - 1);
 		m = v->buffers[wqe_idx];
         // set length to be actual data length received

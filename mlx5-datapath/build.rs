@@ -70,6 +70,7 @@ fn main() {
         "mlx5".to_string(),
         "ibverbs".to_string(),
         "ccan".to_string(),
+        "rdma_util".to_string(),
         "nl-3".to_string(),
         "nl-route-3".to_string(),
         "pthread".to_string(),

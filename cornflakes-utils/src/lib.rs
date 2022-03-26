@@ -124,7 +124,7 @@ impl std::str::FromStr for AppMode {
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum NetworkDatapath {
     DPDK,
-    OFED,
+    MLX5,
 }
 
 impl std::str::FromStr for NetworkDatapath {
@@ -132,7 +132,7 @@ impl std::str::FromStr for NetworkDatapath {
     fn from_str(s: &str) -> Result<NetworkDatapath> {
         Ok(match s {
             "dpdk" | "DPDK" => NetworkDatapath::DPDK,
-            "ofed" | "Ofed" | "OFED" => NetworkDatapath::OFED,
+            "mlx5" | "MLX5" | "Mlx5" => NetworkDatapath::MLX5,
             x => bail!("{} datapath unknown.", x),
         })
     }

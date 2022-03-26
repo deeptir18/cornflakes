@@ -3,6 +3,7 @@
 #include <base/mempool.h>
 #include <base/pci.h>
 #include <base/rte_memcpy.h>
+#include <errno.h>
 #include <infiniband/verbs.h>
 #include <infiniband/mlx5dv.h>
 #include <mlx5/mlx5.h>
@@ -35,6 +36,10 @@ struct mlx5_global_context *alloc_global_context(size_t num_threads) {
         context->thread_contexts[i]->thread_id = i;
     }
     return context;
+}
+
+const char *err_to_str(int no) {
+    return strerror(no);
 }
 
 void free_global_context(struct mlx5_global_context *context) {
@@ -608,8 +613,8 @@ int mlx5_init_rxq(struct mlx5_per_thread_context *thread_context) {
 		return -ret;
     }
 
-	PANIC_ON_TRUE(!is_power_of_two(v->rx_wq_dv.stride), "Stride not power of two; stride: %d", v->rx_wq_dv.stride);
-	PANIC_ON_TRUE(!is_power_of_two(v->rx_cq_dv.cqe_size), "CQE size not power of two");
+	NETPERF_PANIC_ON_TRUE(!is_power_of_two(v->rx_wq_dv.stride), "Stride not power of two; stride: %d", v->rx_wq_dv.stride);
+	NETPERF_PANIC_ON_TRUE(!is_power_of_two(v->rx_cq_dv.cqe_size), "CQE size not power of two");
 	v->rx_wq_log_stride = __builtin_ctz(v->rx_wq_dv.stride);
 	v->rx_cq_log_stride = __builtin_ctz(v->rx_cq_dv.cqe_size);
 
@@ -755,8 +760,8 @@ int mlx5_init_txq(struct mlx5_per_thread_context *thread_context) {
 		return -ret;
     }
 
-	PANIC_ON_TRUE(!is_power_of_two(v->tx_cq_dv.cqe_size), "tx cqe_size not power of two");
-	PANIC_ON_TRUE(!is_power_of_two(v->tx_qp_dv.sq.stride), "tx stride size not power of two");
+	NETPERF_PANIC_ON_TRUE(!is_power_of_two(v->tx_cq_dv.cqe_size), "tx cqe_size not power of two");
+	NETPERF_PANIC_ON_TRUE(!is_power_of_two(v->tx_qp_dv.sq.stride), "tx stride size not power of two");
 	v->tx_sq_log_stride = __builtin_ctz(v->tx_qp_dv.sq.stride);
 	v->tx_cq_log_stride = __builtin_ctz(v->tx_cq_dv.cqe_size);
 

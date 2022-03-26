@@ -4,6 +4,7 @@ pub mod server;
 use color_eyre::eyre::{bail, Result};
 use std::str::FromStr;
 
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct RequestShape {
     pattern: Vec<usize>, // Vector of sizes of entry
     num_repeats: usize,  // number of times pattern is repeated

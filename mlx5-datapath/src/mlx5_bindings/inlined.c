@@ -4,7 +4,6 @@
 #include <base/time.h>
 #include <mlx5/mlx5.h>
 #include <mlx5/mlx5_runtime.h>
-#include <errno.h>
 #include <net/ethernet.h>
 #include <net/ip.h>
 #include <net/udp.h>
@@ -23,10 +22,6 @@ static inline uint64_t cycles_to_ns_(uint64_t a) {
 
 static inline uint64_t current_cycles_() {
     return microcycles();
-}
-
-static inline char *strerror_(int no) {
-    return strerror(no);
 }
 
 static inline void *alloc_data_buf_(struct registered_mempool *mempool) {
@@ -128,7 +123,7 @@ inline struct mlx5_wqe_data_seg *dpseg_start_(struct mlx5_per_thread_context *co
     dpseg_start(&context->txq, inline_off);
 }
 
-void flip_headers_(struct mbuf *metadata_mbuf) {
+void flip_headers_mlx5_(struct mbuf *metadata_mbuf) {
     // flips all headers in this packet's data
     struct eth_hdr *eth = mbuf_offset(metadata_mbuf, 0, struct eth_hdr *);
     struct ip_hdr *ip = mbuf_offset(metadata_mbuf, sizeof(struct eth_hdr), struct ip_hdr *);
