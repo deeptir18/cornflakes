@@ -6,7 +6,7 @@
 
 include!(concat!(env!("OUT_DIR"), "/mlx5_bindings.rs"));
 
-#[link(name = "inlined")]
+#[link(name = "mlx5inlined")]
 extern "C" {
     fn free_mbuf_(mbuf: *mut mbuf);
 
@@ -48,7 +48,11 @@ extern "C" {
 
     fn mbuf_at_index_(mempool: *mut mempool, index: usize) -> *mut mbuf;
 
-    fn rte_memcpy_(dst: *mut ::std::os::raw::c_void, src: *const ::std::os::raw::c_void, n: usize);
+    fn mlx5_rte_memcpy_(
+        dst: *mut ::std::os::raw::c_void,
+        src: *const ::std::os::raw::c_void,
+        n: usize,
+    );
 
     fn fill_in_hdrs_(
         hdr_buffer: *mut ::std::os::raw::c_void,
@@ -153,12 +157,12 @@ pub unsafe fn mbuf_at_index(mempool: *mut mempool, index: usize) -> *mut mbuf {
 }
 
 #[inline]
-pub unsafe fn rte_memcpy(
+pub unsafe fn mlx5_rte_memcpy(
     dst: *mut ::std::os::raw::c_void,
     src: *const ::std::os::raw::c_void,
     n: usize,
 ) {
-    rte_memcpy_(dst, src, n);
+    mlx5_rte_memcpy_(dst, src, n);
 }
 
 #[inline]

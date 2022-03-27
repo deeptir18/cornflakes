@@ -8,7 +8,7 @@ use cornflakes_libos::{
 use cornflakes_utils::{global_debug_init, AppMode, NetworkDatapath, TraceLevel};
 use mlx5_datapath::datapath::connection::{InlineMode, Mlx5Connection};
 use simple_echo::{server::SimpleEchoServer, RequestShape};
-use std::net::Ipv4Addr;
+use std::{net::Ipv4Addr, process::exit};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt, Clone)]
@@ -97,8 +97,9 @@ fn main() -> Result<()> {
                 None,
                 AppMode::Server,
             )?;
-            let (global_context, per_thread_contexts) =
+            let per_thread_contexts =
                 <Mlx5Connection as Datapath>::global_init(1, &mut datapath_params, addresses)?;
+
             let mut connection = <Mlx5Connection as Datapath>::per_thread_init(
                 datapath_params,
                 per_thread_contexts.into_iter().nth(0).unwrap(),
@@ -109,7 +110,15 @@ fn main() -> Result<()> {
             connection.set_copying_threshold(opt.copying_threshold);
             connection.set_inline_mode(opt.inline_mode);
 
-            <Mlx5Connection as Datapath>::global_teardown(global_context, 1)?;
+            // initialize echo server object
+            let mut echo_server: SimpleEchoServer<Mlx5Connection> =
+                SimpleEchoServer::new(opt.push_buf_type, opt.request_shape);
+
+            // initialize echo server
+            echo_server.init(&mut connection)?;
+
+            // run the state machine
+            echo_server.run_state_machine(&mut connection)?;
         }
     }
 

@@ -6,7 +6,7 @@
 
 include!(concat!(env!("OUT_DIR"), "/dpdk_bindings.rs"));
 
-#[link(name = "inlined")]
+#[link(name = "dpdkinlined")]
 extern "C" {
     fn mmap_huge_(
         num_pages: usize,

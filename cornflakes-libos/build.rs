@@ -123,5 +123,5 @@ fn main() {
     for header_location in &header_locations {
         compiler.include(header_location.trim());
     }
-    compiler.compile("inlined");
+    compiler.compile("dpdkinlined");
 }

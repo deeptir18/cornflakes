@@ -131,5 +131,5 @@ fn main() {
     for path in header_paths.iter() {
         compiler.include(path.to_str().unwrap());
     }
-    compiler.compile("inlined");
+    compiler.compile("mlx5inlined");
 }

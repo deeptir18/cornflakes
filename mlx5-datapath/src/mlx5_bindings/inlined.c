@@ -8,27 +8,27 @@
 #include <net/ip.h>
 #include <net/udp.h>
 
-static inline void free_mbuf_(struct mbuf *metadata_mbuf) {
+void free_mbuf_(struct mbuf *metadata_mbuf) {
     mbuf_free(metadata_mbuf);
 }
 
-static inline uint64_t ns_to_cycles_(uint64_t a) {
+uint64_t ns_to_cycles_(uint64_t a) {
     return ns_to_cycles(a);
 }
 
-static inline uint64_t cycles_to_ns_(uint64_t a) {
+uint64_t cycles_to_ns_(uint64_t a) {
     return cycles_to_us(a);
 }
 
-static inline uint64_t current_cycles_() {
+uint64_t current_cycles_() {
     return microcycles();
 }
 
-static inline void *alloc_data_buf_(struct registered_mempool *mempool) {
+void *alloc_data_buf_(struct registered_mempool *mempool) {
     return (void *)(mempool_alloc(&(mempool->data_mempool)));
 }
 
-static inline struct mbuf *alloc_metadata_(struct registered_mempool *mempool, void *data_buf) {
+struct mbuf *alloc_metadata_(struct registered_mempool *mempool, void *data_buf) {
     int index = mempool_find_index(&(mempool->data_mempool), data_buf);
     if (index == -1) {
         return NULL;
@@ -38,7 +38,7 @@ static inline struct mbuf *alloc_metadata_(struct registered_mempool *mempool, v
     
 }
 
-static inline void init_metadata_(struct mbuf *m, void *buf, struct mempool *data_mempool, struct mempool *metadata_mempool, size_t data_len, size_t offset) {
+void init_metadata_(struct mbuf *m, void *buf, struct mempool *data_mempool, struct mempool *metadata_mempool, size_t data_len, size_t offset) {
     mbuf_clear(m);
     m->buf_addr = buf;
     m->data_mempool = data_mempool;
@@ -49,43 +49,43 @@ static inline void init_metadata_(struct mbuf *m, void *buf, struct mempool *dat
     m->offset = offset;
 }
 
-static inline struct mempool *get_data_mempool_(struct registered_mempool *mempool) {
+struct mempool *get_data_mempool_(struct registered_mempool *mempool) {
     return (struct mempool *)(&(mempool->data_mempool));
 }
 
-static inline struct mempool *get_metadata_mempool_(struct registered_mempool *mempool) {
+struct mempool *get_metadata_mempool_(struct registered_mempool *mempool) {
     return (struct mempool *)(&(mempool->metadata_mempool));
 }
 
-static inline void *mbuf_offset_ptr_(struct mbuf *mbuf, size_t off) {
+void *mbuf_offset_ptr_(struct mbuf *mbuf, size_t off) {
     return (void *)mbuf_offset_ptr(mbuf, off);
 }
 
-static inline uint16_t mbuf_refcnt_read_(struct mbuf *mbuf) {
+uint16_t mbuf_refcnt_read_(struct mbuf *mbuf) {
     return mbuf_refcnt_read(mbuf);
 }
 
-static inline void mbuf_refcnt_update_or_free_(struct mbuf *mbuf, int16_t change) {
+void mbuf_refcnt_update_or_free_(struct mbuf *mbuf, int16_t change) {
     mbuf_refcnt_update_or_free(mbuf, change);
 }
 
-static inline void mbuf_free_(struct mbuf *mbuf) {
+void mbuf_free_(struct mbuf *mbuf) {
     mbuf_free(mbuf);
 }
 
-static inline void mempool_free_(void *item, struct mempool *mempool) {
+void mempool_free_(void *item, struct mempool *mempool) {
     mempool_free(mempool, item);
 }
 
-static inline struct mbuf *mbuf_at_index_(struct mempool *mempool, size_t index) {
+struct mbuf *mbuf_at_index_(struct mempool *mempool, size_t index) {
     return (struct mbuf *)((char *)mempool->buf + index * mempool->item_len);
 }
 
-static inline void rte_memcpy_(void *dst, const void *src, size_t n) {
+void mlx5_rte_memcpy_(void *dst, const void *src, size_t n) {
     rte_memcpy(dst, src, n);
 }
 
-static inline void fill_in_hdrs_(void *buffer, const void *hdr, uint32_t id, size_t data_len) {
+void fill_in_hdrs_(void *buffer, const void *hdr, uint32_t id, size_t data_len) {
     char *dst_ptr = buffer;
     const char *src_ptr = hdr;
     // copy ethernet header
@@ -115,12 +115,12 @@ static inline void fill_in_hdrs_(void *buffer, const void *hdr, uint32_t id, siz
 
 }
 
-inline struct transmission_info *completion_start_(struct mlx5_per_thread_context *context) {
-    completion_start(&context->txq);
+struct transmission_info *completion_start_(struct mlx5_per_thread_context *context) {
+    return completion_start(&context->txq);
 }
 
-inline struct mlx5_wqe_data_seg *dpseg_start_(struct mlx5_per_thread_context *context, size_t inline_off) {
-    dpseg_start(&context->txq, inline_off);
+struct mlx5_wqe_data_seg *dpseg_start_(struct mlx5_per_thread_context *context, size_t inline_off) {
+    return dpseg_start(&context->txq, inline_off);
 }
 
 void flip_headers_mlx5_(struct mbuf *metadata_mbuf) {
@@ -130,9 +130,9 @@ void flip_headers_mlx5_(struct mbuf *metadata_mbuf) {
     struct udp_hdr *udp = mbuf_offset(metadata_mbuf, sizeof(struct eth_hdr) + sizeof(struct ip_hdr), struct udp_hdr *);
     
     struct eth_addr tmp;
-    rte_memcpy(&tmp, &eth->dhost, sizeof(struct eth_addr));
-    rte_memcpy(&eth->dhost, &eth->shost, sizeof(struct eth_addr));
-    rte_memcpy(&eth->shost, &tmp, sizeof(struct eth_addr));
+    mlx5_rte_memcpy(&tmp, &eth->dhost, sizeof(struct eth_addr));
+    mlx5_rte_memcpy(&eth->dhost, &eth->shost, sizeof(struct eth_addr));
+    mlx5_rte_memcpy(&eth->shost, &tmp, sizeof(struct eth_addr));
     
     uint32_t tmp_ip = ip->daddr;
     ip->daddr = ip->saddr;

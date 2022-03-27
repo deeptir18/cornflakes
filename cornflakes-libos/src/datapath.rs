@@ -158,9 +158,6 @@ pub trait Datapath {
     /// Any per thread context required by the datapath per thread.
     type PerThreadContext: Send + Clone;
 
-    /// Global context.
-    type GlobalContext: Send + Clone;
-
     /// Any datapath specific parameters.
     type DatapathSpecificParams: Send + Clone;
 
@@ -195,13 +192,7 @@ pub trait Datapath {
         num_queues: usize,
         datapath_params: &mut Self::DatapathSpecificParams,
         addresses: Vec<AddressInfo>,
-    ) -> Result<(Self::GlobalContext, Vec<Self::PerThreadContext>)>;
-
-    /// Any global teardown required by this datapath.
-    /// Args:
-    /// @global_context: Global context object returned by global_init.
-    /// @num_threads: Number of threads used.
-    fn global_teardown(context: Self::GlobalContext, num_threads: usize) -> Result<()>;
+    ) -> Result<Vec<Self::PerThreadContext>>;
 
     /// Per thread initialization for a particular queue.
     /// Args:

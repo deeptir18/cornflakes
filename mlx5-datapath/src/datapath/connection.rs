@@ -25,6 +25,7 @@ use std::{
     path::Path,
     ptr,
     str::FromStr,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use yaml_rust::{Yaml, YamlLoader};
@@ -276,7 +277,17 @@ impl AsRef<[u8]> for MbufMetadata {
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
+struct Mlx5GlobalContext {
+    pub ptr: *mut mlx5_global_context,
+}
+
+unsafe impl Send for Mlx5GlobalContext {}
+unsafe impl Sync for Mlx5GlobalContext {}
+
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub struct Mlx5PerThreadContext {
+    /// Reference counted version of global context pointer
+    global_context_rc: Arc<Mlx5GlobalContext>,
     /// Queue id
     queue_id: u16,
     /// Source address info (ethernet, ip, port)
@@ -284,6 +295,9 @@ pub struct Mlx5PerThreadContext {
     /// Pointer to datapath specific thread information
     context: *mut mlx5_per_thread_context,
 }
+
+unsafe impl Send for Mlx5PerThreadContext {}
+unsafe impl Sync for Mlx5PerThreadContext {}
 
 impl Mlx5PerThreadContext {
     pub fn get_context_ptr(&self) -> *mut mlx5_per_thread_context {
@@ -299,17 +313,19 @@ impl Mlx5PerThreadContext {
     }
 }
 
-unsafe impl Send for Mlx5PerThreadContext {}
-
-#[derive(Debug, Eq, PartialEq, Clone)]
-pub struct Mlx5GlobalContext {
-    /// Pointer to datapath specific global state
-    context: *mut mlx5_global_context,
-}
-
-impl Mlx5GlobalContext {
-    fn get_ptr(&self) -> *mut mlx5_global_context {
-        self.context
+impl Drop for Mlx5PerThreadContext {
+    fn drop(&mut self) {
+        unsafe {
+            teardown(self.context);
+        }
+        if Arc::<Mlx5GlobalContext>::strong_count(&self.global_context_rc) == 1 {
+            // safe to drop global context because this is the last reference
+            unsafe {
+                free_global_context(
+                    (*Arc::<Mlx5GlobalContext>::as_ptr(&self.global_context_rc)).ptr,
+                )
+            }
+        }
     }
 }
 
@@ -348,8 +364,6 @@ impl Mlx5DatapathSpecificParams {
         self.server_port
     }
 }
-
-unsafe impl Send for Mlx5GlobalContext {}
 
 pub struct Mlx5Connection {
     /// Per thread context.
@@ -725,7 +739,7 @@ impl Mlx5Connection {
                     let dst =
                         &mut data_buffer.as_mut()[write_offset..(write_offset + curr_seg.len())];
                     unsafe {
-                        rte_memcpy(
+                        mlx5_rte_memcpy(
                             dst.as_mut_ptr() as _,
                             curr_seg.as_ref().as_ptr() as _,
                             curr_seg.len(),
@@ -898,7 +912,7 @@ impl Mlx5Connection {
                     let dst =
                         &mut data_buffer.as_mut()[write_offset..(write_offset + curr_seg.len())];
                     unsafe {
-                        rte_memcpy(
+                        mlx5_rte_memcpy(
                             dst.as_mut_ptr() as _,
                             curr_seg.as_ptr() as _,
                             curr_seg.len(),
@@ -1052,8 +1066,6 @@ impl Datapath for Mlx5Connection {
 
     type PerThreadContext = Mlx5PerThreadContext;
 
-    type GlobalContext = Mlx5GlobalContext;
-
     type DatapathSpecificParams = Mlx5DatapathSpecificParams;
 
     fn parse_config_file(
@@ -1084,7 +1096,7 @@ impl Datapath for Mlx5Connection {
         let mut ether_addr: MaybeUninit<eth_addr> = MaybeUninit::zeroed();
         // copy given mac addr into the c struct
         unsafe {
-            rte_memcpy(
+            mlx5_rte_memcpy(
                 ether_addr.as_mut_ptr() as _,
                 eth_addr.as_bytes().as_ptr() as _,
                 6,
@@ -1094,7 +1106,7 @@ impl Datapath for Mlx5Connection {
         let pci_str = CString::new(pci_addr.as_str()).expect("CString::new failed");
         let mut pci_addr_c: MaybeUninit<pci_addr> = MaybeUninit::zeroed();
         unsafe {
-            rte_memcpy(
+            mlx5_rte_memcpy(
                 pci_addr_c.as_mut_ptr() as _,
                 pci_str.as_ptr() as _,
                 pci_addr.len(),
@@ -1139,7 +1151,7 @@ impl Datapath for Mlx5Connection {
         num_queues: usize,
         datapath_params: &mut Self::DatapathSpecificParams,
         addresses: Vec<AddressInfo>,
-    ) -> Result<(Self::GlobalContext, Vec<Self::PerThreadContext>)> {
+    ) -> Result<Vec<Self::PerThreadContext>> {
         // do time init
         unsafe {
             time_init();
@@ -1154,8 +1166,8 @@ impl Datapath for Mlx5Connection {
             )
         );
         // allocate the global context
-        let global_context = Mlx5GlobalContext {
-            context: unsafe {
+        let global_context: Arc<Mlx5GlobalContext> = {
+            unsafe {
                 let ptr = alloc_global_context(num_queues as _);
                 ensure!(!ptr.is_null(), "Allocated global context is null");
 
@@ -1189,37 +1201,29 @@ impl Datapath for Mlx5Connection {
 
                 // init queue steering
                 check_ok!(mlx5_qs_init_flows(ptr, datapath_params.get_eth_addr()));
-                ptr
-            },
+                Arc::new(Mlx5GlobalContext { ptr: ptr })
+            }
         };
         let per_thread_contexts: Vec<Mlx5PerThreadContext> = addresses
             .into_iter()
             .enumerate()
             .map(|(i, addr)| {
-                let context_ptr =
-                    unsafe { get_per_thread_context(global_context.get_ptr(), i as u64) };
+                let global_context_copy = global_context.clone();
+                let context_ptr = unsafe {
+                    get_per_thread_context(
+                        (*Arc::<Mlx5GlobalContext>::as_ptr(&global_context_copy)).ptr,
+                        i as u64,
+                    )
+                };
                 Mlx5PerThreadContext {
+                    global_context_rc: global_context_copy,
                     queue_id: i as u16,
                     address_info: addr,
                     context: context_ptr,
                 }
             })
             .collect();
-        Ok((global_context, per_thread_contexts))
-    }
-
-    fn global_teardown(context: Self::GlobalContext, num_threads: usize) -> Result<()> {
-        for i in 0..num_threads {
-            let per_thread_context = unsafe { get_per_thread_context(context.get_ptr(), i as _) };
-            unsafe {
-                teardown(per_thread_context);
-            }
-        }
-        // free the global context
-        unsafe {
-            free_global_context(context.get_ptr());
-        }
-        Ok(())
+        Ok(per_thread_contexts)
     }
 
     fn per_thread_init(
@@ -1389,7 +1393,7 @@ impl Datapath for Mlx5Connection {
                     };
                     let dst = &mut data_buffer.as_mut()[write_offset..(write_offset + buf.len())];
                     unsafe {
-                        rte_memcpy(dst.as_mut_ptr() as _, buf.as_ptr() as _, buf.len());
+                        mlx5_rte_memcpy(dst.as_mut_ptr() as _, buf.as_ptr() as _, buf.len());
                     }
 
                     // now put this inside an mbuf and post it.
