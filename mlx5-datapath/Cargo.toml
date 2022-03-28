@@ -23,5 +23,6 @@ bindgen = "0.55.1"
 cc = "1.0.63"
 
 [features]
-default = []
+default = ["mlx5"]
 profiler = ["perftools"]
+mlx5 = []

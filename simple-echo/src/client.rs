@@ -29,7 +29,7 @@ where
 {
     pub fn new(
         server_addr: AddressInfo,
-        request_shape: RequestShape,
+        request_shape: &RequestShape,
         max_num_requests: usize,
     ) -> SimpleEchoClient<D> {
         SimpleEchoClient {

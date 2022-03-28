@@ -100,14 +100,13 @@ pub trait ClientSM {
         datapath: &mut Self::Datapath,
         num_pkts: u64,
         time_out: impl Fn(usize) -> Duration,
-        server_addr: &AddressInfo,
     ) -> Result<()> {
         let mut recved = 0;
         if recved >= num_pkts {
             return Ok(());
         }
         let conn_id = datapath
-            .connect(server_addr.clone())
+            .connect(self.server_addr())
             .wrap_err("Could not get connection ID")?;
 
         while let Some((id, msg)) = self.get_next_msg()? {
@@ -157,11 +156,10 @@ pub trait ClientSM {
         total_time: u64,
         time_out: impl Fn(usize) -> Duration,
         no_retries: bool,
-        server_addr: &AddressInfo,
     ) -> Result<()> {
         let freq = datapath.timer_hz(); // cycles per second
         let conn_id = datapath
-            .connect(server_addr.clone())
+            .connect(self.server_addr())
             .wrap_err("No more available connection IDs")?;
         let time_start = Instant::now();
         let mut idx = 0;

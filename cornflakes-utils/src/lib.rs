@@ -7,6 +7,39 @@ use tracing_subscriber;
 use tracing_subscriber::{filter::LevelFilter, FmtSubscriber};
 use yaml_rust::{Yaml, YamlLoader};
 
+pub fn get_thread_latlog(name: &str, thread_id: usize) -> Result<String> {
+    let filename = Path::new(name);
+    let stem = match filename.file_stem() {
+        Some(s) => s,
+        None => {
+            bail!("Could not get filestem for: {}", name);
+        }
+    };
+    let mut file_parent = filename.to_path_buf();
+    assert!(file_parent.pop());
+    file_parent.push(&format!("{}-t{}.log", stem.to_str().unwrap(), thread_id));
+    Ok(file_parent.to_str().unwrap().to_string())
+}
+
+pub fn parse_server_addr(
+    config_file: &str,
+    server_ip: &Ipv4Addr,
+) -> Result<(MacAddress, Ipv4Addr, u16)> {
+    let (ip_to_mac, _mac_to_ip, udp_port, _client_port) = parse_yaml_map(config_file)?;
+    let eth = match ip_to_mac.get(server_ip) {
+        Some(eth) => eth,
+        None => {
+            bail!(
+                "Could not find eth address for ip {:?} in yaml map in file {}",
+                server_ip,
+                config_file
+            );
+        }
+    };
+
+    Ok((eth.clone(), server_ip.clone(), udp_port))
+}
+
 pub fn parse_server_port(config_file: &str) -> Result<u16> {
     let file_str = read_to_string(Path::new(&config_file))?;
     let yamls = match YamlLoader::load_from_str(&file_str) {

@@ -73,6 +73,16 @@ impl RequestShape {
         ret
     }
 
+    pub fn message_size(&self) -> usize {
+        let mut sum: usize = 0;
+        for _ in 0..self.num_repeats {
+            for size in self.pattern.iter() {
+                sum += *size;
+            }
+        }
+        sum
+    }
+
     // generate a series of bytes with a specific pattern.
     pub fn generate_bytes(&self) -> Vec<Vec<u8>> {
         let alphabet = "abcdefghijklmnopqrstuvwqyz";

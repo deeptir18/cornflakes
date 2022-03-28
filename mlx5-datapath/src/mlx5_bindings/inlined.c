@@ -130,9 +130,9 @@ void flip_headers_mlx5_(struct mbuf *metadata_mbuf) {
     struct udp_hdr *udp = mbuf_offset(metadata_mbuf, sizeof(struct eth_hdr) + sizeof(struct ip_hdr), struct udp_hdr *);
     
     struct eth_addr tmp;
-    mlx5_rte_memcpy(&tmp, &eth->dhost, sizeof(struct eth_addr));
-    mlx5_rte_memcpy(&eth->dhost, &eth->shost, sizeof(struct eth_addr));
-    mlx5_rte_memcpy(&eth->shost, &tmp, sizeof(struct eth_addr));
+    mlx5_rte_memcpy_(&tmp, &eth->dhost, sizeof(struct eth_addr));
+    mlx5_rte_memcpy_(&eth->dhost, &eth->shost, sizeof(struct eth_addr));
+    mlx5_rte_memcpy_(&eth->shost, &tmp, sizeof(struct eth_addr));
     
     uint32_t tmp_ip = ip->daddr;
     ip->daddr = ip->saddr;

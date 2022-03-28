@@ -13,8 +13,8 @@ use cornflakes_libos::{
     ClientSM, Datapath, ServerSM,
 };
 use cornflakes_utils::{
-    global_debug_init, parse_server_port, AppMode, NetworkDatapath, SerializationType,
-    SimpleMessageType, TraceLevel,
+    get_thread_latlog, global_debug_init, parse_server_port, AppMode, NetworkDatapath,
+    SerializationType, SimpleMessageType, TraceLevel,
 };
 use echo_server::{
     baselines::{BaselineClient, IdealSerializer, OneCopySerializer, TwoCopySerializer},
@@ -32,7 +32,6 @@ use echo_server::{
 };
 use std::{
     net::Ipv4Addr,
-    path::Path,
     process::exit,
     thread::{spawn, JoinHandle},
     time::Instant,
@@ -392,20 +391,6 @@ fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn get_thread_latlog(name: &str, thread_id: usize) -> Result<String> {
-    let filename = Path::new(name);
-    let stem = match filename.file_stem() {
-        Some(s) => s,
-        None => {
-            bail!("Could not get filestem for: {}", name);
-        }
-    };
-    let mut file_parent = filename.to_path_buf();
-    assert!(file_parent.pop());
-    file_parent.push(&format!("{}-t{}.log", stem.to_str().unwrap(), thread_id));
-    Ok(file_parent.to_str().unwrap().to_string())
 }
 
 fn run_client<'normal, S, D>(
