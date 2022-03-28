@@ -1,14 +1,16 @@
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
-    dpdk_bindings,
-    dpdk_libos::{
-        connection::DPDKConnection,
-        echo::{EchoClient, EchoServer},
-    },
     loadgen::request_schedule::{DistributionType, PacketSchedule},
     ClientSM, Datapath, ServerSM,
 };
 use cornflakes_utils::{global_debug_init, parse_server_port, AppMode, TraceLevel};
+use dpdk_datapath::{
+    datapath::{
+        connection::DPDKConnection,
+        echo::{EchoClient, EchoServer},
+    },
+    dpdk_bindings,
+};
 use std::{net::Ipv4Addr, process::exit, time::Instant};
 use structopt::StructOpt;
 

@@ -8,10 +8,10 @@ use super::{
 use color_eyre::eyre::Result;
 use cornflakes_codegen::utils::fixed_hdr::*;
 use cornflakes_libos::{
-    dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, mem::MmapMetadata, Cornflake, Datapath,
-    PtrAttributes, ReceivedPkt, ScatterGather,
+    mem::MmapMetadata, Cornflake, Datapath, PtrAttributes, ReceivedPkt, ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
+use dpdk_datapath::dpdk_bindings::rte_memcpy_wrapper as rte_memcpy;
 use std::slice;
 
 pub struct CornflakesFixedSerializer {

@@ -1,13 +1,13 @@
+use super::connection::DPDKConnection;
+use color_eyre::eyre::{bail, Result, WrapErr};
 /// This module contains a test DPDK echo server and client to test basic functionality.
-use super::super::{
+use cornflakes_libos::{
     mem,
     timing::{record, HistogramWrapper, RTTHistogram},
     utils::AddressInfo,
     ClientSM, CornPtr, Cornflake, Datapath, MsgID, PtrAttributes, ReceivedPkt, ScatterGather,
     ServerSM,
 };
-use super::connection::DPDKConnection;
-use color_eyre::eyre::{bail, Result, WrapErr};
 use hashbrown::HashMap;
 use hdrhistogram::Histogram;
 use std::{

@@ -1,9 +1,6 @@
-use super::{
-    super::{dpdk_call, mem::closest_2mb_page},
-    dpdk_bindings::*,
-    wrapper,
-};
+use super::{super::dpdk_call, dpdk_bindings::*, wrapper};
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
+use cornflakes_libos::mem::closest_2mb_page;
 use hashbrown::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MempoolInfo {

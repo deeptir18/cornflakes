@@ -8,9 +8,9 @@ use super::{ycsb_parser::YCSBRequest, KVSerializer, MsgType, SerializedRequestGe
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_codegen::utils::rc_dynamic_hdr::{CFBytes, HeaderRepr};
 use cornflakes_libos::{
-    dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, CfBuf, Datapath, RcCornPtr, RcCornflake,
-    ReceivedPkt, ScatterGather, USING_REF_COUNTING,
+    CfBuf, Datapath, RcCornPtr, RcCornflake, ReceivedPkt, ScatterGather, USING_REF_COUNTING,
 };
+use dpdk_datapath::dpdk_bindings::rte_memcpy_wrapper as rte_memcpy;
 use hashbrown::HashMap;
 #[cfg(feature = "profiler")]
 use perftools;

@@ -1,10 +1,10 @@
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
     datapath::{Datapath, PushBufType},
-    dpdk_bindings,
     state_machine::server::ServerSM,
 };
 use cornflakes_utils::{global_debug_init, AppMode, NetworkDatapath, TraceLevel};
+use dpdk_datapath::dpdk_bindings;
 use mlx5_datapath::datapath::connection::{InlineMode, Mlx5Connection};
 use simple_echo::{server::SimpleEchoServer, RequestShape};
 use std::net::Ipv4Addr;

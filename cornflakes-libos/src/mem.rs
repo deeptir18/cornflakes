@@ -1,9 +1,8 @@
 //! This module contains ways to interface with custom memory allocation/registration.
 //! How we will exactly achieve that, I am not sure yet.
 //! It seems like standard library containers don't allow custom allocators yet.
-use super::dpdk_bindings::{mmap_huge, munmap_huge};
 use color_eyre::eyre::{bail, Result};
-use std::{ptr, slice};
+use std::slice;
 pub const PAGESIZE: usize = 4096;
 const PGSHIFT_4KB: usize = 12;
 const PGSHIFT_2MB: usize = 21;
@@ -62,22 +61,9 @@ pub struct MmapMetadata {
 }
 
 impl MmapMetadata {
-    pub fn new(num_pages: usize) -> Result<MmapMetadata> {
-        let mut addr: *mut ::std::os::raw::c_void = ptr::null_mut();
-        let mut paddrs = vec![0usize; num_pages];
-        let ret = unsafe { mmap_huge(num_pages, &mut addr as _, paddrs.as_mut_ptr()) };
-        if ret != 0 {
-            bail!("Mmap huge failed.");
-        }
-
-        Ok(MmapMetadata {
-            ptr: addr as *const u8,
-            length: PGSIZE_2MB * num_pages,
-            pagesize: PageSize::PG2MB,
-            paddrs: paddrs,
-            lkey: 0,
-            ibv_mr: ptr::null_mut(),
-        })
+    pub fn new(_num_pages: usize) -> Result<MmapMetadata> {
+        // TODO: remove all instances of this struct from the code
+        unimplemented!();
     }
 
     #[cfg(test)]
@@ -162,9 +148,7 @@ impl MmapMetadata {
     }
 
     pub fn free_mmap(&mut self) {
-        unsafe {
-            munmap_huge(self.ptr as _, self.get_pagesize(), self.num_pages());
-        }
+        unimplemented!();
     }
 }
 

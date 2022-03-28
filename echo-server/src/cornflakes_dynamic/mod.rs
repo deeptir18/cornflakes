@@ -10,10 +10,10 @@ use super::{
 use color_eyre::eyre::{bail, Result};
 use cornflakes_codegen::utils::rc_dynamic_hdr::*;
 use cornflakes_libos::{
-    dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, mem::MmapMetadata, Datapath, PtrAttributes,
-    RcCornPtr, RcCornflake, ReceivedPkt, ScatterGather,
+    mem::MmapMetadata, Datapath, PtrAttributes, RcCornPtr, RcCornflake, ReceivedPkt, ScatterGather,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
+use dpdk_datapath::dpdk_bindings::rte_memcpy_wrapper as rte_memcpy;
 use std::{marker::PhantomData, slice};
 
 pub struct CornflakesDynamicSerializer<D>

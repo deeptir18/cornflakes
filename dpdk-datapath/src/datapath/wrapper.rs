@@ -1,15 +1,12 @@
 #![allow(unused_assignments)]
-
 use super::{
-    super::{
-        dpdk_call, dpdk_check_not_failed, dpdk_ok, mbuf_slice, mem, utils, CornType, MsgID,
-        PtrAttributes, ScatterGather,
-    },
+    super::{dpdk_call, dpdk_check_not_failed, dpdk_ok, mbuf_slice},
     allocator::MempoolAllocator,
     dpdk_bindings::*,
     dpdk_check, dpdk_error, dpdk_utils,
 };
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
+use cornflakes_libos::{mem, utils, CornType, MsgID, PtrAttributes, ScatterGather};
 use hashbrown::HashMap;
 use std::{
     ffi::{CStr, CString},

@@ -1,7 +1,5 @@
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_libos::{
-    dpdk_bindings,
-    dpdk_libos::connection::DPDKConnection,
     loadgen::request_schedule::{DistributionType, PacketSchedule},
     timing::ManualHistogram,
     ClientSM, Datapath, ServerSM,
@@ -17,6 +15,7 @@ use data_structure_query::{
     server::EchoServer,
     CerealizeClient, CerealizeMessage, EchoMode,
 };
+use dpdk_datapath::{datapath::connection::DPDKConnection, dpdk_bindings};
 use std::{net::Ipv4Addr, process::exit, time::Instant};
 use structopt::StructOpt;
 

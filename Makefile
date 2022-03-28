@@ -19,8 +19,6 @@ mlx5-netperf:
 clean:
 	rm -rf mlx5-datapath/mlx5-wrapper/rdma-core/build
 	$(MAKE) -C mlx5-datapath/mlx5-wrapper clean
-
-	rm -rf cornflakes-libos/3rdparty/dpdk/build/
 	rm -rf dpdk-datapath/3rdparty/dpdk/build
 	cargo clean
 
@@ -30,12 +28,6 @@ submodules:
 	git submodule init
 	git submodule update --init -f --recursive
 	$(MAKE) submodules -C mlx5-datapath/mlx5-wrapper
-
-	# apply the DPDK patch
-	git -C cornflakes-libos/3rdparty/dpdk apply ../../dpdk-mlx.patch
-	# build DPDK
-	cornflakes-libos/build-dpdk.sh $(PWD)/cornflakes-libos/3rdparty/dpdk
-
 	# apply DPDK patch to dpdk datapath submodule
 	git -C dpdk-datapath/3rdparty/dpdk apply ../dpdk-mlx.patch
 	# build dpdk datapath submodule

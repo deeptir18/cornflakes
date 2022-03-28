@@ -1,10 +1,10 @@
 use super::{init_payloads, CerealizeClient, CerealizeMessage};
 use color_eyre::eyre::Result;
 use cornflakes_libos::{
-    dpdk_bindings::rte_memcpy_wrapper as rte_memcpy, mem::MmapMetadata, Datapath, RcCornPtr,
-    RcCornflake, ReceivedPkt, ScatterGather,
+    mem::MmapMetadata, Datapath, RcCornPtr, RcCornflake, ReceivedPkt, ScatterGather,
 };
 use cornflakes_utils::SimpleMessageType;
+use dpdk_datapath::dpdk_bindings::rte_memcpy_wrapper as rte_memcpy;
 use std::slice;
 
 pub struct IdealSerializer {

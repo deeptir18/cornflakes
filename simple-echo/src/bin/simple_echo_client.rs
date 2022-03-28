@@ -2,7 +2,6 @@ use affinity::*;
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
     datapath::Datapath,
-    dpdk_bindings,
     loadgen::{
         client_threads::{dump_thread_stats, ThreadStats},
         request_schedule::{generate_schedules, DistributionType, PacketSchedule},
@@ -13,6 +12,7 @@ use cornflakes_libos::{
 use cornflakes_utils::{
     get_thread_latlog, global_debug_init, parse_server_addr, AppMode, NetworkDatapath, TraceLevel,
 };
+use dpdk_datapath::dpdk_bindings;
 use mlx5_datapath::datapath::connection::Mlx5Connection;
 use simple_echo::{client::SimpleEchoClient, RequestShape};
 use std::{

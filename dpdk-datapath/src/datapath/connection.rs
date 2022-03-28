@@ -1,14 +1,14 @@
 use super::{
-    super::{
-        dpdk_bindings::*,
-        dpdk_call, mbuf_slice, mem,
-        timing::{record, timefunc, HistogramWrapper},
-        utils, CornType, Datapath, MsgID, PtrAttributes, RcCornflake, ReceivedPkt, RefCnt,
-        ScatterGather, USING_REF_COUNTING,
-    },
+    super::{dpdk_bindings::*, dpdk_call, mbuf_slice},
     allocator, wrapper,
 };
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
+use cornflakes_libos::{
+    mem,
+    timing::{record, timefunc, HistogramWrapper},
+    utils, CornType, Datapath, MsgID, PtrAttributes, RcCornflake, ReceivedPkt, RefCnt,
+    ScatterGather, USING_REF_COUNTING,
+};
 use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
 use hashbrown::HashMap;

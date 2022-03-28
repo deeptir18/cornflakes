@@ -1,8 +1,6 @@
 use affinity::*;
 use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::{
-    dpdk_bindings,
-    dpdk_libos::connection::DPDKConnection,
     loadgen::{
         client_threads::{dump_thread_stats, ThreadStats},
         request_schedule::{generate_schedules, DistributionType, PacketSchedule},
@@ -16,6 +14,7 @@ use cornflakes_utils::{
     get_thread_latlog, global_debug_init, parse_server_port, AppMode, NetworkDatapath,
     SerializationType, SimpleMessageType, TraceLevel,
 };
+use dpdk_datapath::{datapath::connection::DPDKConnection, dpdk_bindings};
 use echo_server::{
     baselines::{BaselineClient, IdealSerializer, OneCopySerializer, TwoCopySerializer},
     capnproto::{CapnprotoEchoClient, CapnprotoSerializer},

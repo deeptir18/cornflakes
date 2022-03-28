@@ -6,8 +6,6 @@
 //!  2. DPDK bindings, which are used to implement the DPDK datapath.
 //!  3. A DPDK based datapath.
 pub mod datapath;
-pub mod dpdk_bindings;
-pub mod dpdk_libos;
 pub mod loadgen;
 pub mod mem;
 pub mod serialize;
@@ -1117,18 +1115,6 @@ pub trait Datapath {
     /// Max packet len.
     fn max_packet_len(&self) -> usize;
 
-    /// Register external pages.
-    ///
-    /// Arguments:
-    /// * mmap metadata (contains the beginning, end, alignment of region)
-    fn register_external_region(&mut self, metadata: &mut MmapMetadata) -> Result<()>;
-
-    /// Unregister external pages.
-    ///
-    /// Arguments:
-    /// * mmap metadata (contains beginning, end, alignment of region)
-    fn unregister_external_region(&mut self, metadata: &MmapMetadata) -> Result<()>;
-
     /// For debugging purposes, get timers to print at end of execution.
     fn get_timers(&self) -> Vec<Arc<Mutex<HistogramWrapper>>>;
 
@@ -1146,6 +1132,10 @@ pub trait Datapath {
 
     /// Allocate a datapath buffer (registered) with this size and alignment.
     fn allocate(&self, size: usize, alignment: usize) -> Result<Self::DatapathPkt>;
+
+    fn register_external_region(&mut self, metadata: &mut MmapMetadata) -> Result<()>;
+
+    fn unregister_external_region(&mut self, metadata: &MmapMetadata) -> Result<()>;
 }
 
 pub fn high_timeout_at_start(received: usize) -> Duration {

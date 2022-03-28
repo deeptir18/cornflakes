@@ -15,6 +15,7 @@ structopt-derive="0.2.16"
 cornflakes-libos = { path = "../cornflakes-libos" }
 cornflakes-utils = { path = "../cornflakes-utils" }
 mlx5-datapath = { path = "../mlx5-datapath" }
+dpdk-datapath = { path = "../dpdk-datapath" }
 perftools = {git = "https://github.com/demikernel/perftools", rev = "94031ae", optional = true}
 yaml-rust = "0.4.3"
 hashbrown = "0.11.*"

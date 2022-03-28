@@ -1,12 +1,10 @@
-use super::super::{
-    dpdk_bindings::*,
-    dpdk_call, mbuf_slice, mem,
-    timing::{record, timefunc, HistogramWrapper, RTTHistogram},
-};
+use super::super::{dpdk_bindings::*, dpdk_call, mbuf_slice};
 use super::wrapper;
 use affinity::*;
 use bytes::{ByteOrder, LittleEndian};
 use color_eyre::eyre::{bail, Result, WrapErr};
+use cornflakes_libos::mem;
+use cornflakes_libos::timing::{record, timefunc, HistogramWrapper, RTTHistogram};
 use cornflakes_utils::parse_yaml_map;
 use eui48::MacAddress;
 use hashbrown::HashMap;
