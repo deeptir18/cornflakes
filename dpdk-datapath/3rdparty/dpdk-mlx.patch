@@ -1,0 +1,199 @@
+diff --git a/drivers/net/mlx5/mlx5.c b/drivers/net/mlx5/mlx5.c
+index ca3667a46..a7138eff8 100644
+--- a/drivers/net/mlx5/mlx5.c
++++ b/drivers/net/mlx5/mlx5.c
+@@ -1862,6 +1862,23 @@ rte_pmd_mlx5_get_dyn_flag_names(char *names[], unsigned int n)
+ 	return RTE_DIM(dynf_names);
+ }
+ 
++void *
++rte_pmd_mlx5_manual_reg_mr(uint8_t port_id, void *addr, size_t length, uint32_t *lkey_out)
++{
++    struct rte_eth_dev *dev = &rte_eth_devices[port_id];
++    struct mlx5_priv *priv = dev->data->dev_private;
++    struct ibv_mr *ibv_mr = mlx5_glue->reg_mr(priv->sh->pd, addr, length, IBV_ACCESS_LOCAL_WRITE);
++    if (ibv_mr && lkey_out) *lkey_out = rte_cpu_to_be_32(ibv_mr->lkey);
++    return ibv_mr;
++}
++
++void
++rte_pmd_mlx5_manual_dereg_mr(void *ibv_mr)
++{
++    mlx5_glue->dereg_mr(ibv_mr);
++}
++
++
+ /**
+  * Comparison callback to sort device data.
+  *
+diff --git a/drivers/net/mlx5/mlx5_mr.c b/drivers/net/mlx5/mlx5_mr.c
+index 8b20ee3f8..d294b69df 100644
+--- a/drivers/net/mlx5/mlx5_mr.c
++++ b/drivers/net/mlx5/mlx5_mr.c
+@@ -546,3 +546,4 @@ mlx5_mr_update_mp(struct rte_eth_dev *dev, struct mlx5_mr_ctrl *mr_ctrl,
+ 	}
+ 	return data.ret;
+ }
++
+diff --git a/drivers/net/mlx5/mlx5_rxtx.h b/drivers/net/mlx5/mlx5_rxtx.h
+index 7989a5040..455f0b75b 100644
+--- a/drivers/net/mlx5/mlx5_rxtx.h
++++ b/drivers/net/mlx5/mlx5_rxtx.h
+@@ -574,6 +574,10 @@ mlx5_rx_addr2mr(struct mlx5_rxq_data *rxq, uintptr_t addr)
+ 
+ #define mlx5_rx_mb2mr(rxq, mb) mlx5_rx_addr2mr(rxq, (uintptr_t)((mb)->buf_addr))
+ 
++struct mem_info {
++    uint32_t lkey;
++    uint16_t lkey_present;
++};
+ /**
+  * Query LKey from a packet buffer for Tx. If not found, add the mempool.
+  *
+@@ -588,6 +592,12 @@ mlx5_rx_addr2mr(struct mlx5_rxq_data *rxq, uintptr_t addr)
+ static __rte_always_inline uint32_t
+ mlx5_tx_mb2mr(struct mlx5_txq_data *txq, struct rte_mbuf *mb)
+ {
++    // if lkey is in private data of mbuf, return it
++    struct mem_info *m = (struct mem_info *)(((char *) mb) + sizeof(struct rte_mbuf));
++    if (m->lkey_present == 1) {
++        return (uint32_t)m->lkey;
++    }
++
+ 	struct mlx5_mr_ctrl *mr_ctrl = &txq->mr_ctrl;
+ 	uintptr_t addr = (uintptr_t)mb->buf_addr;
+ 	uint32_t lkey;
+diff --git a/drivers/net/mlx5/rte_pmd_mlx5.h b/drivers/net/mlx5/rte_pmd_mlx5.h
+index e531e527b..d0dbe7968 100644
+--- a/drivers/net/mlx5/rte_pmd_mlx5.h
++++ b/drivers/net/mlx5/rte_pmd_mlx5.h
+@@ -57,4 +57,10 @@ int rte_pmd_mlx5_get_dyn_flag_names(char *names[], unsigned int n);
+ __rte_experimental
+ int rte_pmd_mlx5_sync_flow(uint16_t port_id, uint32_t domains);
+ 
++__rte_experimental
++void *rte_pmd_mlx5_manual_reg_mr(uint8_t port_id, void *addr, size_t length, uint32_t *lkey_out);
++
++__rte_experimental
++void rte_pmd_mlx5_manual_dereg_mr(void *ibv_mr);
++
+ #endif
+diff --git a/drivers/net/mlx5/version.map b/drivers/net/mlx5/version.map
+index 82a32b53d..257bb5416 100644
+--- a/drivers/net/mlx5/version.map
++++ b/drivers/net/mlx5/version.map
+@@ -9,4 +9,8 @@ EXPERIMENTAL {
+ 	rte_pmd_mlx5_get_dyn_flag_names;
+ 	# added in 20.11
+ 	rte_pmd_mlx5_sync_flow;
++
++    # added for mlx5 manual memory registration patch
++    rte_pmd_mlx5_manual_reg_mr;
++    rte_pmd_mlx5_manual_dereg_mr;
+ };
+diff --git a/examples/meson.build b/examples/meson.build
+index 46ec80919..19da16274 100644
+--- a/examples/meson.build
++++ b/examples/meson.build
+@@ -45,7 +45,7 @@ all_examples = [
+ 	'vhost', 'vhost_crypto',
+ 	'vhost_blk', 'vm_power_manager',
+ 	'vm_power_manager/guest_cli',
+-	'vmdq', 'vmdq_dcb',
++	'vmdq', 'vmdq_dcb', 'netperf',
+ ]
+ 
+ if get_option('examples') == ''
+diff --git a/lib/librte_mempool/rte_mempool.c b/lib/librte_mempool/rte_mempool.c
+index b9f3fbd61..027f3cff9 100644
+--- a/lib/librte_mempool/rte_mempool.c
++++ b/lib/librte_mempool/rte_mempool.c
+@@ -183,6 +183,9 @@ rte_mempool_obj_iter(struct rte_mempool *mp,
+ 
+ 	STAILQ_FOREACH(hdr, &mp->elt_list, next) {
+ 		obj = (char *)hdr + sizeof(*hdr);
++        /*if ((n < 10) || ( n >= 8189)) {
++            printf("[mempool %s], obj # %u, hdr addr: %p, obj addr: %p, hdr size: %u; size of memhdr: %u\n", mp->name, (unsigned)n, hdr, obj, (unsigned)(sizeof(*hdr)), (unsigned)(sizeof(struct rte_mempool_memhdr)));
++        }*/
+ 		obj_cb(mp, obj_cb_arg, obj, n);
+ 		n++;
+ 	}
+@@ -199,6 +202,9 @@ rte_mempool_mem_iter(struct rte_mempool *mp,
+ 	unsigned n = 0;
+ 
+ 	STAILQ_FOREACH(hdr, &mp->mem_list, next) {
++        /*if ((n < 10) || (n > 8189)) {
++            printf("[mempool %s] obj # %u, hdr addr: %p, hdr size: %u, memhdr_addr: %p\n", mp->name, (unsigned)n, hdr, (unsigned)(sizeof(*hdr)), hdr->addr);
++        }*/
+ 		mem_cb(mp, mem_cb_arg, hdr, n);
+ 		n++;
+ 	}
+diff --git a/lib/librte_mempool/rte_mempool.h b/lib/librte_mempool/rte_mempool.h
+index c551cf733..ab75474eb 100644
+--- a/lib/librte_mempool/rte_mempool.h
++++ b/lib/librte_mempool/rte_mempool.h
+@@ -609,6 +609,12 @@ int rte_mempool_op_populate_default(struct rte_mempool *mp,
+ typedef int (*rte_mempool_get_info_t)(const struct rte_mempool *mp,
+ 		struct rte_mempool_info *info);
+ 
++/**
++ * Run an additional callback when objects are put back into the cache or
++ * enqueued.
++ * */
++typedef int (*rte_mempool_obj_free_t)(void * const *obj_table, unsigned int n);
++
+ 
+ /** Structure defining mempool operations structure */
+ struct rte_mempool_ops {
+@@ -618,6 +624,7 @@ struct rte_mempool_ops {
+ 	rte_mempool_enqueue_t enqueue;   /**< Enqueue an object. */
+ 	rte_mempool_dequeue_t dequeue;   /**< Dequeue an object. */
+ 	rte_mempool_get_count get_count; /**< Get qty of available objs. */
++    rte_mempool_obj_free_t obj_free; /**< Optional callback for per-object freeing before adding to cache. */
+ 	/**
+ 	 * Optional callback to calculate memory size required to
+ 	 * store specified number of objects.
+@@ -763,6 +770,21 @@ rte_mempool_ops_enqueue_bulk(struct rte_mempool *mp, void * const *obj_table,
+ 	return ops->enqueue(mp, obj_table, n);
+ }
+ 
++/**
++ * Extra function to free stuff.
++ * */
++static inline int
++rte_mempool_ops_obj_free_bulk(struct rte_mempool *mp, void * const *obj_table,
++        unsigned n)
++{
++    struct rte_mempool_ops *ops;
++    ops = rte_mempool_get_ops(mp->ops_index);
++    if (ops->obj_free != NULL) {
++        return ops->obj_free(obj_table, n);
++    }
++    return 0;
++}
++
+ /**
+  * @internal wrapper for mempool_ops get_count callback.
+  *
+@@ -1290,6 +1312,9 @@ __mempool_generic_put(struct rte_mempool *mp, void * const *obj_table,
+ 	/* increment stat now, adding in mempool always success */
+ 	__MEMPOOL_STAT_ADD(mp, put, n);
+ 
++    /* Call user-defined object callback */
++    rte_mempool_ops_obj_free_bulk(mp, obj_table, n);
++
+ 	/* No cache provided or if put would overflow mem allocated for cache */
+ 	if (unlikely(cache == NULL || n > RTE_MEMPOOL_CACHE_MAX_SIZE))
+ 		goto ring_enqueue;
+diff --git a/lib/librte_mempool/rte_mempool_ops.c b/lib/librte_mempool/rte_mempool_ops.c
+index 5e2266778..f36111f15 100644
+--- a/lib/librte_mempool/rte_mempool_ops.c
++++ b/lib/librte_mempool/rte_mempool_ops.c
+@@ -64,6 +64,7 @@ rte_mempool_register_ops(const struct rte_mempool_ops *h)
+ 	ops->populate = h->populate;
+ 	ops->get_info = h->get_info;
+ 	ops->dequeue_contig_blocks = h->dequeue_contig_blocks;
++    ops->obj_free = h->obj_free;
+ 
+ 	rte_spinlock_unlock(&rte_mempool_ops_table.sl);
+ 

@@ -16,3 +16,6 @@
 [submodule "mlx5-datapath/mlx5-wrapper/rdma-core"]
 	path = mlx5-datapath/mlx5-wrapper/rdma-core
 	url = https://github.com/linux-rdma/rdma-core
+[submodule "dpdk-datapath/3rdparty/dpdk"]
+	path = dpdk-datapath/3rdparty/dpdk
+	url = https://github.com/DPDK/dpdk.git
