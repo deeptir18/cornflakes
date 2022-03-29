@@ -1,8 +1,3 @@
-[submodule "cornflakes-libos/3rdparty/dpdk"]
-    path = cornflakes-libos/3rdparty/dpdk
-    url = https://github.com/DPDK/dpdk.git
-    branch=releases
-    ignore = untracked
 [submodule "mlx5-netperf"]
 	path = mlx5-netperf
     url = https://github.com/deeptir18/mlx5-netperf.git
