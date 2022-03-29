@@ -15,7 +15,7 @@ use data_structure_query::{
     server::EchoServer,
     CerealizeClient, CerealizeMessage, EchoMode,
 };
-use dpdk_datapath::{datapath::connection::DPDKConnection, dpdk_bindings};
+use dpdk_datapath::{datapath2::connection::DPDKConnection, dpdk_bindings};
 use std::{net::Ipv4Addr, process::exit, time::Instant};
 use structopt::StructOpt;
 

@@ -1,7 +1,7 @@
 use color_eyre::eyre::Result;
 use cornflakes_utils::{global_debug_init, AppMode, TraceLevel};
 use dpdk_datapath::{
-    datapath::fast_echo::{do_client, do_server, MemoryMode},
+    datapath2::fast_echo::{do_client, do_server, MemoryMode},
     dpdk_bindings,
 };
 use std::net::Ipv4Addr;

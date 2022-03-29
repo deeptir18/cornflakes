@@ -10,7 +10,7 @@ use cornflakes_libos::{
     utils::AddressInfo,
     ClientSM, Datapath, ServerSM,
 };
-use dpdk_datapath::{datapath::connection::DPDKConnection, dpdk_bindings};
+use dpdk_datapath::{datapath2::connection::DPDKConnection, dpdk_bindings};
 
 use cornflakes_utils::{
     global_debug_init, parse_server_port, AppMode, NetworkDatapath, SerializationType, TraceLevel,

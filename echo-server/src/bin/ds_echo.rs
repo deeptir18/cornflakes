@@ -14,7 +14,7 @@ use cornflakes_utils::{
     get_thread_latlog, global_debug_init, parse_server_port, AppMode, NetworkDatapath,
     SerializationType, SimpleMessageType, TraceLevel,
 };
-use dpdk_datapath::{datapath::connection::DPDKConnection, dpdk_bindings};
+use dpdk_datapath::{datapath2::connection::DPDKConnection, dpdk_bindings};
 use echo_server::{
     baselines::{BaselineClient, IdealSerializer, OneCopySerializer, TwoCopySerializer},
     capnproto::{CapnprotoEchoClient, CapnprotoSerializer},

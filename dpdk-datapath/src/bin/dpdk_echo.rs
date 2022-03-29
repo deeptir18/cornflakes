@@ -5,7 +5,7 @@ use cornflakes_libos::{
 };
 use cornflakes_utils::{global_debug_init, parse_server_port, AppMode, TraceLevel};
 use dpdk_datapath::{
-    datapath::{
+    datapath2::{
         connection::DPDKConnection,
         echo::{EchoClient, EchoServer},
     },
