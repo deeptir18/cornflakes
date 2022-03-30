@@ -1,4 +1,4 @@
-use super::super::{dpdk_bindings::*, dpdk_call, mbuf_slice};
+use super::super::{dpdk_bindings::*, dpdk_call, mbuf_slice2};
 use super::wrapper;
 use affinity::*;
 use bytes::{ByteOrder, LittleEndian};
@@ -109,7 +109,7 @@ fn client_thread(
 
         // Write in timestamp as u64 payload
         let send_time = clock_offset.elapsed().as_nanos() as u64;
-        let mut mbuf_buffer = mbuf_slice!(pkt, header_size, 8);
+        let mut mbuf_buffer = mbuf_slice2!(pkt, header_size, 8);
         LittleEndian::write_u64(&mut mbuf_buffer, send_time);
 
         wrapper::tx_burst(port, queue_id, &mut pkt as _, 1).wrap_err(format!(
@@ -152,7 +152,7 @@ fn client_thread(
                 let (valid, _payload_length) = dpdk_call!(parse_packet(rx_buf, my_eth, my_ip));
                 if valid {
                     let now = clock_offset.elapsed().as_nanos() as u64;
-                    let mbuf_buffer = mbuf_slice!(rx_buf, header_size, 8);
+                    let mbuf_buffer = mbuf_slice2!(rx_buf, header_size, 8);
                     let start = LittleEndian::read_u64(&mbuf_buffer);
                     histogram.record(now - start)?;
                     tracing::debug!(
@@ -569,7 +569,7 @@ pub fn do_server(
                         secondary_tx = secondary_tx_bufs[n_to_tx];
 
                         if !zero_copy {
-                            let payload_slice = mbuf_slice!(secondary_tx, 0, payload_length - 8);
+                            let payload_slice = mbuf_slice2!(secondary_tx, 0, payload_length - 8);
                             dpdk_call!(rte_memcpy_wrapper(
                                 payload_slice.as_mut_ptr() as _,
                                 payload.as_ptr() as _,
@@ -584,7 +584,7 @@ pub fn do_server(
                         tracing::debug!("Allocated mbuf");
                         if !zero_copy {
                             let payload_slice =
-                                mbuf_slice!(tx_buf, header_size + 8, payload_length - 8);
+                                mbuf_slice2!(tx_buf, header_size + 8, payload_length - 8);
                             dpdk_call!(rte_memcpy_wrapper(
                                 payload_slice.as_mut_ptr() as _,
                                 payload.as_ptr() as _,

@@ -99,6 +99,19 @@ impl Mlx5Buffer {
     pub fn get_mempool(&self) -> *mut registered_mempool {
         self.mempool
     }
+
+    pub fn mutable_slice(&mut self, start: usize, end: usize) -> Result<&mut [u8]> {
+        let item_len = unsafe { access!(get_data_mempool(self.mempool), item_len, usize) };
+        if start > item_len || end > item_len {
+            bail!("Invalid bounnds for buf of len {}", item_len);
+        }
+        let buf = unsafe { std::slice::from_raw_parts_mut(self.data as *mut u8, item_len) };
+        if self.data_len <= end {
+            // TODO: is this not a great way to do this?
+            self.data_len = end;
+        }
+        Ok(&mut buf[start..end])
+    }
 }
 
 impl std::fmt::Debug for Mlx5Buffer {
@@ -112,18 +125,14 @@ impl AsRef<[u8]> for Mlx5Buffer {
     }
 }
 
-impl AsMut<[u8]> for Mlx5Buffer {
-    fn as_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.data as *mut u8, self.data_len) }
-    }
-}
-
 impl Write for Mlx5Buffer {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         // only write the maximum amount
         let data_mempool = unsafe { get_data_mempool(self.mempool) };
         let written = std::cmp::min(unsafe { access!(data_mempool, item_len, usize) }, buf.len());
-        let written = self.as_mut().write(&buf[0..written])?;
+        let mut mut_slice =
+            unsafe { std::slice::from_raw_parts_mut(self.data as *mut u8, self.data_len) };
+        let written = mut_slice.write(&buf[0..written])?;
         self.data_len = written;
         Ok(written)
     }
@@ -171,26 +180,36 @@ impl MbufMetadata {
             );
             mbuf_refcnt_update_or_free(metadata_buf, 1);
         }
-        Ok(Some(MbufMetadata::new(metadata_buf, 0, Some(data_len))))
+        Ok(Some(MbufMetadata::new(metadata_buf, 0, Some(data_len))?))
     }
     /// Initializes metadata object from existing metadata mbuf in c.
     /// Args:
     /// @mbuf: mbuf structure that contains metadata
     /// @data_offset: Application data offset into this buffer.
     /// @data_len: Optional application data length into the buffer.
-    pub fn new(mbuf: *mut mbuf, data_offset: usize, data_len: Option<usize>) -> Self {
+    pub fn new(mbuf: *mut mbuf, data_offset: usize, data_len: Option<usize>) -> Result<Self> {
+        ensure!(
+            data_offset >= unsafe { access!(mbuf, data_buf_len, usize) },
+            "Data offset too large"
+        );
         unsafe {
             mbuf_refcnt_update_or_free(mbuf, 1);
         }
         let len = match data_len {
-            Some(x) => x,
-            None => unsafe { (*mbuf).data_len as usize },
+            Some(x) => {
+                ensure!(
+                    x <= unsafe { access!(mbuf, data_buf_len, usize) - data_offset },
+                    "Data len to large"
+                );
+                x
+            }
+            None => unsafe { access!(mbuf, data_len, usize) - data_offset },
         };
-        MbufMetadata {
+        Ok(MbufMetadata {
             mbuf: mbuf,
             offset: data_offset,
             len: len,
-        }
+        })
     }
 
     pub fn mbuf(&self) -> *mut mbuf {
@@ -207,21 +226,17 @@ impl MetadataOps for MbufMetadata {
         self.len
     }
 
-    fn set_offset(&mut self, off: usize) -> Result<()> {
+    fn set_data_len_and_offset(&mut self, len: usize, offset: usize) -> Result<()> {
         ensure!(
-            off < unsafe { access!(self.mbuf, data_buf_len, usize) },
+            offset <= unsafe { access!(self.mbuf, data_buf_len, usize) },
             "Offset too large"
         );
-        self.offset = off;
-        Ok(())
-    }
-
-    fn set_data_len(&mut self, data_len: usize) -> Result<()> {
         ensure!(
-            data_len <= unsafe { access!(self.mbuf, data_buf_len, usize) },
-            "Data_len too large"
+            len <= unsafe { access!(self.mbuf, data_buf_len, usize) - offset },
+            "Provided data len too large"
         );
-        self.len = data_len;
+        self.offset = offset;
+        self.len = len;
         Ok(())
     }
 }
@@ -482,7 +497,7 @@ impl Mlx5Connection {
             recv_mbuf,
             cornflakes_libos::utils::TOTAL_HEADER_SIZE,
             Some(data_len - 4),
-        );
+        )?;
 
         let received_pkt = ReceivedPkt::new(vec![datapath_metadata], msg_id, conn_id);
         Ok(Some(received_pkt))
@@ -515,8 +530,9 @@ impl Mlx5Connection {
             };
         unsafe {
             fill_in_hdrs(
-                data_buffer.as_mut()[0..cornflakes_libos::utils::TOTAL_HEADER_SIZE].as_mut_ptr()
-                    as _,
+                data_buffer
+                    .mutable_slice(0, cornflakes_libos::utils::TOTAL_HEADER_SIZE)?
+                    .as_mut_ptr() as _,
                 hdr_bytes.as_ptr() as _,
                 msg_id,
                 data_len,
@@ -737,7 +753,7 @@ impl Mlx5Connection {
                     let curr_seg = rc_sga.get(idx).addr();
                     // copy into the destination
                     let dst =
-                        &mut data_buffer.as_mut()[write_offset..(write_offset + curr_seg.len())];
+                        data_buffer.mutable_slice(write_offset, write_offset + curr_seg.len())?;
                     unsafe {
                         mlx5_rte_memcpy(
                             dst.as_mut_ptr() as _,
@@ -910,7 +926,7 @@ impl Mlx5Connection {
                     let curr_seg = sga.get(idx).addr();
                     // copy into the destination
                     let dst =
-                        &mut data_buffer.as_mut()[write_offset..(write_offset + curr_seg.len())];
+                        data_buffer.mutable_slice(write_offset, write_offset + curr_seg.len())?;
                     unsafe {
                         mlx5_rte_memcpy(
                             dst.as_mut_ptr() as _,
@@ -1070,7 +1086,7 @@ impl Datapath for Mlx5Connection {
 
     fn parse_config_file(
         config_file: &str,
-        our_ip: Option<Ipv4Addr>,
+        our_ip: &Ipv4Addr,
     ) -> Result<Self::DatapathSpecificParams> {
         // parse the IP to Mac hashmap
         let (ip_to_mac, _mac_to_ip, server_port, client_port) =
@@ -1080,16 +1096,11 @@ impl Datapath for Mlx5Connection {
             parse_pci_addr(config_file).wrap_err("Failed to parse pci addr from config")?;
 
         // for this datapath, knowing our IP address is required (to find our mac address)
-        let (eth_addr, ip) = match our_ip {
+        let eth_addr = match ip_to_mac.get(our_ip) {
+            Some(e) => e.clone(),
             None => {
-                bail!("For mlx5 datapath, must pass in ip to parse_config_file to retrieve our ethernet address");
+                bail!("Could not find eth addr for passed in ipv4 addr {:?} in config_file ip_to_mac map: {:?}", our_ip, ip_to_mac);
             }
-            Some(x) => match ip_to_mac.get(&x) {
-                Some(e) => (e.clone(), x.clone()),
-                None => {
-                    bail!("Could not find eth addr for passed in ipv4 addr {:?} in config_file ip_to_mac map: {:?}", x, ip_to_mac);
-                }
-            },
         };
 
         // convert pci addr and eth addr to C structs
@@ -1115,7 +1126,7 @@ impl Datapath for Mlx5Connection {
         Ok(Mlx5DatapathSpecificParams {
             pci_addr: pci_addr_c,
             eth_addr: ether_addr,
-            our_ip: ip,
+            our_ip: our_ip.clone(),
             our_eth: eth_addr.clone(),
             client_port: client_port,
             server_port: server_port,
@@ -1391,7 +1402,7 @@ impl Datapath for Mlx5Connection {
                         }
                         false => 0,
                     };
-                    let dst = &mut data_buffer.as_mut()[write_offset..(write_offset + buf.len())];
+                    let dst = data_buffer.mutable_slice(write_offset, write_offset + buf.len())?;
                     unsafe {
                         mlx5_rte_memcpy(dst.as_mut_ptr() as _, buf.as_ptr() as _, buf.len());
                     }

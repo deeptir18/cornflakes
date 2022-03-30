@@ -16,7 +16,7 @@ macro_rules! test_init(
     );
 
 #[macro_export]
-macro_rules! mbuf_slice(
+macro_rules! mbuf_slice2(
     ($mbuf: expr, $offset: expr, $len: expr) => {
         unsafe {
             slice::from_raw_parts_mut(
@@ -63,7 +63,7 @@ pub unsafe fn dpdk_error(func_name: &str, retval: Option<std::os::raw::c_int>) -
 }
 
 #[macro_export]
-macro_rules! dpdk_check_not_failed(
+macro_rules! dpdk_check_not_failed2(
     ($x: ident ($($arg: expr),*)) =>  {
         unsafe {
             let ret = $x($($arg),*);

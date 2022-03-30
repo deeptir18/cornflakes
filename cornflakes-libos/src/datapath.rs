@@ -93,8 +93,8 @@ where
                 } else {
                     let slice_offset = start - cur_seg_offset;
                     let mut cloned_metadata = self.pkts[idx].clone();
-                    cloned_metadata.set_offset(cloned_metadata.offset() + slice_offset)?;
-                    cloned_metadata.set_data_len(len)?;
+                    cloned_metadata
+                        .set_data_len_and_offset(len, cloned_metadata.offset() + slice_offset)?;
                     return Ok(Some(cloned_metadata));
                 }
             }
@@ -143,14 +143,12 @@ pub trait MetadataOps {
 
     fn data_len(&self) -> usize;
 
-    fn set_offset(&mut self, off: usize) -> Result<()>;
-
-    fn set_data_len(&mut self, data_len: usize) -> Result<()>;
+    fn set_data_len_and_offset(&mut self, data_len: usize, offset: usize) -> Result<()>;
 }
 
 pub trait Datapath {
     /// Mutable buffer type that can be written into.
-    type DatapathBuffer: AsMut<[u8]> + Write + PartialEq + Eq + std::fmt::Debug;
+    type DatapathBuffer: AsRef<[u8]> + Write + PartialEq + Eq + std::fmt::Debug;
 
     /// Metadata that wraps around a datapath buffer.
     type DatapathMetadata: AsRef<[u8]> + PartialEq + Eq + Clone + std::fmt::Debug + MetadataOps;
@@ -169,7 +167,7 @@ pub trait Datapath {
     /// address).
     fn parse_config_file(
         config_file: &str,
-        our_ip: Option<Ipv4Addr>,
+        our_ip: &Ipv4Addr,
     ) -> Result<Self::DatapathSpecificParams>;
 
     /// Given a remote IP address, compute a source IP and port for each queue

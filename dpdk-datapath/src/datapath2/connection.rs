@@ -1,5 +1,5 @@
 use super::{
-    super::{dpdk_bindings::*, dpdk_call, mbuf_slice},
+    super::{dpdk_bindings::*, dpdk_call, mbuf_slice2},
     allocator, wrapper,
 };
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
@@ -125,7 +125,7 @@ impl RefCnt for DPDKBuffer {
 impl AsRef<[u8]> for DPDKBuffer {
     fn as_ref(&self) -> &[u8] {
         let data_len = unsafe { (*self.mbuf).data_len } as usize;
-        let slice = mbuf_slice!(self.mbuf, self.offset, data_len - self.offset);
+        let slice = mbuf_slice2!(self.mbuf, self.offset, data_len - self.offset);
         /*tracing::debug!(
             "Mbuf address: {:?}, slice address: {:?}, data off: {:?}, buf_addr: {:?}",
             self.mbuf,
@@ -140,7 +140,7 @@ impl AsRef<[u8]> for DPDKBuffer {
 impl AsMut<[u8]> for DPDKBuffer {
     fn as_mut(&mut self) -> &mut [u8] {
         let data_len = unsafe { (*self.mbuf).data_len } as usize;
-        let slice = mbuf_slice!(self.mbuf, self.offset, data_len - self.offset);
+        let slice = mbuf_slice2!(self.mbuf, self.offset, data_len - self.offset);
         /*tracing::debug!(
             "Mbuf address: {:?}, slice address: {:?}, data off: {:?}, buf_addr: {:?}",
             self.mbuf,

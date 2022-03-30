@@ -1,6 +1,6 @@
 #![allow(unused_assignments)]
 use super::{
-    super::{dpdk_call, dpdk_check_not_failed, dpdk_ok, mbuf_slice},
+    super::{dpdk_call, dpdk_ok, mbuf_slice2},
     allocator::MempoolAllocator,
     dpdk_bindings::*,
     dpdk_check, dpdk_error, dpdk_utils,
@@ -83,7 +83,7 @@ pub fn get_mbuf_with_memcpy(
         (*header_mbuf).nb_segs = 1;
     }
     // copy the payload into the mbuf
-    let ctx_hdr_slice = mbuf_slice!(header_mbuf, data_offset, buf.len());
+    let ctx_hdr_slice = mbuf_slice2!(header_mbuf, data_offset, buf.len());
     dpdk_call!(rte_memcpy_wrapper(
         ctx_hdr_slice.as_mut_ptr() as _,
         buf.as_ref().as_ptr() as _,
@@ -354,7 +354,7 @@ impl Pkt {
         if (buf.len() + data_offset) > RX_PACKET_LEN as usize {
             bail!("Cannot set payload of size {}, as data offset is {}: mbuf would be too large, and limit is {}.", buf.len(), data_offset, RX_PACKET_LEN as usize);
         }
-        let mbuf_buffer = mbuf_slice!(mbufs[idx][pkt_id], data_offset, buf.len());
+        let mbuf_buffer = mbuf_slice2!(mbufs[idx][pkt_id], data_offset, buf.len());
         // run rte_memcpy, as an alternate to rust's copy
         dpdk_call!(rte_memcpy_wrapper(
             mbuf_buffer.as_mut_ptr() as _,
@@ -471,7 +471,7 @@ fn dpdk_eal_init(eal_init: Vec<String>) -> Result<()> {
     }
 
     debug!("DPDK init args: {:?}", args);
-    dpdk_check_not_failed!(rte_eal_init(ptrs.len() as i32, ptrs.as_ptr() as *mut _));
+    dpdk_check_not_failed2!(rte_eal_init(ptrs.len() as i32, ptrs.as_ptr() as *mut _));
     Ok(())
 }
 
@@ -537,7 +537,7 @@ fn initialize_dpdk_port(
     dpdk_call!(eth_dev_configure(port_id, rx_rings, tx_rings));
 
     let socket_id =
-        dpdk_check_not_failed!(rte_eth_dev_socket_id(port_id), "Port id is out of range") as u32;
+        dpdk_check_not_failed2!(rte_eth_dev_socket_id(port_id), "Port id is out of range") as u32;
 
     // allocate and set up 1 RX queue per Ethernet port
     for i in 0..rx_rings {
@@ -868,17 +868,17 @@ pub fn fill_in_header(
     data_len: usize,
     id: MsgID,
 ) -> Result<usize> {
-    let eth_hdr_slice = mbuf_slice!(pkt, 0, utils::ETHERNET2_HEADER2_SIZE);
+    let eth_hdr_slice = mbuf_slice2!(pkt, 0, utils::ETHERNET2_HEADER2_SIZE);
 
-    let ipv4_hdr_slice = mbuf_slice!(pkt, utils::ETHERNET2_HEADER2_SIZE, utils::IPV4_HEADER2_SIZE);
+    let ipv4_hdr_slice = mbuf_slice2!(pkt, utils::ETHERNET2_HEADER2_SIZE, utils::IPV4_HEADER2_SIZE);
 
-    let udp_hdr_slice = mbuf_slice!(
+    let udp_hdr_slice = mbuf_slice2!(
         pkt,
         utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
         utils::UDP_HEADER2_SIZE
     );
 
-    let id_hdr_slice = mbuf_slice!(
+    let id_hdr_slice = mbuf_slice2!(
         pkt,
         utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE + utils::UDP_HEADER2_SIZE,
         4
@@ -986,7 +986,7 @@ fn check_valid_packet(
     pkt: *mut rte_mbuf,
     my_addr_info: &utils::AddressInfo,
 ) -> Option<(MsgID, utils::AddressInfo, usize)> {
-    let eth_hdr_slice = mbuf_slice!(pkt, 0, utils::ETHERNET2_HEADER2_SIZE);
+    let eth_hdr_slice = mbuf_slice2!(pkt, 0, utils::ETHERNET2_HEADER2_SIZE);
     let src_eth = match utils::check_eth_hdr(eth_hdr_slice, &my_addr_info.ether_addr) {
         Ok((eth, _)) => eth,
         Err(_) => {
@@ -994,7 +994,7 @@ fn check_valid_packet(
         }
     };
 
-    let ipv4_hdr_slice = mbuf_slice!(pkt, utils::ETHERNET2_HEADER2_SIZE, utils::IPV4_HEADER2_SIZE);
+    let ipv4_hdr_slice = mbuf_slice2!(pkt, utils::ETHERNET2_HEADER2_SIZE, utils::IPV4_HEADER2_SIZE);
 
     let src_ip = match utils::check_ipv4_hdr(ipv4_hdr_slice, &my_addr_info.ipv4_addr) {
         Ok((ip, _)) => ip,
@@ -1003,7 +1003,7 @@ fn check_valid_packet(
         }
     };
 
-    let udp_hdr_slice = mbuf_slice!(
+    let udp_hdr_slice = mbuf_slice2!(
         pkt,
         utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
         utils::UDP_HEADER2_SIZE
@@ -1232,11 +1232,11 @@ mod tests {
         }
 
         // now test that the packet we set is valid
-        let eth_hdr_slice = mbuf_slice!(mbuf, 0, utils::ETHERNET2_HEADER2_SIZE);
+        let eth_hdr_slice = mbuf_slice2!(mbuf, 0, utils::ETHERNET2_HEADER2_SIZE);
         let (src_eth, _) = utils::check_eth_hdr(eth_hdr_slice, &dst_info.ether_addr).unwrap();
         assert!(src_eth == src_info.ether_addr);
 
-        let ipv4_hdr_slice = mbuf_slice!(
+        let ipv4_hdr_slice = mbuf_slice2!(
             mbuf,
             utils::ETHERNET2_HEADER2_SIZE,
             utils::IPV4_HEADER2_SIZE
@@ -1245,7 +1245,7 @@ mod tests {
         let (src_ip, _) = utils::check_ipv4_hdr(ipv4_hdr_slice, &dst_info.ipv4_addr).unwrap();
         assert!(src_ip == src_info.ipv4_addr);
 
-        let udp_hdr_slice = mbuf_slice!(
+        let udp_hdr_slice = mbuf_slice2!(
             mbuf,
             utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
             utils::UDP_HEADER2_SIZE
@@ -1254,7 +1254,7 @@ mod tests {
         let (src_port, _) = utils::check_udp_hdr(udp_hdr_slice, dst_info.udp_port).unwrap();
         assert!(src_port == src_info.udp_port);
 
-        let id_hdr_slice = mbuf_slice!(
+        let id_hdr_slice = mbuf_slice2!(
             mbuf,
             utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE + utils::UDP_HEADER2_SIZE,
             4
@@ -1286,7 +1286,7 @@ mod tests {
             .unwrap();
 
         // now test that the packet does NOT have a valid destination ether addr
-        let eth_hdr_slice = mbuf_slice!(mbufs[0][0], 0, utils::ETHERNET2_HEADER2_SIZE);
+        let eth_hdr_slice = mbuf_slice2!(mbufs[0][0], 0, utils::ETHERNET2_HEADER2_SIZE);
         match utils::check_eth_hdr(eth_hdr_slice, &random_mac()) {
             Ok(_) => {
                 panic!("Dst mac address should have been invalid.");
@@ -1294,7 +1294,7 @@ mod tests {
             Err(_) => {}
         }
 
-        let ipv4_hdr_slice = mbuf_slice!(
+        let ipv4_hdr_slice = mbuf_slice2!(
             mbufs[0][0],
             utils::ETHERNET2_HEADER2_SIZE,
             utils::IPV4_HEADER2_SIZE
@@ -1307,7 +1307,7 @@ mod tests {
             Err(_) => {}
         }
 
-        let udp_hdr_slice = mbuf_slice!(
+        let udp_hdr_slice = mbuf_slice2!(
             mbufs[0][0],
             utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
             utils::UDP_HEADER2_SIZE
@@ -1354,11 +1354,11 @@ mod tests {
             assert!((*(mbufs[0][0])).pkt_len as usize == utils::TOTAL_HEADER_SIZE + 64);
         }
 
-        let first_payload = mbuf_slice!(mbufs[0][0], utils::TOTAL_HEADER_SIZE, 32);
+        let first_payload = mbuf_slice2!(mbufs[0][0], utils::TOTAL_HEADER_SIZE, 32);
         let first_payload_sized: &[u8; 32] = &first_payload[0..32].try_into().unwrap();
         assert!(first_payload_sized.eq(&payload1));
 
-        let second_payload = mbuf_slice!(mbufs[0][0], utils::TOTAL_HEADER_SIZE + 32, 32);
+        let second_payload = mbuf_slice2!(mbufs[0][0], utils::TOTAL_HEADER_SIZE + 32, 32);
         let second_payload_sized: &[u8; 32] = &second_payload[0..32].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload2));
     }
@@ -1390,7 +1390,7 @@ mod tests {
             assert!((*(mbufs[0][0])).nb_segs as usize == 1);
         }
 
-        let first_payload = mbuf_slice!(mbufs[0][0], utils::TOTAL_HEADER_SIZE, 32);
+        let first_payload = mbuf_slice2!(mbufs[0][0], utils::TOTAL_HEADER_SIZE, 32);
         let first_payload_sized: &[u8; 32] = &first_payload[0..32].try_into().unwrap();
         assert!(first_payload_sized.eq(&payload));
     }
@@ -1426,11 +1426,11 @@ mod tests {
             assert!(((*(mbufs[0][0])).next).is_null());
         }
 
-        let first_payload = mbuf_slice!(mbufs[0][0], utils::TOTAL_HEADER_SIZE, 32);
+        let first_payload = mbuf_slice2!(mbufs[0][0], utils::TOTAL_HEADER_SIZE, 32);
         let first_payload_sized: &[u8; 32] = &first_payload[0..32].try_into().unwrap();
         assert!(first_payload_sized.eq(&payload1));
 
-        let second_payload = mbuf_slice!(mbufs[0][0], utils::TOTAL_HEADER_SIZE + 32, 32);
+        let second_payload = mbuf_slice2!(mbufs[0][0], utils::TOTAL_HEADER_SIZE + 32, 32);
         let second_payload_sized: &[u8; 32] = &second_payload[0..32].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload2));
     }
@@ -1488,7 +1488,7 @@ mod tests {
         assert!(msg_id == 1);
         assert!(addr_info == src_info);
 
-        let second_payload = mbuf_slice!(mbufs[1][0], 0, 56);
+        let second_payload = mbuf_slice2!(mbufs[1][0], 0, 56);
         debug!("Second payload addr: {:?}", &second_payload);
         let second_payload_sized: &[u8; 56] = &second_payload[0..56].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload1[224..280]));
@@ -1553,7 +1553,7 @@ mod tests {
         assert!(msg_id == 1);
         assert!(addr_info == src_info);
 
-        let second_payload = mbuf_slice!(mbufs[1][0], 0, 56);
+        let second_payload = mbuf_slice2!(mbufs[1][0], 0, 56);
         debug!("Second payload addr: {:?}", &second_payload);
         let second_payload_sized: &[u8; 56] = &second_payload[0..56].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload1[224..280]));
@@ -1632,11 +1632,11 @@ mod tests {
         assert!(msg_id == 1);
         assert!(addr_info == src_info);
 
-        let first_payload = mbuf_slice!(mbufs[1][0], 0, 100);
+        let first_payload = mbuf_slice2!(mbufs[1][0], 0, 100);
         let first_payload_sized: &[u8; 100] = &first_payload[0..100].try_into().unwrap();
         assert!(first_payload_sized.eq(&payload1[300..400]));
 
-        let second_payload = mbuf_slice!(mbufs[2][0], 0, 100);
+        let second_payload = mbuf_slice2!(mbufs[2][0], 0, 100);
         let second_payload_sized: &[u8; 100] = &second_payload[0..100].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload1[400..500]));
     }
@@ -1700,11 +1700,11 @@ mod tests {
         assert!(msg_id == 3);
         assert!(addr_info == src_info);
 
-        let first_payload = mbuf_slice!(mbufs[0][0], utils::TOTAL_HEADER_SIZE, 32);
+        let first_payload = mbuf_slice2!(mbufs[0][0], utils::TOTAL_HEADER_SIZE, 32);
         let first_payload_sized: &[u8; 32] = &first_payload[0..32].try_into().unwrap();
         assert!(first_payload_sized.eq(&payload1));
 
-        let second_payload = mbuf_slice!(mbufs[1][0], 0, 32);
+        let second_payload = mbuf_slice2!(mbufs[1][0], 0, 32);
         let second_payload_sized: &[u8; 32] = &second_payload[0..32].try_into().unwrap();
         assert!(second_payload_sized.eq(&payload2[224..256]));
     }

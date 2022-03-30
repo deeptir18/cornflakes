@@ -126,7 +126,7 @@ impl MemoryAllocator {
             for mempool in mempool_arr.iter() {
                 if unsafe { mempool.is_within_bounds(buf) } {
                     let (mbuf, offset) = unsafe { mempool.recover_mbuf_metadata(buf) };
-                    let mbuf_metadata = MbufMetadata::new(mbuf, offset, Some(buf.len()));
+                    let mbuf_metadata = MbufMetadata::new(mbuf, offset, Some(buf.len()))?;
                     return Ok(mbuf_metadata);
                 }
             }

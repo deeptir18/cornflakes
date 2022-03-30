@@ -86,10 +86,8 @@ fn main() -> Result<()> {
             unimplemented!();
         }
         NetworkDatapath::MLX5 => {
-            let mut datapath_params = <Mlx5Connection as Datapath>::parse_config_file(
-                &opt.config_file,
-                Some(opt.server_ip.clone()),
-            )?;
+            let mut datapath_params =
+                <Mlx5Connection as Datapath>::parse_config_file(&opt.config_file, &opt.server_ip)?;
             let addresses = <Mlx5Connection as Datapath>::compute_affinity(
                 &datapath_params,
                 1,
