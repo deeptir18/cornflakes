@@ -142,65 +142,6 @@ pub fn create_mempool(
 ) -> Result<*mut rte_mempool> {
     let name_str = CString::new(name)?;
 
-    /*let mut mbp_priv_uninit: MaybeUninit<rte_pktmbuf_pool_private> = MaybeUninit::zeroed();
-    unsafe {
-        (*mbp_priv_uninit.as_mut_ptr()).mbuf_data_room_size = data_size as u16;
-        (*mbp_priv_uninit.as_mut_ptr()).mbuf_priv_size = MBUF_PRIV_SIZE as _;
-    }
-
-    // actual data size is empty (just mbuf and priv data)
-    let elt_size: u32 = size_of::<rte_mbuf>() as u32 + MBUF_PRIV_SIZE as u32 + data_size as u32;
-
-    tracing::debug!(elt_size, "Trying to init extbuf mempool with elt_size");
-    let mbuf_pool = dpdk_call!(rte_mempool_create_empty(
-        name.as_ptr(),
-        (num_values * nb_ports as usize) as u32,
-        elt_size,
-        MBUF_CACHE_SIZE.into(),
-        MBUF_PRIV_SIZE as u32,
-        rte_socket_id() as i32,
-        0,
-    ));
-
-    ensure!(
-        !mbuf_pool.is_null(),
-        "Mempool {:?} created with rte_mempool_create_empty is null.",
-        name
-    );
-
-    // initialize the private data space
-    dpdk_call!(rte_pktmbuf_pool_init(
-        mbuf_pool,
-        mbp_priv_uninit.as_mut_ptr() as _
-    ));
-
-    // populate
-    if dpdk_call!(rte_mempool_populate_default(mbuf_pool))
-        != (num_values * nb_ports as usize) as i32
-    {
-        dpdk_call!(rte_mempool_free(mbuf_pool));
-        bail!(
-            "Not able to initialize mempool {:?}: Failed on rte_mempool_populate_default; ERR: {:?}",
-            name,
-            print_error(),
-        );
-    }
-
-    // initialize each mbuf
-    if dpdk_call!(rte_mempool_obj_iter(
-        mbuf_pool,
-        Some(rte_pktmbuf_init),
-        ptr::null_mut()
-    )) != (num_values as u16 * nb_ports) as u32
-    {
-        dpdk_call!(rte_mempool_free(mbuf_pool));
-        bail!(
-            "Not able to initialize mempool {:?}: failed at rte_pktmbuf_init; ERR: {:?}",
-            name,
-            print_error()
-        );
-    }*/
-
     let mbuf_pool = unsafe {
         rte_pktmbuf_pool_create(
             name_str.as_ptr(),

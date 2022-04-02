@@ -5,6 +5,7 @@
 //!  1. An interface for datapaths to implement.
 //!  2. DPDK bindings, which are used to implement the DPDK datapath.
 //!  3. A DPDK based datapath.
+pub mod allocator;
 pub mod datapath;
 pub mod loadgen;
 pub mod mem;

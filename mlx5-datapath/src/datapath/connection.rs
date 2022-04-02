@@ -1,9 +1,10 @@
 use super::{
     super::{access, check_ok, mbuf_slice, mlx5_bindings::*},
-    allocator::MemoryAllocator,
+    allocator::DataMempool,
     check, sizes,
 };
 use cornflakes_libos::{
+    allocator::{MemoryPoolAllocator, MempoolID},
     datapath::{Datapath, MetadataOps, ReceivedPkt},
     mem::{PGSIZE_2MB, PGSIZE_4KB},
     serialize::Serializable,
@@ -396,7 +397,7 @@ pub struct Mlx5Connection {
     /// Map from AddressInfo to connection id
     address_to_conn_id: HashMap<AddressInfo, ConnID>,
     /// Allocator for outgoing mbufs and packets.
-    allocator: MemoryAllocator,
+    allocator: MemoryPoolAllocator<DataMempool>,
     /// Threshold for copying a segment or leaving as a separate scatter-gather entry.
     copying_threshold: usize,
     /// Inline mode,
@@ -729,7 +730,7 @@ impl Mlx5Connection {
                 }
 
                 // allocate an mbuf that can fit this amount of data and copy data to it
-                let mut data_buffer = match self.allocator.allocate_data_buffer(mbuf_length, 256)? {
+                let mut data_buffer = match self.allocator.allocate_buffer(mbuf_length)? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -867,9 +868,10 @@ impl Mlx5Connection {
 
         // fill in all entries
         while entry_idx < sga.len() {
+            // TODO: can make this more optimal to not search through mempools twice
             if self.zero_copy_seg(sga.get(entry_idx).addr()) {
                 let curr_seg = sga.get(entry_idx).addr();
-                let mbuf_metadata = self.allocator.recover_mbuf(curr_seg)?;
+                let mbuf_metadata = self.allocator.recover_buffer(curr_seg)?.unwrap();
                 curr_data_seg = unsafe {
                     add_dpseg(
                         self.thread_context.get_context_ptr(),
@@ -902,7 +904,7 @@ impl Mlx5Connection {
                 }
 
                 // allocate an mbuf that can fit this amount of data and copy data to it
-                let mut data_buffer = match self.allocator.allocate_data_buffer(mbuf_length, 256)? {
+                let mut data_buffer = match self.allocator.allocate_buffer(mbuf_length)? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -1251,7 +1253,7 @@ impl Datapath for Mlx5Connection {
             outgoing_window: HashMap::default(),
             active_connections: [None; MAX_CONCURRENT_CONNECTIONS],
             address_to_conn_id: HashMap::default(),
-            allocator: MemoryAllocator::default(),
+            allocator: MemoryPoolAllocator::default(),
             copying_threshold: 256,
             inline_mode: InlineMode::default(),
             max_inline_size: 256,
@@ -1387,13 +1389,12 @@ impl Datapath for Mlx5Connection {
                 if allocation_size > 0 {
                     // copy data into mbuf
                     // allocate an mbuf that can fit this amount of data and copy data to it
-                    let mut data_buffer =
-                        match self.allocator.allocate_data_buffer(allocation_size, 256)? {
-                            Some(buf) => buf,
-                            None => {
-                                bail!("No tx mempools to allocate outgoing packet");
-                            }
-                        };
+                    let mut data_buffer = match self.allocator.allocate_buffer(allocation_size)? {
+                        Some(buf) => buf,
+                        None => {
+                            bail!("No tx mempools to allocate outgoing packet");
+                        }
+                    };
                     let write_offset = match !written_header {
                         true => {
                             // copy in the header into a buffer
@@ -1690,15 +1691,15 @@ impl Datapath for Mlx5Connection {
         self.allocator.is_registered(buf)
     }
 
-    fn allocate(&mut self, size: usize, alignment: usize) -> Result<Option<Self::DatapathBuffer>> {
-        self.allocator.allocate_data_buffer(size, alignment)
+    fn allocate(&mut self, size: usize) -> Result<Option<Self::DatapathBuffer>> {
+        self.allocator.allocate_buffer(size)
     }
 
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>> {
         MbufMetadata::from_buf(buf)
     }
 
-    fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<()> {
+    fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {
         // use 2MB pages for data, 2MB pages for metadata (?)
         let metadata_pgsize = match min_elts > 8192 {
             true => PGSIZE_4KB,
@@ -1719,10 +1720,21 @@ impl Datapath for Mlx5Connection {
             )
         };
         ensure!(!tx_mempool_ptr.is_null(), "Allocated tx mempool is null");
-        self.allocator
-            .add_mempool(mempool_params.get_item_len(), tx_mempool_ptr)?;
+        let data_mempool = DataMempool::new(tx_mempool_ptr)?;
+        let id = self
+            .allocator
+            .add_mempool(mempool_params.get_item_len(), data_mempool)?;
 
-        Ok(())
+        Ok(vec![id])
+    }
+
+    fn register_mempool(&mut self, id: MempoolID) -> Result<()> {
+        self.allocator
+            .register(id, self.thread_context.get_context_ptr())
+    }
+
+    fn unregister_mempool(&mut self, id: MempoolID) -> Result<()> {
+        self.allocator.unregister(id)
     }
 
     fn header_size(&self) -> usize {

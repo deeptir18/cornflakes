@@ -27,6 +27,12 @@ int allocate_mempool(struct registered_mempool *mempool,
                         size_t data_pgsize,
                         size_t metadata_pgsize);
 
+/* Registers the mempool from the thread, doing nothing if the memory pool is
+ * already not registered. */
+int register_memory_pool_from_thread(struct mlx5_per_thread_context *thread_context,
+                                        struct registered_mempool *mempool,
+                                        int flags);
+
 /* Initializes the external data mempool */
 /* Memory registration for a specific region of memory. */
 int register_memory_pool(struct mlx5_global_context *context,

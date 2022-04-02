@@ -1,4 +1,6 @@
-use super::{serialize::Serializable, utils::AddressInfo, ConnID, MsgID, RcSga, Sga};
+use super::{
+    allocator::MempoolID, serialize::Serializable, utils::AddressInfo, ConnID, MsgID, RcSga, Sga,
+};
 use color_eyre::eyre::{bail, Result};
 use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
 
@@ -265,8 +267,7 @@ pub trait Datapath {
     /// Allocate a datapath buffer with the given size and alignment.
     /// Args:
     /// @size: minimum size of buffer to be allocated.
-    /// @alignment: alignment size to align up to.
-    fn allocate(&mut self, size: usize, alignment: usize) -> Result<Option<Self::DatapathBuffer>>;
+    fn allocate(&mut self, size: usize) -> Result<Option<Self::DatapathBuffer>>;
 
     /// Consume a datapath buffer and returns a metadata object that owns the underlying
     /// buffer.
@@ -279,7 +280,17 @@ pub trait Datapath {
     /// Args:
     /// @size: element size
     /// @min_elts: minimum number of elements in the memory pool.
-    fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<()>;
+    ///
+    /// Returns:
+    /// Vector of memory pool IDs for mempools that were created (datapath may have a maximum size
+    /// for the memory pool).
+    fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>>;
+
+    /// Register given mempool ID
+    fn register_mempool(&mut self, id: MempoolID) -> Result<()>;
+
+    /// Unregister given mempool ID
+    fn unregister_mempool(&mut self, id: MempoolID) -> Result<()>;
 
     fn header_size(&self) -> usize;
 

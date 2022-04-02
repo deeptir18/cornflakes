@@ -108,6 +108,26 @@ int allocate_mempool(struct registered_mempool *mempool,
 
     return 0;
 }
+
+int register_memory_pool_from_thread(struct mlx5_per_thread_context *thread_context, 
+        struct registered_mempool *mempool, 
+        int flags) {
+    if (&(mempool->data_mempool)->is_registered()) {
+        return 0;
+    } else {
+        void *buf = (&(mempool->data_mempool))->buf;
+        size_t len = (&(mempool->data_mempool))->len;
+        mempool->mr = ibv_reg_mr(thread_context->global_context->pd, buf, len, flags);
+        if (!mempool->mr) {
+            NETPERF_ERROR("Failed to do memory reg for region %p len %lu: %s", buf, len, strerror(errno));
+            return -errno;
+        }
+        register_mempool(&mempool->data_mempool, mempool->mr->lkey);
+        return 0;
+    }
+
+}
+
 int register_memory_pool(struct mlx5_global_context *context,
                             struct registered_mempool *mempool,
                             int flags) {
@@ -152,8 +172,11 @@ int create_and_register_mempool(struct mlx5_global_context *context,
 }
 
 int deregister_memory_pool(struct registered_mempool *mempool) {
-    struct ibv_mr *mr = mempool->mr;
     struct mempool *data_mempool = &mempool->data_mempool;
+    if (!(data_mempool->is_registered())) {
+        return 0;
+    }
+    struct ibv_mr *mr = mempool->mr;
     int ret = ibv_dereg_mr(mr);
     if (ret != 0) {
         NETPERF_ERROR("Failed to dereg memory region with lkey %d: %s", mempool->mr->lkey, strerror(errno));            

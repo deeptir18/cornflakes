@@ -1,8 +1,9 @@
 use super::{
-    super::dpdk_bindings::*, allocator::MemoryAllocator, dpdk_check, dpdk_error, dpdk_utils::*,
+    super::dpdk_bindings::*, allocator::MempoolInfo, dpdk_check, dpdk_error, dpdk_utils::*,
     wrapper::*,
 };
 use cornflakes_libos::{
+    allocator::{MemoryPoolAllocator, MempoolID},
     datapath::{Datapath, MetadataOps, ReceivedPkt},
     mem::{PGSIZE_2MB, PGSIZE_4KB},
     serialize::Serializable,
@@ -348,7 +349,7 @@ pub struct DpdkConnection {
     /// Map from address info to connection id
     address_to_conn_id: HashMap<AddressInfo, ConnID>,
     /// Allocator for outgoing packets
-    allocator: MemoryAllocator,
+    allocator: MemoryPoolAllocator<MempoolInfo>,
     /// Threshold for copying a segment or leaving as a separate scatter-gather entry
     copying_threshold: usize,
     /// Array of mbuf pointers used to receive packets
@@ -619,7 +620,7 @@ impl Datapath for DpdkConnection {
             outgoing_window: HashMap::default(),
             active_connections: [None; MAX_CONCURRENT_CONNECTIONS],
             address_to_conn_id: HashMap::default(),
-            allocator: MemoryAllocator::default(),
+            allocator: MemoryPoolAllocator::default(),
             copying_threshold: 256,
             recv_mbufs: [ptr::null_mut(); RECEIVE_BURST_SIZE],
             send_mbufs: [ptr::null_mut(); SEND_BURST_SIZE],
@@ -746,7 +747,7 @@ impl Datapath for DpdkConnection {
         false
     }
 
-    fn allocate(&mut self, size: usize, alignment: usize) -> Result<Option<Self::DatapathBuffer>> {
+    fn allocate(&mut self, size: usize) -> Result<Option<Self::DatapathBuffer>> {
         unimplemented!();
     }
 
@@ -754,7 +755,8 @@ impl Datapath for DpdkConnection {
         Ok(Some(RteMbufMetadata::from_dpdk_buf(buf)))
     }
 
-    fn add_memory_pool(&mut self, value_size: usize, min_elts: usize) -> Result<()> {
+    fn add_memory_pool(&mut self, value_size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {
+        let mut ret: Vec<MempoolID> = Vec::default();
         //let num_values = (min_num_values as f64 * 1.20) as usize;
         // find optimal number of values above this
         let name = format!(
@@ -762,7 +764,7 @@ impl Datapath for DpdkConnection {
             self.thread_context.get_queue_id(),
             self.allocator.num_mempools_so_far()
         );
-        tracing::info!(name = name.as_str(), value_size, min_elts, "Adding mempool");
+        tracing::info!(name = ?name, value_size, min_elts, "Adding mempool");
         let (num_values, num_mempools) = {
             let log2 = (min_elts as f64).log2().ceil() as u32;
             let num_elts = usize::pow(2, log2) as usize;
@@ -793,14 +795,24 @@ impl Datapath for DpdkConnection {
                 unsafe { rte_mempool_avail_count(mempool) },
                 unsafe { rte_mempool_in_use_count(mempool) },
             );
-            self.allocator
-                .add_mempool(mempool, value_size)
+            let id = self
+                .allocator
+                .add_mempool(value_size, MempoolInfo::new(mempool)?)
                 .wrap_err(format!(
                     "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}",
                     name, value_size, num_values
                 ))?;
+            ret.push(id);
         }
-        Ok(())
+        Ok(ret)
+    }
+
+    fn register_mempool(&mut self, id: MempoolID) -> Result<()> {
+        self.allocator.register(id, ())
+    }
+
+    fn unregister_mempool(&mut self, id: MempoolID) -> Result<()> {
+        self.allocator.unregister(id)
     }
 
     fn header_size(&self) -> usize {
