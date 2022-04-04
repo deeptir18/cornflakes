@@ -398,6 +398,13 @@ where
             RcSge::RefCounted(m) => Some(m),
         }
     }
+
+    pub fn inner_datapath_pkt_mut(&mut self) -> Option<&mut D::DatapathMetadata> {
+        match self {
+            RcSge::RawRef(_) => None,
+            RcSge::RefCounted(ref mut m) => Some(m),
+        }
+    }
 }
 
 impl<'a, D> AsRef<[u8]> for RcSge<'a, D>
@@ -456,6 +463,10 @@ where
 
     pub fn get(&self, idx: usize) -> &RcSge<'a, D> {
         &self.entries[idx]
+    }
+
+    pub fn get_mut(&mut self, idx: usize) -> &mut RcSge<'a, D> {
+        &mut self.entries[idx]
     }
 
     pub fn iter(&self) -> Iter<RcSge<'a, D>> {

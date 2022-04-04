@@ -16,6 +16,8 @@ extern "C" {
 
     fn current_cycles_() -> u64;
 
+    fn get_recv_mempool_(context: *mut mlx5_per_thread_context) -> *mut registered_mempool;
+
     fn alloc_data_buf_(mempool: *mut registered_mempool) -> *mut ::std::os::raw::c_void;
 
     fn alloc_metadata_(
@@ -90,6 +92,11 @@ pub unsafe fn cycles_to_ns(a: u64) -> u64 {
 #[inline]
 pub unsafe fn current_cycles() -> u64 {
     current_cycles_()
+}
+
+#[inline]
+pub unsafe fn get_recv_mempool(context: *mut mlx5_per_thread_context) -> *mut registered_mempool {
+    get_recv_mempool_(context)
 }
 
 #[inline]

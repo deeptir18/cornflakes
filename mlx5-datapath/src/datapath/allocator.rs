@@ -1,11 +1,9 @@
 use super::{
     super::{access, mlx5_bindings::*},
     connection::{MbufMetadata, Mlx5Buffer, Mlx5Connection},
-    sizes::align_up,
 };
 use color_eyre::eyre::{bail, ensure, Result};
 use cornflakes_libos::{allocator::DatapathMemoryPool, datapath::Datapath};
-use hashbrown::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataMempool {
@@ -37,15 +35,6 @@ impl DataMempool {
     pub unsafe fn check_mempool(&self, mempool: *mut mempool) -> bool {
         get_data_mempool(self.mempool) == mempool
     }*/
-
-    pub unsafe fn alloc_data(&mut self) -> Result<Option<Mlx5Buffer>> {
-        let buf = alloc_data_buf(self.mempool);
-        if buf.is_null() {
-            return Ok(None);
-        } else {
-            return Ok(Some(Mlx5Buffer::new(buf, self.mempool, 0)));
-        }
-    }
 
     /*#[inline]
     pub unsafe fn item_len(&self) -> usize {
@@ -107,6 +96,13 @@ impl DatapathMemoryPool for DataMempool {
                     <= (access!(data_pool, buf, *const u8) as usize
                         + access!(data_pool, len, usize))
         }
+    }
+
+    fn recover_metadata(
+        &self,
+        buf: <<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer,
+    ) -> Result<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata> {
+        self.recover_buffer(buf.as_ref())
     }
 
     /// Recovers buffer into datapath metadata IF the buffer is registered and within bounds.

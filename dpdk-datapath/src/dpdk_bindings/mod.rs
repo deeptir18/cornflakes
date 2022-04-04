@@ -165,6 +165,13 @@ extern "C" {
         pgsize: usize,
         paddrs: *mut usize,
     ) -> ::std::os::raw::c_int;
+
+    fn fill_in_hdrs_dpdk_(
+        buffer: *mut ::std::os::raw::c_void,
+        hdr_buffer: *const ::std::os::raw::c_void,
+        pkt_id: u32,
+        data_len: usize,
+    );
 }
 
 #[cfg(feature = "mlx5")]
@@ -533,4 +540,14 @@ pub unsafe fn mlx5_manual_reg_mr_callback(
 #[inline(never)]
 pub unsafe fn mlx5_manual_dereg_mr_callback(ibv_mr: *mut ::std::os::raw::c_void) {
     rte_pmd_mlx5_manual_dereg_mr(ibv_mr)
+}
+
+#[inline]
+pub unsafe fn fill_in_hdrs_dpdk(
+    buffer: *mut ::std::os::raw::c_void,
+    hdr_buffer: *const ::std::os::raw::c_void,
+    pkt_id: u32,
+    data_len: usize,
+) {
+    fill_in_hdrs_dpdk_(buffer, hdr_buffer, pkt_id, data_len);
 }

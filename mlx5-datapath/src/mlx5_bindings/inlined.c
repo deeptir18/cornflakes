@@ -20,6 +20,10 @@ uint64_t cycles_to_ns_(uint64_t a) {
     return cycles_to_us(a);
 }
 
+struct registered_mempool *get_recv_mempool_(struct mlx5_per_thread_context *context) {
+    return (struct registered_mempool *)(&(context->rx_mempool));
+}
+
 uint64_t current_cycles_() {
     return microcycles();
 }
@@ -89,27 +93,27 @@ void fill_in_hdrs_(void *buffer, const void *hdr, uint32_t id, size_t data_len) 
     char *dst_ptr = buffer;
     const char *src_ptr = hdr;
     // copy ethernet header
-    memcpy(dst_ptr, src_ptr, sizeof(struct eth_hdr));
+    rte_memcpy(dst_ptr, src_ptr, sizeof(struct eth_hdr));
     dst_ptr += sizeof(struct eth_hdr);
     src_ptr += sizeof(struct eth_hdr);
 
     // copy in the ipv4 header and reset the the data length and checksum
-    memcpy(dst_ptr, src_ptr, sizeof(struct ip_hdr));
+    rte_memcpy(dst_ptr, src_ptr, sizeof(struct ip_hdr));
     struct ip_hdr *ip = (struct ip_hdr *)dst_ptr;
     dst_ptr += sizeof(struct ip_hdr);
     src_ptr += sizeof(struct ip_hdr);
 
-     memcpy(dst_ptr, src_ptr, sizeof(struct udp_hdr));
+     rte_memcpy(dst_ptr, src_ptr, sizeof(struct udp_hdr));
      struct udp_hdr *udp = (struct udp_hdr *)dst_ptr;
      dst_ptr += sizeof(struct udp_hdr);
 
     *(uint32_t *)dst_ptr = id;
 
-    ip->len = data_len;
+    ip->len = htons(sizeof(struct ip_hdr) + sizeof(struct udp_hdr) + 4 + data_len);
     ip->chksum = 0;
     ip->chksum = get_chksum(ip);
 
-     udp->len = data_len;
+     udp->len = htons(sizeof(struct udp_hdr) + 4 + data_len);
      udp->chksum = 0;
      udp->chksum = get_chksum(udp);
 

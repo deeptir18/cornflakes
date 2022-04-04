@@ -89,7 +89,7 @@ where
             })
             .collect();
         datapath
-            .push_rc_sgas(&outgoing_rc_sgas_result?)
+            .push_rc_sgas(&mut outgoing_rc_sgas_result?)
             .wrap_err("Failed to push rc sgas")?;
         Ok(())
     }

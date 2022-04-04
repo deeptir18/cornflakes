@@ -76,6 +76,10 @@ where
         self.pkts.iter()
     }
 
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<D::DatapathMetadata> {
+        self.pkts.iter_mut()
+    }
+
     /// Given a start index and length, return a datapath metadata object referring to the given
     /// contiguous slice within the packet if it exists.
     /// Arguments:
@@ -237,7 +241,9 @@ pub trait Datapath {
     /// Send as a reference counted scatter-gather array.
     /// Args:
     /// @rc_sgas: Vector of (msg id, connection id, reference counted scatter-gather arrays) to send.
-    fn push_rc_sgas(&mut self, rc_sgas: &Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
+    /// Must be mutable in order to correctly increment the reference counts on the underlying
+    /// buffers.
+    fn push_rc_sgas(&mut self, rc_sgas: &mut Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
     where
         Self: Sized;
 

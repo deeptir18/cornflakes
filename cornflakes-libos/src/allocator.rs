@@ -22,6 +22,11 @@ pub trait DatapathMemoryPool {
     /// Is a specific buffer within bounds
     fn is_buf_within_bounds(&self, buf: &[u8]) -> bool;
 
+    fn recover_metadata(
+        &self,
+        buf: <<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer,
+    ) -> Result<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata>;
+
     /// Recovers buffer into datapath metadata IF the buffer is registered and within bounds.
     /// MUST be called ONLY if the buffer is registered and within bounds.
     fn recover_buffer(
@@ -49,6 +54,9 @@ where
 
     /// Unique IDs assigned to mempools (assumes the number of mempools added won't overflow)
     next_id_to_allocate: MempoolID,
+
+    /// Mempools that cannot be allocated from, but must be searched for recovery.
+    recv_mempools: Vec<M>,
 }
 
 impl<M> Default for MemoryPoolAllocator<M>
@@ -60,6 +68,7 @@ where
             mempool_ids: HashMap::default(),
             mempools: HashMap::default(),
             next_id_to_allocate: 0,
+            recv_mempools: Vec::default(),
         }
     }
 }
@@ -83,6 +92,10 @@ where
             }
         }
         Ok(self.next_id_to_allocate - 1)
+    }
+
+    pub fn add_recv_mempool(&mut self, mempool: M) {
+        self.recv_mempools.push(mempool);
     }
 
     /// Registers the backing region behind the given mempool.
@@ -153,6 +166,20 @@ where
         buffer: &[u8],
     ) -> Result<Option<<<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata>>
     {
+        // search through recv mempools first
+        for mempool in self.recv_mempools.iter() {
+            if mempool.is_buf_within_bounds(buffer) {
+                if mempool.is_registered() {
+                    let metadata = mempool
+                        .recover_buffer(buffer)
+                        .wrap_err("unable to recover metadata")?;
+                    return Ok(Some(metadata));
+                } else {
+                    return Ok(None);
+                }
+            }
+        }
+
         let mempool_sizes: Vec<&usize> = self
             .mempool_ids
             .keys()
@@ -166,7 +193,7 @@ where
                     if mempool.is_registered() {
                         let metadata = mempool
                             .recover_buffer(buffer)
-                            .wrap_err("Unable to recover metadata")?;
+                            .wrap_err("unable to recover metadata")?;
                         return Ok(Some(metadata));
                     } else {
                         return Ok(None);
@@ -188,11 +215,57 @@ where
         buf: <<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer,
     ) -> Result<Option<<<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata>>
     {
-        self.recover_buffer(buf.as_ref())
+        // search through recv mempools first
+        for mempool in self.recv_mempools.iter() {
+            if mempool.is_buf_within_bounds(buf.as_ref()) {
+                if mempool.is_registered() {
+                    let metadata = mempool
+                        .recover_metadata(buf)
+                        .wrap_err("unable to recover metadata")?;
+                    return Ok(Some(metadata));
+                } else {
+                    return Ok(None);
+                }
+            }
+        }
+
+        let mempool_sizes: Vec<&usize> = self
+            .mempool_ids
+            .keys()
+            .sorted()
+            .filter(|size| *size >= &buf.as_ref().len())
+            .collect();
+        for size in mempool_sizes {
+            for mempool_id in self.mempool_ids.get(size).unwrap() {
+                let mempool = self.mempools.get(mempool_id).unwrap();
+                if mempool.is_buf_within_bounds(buf.as_ref()) {
+                    if mempool.is_registered() {
+                        let metadata = mempool
+                            .recover_metadata(buf)
+                            .wrap_err("unable to recover metadata")?;
+                        return Ok(Some(metadata));
+                    } else {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        return Ok(None);
     }
 
     /// Checks whether a given datapath buffer is in registered memory or not.
     pub fn is_registered(&self, buf: &[u8]) -> bool {
+        // search through recv mempools first
+        for mempool in self.recv_mempools.iter() {
+            if mempool.is_buf_within_bounds(buf.as_ref()) {
+                if mempool.is_registered() {
+                    return true;
+                } else {
+                    return false;
+                }
+            }
+        }
+
         let mempool_sizes: Vec<&usize> = self
             .mempool_ids
             .keys()

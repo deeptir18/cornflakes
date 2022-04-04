@@ -4,7 +4,6 @@ use super::{
 };
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_libos::{allocator::DatapathMemoryPool, datapath::Datapath, mem::closest_2mb_page};
-use hashbrown::HashMap;
 
 /// Determine three parameters about the memory in the DPDK mempool:
 /// 1. (Start address, length)
@@ -86,7 +85,7 @@ fn get_mempool_memzone_area(
     let pagesize = unsafe { (*(*mbuf_pool).mz).hugepage_sz as usize };
     let mut first_on_page = true;
 
-    for (idx, mbuf_ptr) in mbuf_addrs.iter() {
+    for (_idx, mbuf_ptr) in mbuf_addrs.iter() {
         let mbuf = *mbuf_ptr;
         // get current closest memzone page
         let mut closest_page = memzone_pages[cur_memzone_page_idx].0;
@@ -238,6 +237,14 @@ impl DatapathMemoryPool for MempoolInfo {
         (buf.as_ptr() as usize > self.start) && (buf.as_ptr() as usize) < (self.start + self.size)
     }
 
+    fn recover_metadata(
+        &self,
+        buf: <<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer,
+    ) -> Result<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata> {
+        // can just consume the DpdkBuffer and turn it into RteMbufMetadata
+        Ok(RteMbufMetadata::from_dpdk_buf(buf))
+    }
+
     fn recover_buffer(
         &self,
         buf: &[u8],
@@ -363,10 +370,10 @@ impl MempoolInfo {
         self.header_size() + self.priv_size() + self.headroom
     }
 
-    #[inline]
+    /*#[inline]
     fn get_mempool(&self) -> *mut rte_mempool {
         self.handle
-    }
+    }*/
 }
 
 impl Drop for MempoolInfo {

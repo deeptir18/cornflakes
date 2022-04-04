@@ -1,4 +1,4 @@
-use super::{super::dpdk_bindings::*, dpdk_check, dpdk_error};
+use super::{super::dpdk_bindings::*, dpdk_check};
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use std::{
     ffi::{CStr, CString},
@@ -10,7 +10,6 @@ use std::{
 /// DPDK memory pool parameters
 const DEFAULT_MBUFS_PER_MEMPOOL: u16 = 8191;
 const MBUF_CACHE_SIZE: u16 = 250;
-const RX_PACKET_LEN: u32 = 9216;
 const DEFAULT_MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
 const MBUF_PRIV_SIZE: usize = 8;
 
@@ -20,9 +19,7 @@ pub fn wait_for_link_status_up(port_id: u16) -> Result<()> {
 
     let mut link: MaybeUninit<rte_eth_link> = MaybeUninit::zeroed();
     for _i in 0..retry_count {
-        unsafe {
-            dpdk_check_not_errored!(rte_eth_link_get_nowait(port_id, link.as_mut_ptr()));
-        }
+        dpdk_check_not_errored!(rte_eth_link_get_nowait(port_id, link.as_mut_ptr()));
         let link = unsafe { link.assume_init() };
         if ETH_LINK_UP == link.link_status() as u32 {
             let duplex = if link.link_duplex() as u32 == ETH_LINK_FULL_DUPLEX {
@@ -45,7 +42,7 @@ pub fn wait_for_link_status_up(port_id: u16) -> Result<()> {
     bail!("Link never came up");
 }
 
-pub fn create_recv_mempool(name: &str, dpdk_port: u16) -> Result<*mut rte_mempool> {
+pub fn create_recv_mempool(name: &str) -> Result<*mut rte_mempool> {
     let name_str = CString::new(name)?;
     let mbuf_pool = unsafe {
         rte_pktmbuf_pool_create(
@@ -73,7 +70,7 @@ pub fn create_recv_mempool(name: &str, dpdk_port: u16) -> Result<*mut rte_mempoo
     Ok(mbuf_pool)
 }
 
-pub fn create_extbuf_pool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
+pub fn create_extbuf_pool(name: &str) -> Result<*mut rte_mempool> {
     let name = CString::new(name)?;
 
     let mut mbp_priv_uninit: MaybeUninit<rte_pktmbuf_pool_private> = MaybeUninit::zeroed();

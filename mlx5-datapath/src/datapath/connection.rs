@@ -106,7 +106,7 @@ impl Mlx5Buffer {
         if start > item_len || end > item_len {
             bail!("Invalid bounnds for buf of len {}", item_len);
         }
-        let buf = unsafe { std::slice::from_raw_parts_mut(self.data as *mut u8, item_len) };
+        let buf = unsafe { std::slice::from_raw_parts_mut(self.data as *mut u8, end - start) };
         if self.data_len <= end {
             // TODO: is this not a great way to do this?
             self.data_len = end;
@@ -183,6 +183,13 @@ impl MbufMetadata {
         }
         Ok(Some(MbufMetadata::new(metadata_buf, 0, Some(data_len))?))
     }
+
+    pub fn increment_refcnt(&mut self) {
+        unsafe {
+            mbuf_refcnt_update_or_free(self.mbuf, 1);
+        }
+    }
+
     /// Initializes metadata object from existing metadata mbuf in c.
     /// Args:
     /// @mbuf: mbuf structure that contains metadata
@@ -320,6 +327,10 @@ impl Mlx5PerThreadContext {
         self.context
     }
 
+    pub fn get_recv_mempool(&self) -> *mut registered_mempool {
+        unsafe { get_recv_mempool(self.context) }
+    }
+
     pub fn get_queue_id(&self) -> u16 {
         self.queue_id
     }
@@ -419,8 +430,10 @@ impl Mlx5Connection {
 
     fn insert_into_outgoing_map(&mut self, msg_id: MsgID, conn_id: ConnID) {
         if self.mode == AppMode::Client {
-            self.outgoing_window
-                .insert((msg_id, conn_id), Instant::now());
+            if !self.outgoing_window.contains_key(&(msg_id, conn_id)) {
+                self.outgoing_window
+                    .insert((msg_id, conn_id), Instant::now());
+            }
         }
     }
 
@@ -497,7 +510,7 @@ impl Mlx5Connection {
         let datapath_metadata = MbufMetadata::new(
             recv_mbuf,
             cornflakes_libos::utils::TOTAL_HEADER_SIZE,
-            Some(data_len - 4),
+            Some(data_len - 4 - cornflakes_libos::utils::UDP_HEADER2_SIZE),
         )?;
 
         let received_pkt = ReceivedPkt::new(vec![datapath_metadata], msg_id, conn_id);
@@ -637,7 +650,7 @@ impl Mlx5Connection {
     /// Assuming that there are enough descriptors to transmit this sga, post the rc sga.
     fn post_rc_sga(
         &mut self,
-        rc_sga: &RcSga<Self>,
+        rc_sga: &mut RcSga<Self>,
         conn_id: ConnID,
         msg_id: MsgID,
         num_wqes_required: u64,
@@ -698,7 +711,9 @@ impl Mlx5Connection {
         // fill in all entries
         while entry_idx < rc_sga.len() {
             if self.zero_copy_rc_seg(rc_sga.get(entry_idx)) {
-                let mbuf_metadata = rc_sga.get(entry_idx).inner_datapath_pkt().unwrap();
+                let mbuf_metadata = rc_sga.get_mut(entry_idx).inner_datapath_pkt_mut().unwrap();
+                mbuf_metadata.increment_refcnt();
+
                 curr_data_seg = unsafe {
                     add_dpseg(
                         self.thread_context.get_context_ptr(),
@@ -767,7 +782,7 @@ impl Mlx5Connection {
                 }
 
                 // attach this data buffer to a metadata buffer
-                let metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
+                let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
                     Some(m) => m,
                     None => {
                         bail!(
@@ -775,6 +790,8 @@ impl Mlx5Connection {
                         );
                     }
                 };
+                // increment refcount as MbufMetadata may be dropped before data is sent
+                metadata_mbuf.increment_refcnt();
 
                 // post this data buffer to the ring buffer
                 unsafe {
@@ -871,7 +888,8 @@ impl Mlx5Connection {
             // TODO: can make this more optimal to not search through mempools twice
             if self.zero_copy_seg(sga.get(entry_idx).addr()) {
                 let curr_seg = sga.get(entry_idx).addr();
-                let mbuf_metadata = self.allocator.recover_buffer(curr_seg)?.unwrap();
+                let mut mbuf_metadata = self.allocator.recover_buffer(curr_seg)?.unwrap();
+                mbuf_metadata.increment_refcnt();
                 curr_data_seg = unsafe {
                     add_dpseg(
                         self.thread_context.get_context_ptr(),
@@ -941,7 +959,7 @@ impl Mlx5Connection {
                 }
 
                 // attach this data buffer to a metadata buffer
-                let metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
+                let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
                     Some(m) => m,
                     None => {
                         bail!(
@@ -949,6 +967,7 @@ impl Mlx5Connection {
                         );
                     }
                 };
+                metadata_mbuf.increment_refcnt();
 
                 // post this data buffer to the ring buffer
                 unsafe {
@@ -1247,6 +1266,9 @@ impl Datapath for Mlx5Connection {
     where
         Self: Sized,
     {
+        let mut allocator = MemoryPoolAllocator::default();
+        allocator.add_recv_mempool(DataMempool::new(context.get_recv_mempool())?);
+
         Ok(Mlx5Connection {
             thread_context: context,
             mode: mode,
@@ -1410,7 +1432,7 @@ impl Datapath for Mlx5Connection {
 
                     // now put this inside an mbuf and post it.
                     // attach this data buffer to a metadata buffer
-                    let metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
+                    let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
                         Some(m) => m,
                         None => {
                             bail!(
@@ -1418,6 +1440,7 @@ impl Datapath for Mlx5Connection {
                         );
                         }
                     };
+                    metadata_mbuf.increment_refcnt();
 
                     // post this data buffer to the ring buffer
                     unsafe {
@@ -1452,7 +1475,7 @@ impl Datapath for Mlx5Connection {
         Ok(())
     }
 
-    fn echo(&mut self, pkts: Vec<ReceivedPkt<Self>>) -> Result<()>
+    fn echo(&mut self, mut pkts: Vec<ReceivedPkt<Self>>) -> Result<()>
     where
         Self: Sized,
     {
@@ -1461,7 +1484,7 @@ impl Datapath for Mlx5Connection {
         let mut pkt_idx = 0;
         let mut first_ctrl_seg: Option<*mut mlx5_wqe_ctrl_seg> = None;
         while pkt_idx < pkts.len() {
-            let received_pkt = &pkts[pkt_idx];
+            let received_pkt = &mut pkts[pkt_idx];
             let inline_len = 0;
             let num_segs = received_pkt.num_segs();
             let num_wqes_required = unsafe { num_wqes_required(inline_len as _, num_segs as _) };
@@ -1489,7 +1512,8 @@ impl Datapath for Mlx5Connection {
                     let mut curr_dpseg = dpseg_start(self.thread_context.get_context_ptr(), 0);
                     let mut curr_completion =
                         completion_start(self.thread_context.get_context_ptr());
-                    for seg in received_pkt.iter() {
+                    for seg in received_pkt.iter_mut() {
+                        seg.increment_refcnt();
                         curr_dpseg = add_dpseg(
                             self.thread_context.get_context_ptr(),
                             curr_dpseg,
@@ -1528,14 +1552,14 @@ impl Datapath for Mlx5Connection {
         Ok(())
     }
 
-    fn push_rc_sgas(&mut self, rc_sgas: &Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
+    fn push_rc_sgas(&mut self, rc_sgas: &mut Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
     where
         Self: Sized,
     {
         let mut first_ctrl_seg: Option<*mut mlx5_wqe_ctrl_seg> = None;
         let mut sga_idx = 0;
         while sga_idx < rc_sgas.len() {
-            let (msg_id, conn_id, sga) = &rc_sgas[sga_idx];
+            let (msg_id, conn_id, ref mut sga) = &mut rc_sgas[sga_idx];
             self.insert_into_outgoing_map(*msg_id, *conn_id);
             let (inline_len, num_segs) = self.calculate_shape_rc(&sga)?;
             let num_wqes_required = unsafe { num_wqes_required(inline_len as _, num_segs as _) };
@@ -1642,6 +1666,7 @@ impl Datapath for Mlx5Connection {
                 unsafe {
                     free_mbuf(self.recv_mbufs[i]);
                 }
+                self.recv_mbufs[i] = ptr::null_mut();
             }
         }
         Ok(ret)
@@ -1671,6 +1696,7 @@ impl Datapath for Mlx5Connection {
                 unsafe {
                     free_mbuf(self.recv_mbufs[i]);
                 }
+                self.recv_mbufs[i] = ptr::null_mut();
             }
         }
         Ok(ret)

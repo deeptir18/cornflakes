@@ -795,4 +795,31 @@ void copy_payload_(struct rte_mbuf *src_mbuf,
     rte_memcpy(tx_slice, rx_slice, len);
 }
 
+void fill_in_hdrs_dpdk_(void *buffer, const void *hdr, uint32_t id, size_t data_len) {
+    char *dst_ptr = buffer;
+    const char *src_ptr = hdr;
+    // copy ethernet header
+    rte_memcpy(dst_ptr, src_ptr, sizeof(struct rte_ether_hdr));
+    dst_ptr += sizeof(struct rte_ether_hdr);
+    src_ptr += sizeof(struct rte_ether_hdr);
 
+    // copy in the ipv4 header and reset the the data length and checksum
+    rte_memcpy(dst_ptr, src_ptr, sizeof(struct rte_ipv4_hdr));
+    struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)dst_ptr;
+    dst_ptr += sizeof(struct rte_ipv4_hdr);
+    src_ptr += sizeof(struct rte_ipv4_hdr);
+
+     rte_memcpy(dst_ptr, src_ptr, sizeof(struct rte_udp_hdr));
+     struct rte_udp_hdr *udp = (struct rte_udp_hdr *)dst_ptr;
+     dst_ptr += sizeof(struct rte_udp_hdr);
+
+    *(uint32_t *)dst_ptr = id;
+
+    ip->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) +  4 + data_len);
+    ip->hdr_checksum = 0;
+    ip->hdr_checksum = rte_ipv4_cksum(ip);
+
+     udp->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + 4 + data_len);
+     udp->dgram_cksum = 0;
+    udp->dgram_cksum = rte_cpu_to_be_16(rte_raw_cksum((void *)udp, sizeof(struct rte_udp_hdr)));
+}

@@ -5,10 +5,9 @@ use super::{
 use cornflakes_libos::{
     allocator::{MemoryPoolAllocator, MempoolID},
     datapath::{Datapath, MetadataOps, ReceivedPkt},
-    mem::{PGSIZE_2MB, PGSIZE_4KB},
     serialize::Serializable,
     utils::AddressInfo,
-    ConnID, MsgID, RcSga, RcSge, Sga, USING_REF_COUNTING,
+    ConnID, MsgID, RcSga, RcSge, Sga, Sge, USING_REF_COUNTING,
 };
 
 use byteorder::{ByteOrder, NetworkEndian};
@@ -18,14 +17,10 @@ use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
     ffi::CString,
-    fs::read_to_string,
     io::Write,
     mem::MaybeUninit,
     net::Ipv4Addr,
-    path::Path,
     ptr,
-    str::FromStr,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -34,9 +29,9 @@ use perftools;
 
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 
-const COMPLETION_BUDGET: usize = 32;
 const RECEIVE_BURST_SIZE: usize = 32;
 const SEND_BURST_SIZE: usize = 32;
+const MAX_SCATTERS: usize = 32;
 const MEMPOOL_MAX_SIZE: usize = 65536;
 
 /// RX and TX Prefetch, Host, and Write-back threshold values should be
@@ -72,8 +67,43 @@ impl DpdkBuffer {
         self.mbuf
     }
 
-    unsafe fn effective_buf_len(&self) -> usize {
-        access!(self.mbuf, buf_len, usize) - access!(self.mbuf, data_off, usize)
+    fn effective_buf_len(&self) -> usize {
+        unsafe { access!(self.mbuf, buf_len, usize) - access!(self.mbuf, data_off, usize) }
+    }
+
+    pub fn mutable_slice(&mut self, start: usize, end: usize) -> Result<&mut [u8]> {
+        let effective_buf_len = self.effective_buf_len();
+        if start > effective_buf_len || end > effective_buf_len {
+            bail!(
+                "Invalid bounds for buf of effective len {}",
+                effective_buf_len
+            );
+        }
+        let buf = unsafe { mbuf_mut_slice!(self.mbuf, start, end - start) };
+        unsafe {
+            if access!(self.mbuf, data_len, usize) <= end {
+                write_struct_field!(self.mbuf, data_len, end);
+            }
+        }
+        Ok(buf)
+    }
+
+    /// Copies contents of buffer into mbuf at offset (until buffer space is available).
+    /// Returns amount written.
+    pub fn copy_data(&mut self, buf: &[u8], offset: usize) -> Result<usize> {
+        let to_write = std::cmp::min(self.effective_buf_len() - offset, buf.len());
+        let mut_slice = unsafe { mbuf_mut_slice!(self.mbuf, offset, to_write) };
+        unsafe {
+            rte_memcpy_wrapper(
+                mut_slice.as_mut_ptr() as _,
+                buf[0..to_write].as_ptr() as _,
+                to_write,
+            );
+            let new_data_len =
+                std::cmp::max(access!(self.mbuf, data_len, usize), offset + buf.len());
+            write_struct_field!(self.mbuf, data_len, new_data_len);
+        }
+        Ok(to_write)
     }
 }
 
@@ -93,7 +123,7 @@ impl AsRef<[u8]> for DpdkBuffer {
 
 impl Write for DpdkBuffer {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let to_write = std::cmp::min(unsafe { self.effective_buf_len() }, buf.len());
+        let to_write = std::cmp::min(self.effective_buf_len(), buf.len());
         let mut mut_slice = unsafe { mbuf_mut_slice!(self.mbuf, 0, to_write) };
         let written = mut_slice.write(&buf[0..to_write])?;
         unsafe { write_struct_field!(self.mbuf, data_len, written) };
@@ -121,7 +151,11 @@ impl RteMbufMetadata {
         let mbuf = dpdk_buffer.get_inner();
 
         // increment the reference count of the underlying mbuf
-        unsafe { rte_pktmbuf_refcnt_set(mbuf, 1) };
+        unsafe {
+            if USING_REF_COUNTING {
+                rte_pktmbuf_refcnt_set(mbuf, 1)
+            }
+        };
         let data_len = unsafe { access!(mbuf, data_len, usize) };
 
         RteMbufMetadata {
@@ -138,7 +172,11 @@ impl RteMbufMetadata {
             unsafe { access!(mbuf, buf_len, usize) - access!(mbuf, data_off, usize) };
         ensure!(data_offset <= effective_buf_len, "Data offset too large");
 
-        unsafe { rte_pktmbuf_refcnt_set(mbuf, 1) };
+        unsafe {
+            if USING_REF_COUNTING {
+                rte_pktmbuf_refcnt_set(mbuf, 1)
+            }
+        };
 
         let len = match data_len {
             Some(x) => {
@@ -158,7 +196,46 @@ impl RteMbufMetadata {
         })
     }
 
-    pub fn mbuf(&self) -> *mut rte_mbuf {
+    pub fn increment_refcnt(&mut self) {
+        unsafe {
+            if USING_REF_COUNTING {
+                rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1)
+            }
+        };
+    }
+
+    pub fn update_metadata(
+        &mut self,
+        pkt_len: u32,
+        next: *mut rte_mbuf,
+        lkey: Option<u32>,
+        refers_to_another: bool,
+        nb_segs: u16,
+    ) {
+        unsafe {
+            (*self.mbuf).pkt_len = pkt_len;
+            (*self.mbuf).next = next;
+            (*self.mbuf).nb_segs = nb_segs;
+            match lkey {
+                Some(x) => {
+                    set_lkey(self.mbuf, x);
+                }
+                None => {
+                    set_lkey_not_present(self.mbuf);
+                }
+            }
+            match refers_to_another {
+                true => {
+                    set_refers_to_another(self.mbuf, 1);
+                }
+                false => {
+                    set_refers_to_another(self.mbuf, 2);
+                }
+            }
+        }
+    }
+
+    pub fn get_inner(&self) -> *mut rte_mbuf {
         self.mbuf
     }
 
@@ -204,6 +281,7 @@ impl Default for RteMbufMetadata {
 impl Drop for RteMbufMetadata {
     fn drop(&mut self) {
         unsafe {
+            // TODO: doesn't make sense to have this flag. should remove
             if USING_REF_COUNTING {
                 rte_pktmbuf_refcnt_update_or_free(self.mbuf, -1);
             } else {
@@ -251,6 +329,8 @@ impl AsRef<[u8]> for RteMbufMetadata {
 pub struct DpdkPerThreadContext {
     /// Queue id
     queue_id: u16,
+    /// Physical port
+    physical_port: u16,
     /// Source address info
     address_info: AddressInfo,
     /// Basic mempool for receiving packets
@@ -277,6 +357,10 @@ impl DpdkPerThreadContext {
 
     pub fn get_queue_id(&self) -> u16 {
         self.queue_id
+    }
+
+    pub fn get_physical_port(&self) -> u16 {
+        self.physical_port
     }
 }
 
@@ -355,10 +439,450 @@ pub struct DpdkConnection {
     /// Array of mbuf pointers used to receive packets
     recv_mbufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE],
     /// Array of mbuf pointers used to send packets
-    send_mbufs: [*mut rte_mbuf; SEND_BURST_SIZE],
+    send_mbufs: [[*mut rte_mbuf; SEND_BURST_SIZE]; MAX_SCATTERS],
 }
 
-impl DpdkConnection {}
+impl DpdkConnection {
+    pub fn set_copying_threshold(&mut self, thresh: usize) {
+        self.copying_threshold = thresh;
+    }
+
+    fn check_received_pkt(&mut self, i: usize) -> Result<Option<ReceivedPkt<Self>>> {
+        let recv_mbuf = self.recv_mbufs[i];
+        let eth_hdr = unsafe {
+            mbuf_slice!(
+                recv_mbuf,
+                0,
+                cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE
+            )
+        };
+        let (src_eth, _) = match cornflakes_libos::utils::check_eth_hdr(
+            eth_hdr,
+            &self.thread_context.address_info.ether_addr,
+        ) {
+            Ok(r) => r,
+            Err(_) => {
+                return Ok(None);
+            }
+        };
+
+        let ipv4_hdr = unsafe {
+            mbuf_slice!(
+                recv_mbuf,
+                cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE,
+                cornflakes_libos::utils::IPV4_HEADER2_SIZE
+            )
+        };
+        let (src_ip, _) = match cornflakes_libos::utils::check_ipv4_hdr(
+            ipv4_hdr,
+            &self.thread_context.address_info.ipv4_addr,
+        ) {
+            Ok(r) => r,
+            Err(_) => {
+                return Ok(None);
+            }
+        };
+
+        let udp_hdr = unsafe {
+            mbuf_slice!(
+                recv_mbuf,
+                cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE
+                    + cornflakes_libos::utils::IPV4_HEADER2_SIZE,
+                cornflakes_libos::utils::UDP_HEADER2_SIZE
+            )
+        };
+
+        let (src_port, _, data_len) = match cornflakes_libos::utils::check_udp_hdr(
+            udp_hdr,
+            self.thread_context.address_info.udp_port,
+        ) {
+            Ok(p) => p,
+            Err(_) => {
+                return Ok(None);
+            }
+        };
+
+        // check if this address info is within a current conn_id
+        let src_addr = cornflakes_libos::utils::AddressInfo::new(src_port, src_ip, src_eth);
+        let conn_id = self
+            .connect(src_addr)
+            .wrap_err("TOO MANY CONCURRENT CONNECTIONS")?;
+
+        let msg_id = unsafe {
+            let slice = mbuf_slice!(
+                recv_mbuf,
+                cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE,
+                cornflakes_libos::utils::HEADER_ID_SIZE
+            );
+            NetworkEndian::read_u32(&slice[0..4])
+        };
+
+        let datapath_metadata = RteMbufMetadata::new(
+            recv_mbuf,
+            cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+            Some(data_len - 4 - cornflakes_libos::utils::UDP_HEADER2_SIZE),
+        )?;
+
+        let received_pkt = ReceivedPkt::new(vec![datapath_metadata], msg_id, conn_id);
+        Ok(Some(received_pkt))
+    }
+
+    fn insert_into_outgoing_map(&mut self, msg_id: MsgID, conn_id: ConnID) {
+        if self.mode == AppMode::Client {
+            if !self.outgoing_window.contains_key(&(msg_id, conn_id)) {
+                self.outgoing_window
+                    .insert((msg_id, conn_id), Instant::now());
+            }
+        }
+    }
+
+    /// Takes zero-copy buffer (represented by RteMbufMetadata),
+    /// copies data into an external mbuf, and updates all the relevant metadata.
+    /// Arguments:
+    /// @original_mbuf_metadata: RteMbufMetadata representing original mbuf, data_offset and
+    /// data_len of application payload.
+    /// @pkt_idx: index of packet in send mbufs (within burst).
+    /// @nb_segs: Number of segments so far.
+    fn place_zero_copy_buf_into_send_mbufs(
+        &mut self,
+        original_mbuf_metadata: &mut RteMbufMetadata,
+        pkt_idx: usize,
+        nb_segs: &mut usize,
+        pkt_len: &mut usize,
+    ) -> Result<()> {
+        // allocate external buffer
+        let external_mbuf = unsafe {
+            let buf = rte_pktmbuf_alloc(self.thread_context.extbuf_mempool);
+            if buf.is_null() {
+                bail!("Could not allocate external buffer");
+            }
+            buf
+        };
+        // increment metadata of original mbuf
+        original_mbuf_metadata.increment_refcnt();
+        // update metadata in external buffer
+        unsafe {
+            (*external_mbuf).buf_iova = (*original_mbuf_metadata.get_inner()).buf_iova;
+            (*external_mbuf).buf_addr = (*original_mbuf_metadata.get_inner()).buf_addr;
+            (*external_mbuf).data_len = original_mbuf_metadata.data_len() as _;
+            (*external_mbuf).data_off = (*original_mbuf_metadata.get_inner()).data_off
+                + original_mbuf_metadata.offset() as u16;
+            (*external_mbuf).next = ptr::null_mut();
+            set_refers_to_another(external_mbuf, 1);
+            (*external_mbuf).nb_segs = 1;
+            set_lkey_not_present(external_mbuf);
+        }
+
+        self.send_mbufs[*nb_segs][pkt_idx] = external_mbuf;
+        if *nb_segs > 0 {
+            unsafe {
+                (*(self.send_mbufs[*nb_segs - 1][pkt_idx])).next = external_mbuf;
+            }
+        }
+        *nb_segs += 1;
+        *pkt_len += original_mbuf_metadata.data_len();
+        Ok(())
+    }
+
+    /// Consumes dpdk buffer (with new data), turns into RteMbufMetadata, increments ref count and metadata, and
+    /// places buffer into send_mbufs
+    /// Arguments:
+    /// @dpdk_buffer: DpdkBuffer to consume
+    /// @pkt_idx: index of packet in send mbufs array
+    /// @nb_segs: Pointer to total number of segments so far in this packet
+    /// @pkt_len: Pointer to packet len so far in this packet.
+    fn place_copy_buf_into_send_mbufs(
+        &mut self,
+        dpdk_buffer: DpdkBuffer,
+        pkt_idx: usize,
+        nb_segs: &mut usize,
+        pkt_len: &mut usize,
+    ) -> Result<()> {
+        let mut metadata_mbuf = RteMbufMetadata::from_dpdk_buf(dpdk_buffer);
+        metadata_mbuf.increment_refcnt();
+        metadata_mbuf.update_metadata(
+            metadata_mbuf.data_len() as _, // pkt_len for this mbuf
+            ptr::null_mut(),               // next pointer for this mbuf
+            None,                          // lkey not present
+            false,                         // refers to another = false
+            1,                             // nb segs = 1
+        );
+        let mbuf = metadata_mbuf.get_inner();
+        self.send_mbufs[*nb_segs][pkt_idx] = mbuf;
+        // update next pointer for previous mbuf
+        if *nb_segs > 0 {
+            unsafe {
+                (*(self.send_mbufs[*nb_segs - 1][pkt_idx])).next = mbuf;
+            }
+        }
+        *nb_segs += 1;
+        *pkt_len += cornflakes_libos::utils::TOTAL_HEADER_SIZE;
+        Ok(())
+    }
+    fn write_header_and_return_new_buffer(
+        &mut self,
+        conn_id: ConnID,
+        msg_id: MsgID,
+        buffer_size: usize,
+    ) -> Result<DpdkBuffer> {
+        let mut dpdk_buffer = match self.allocator.allocate_buffer(buffer_size)? {
+            Some(x) => x,
+            None => {
+                bail!("Error allocating mbuf to copy header into");
+            }
+        };
+        let mutable_slice =
+            dpdk_buffer.mutable_slice(0, cornflakes_libos::utils::TOTAL_HEADER_SIZE)?;
+        self.copy_hdr(conn_id, msg_id, mutable_slice)?;
+        Ok(dpdk_buffer)
+    }
+
+    fn zero_copy_rc_seg(&self, seg: &RcSge<Self>) -> bool {
+        match seg {
+            RcSge::RawRef(_) => false,
+            RcSge::RefCounted(mbuf_metadata) => {
+                mbuf_metadata.data_len() > self.copying_threshold
+                    && self.allocator.is_registered(seg.as_ref())
+            }
+        }
+    }
+
+    fn zero_copy_seg(&self, seg: &Sge) -> bool {
+        let buf = seg.addr();
+        buf.len() >= self.copying_threshold && self.allocator.is_registered(buf)
+    }
+
+    fn post_sga(
+        &mut self,
+        posting_idx: usize,
+        msg_id: MsgID,
+        conn_id: ConnID,
+        sga: &Sga,
+    ) -> Result<()> {
+        let mut sga_idx = 0;
+        let mut written_header = false;
+        let mut nb_segs = 0;
+        let mut pkt_len = 0;
+
+        while sga_idx < sga.len() {
+            let curr_seg = sga.get(sga_idx);
+            if self.zero_copy_seg(curr_seg) {
+                if !written_header {
+                    let dpdk_buffer = self.write_header_and_return_new_buffer(
+                        conn_id,
+                        msg_id,
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                    )?;
+                    self.place_copy_buf_into_send_mbufs(
+                        dpdk_buffer,
+                        posting_idx,
+                        &mut nb_segs,
+                        &mut pkt_len,
+                    )?;
+                    written_header = true;
+                }
+                // make a zero copy segment
+                let mut original_mbuf_metadata =
+                    match self.allocator.recover_buffer(sga.get(sga_idx).addr())? {
+                        Some(x) => x,
+                        None => {
+                            bail!("Failed to recover mbuf metadata for given buffer");
+                        }
+                    };
+                self.place_zero_copy_buf_into_send_mbufs(
+                    &mut original_mbuf_metadata,
+                    posting_idx,
+                    &mut nb_segs,
+                    &mut pkt_len,
+                )?;
+                sga_idx += 1;
+            } else {
+                let mut curr_idx = sga_idx;
+                let mut data_segment_length = 0;
+                while !self.zero_copy_seg(sga.get(curr_idx)) && curr_idx < sga.len() {
+                    curr_idx += 1;
+                    data_segment_length += sga.get(curr_idx).len();
+                }
+
+                let (mut copy_offset, mut dpdk_buffer) = match written_header {
+                    false => {
+                        written_header = true;
+                        (
+                            cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                            self.write_header_and_return_new_buffer(
+                                conn_id,
+                                msg_id,
+                                cornflakes_libos::utils::TOTAL_HEADER_SIZE + data_segment_length,
+                            )?,
+                        )
+                    }
+                    true => {
+                        match self
+                            .allocator
+                            .allocate_buffer(data_segment_length)
+                            .wrap_err("Could not allocate dpdk buffer to copy into")?
+                        {
+                            Some(x) => (0, x),
+                            None => {
+                                bail!("Error allocating mbuf to copy into");
+                            }
+                        }
+                    }
+                };
+
+                for curr_seg_idx in sga_idx..curr_idx {
+                    copy_offset +=
+                        dpdk_buffer.copy_data(sga.get(curr_seg_idx).addr(), copy_offset)?;
+                }
+
+                self.place_copy_buf_into_send_mbufs(
+                    dpdk_buffer,
+                    posting_idx,
+                    &mut nb_segs,
+                    &mut pkt_len,
+                )?;
+                sga_idx = curr_idx
+            }
+        }
+
+        // update metadata of first mbuf to reflect pkt_len and nb_segs
+        unsafe {
+            (*(self.send_mbufs[0][posting_idx])).pkt_len = pkt_len as _;
+            (*(self.send_mbufs[0][posting_idx])).nb_segs = nb_segs as _;
+        }
+        Ok(())
+    }
+
+    fn post_rc_sga(
+        &mut self,
+        posting_idx: usize,
+        msg_id: MsgID,
+        conn_id: ConnID,
+        rc_sga: &mut RcSga<Self>,
+    ) -> Result<()> {
+        let mut sga_idx = 0;
+        let mut written_header = false;
+        let mut nb_segs = 0;
+        let mut pkt_len = 0;
+
+        while sga_idx < rc_sga.len() {
+            let curr_seg = rc_sga.get_mut(sga_idx);
+            if self.zero_copy_rc_seg(curr_seg) {
+                if !written_header {
+                    let dpdk_buffer = self.write_header_and_return_new_buffer(
+                        conn_id,
+                        msg_id,
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                    )?;
+                    self.place_copy_buf_into_send_mbufs(
+                        dpdk_buffer,
+                        posting_idx,
+                        &mut nb_segs,
+                        &mut pkt_len,
+                    )?;
+                    written_header = true;
+                }
+                // make a zero copy segment
+                let mut original_mbuf_metadata = curr_seg.inner_datapath_pkt_mut().unwrap();
+                self.place_zero_copy_buf_into_send_mbufs(
+                    &mut original_mbuf_metadata,
+                    posting_idx,
+                    &mut nb_segs,
+                    &mut pkt_len,
+                )?;
+                sga_idx += 1;
+            } else {
+                let mut curr_idx = sga_idx;
+                let mut data_segment_length = 0;
+                while !self.zero_copy_rc_seg(rc_sga.get(curr_idx)) && curr_idx < rc_sga.len() {
+                    curr_idx += 1;
+                    data_segment_length += rc_sga.get(curr_idx).len();
+                }
+
+                let (mut copy_offset, mut dpdk_buffer) = match written_header {
+                    false => {
+                        written_header = true;
+                        (
+                            cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                            self.write_header_and_return_new_buffer(
+                                conn_id,
+                                msg_id,
+                                cornflakes_libos::utils::TOTAL_HEADER_SIZE + data_segment_length,
+                            )?,
+                        )
+                    }
+                    true => {
+                        match self
+                            .allocator
+                            .allocate_buffer(data_segment_length)
+                            .wrap_err("Could not allocate dpdk buffer to copy into")?
+                        {
+                            Some(x) => (0, x),
+                            None => {
+                                bail!("Error allocating mbuf to copy into");
+                            }
+                        }
+                    }
+                };
+
+                for curr_seg_idx in sga_idx..curr_idx {
+                    copy_offset +=
+                        dpdk_buffer.copy_data(rc_sga.get(curr_seg_idx).addr(), copy_offset)?;
+                }
+
+                self.place_copy_buf_into_send_mbufs(
+                    dpdk_buffer,
+                    posting_idx,
+                    &mut nb_segs,
+                    &mut pkt_len,
+                )?;
+                sga_idx = curr_idx
+            }
+        }
+
+        // update metadata of first mbuf to reflect pkt_len and nb_segs
+        unsafe {
+            (*(self.send_mbufs[0][posting_idx])).pkt_len = pkt_len as _;
+            (*(self.send_mbufs[0][posting_idx])).nb_segs = nb_segs as _;
+        }
+        Ok(())
+    }
+
+    fn send_current_mbufs(&mut self, ct: u16) -> Result<()> {
+        let mut num_sent: u16 = 0;
+        while num_sent < ct {
+            let mbuf_ptr = &mut self.send_mbufs[0][num_sent as usize] as _;
+            num_sent += unsafe {
+                rte_eth_tx_burst(
+                    self.thread_context.get_physical_port(),
+                    self.thread_context.get_queue_id(),
+                    mbuf_ptr,
+                    ct - num_sent,
+                )
+            };
+        }
+        Ok(())
+    }
+
+    fn copy_hdr(&self, conn_id: ConnID, msg_id: MsgID, buffer: &mut [u8]) -> Result<()> {
+        let hdr_bytes: &[u8; cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE] =
+            match &self.active_connections[conn_id as usize] {
+                Some((_, hdr_bytes_vec)) => hdr_bytes_vec,
+                None => {
+                    bail!("Could not find address for connID");
+                }
+            };
+        unsafe {
+            fill_in_hdrs_dpdk(
+                buffer.as_mut_ptr() as _,
+                hdr_bytes.as_ptr() as _,
+                msg_id,
+                buffer.len(),
+            );
+        }
+        Ok(())
+    }
+}
 
 impl Datapath for DpdkConnection {
     type DatapathBuffer = DpdkBuffer;
@@ -501,29 +1025,20 @@ impl Datapath for DpdkConnection {
         // for each core, initialize a native memory pool and external buffer memory pool
         let mut ret: Vec<Self::PerThreadContext> = Vec::with_capacity(num_queues);
         for (i, addr) in addresses.into_iter().enumerate() {
-            let recv_mempool = create_recv_mempool(
-                &format!("recv_mbuf_pool_{}", i),
-                datapath_params.get_physical_port()?,
-            )
-            .wrap_err(format!(
-                "Not able create recv mbuf pool {} in global init",
-                i
-            ))?;
+            let recv_mempool = create_recv_mempool(&format!("recv_mbuf_pool_{}", i)).wrap_err(
+                format!("Not able create recv mbuf pool {} in global init", i),
+            )?;
 
-            let extbuf_mempool = create_extbuf_pool(
-                &format!("extbuf_mempool_{}", i),
-                datapath_params.get_physical_port()?,
-            )
-            .wrap_err(format!(
-                "Not able to create extbuf mempool {} in global init",
-                i
-            ))?;
+            let extbuf_mempool = create_extbuf_pool(&format!("extbuf_mempool_{}", i)).wrap_err(
+                format!("Not able to create extbuf mempool {} in global init", i),
+            )?;
 
             ret.push(DpdkPerThreadContext {
                 queue_id: i as _,
                 address_info: addr,
                 recv_mempool: recv_mempool,
                 extbuf_mempool: extbuf_mempool,
+                physical_port: datapath_params.get_physical_port()?,
             });
         }
 
@@ -560,26 +1075,22 @@ impl Datapath for DpdkConnection {
         } as u32;
 
         for per_thread_context in ret.iter() {
-            unsafe {
-                dpdk_check_not_errored!(rte_eth_rx_queue_setup(
-                    datapath_params.get_physical_port()?,
-                    per_thread_context.get_queue_id(),
-                    RX_RING_SIZE,
-                    socket_id,
-                    rx_conf.as_mut_ptr(),
-                    per_thread_context.get_recv_mempool()
-                ));
-            }
+            dpdk_check_not_errored!(rte_eth_rx_queue_setup(
+                datapath_params.get_physical_port()?,
+                per_thread_context.get_queue_id(),
+                RX_RING_SIZE,
+                socket_id,
+                rx_conf.as_mut_ptr(),
+                per_thread_context.get_recv_mempool()
+            ));
 
-            unsafe {
-                dpdk_check_not_errored!(rte_eth_tx_queue_setup(
-                    datapath_params.get_physical_port()?,
-                    per_thread_context.get_queue_id(),
-                    TX_RING_SIZE,
-                    socket_id,
-                    tx_conf.as_mut_ptr()
-                ));
-            }
+            dpdk_check_not_errored!(rte_eth_tx_queue_setup(
+                datapath_params.get_physical_port()?,
+                per_thread_context.get_queue_id(),
+                TX_RING_SIZE,
+                socket_id,
+                tx_conf.as_mut_ptr()
+            ));
         }
 
         // start ethernet port
@@ -607,23 +1118,25 @@ impl Datapath for DpdkConnection {
     }
 
     fn per_thread_init(
-        datapath_params: Self::DatapathSpecificParams,
+        _datapath_params: Self::DatapathSpecificParams,
         context: Self::PerThreadContext,
         mode: AppMode,
     ) -> Result<Self>
     where
         Self: Sized,
     {
+        let mut allocator = MemoryPoolAllocator::default();
+        allocator.add_recv_mempool(MempoolInfo::new(context.get_recv_mempool())?);
         Ok(DpdkConnection {
             thread_context: context,
             mode: mode,
             outgoing_window: HashMap::default(),
             active_connections: [None; MAX_CONCURRENT_CONNECTIONS],
             address_to_conn_id: HashMap::default(),
-            allocator: MemoryPoolAllocator::default(),
+            allocator: allocator,
             copying_threshold: 256,
             recv_mbufs: [ptr::null_mut(); RECEIVE_BURST_SIZE],
-            send_mbufs: [ptr::null_mut(); SEND_BURST_SIZE],
+            send_mbufs: [[ptr::null_mut(); SEND_BURST_SIZE]; MAX_SCATTERS],
         })
     }
 
@@ -687,14 +1200,85 @@ impl Datapath for DpdkConnection {
     }
 
     fn push_buffers_with_copy(&mut self, pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()> {
-        unimplemented!();
+        for (i, (msg_id, conn_id, buf)) in pkts.iter().enumerate() {
+            self.insert_into_outgoing_map(*msg_id, *conn_id);
+            // allocate buffer to copy data into
+            let mut dpdk_buffer = match self
+                .allocator
+                .allocate_buffer(buf.len() + cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE)
+                .wrap_err("Could not allocate buf to copy into")?
+            {
+                Some(buf) => buf,
+                None => {
+                    bail!("Could not allocate buffer to copy into");
+                }
+            };
+            // write header into the dpdk buffer
+            let mut mutable_slice =
+                dpdk_buffer.mutable_slice(0, cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE)?;
+            self.copy_hdr(*conn_id, *msg_id, &mut mutable_slice)
+                .wrap_err("Could not copy header into mutable slice")?;
+            dpdk_buffer.copy_data(buf, cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE)?;
+
+            // turn dpdk buffer back into metadata object
+            let mut metadata_mbuf = match self.get_metadata(dpdk_buffer)? {
+                Some(x) => x,
+                None => {
+                    bail!("Failed to find corresponding metadata for allocated dpdk buffer")
+                }
+            };
+            // update metadata on packet required to send out
+            metadata_mbuf.update_metadata(
+                (buf.len() + cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE) as _,
+                ptr::null_mut(),
+                None,
+                false,
+                1,
+            );
+
+            // update refcount, because this RteMbufMetadata will be dropped after this loop
+            metadata_mbuf.increment_refcnt();
+
+            self.send_mbufs[0][i] = metadata_mbuf.get_inner();
+        }
+
+        self.send_current_mbufs(pkts.len() as _)
+            .wrap_err("Could not send mbufs in push buffers with copy function")?;
+
+        Ok(())
     }
 
     fn echo(&mut self, pkts: Vec<ReceivedPkt<Self>>) -> Result<()>
     where
         Self: Sized,
     {
-        unimplemented!();
+        for (i, pkt) in pkts.iter().enumerate() {
+            for (scatter_index, dpdk_buffer) in pkt.iter().enumerate() {
+                let mbuf = dpdk_buffer.get_inner();
+                tracing::debug!(
+                    "Echoing packet with id {}, mbuf addr {:?}, refcnt {}",
+                    pkt.msg_id(),
+                    mbuf,
+                    unsafe { access!(mbuf, refcnt, u16) }
+                );
+
+                // flip headers on packet
+                if scatter_index == 0 {
+                    // flip headers assumes the header is right at the buf addr of the packet
+                    unsafe {
+                        flip_headers(mbuf, pkt.msg_id());
+                    }
+                }
+                // increment ref count so it does not get dropped here
+                unsafe {
+                    rte_pktmbuf_refcnt_update_or_free(mbuf, 1);
+                }
+                self.send_mbufs[scatter_index as usize][i as usize] = mbuf;
+            }
+        }
+        self.send_current_mbufs(pkts.len() as u16)
+            .wrap_err("Failed to send packets from echo")?;
+        Ok(())
     }
 
     fn serialize_and_send(
@@ -707,29 +1291,111 @@ impl Datapath for DpdkConnection {
         Ok(())
     }
 
-    fn push_rc_sgas(&mut self, rc_sgas: &Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
+    fn push_rc_sgas(&mut self, rc_sgas: &mut Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
     where
         Self: Sized,
     {
-        unimplemented!();
+        for (pkt_idx, (msg, conn, rc_sga)) in rc_sgas.iter_mut().enumerate() {
+            self.insert_into_outgoing_map(*msg, *conn);
+            self.post_rc_sga(pkt_idx, *msg, *conn, rc_sga)
+                .wrap_err(format!("Failed to process sga {}", pkt_idx))?;
+        }
+        // send all current mbufs
+        self.send_current_mbufs(rc_sgas.len() as _)
+            .wrap_err(format!("Failed to send current mbufs"))?;
+        Ok(())
     }
 
     fn push_sgas(&mut self, sgas: &Vec<(MsgID, ConnID, Sga)>) -> Result<()> {
-        unimplemented!();
+        for (pkt_idx, (msg, conn, sga)) in sgas.iter().enumerate() {
+            self.insert_into_outgoing_map(*msg, *conn);
+            self.post_sga(pkt_idx, *msg, *conn, sga)
+                .wrap_err(format!("Failed to process sga {}", pkt_idx))?;
+        }
+        // send all current mbufs
+        self.send_current_mbufs(sgas.len() as _)
+            .wrap_err(format!("Failed to send current mbufs"))?;
+        Ok(())
     }
 
     fn pop_with_durations(&mut self) -> Result<Vec<(ReceivedPkt<Self>, Duration)>>
     where
         Self: Sized,
     {
-        unimplemented!();
+        let num_received = unsafe {
+            rte_eth_rx_burst(
+                self.thread_context.get_physical_port(),
+                self.thread_context.get_queue_id(),
+                self.recv_mbufs.as_mut_ptr(),
+                RECEIVE_BURST_SIZE as _,
+            )
+        };
+
+        let mut ret: Vec<(ReceivedPkt<Self>, Duration)> = Vec::with_capacity(RECEIVE_BURST_SIZE);
+        for i in 0..num_received as usize {
+            if let Some(received_pkt) = self
+                .check_received_pkt(i)
+                .wrap_err(format!("Error checking received pkt {}", i))?
+            {
+                let dur = match self
+                    .outgoing_window
+                    .remove(&(received_pkt.msg_id(), received_pkt.conn_id()))
+                {
+                    Some(start_time) => start_time.elapsed(),
+                    None => {
+                        // free the rest of the packets
+                        for _ in (i + 1)..num_received as usize {
+                            unsafe {
+                                rte_pktmbuf_free(self.recv_mbufs[i]);
+                            }
+                            self.recv_mbufs[i] = ptr::null_mut();
+                        }
+                        bail!(
+                            "Cannot find msg id {} and conn id {} in outgoing window",
+                            received_pkt.msg_id(),
+                            received_pkt.conn_id()
+                        );
+                    }
+                };
+                ret.push((received_pkt, dur));
+            } else {
+                unsafe {
+                    rte_pktmbuf_free(self.recv_mbufs[i]);
+                }
+                self.recv_mbufs[i] = ptr::null_mut();
+            }
+        }
+        Ok(ret)
     }
 
     fn pop(&mut self) -> Result<Vec<ReceivedPkt<Self>>>
     where
         Self: Sized,
     {
-        unimplemented!();
+        let num_received = unsafe {
+            rte_eth_rx_burst(
+                self.thread_context.get_physical_port(),
+                self.thread_context.get_queue_id(),
+                self.recv_mbufs.as_mut_ptr(),
+                RECEIVE_BURST_SIZE as _,
+            )
+        };
+
+        let mut ret: Vec<ReceivedPkt<Self>> = Vec::with_capacity(RECEIVE_BURST_SIZE);
+        for i in 0..num_received as usize {
+            if let Some(received_pkt) = self
+                .check_received_pkt(i)
+                .wrap_err(format!("Error checking received pkt {}", i))?
+            {
+                ret.push(received_pkt);
+            } else {
+                unsafe {
+                    rte_pktmbuf_free(self.recv_mbufs[i]);
+                }
+                self.recv_mbufs[i] = ptr::null_mut();
+            }
+        }
+        Ok(ret)
     }
 
     fn timed_out(&self, time_out: Duration) -> Result<Vec<(MsgID, ConnID)>> {
@@ -744,11 +1410,11 @@ impl Datapath for DpdkConnection {
     }
 
     fn is_registered(&self, buf: &[u8]) -> bool {
-        false
+        self.allocator.is_registered(buf)
     }
 
     fn allocate(&mut self, size: usize) -> Result<Option<Self::DatapathBuffer>> {
-        unimplemented!();
+        self.allocator.allocate_buffer(size)
     }
 
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>> {
@@ -824,7 +1490,7 @@ impl Datapath for DpdkConnection {
     }
 
     fn cycles_to_ns(&self, t: u64) -> u64 {
-        unimplemented!();
+        unsafe { ((t * rte_get_timer_hz()) as f64 / 1_000_000_000.0) as u64 }
     }
 
     fn current_cycles(&self) -> u64 {

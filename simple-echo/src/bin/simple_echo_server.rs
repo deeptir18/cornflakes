@@ -4,7 +4,7 @@ use cornflakes_libos::{
     state_machine::server::ServerSM,
 };
 use cornflakes_utils::{global_debug_init, AppMode, NetworkDatapath, TraceLevel};
-use dpdk_datapath::dpdk_bindings;
+use dpdk_datapath::{datapath::connection::DpdkConnection, dpdk_bindings};
 use mlx5_datapath::datapath::connection::{InlineMode, Mlx5Connection};
 use simple_echo::{server::SimpleEchoServer, RequestShape};
 use std::net::Ipv4Addr;
@@ -83,7 +83,31 @@ fn main() -> Result<()> {
 
     match opt.datapath {
         NetworkDatapath::DPDK => {
-            unimplemented!();
+            let mut datapath_params =
+                <DpdkConnection as Datapath>::parse_config_file(&opt.config_file, &opt.server_ip)?;
+            let addresses = <DpdkConnection as Datapath>::compute_affinity(
+                &datapath_params,
+                1,
+                None,
+                AppMode::Server,
+            )?;
+            let per_thread_contexts =
+                <DpdkConnection as Datapath>::global_init(1, &mut datapath_params, addresses)?;
+            let mut connection = <DpdkConnection as Datapath>::per_thread_init(
+                datapath_params,
+                per_thread_contexts.into_iter().nth(0).unwrap(),
+                AppMode::Server,
+            )?;
+
+            connection.set_copying_threshold(opt.copying_threshold);
+
+            // init echo server
+            let mut echo_server: SimpleEchoServer<DpdkConnection> =
+                SimpleEchoServer::new(opt.push_buf_type, opt.request_shape);
+
+            echo_server.init(&mut connection)?;
+
+            echo_server.run_state_machine(&mut connection)?;
         }
         NetworkDatapath::MLX5 => {
             let mut datapath_params =
