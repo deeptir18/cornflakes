@@ -109,7 +109,7 @@ rte_align64pow2(uint64_t v)
  *   Pointer to the source data.
  */
 static forceinline void
-rte_mov16(uint8_t *dst, const uint8_t *src)
+custom_mlx5_rte_mov16(uint8_t *dst, const uint8_t *src)
 {
 	__m128i reg_a;
 	asm volatile (
@@ -132,7 +132,7 @@ rte_mov16(uint8_t *dst, const uint8_t *src)
  *   Pointer to the source data.
  */
 static forceinline void
-rte_mov32(uint8_t *dst, const uint8_t *src)
+custom_mlx5_rte_mov32(uint8_t *dst, const uint8_t *src)
 {
 	__m128i reg_a, reg_b;
 	asm volatile (
@@ -158,7 +158,7 @@ rte_mov32(uint8_t *dst, const uint8_t *src)
  *   Pointer to the source data.
  */
 static forceinline void
-rte_mov48(uint8_t *dst, const uint8_t *src)
+custom_mlx5_rte_mov48(uint8_t *dst, const uint8_t *src)
 {
 	__m128i reg_a, reg_b, reg_c;
 	asm volatile (
@@ -187,7 +187,7 @@ rte_mov48(uint8_t *dst, const uint8_t *src)
  *   Pointer to the source data.
  */
 static forceinline void
-rte_mov64(uint8_t *dst, const uint8_t *src)
+custom_mlx5_rte_mov64(uint8_t *dst, const uint8_t *src)
 {
 	__m128i reg_a, reg_b, reg_c, reg_d;
 	asm volatile (
@@ -219,7 +219,7 @@ rte_mov64(uint8_t *dst, const uint8_t *src)
  *   Pointer to the source data.
  */
 static forceinline void
-rte_mov128(uint8_t *dst, const uint8_t *src)
+custom_mlx5_rte_mov128(uint8_t *dst, const uint8_t *src)
 {
 	__m128i reg_a, reg_b, reg_c, reg_d, reg_e, reg_f, reg_g, reg_h;
 	asm volatile (
@@ -267,10 +267,10 @@ rte_mov128(uint8_t *dst, const uint8_t *src)
  *   Pointer to the source data.
  */
 static forceinline void
-rte_mov256(uint8_t *dst, const uint8_t *src)
+custom_mlx5_rte_mov256(uint8_t *dst, const uint8_t *src)
 {
-	rte_mov128(dst, src);
-	rte_mov128(dst + 128, src + 128);
+	custom_mlx5_rte_mov128(dst, src);
+	custom_mlx5_rte_mov128(dst + 128, src + 128);
 }
 
 /**
@@ -288,19 +288,19 @@ rte_mov256(uint8_t *dst, const uint8_t *src)
  * @return
  *   Pointer to the destination data.
  */
-#define rte_memcpy(dst, src, n)              \
+#define custom_mlx5_rte_memcpy(dst, src, n)              \
 	((__builtin_constant_p(n)) ?          \
 	memcpy((dst), (src), (n)) :          \
-	rte_memcpy_func((dst), (src), (n)))
+	custom_mlx5_rte_memcpy_func((dst), (src), (n)))
 
 /*
  * memcpy() function used by rte_memcpy macro
  */
 static forceinline void *
-rte_memcpy_func(void *dst, const void *src, size_t n) __attribute__((always_inline));
+custom_mlx5_rte_memcpy_func(void *dst, const void *src, size_t n) __attribute__((always_inline));
 
 static forceinline void *
-rte_memcpy_func(void *dst, const void *src, size_t n)
+custom_mlx5_rte_memcpy_func(void *dst, const void *src, size_t n)
 {
 	void *ret = dst;
 
@@ -329,20 +329,20 @@ rte_memcpy_func(void *dst, const void *src, size_t n)
 
 	/* Special fast cases for <= 128 bytes */
 	if (n <= 32) {
-		rte_mov16((uint8_t *)dst, (const uint8_t *)src);
-		rte_mov16((uint8_t *)dst - 16 + n, (const uint8_t *)src - 16 + n);
+		custom_mlx5_rte_mov16((uint8_t *)dst, (const uint8_t *)src);
+		custom_mlx5_rte_mov16((uint8_t *)dst - 16 + n, (const uint8_t *)src - 16 + n);
 		return ret;
 	}
 
 	if (n <= 64) {
-		rte_mov32((uint8_t *)dst, (const uint8_t *)src);
-		rte_mov32((uint8_t *)dst - 32 + n, (const uint8_t *)src - 32 + n);
+		custom_mlx5_rte_mov32((uint8_t *)dst, (const uint8_t *)src);
+		custom_mlx5_rte_mov32((uint8_t *)dst - 32 + n, (const uint8_t *)src - 32 + n);
 		return ret;
 	}
 
 	if (n <= 128) {
-		rte_mov64((uint8_t *)dst, (const uint8_t *)src);
-		rte_mov64((uint8_t *)dst - 64 + n, (const uint8_t *)src - 64 + n);
+		custom_mlx5_rte_mov64((uint8_t *)dst, (const uint8_t *)src);
+		custom_mlx5_rte_mov64((uint8_t *)dst - 64 + n, (const uint8_t *)src - 64 + n);
 		return ret;
 	}
 
@@ -352,7 +352,7 @@ rte_memcpy_func(void *dst, const void *src, size_t n)
 	 * well.
 	 */
 	for ( ; n >= 256; n -= 256) {
-		rte_mov256((uint8_t *)dst, (const uint8_t *)src);
+		custom_mlx5_rte_mov256((uint8_t *)dst, (const uint8_t *)src);
 		dst = (uint8_t *)dst + 256;
 		src = (const uint8_t *)src + 256;
 	}
@@ -367,17 +367,17 @@ rte_memcpy_func(void *dst, const void *src, size_t n)
 	 */
 	switch (3 - (n >> 6)) {
 	case 0x00:
-		rte_mov64((uint8_t *)dst, (const uint8_t *)src);
+		custom_mlx5_rte_mov64((uint8_t *)dst, (const uint8_t *)src);
 		n -= 64;
 		dst = (uint8_t *)dst + 64;
 		src = (const uint8_t *)src + 64;      /* fallthrough */
 	case 0x01:
-		rte_mov64((uint8_t *)dst, (const uint8_t *)src);
+		custom_mlx5_rte_mov64((uint8_t *)dst, (const uint8_t *)src);
 		n -= 64;
 		dst = (uint8_t *)dst + 64;
 		src = (const uint8_t *)src + 64;      /* fallthrough */
 	case 0x02:
-		rte_mov64((uint8_t *)dst, (const uint8_t *)src);
+		custom_mlx5_rte_mov64((uint8_t *)dst, (const uint8_t *)src);
 		n -= 64;
 		dst = (uint8_t *)dst + 64;
 		src = (const uint8_t *)src + 64;      /* fallthrough */
@@ -391,17 +391,17 @@ rte_memcpy_func(void *dst, const void *src, size_t n)
 	 */
 	switch (3 - (n >> 4)) {
 	case 0x00:
-		rte_mov16((uint8_t *)dst, (const uint8_t *)src);
+		custom_mlx5_rte_mov16((uint8_t *)dst, (const uint8_t *)src);
 		n -= 16;
 		dst = (uint8_t *)dst + 16;
 		src = (const uint8_t *)src + 16;      /* fallthrough */
 	case 0x01:
-		rte_mov16((uint8_t *)dst, (const uint8_t *)src);
+		custom_mlx5_rte_mov16((uint8_t *)dst, (const uint8_t *)src);
 		n -= 16;
 		dst = (uint8_t *)dst + 16;
 		src = (const uint8_t *)src + 16;      /* fallthrough */
 	case 0x02:
-		rte_mov16((uint8_t *)dst, (const uint8_t *)src);
+		custom_mlx5_rte_mov16((uint8_t *)dst, (const uint8_t *)src);
 		n -= 16;
 		dst = (uint8_t *)dst + 16;
 		src = (const uint8_t *)src + 16;      /* fallthrough */
@@ -411,7 +411,7 @@ rte_memcpy_func(void *dst, const void *src, size_t n)
 
 	/* Copy any remaining bytes, without going beyond end of buffers */
 	if (n != 0) {
-		rte_mov16((uint8_t *)dst - 16 + n, (const uint8_t *)src - 16 + n);
+		custom_mlx5_rte_mov16((uint8_t *)dst - 16 + n, (const uint8_t *)src - 16 + n);
 	}
 	return ret;
 }

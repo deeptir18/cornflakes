@@ -26,54 +26,55 @@ static uint8_t sym_rss_key[] = {
 };
 /**********************************************************************/
 
-struct mlx5_global_context *alloc_global_context(size_t num_threads) {
-    struct mlx5_global_context *context = (struct mlx5_global_context *)malloc(sizeof(struct mlx5_global_context));
-    struct mlx5_per_thread_context **per_thread_info = (struct mlx5_per_thread_context **)(malloc(sizeof(struct mlx5_per_thread_context) * num_threads));
+struct custom_mlx5_global_context *custom_mlx5_alloc_global_context(size_t num_threads) {
+    struct custom_mlx5_global_context *context = (struct custom_mlx5_global_context *)malloc(sizeof(struct custom_mlx5_global_context));
+    struct custom_mlx5_per_thread_context **per_thread_info = (struct custom_mlx5_per_thread_context **)(malloc(sizeof(struct custom_mlx5_per_thread_context) * num_threads));
     context->num_threads = num_threads;
     context->thread_contexts = per_thread_info;
     for (size_t i = 0; i < num_threads; i++) {
-        clear_per_thread_context(context, i);
+        custom_mlx5_clear_per_thread_context(context, i);
         context->thread_contexts[i]->thread_id = i;
+        context->thread_contexts[i]->global_context = context;
     }
     return context;
 }
 
-const char *err_to_str(int no) {
+const char *custom_mlx5_err_to_str(int no) {
     return strerror(no);
 }
 
-void free_global_context(struct mlx5_global_context *context) {
+void custom_mlx5_free_global_context(struct custom_mlx5_global_context *context) {
     free(context->thread_contexts);
     free(context);
 }
 
-struct mlx5_per_thread_context *get_per_thread_context(struct mlx5_global_context *context, size_t idx) {
+struct custom_mlx5_per_thread_context *custom_mlx5_get_per_thread_context(struct custom_mlx5_global_context *context, size_t idx) {
     NETPERF_ASSERT(idx < context->num_threads, "Accessing thread greater than total allocated threads.");
     return context->thread_contexts[idx];
 }
 
-struct mbuf *allocate_data_and_metadata_mbuf(struct registered_mempool *mempool) {
-    void *data = mempool_alloc(&mempool->data_mempool);
+struct custom_mlx5_mbuf *custom_mlx5_allocate_data_and_metadata_mbuf(struct registered_mempool *mempool) {
+    void *data = custom_mlx5_mempool_alloc(&mempool->data_mempool);
     if (data == NULL) {
         errno = -ENOMEM;
         NETPERF_WARN("Could not allocate data mbuf");
         return NULL;
     }
-    int index = mempool_find_index(&mempool->data_mempool, data);
-    struct mbuf *metadata = (struct mbuf *)(mempool_alloc_by_idx(&mempool->metadata_mempool, (size_t)index));
+    int index = custom_mlx5_mempool_find_index(&mempool->data_mempool, data);
+    struct custom_mlx5_mbuf *metadata = (struct custom_mlx5_mbuf *)(custom_mlx5_mempool_alloc_by_idx(&mempool->metadata_mempool, (size_t)index));
     if (metadata == NULL) {
-        mempool_free(&mempool->data_mempool, data);
+        custom_mlx5_mempool_free(&mempool->data_mempool, data);
         NETPERF_WARN("Could not allocate metadata mbuf");
         errno = -ENOMEM;
         return NULL;
     }
 
     // initialize the metadata mbuf to point to the data mbuf
-    mbuf_init(metadata, data, &mempool->metadata_mempool, &mempool->data_mempool);
+    custom_mlx5_mbuf_init(metadata, data, &mempool->metadata_mempool, &mempool->data_mempool);
     return metadata;
 }
 
-int allocate_mempool(struct registered_mempool *mempool,
+int custom_mlx5_allocate_mempool(struct registered_mempool *mempool,
                     size_t item_len,
                     size_t num_items,
                     size_t data_pgsize,
@@ -85,34 +86,34 @@ int allocate_mempool(struct registered_mempool *mempool,
         return -EINVAL;
     }
 
-    size_t total_metadata_len = sizeof(struct mbuf) * num_items;
+    size_t total_metadata_len = sizeof(struct custom_mlx5_mbuf) * num_items;
     if (total_metadata_len % metadata_pgsize != 0) {
-        NETPERF_ERROR("Invalid params to create metadata mempool: (size of mbuf (%lu) x %lu) not aligned to pgsize %lu", sizeof(struct mbuf), num_items,  metadata_pgsize);
+        NETPERF_ERROR("Invalid params to create metadata mempool: (size of mbuf (%lu) x %lu) not aligned to pgsize %lu", sizeof(struct custom_mlx5_mbuf), num_items,  metadata_pgsize);
         return -EINVAL;
     }
 
     // create the data mempool
-    ret = mempool_create(&mempool->data_mempool, total_data_len, data_pgsize, item_len);
+    ret = custom_mlx5_mempool_create(&mempool->data_mempool, total_data_len, data_pgsize, item_len);
     if (ret != 0) {
         NETPERF_ERROR("Data Mempool create failed: %s", strerror(-ret));
         return ret;
     }
 
     // create metadata pool
-    ret = mempool_create(&mempool->metadata_mempool, total_metadata_len, metadata_pgsize, sizeof(struct mbuf));
+    ret = custom_mlx5_mempool_create(&mempool->metadata_mempool, total_metadata_len, metadata_pgsize, sizeof(struct custom_mlx5_mbuf));
     if (ret != 0) {
         NETPERF_ERROR("Metadata mempool create failed: %s", strerror(-ret));
-        RETURN_ON_ERR(deregister_and_free_register_registered_mempool(mempool), "Dereg and free of mempool failed");
+        RETURN_ON_ERR(custom_mlx5_deregister_and_free_register_registered_mempool(mempool), "Dereg and free of mempool failed");
         return ret;
     }
 
     return 0;
 }
 
-int register_memory_pool_from_thread(struct mlx5_per_thread_context *thread_context, 
+int register_memory_pool_from_thread(struct custom_mlx5_per_thread_context *thread_context, 
         struct registered_mempool *mempool, 
         int flags) {
-    if (&(mempool->data_mempool)->is_registered()) {
+    if (custom_mlx5_is_registered(&(mempool->data_mempool))) {
         return 0;
     } else {
         void *buf = (&(mempool->data_mempool))->buf;
@@ -122,13 +123,13 @@ int register_memory_pool_from_thread(struct mlx5_per_thread_context *thread_cont
             NETPERF_ERROR("Failed to do memory reg for region %p len %lu: %s", buf, len, strerror(errno));
             return -errno;
         }
-        register_mempool(&mempool->data_mempool, mempool->mr->lkey);
+        custom_mlx5_register_mempool(&mempool->data_mempool, mempool->mr->lkey);
         return 0;
     }
 
 }
 
-int register_memory_pool(struct mlx5_global_context *context,
+int custom_mlx5_register_memory_pool(struct custom_mlx5_global_context *context,
                             struct registered_mempool *mempool,
                             int flags) {
     void *buf = (&(mempool->data_mempool))->buf;
@@ -138,11 +139,11 @@ int register_memory_pool(struct mlx5_global_context *context,
         NETPERF_ERROR("Failed to do memory reg for region %p len %lu: %s", buf, len, strerror(errno));
         return -errno;
     }
-    register_mempool(&mempool->data_mempool, mempool->mr->lkey);
+    custom_mlx5_register_mempool(&mempool->data_mempool, mempool->mr->lkey);
     return 0;
 }
 
-int create_and_register_mempool(struct mlx5_global_context *context, 
+int custom_mlx5_create_and_register_mempool(struct custom_mlx5_global_context *context, 
                                     struct registered_mempool *mempool,
                                     size_t item_len,
                                     size_t num_items,
@@ -152,28 +153,28 @@ int create_and_register_mempool(struct mlx5_global_context *context,
     int ret = 0;
 
     // allocate data and metadata portions of mempool
-    ret = allocate_mempool(mempool, item_len, num_items, data_pgsize, metadata_pgsize);
+    ret = custom_mlx5_allocate_mempool(mempool, item_len, num_items, data_pgsize, metadata_pgsize);
     if (ret != 0) {
         NETPERF_ERROR("Mempool creation failed: %s", strerror(-ret));
         return ret;
     }
 
     // register the data memory pool
-    ret = register_memory_pool(context, mempool, registry_flags);
+    ret = custom_mlx5_register_memory_pool(context, mempool, registry_flags);
     if (ret != 0) {
         NETPERF_ERROR("Mempool registration failed: %s", strerror(-ret));
         // free the mempool just created
-        mempool_destroy(&mempool->data_mempool);
-        mempool_destroy(&mempool->metadata_mempool);
+        custom_mlx5_mempool_destroy(&mempool->data_mempool);
+        custom_mlx5_mempool_destroy(&mempool->metadata_mempool);
         return ret;
     }
 
     return 0;
 }
 
-int deregister_memory_pool(struct registered_mempool *mempool) {
-    struct mempool *data_mempool = &mempool->data_mempool;
-    if (!(data_mempool->is_registered())) {
+int custom_mlx5_deregister_memory_pool(struct registered_mempool *mempool) {
+    struct custom_mlx5_mempool *data_mempool = &mempool->data_mempool;
+    if (!custom_mlx5_is_registered(&(mempool->data_mempool))) {
         return 0;
     }
     struct ibv_mr *mr = mempool->mr;
@@ -183,33 +184,33 @@ int deregister_memory_pool(struct registered_mempool *mempool) {
         return -errno;
     }
     mr = NULL;
-    deregister_mempool(data_mempool);
+    custom_mlx5_deregister_mempool(data_mempool);
     return 0;
 }
 
-int deregister_and_free_registered_mempool(struct registered_mempool *mempool) {
+int custom_mlx5_deregister_and_free_registered_mempool(struct registered_mempool *mempool) {
     int ret = 0;
     // unregister mempool if necessary 
-    if (is_registered(&mempool->data_mempool)) {
-        ret = deregister_memory_pool(mempool);
+    if (custom_mlx5_is_registered(&mempool->data_mempool)) {
+        ret = custom_mlx5_deregister_memory_pool(mempool);
         if (ret != 0) {
             NETPERF_ERROR("Failed to dereg memory region with lkey %d: %s", (&(mempool->data_mempool))->lkey, strerror(-errno));
             return errno;
         }
     }
     // unallocate mempool
-    if (is_allocated(&mempool->data_mempool)) {
-        mempool_destroy(&mempool->data_mempool);
+    if (custom_mlx5_is_allocated(&mempool->data_mempool)) {
+        custom_mlx5_mempool_destroy(&mempool->data_mempool);
     }
 
     // unallocate metadata mempool
-    if (is_allocated(&mempool->metadata_mempool)) {
-        mempool_destroy(&mempool->metadata_mempool);
+    if (custom_mlx5_is_allocated(&mempool->metadata_mempool)) {
+        custom_mlx5_mempool_destroy(&mempool->metadata_mempool);
     }
     return 0;
 }
 
-int init_rx_mempools(struct mlx5_global_context *context, 
+int custom_mlx5_init_rx_mempools(struct custom_mlx5_global_context *context, 
                         size_t item_len, 
                         size_t num_items, 
                         size_t data_pgsize, 
@@ -217,9 +218,9 @@ int init_rx_mempools(struct mlx5_global_context *context,
                         int registry_flags) {
     int ret = 0;
     for (int i = 0; i < context->num_threads; i++) {
-        struct mlx5_per_thread_context *thread_context = get_per_thread_context(context, i);
+        struct custom_mlx5_per_thread_context *thread_context = custom_mlx5_get_per_thread_context(context, i);
         struct registered_mempool *mempool = &thread_context->rx_mempool;
-        ret = create_and_register_mempool(context, mempool, item_len, num_items, data_pgsize, metadata_pgsize, registry_flags);
+        ret = custom_mlx5_create_and_register_mempool(context, mempool, item_len, num_items, data_pgsize, metadata_pgsize, registry_flags);
         if (ret != 0) {
             NETPERF_ERROR("Creation of rx mempool for thread %d failed: %s", i, strerror(-ret));
             RETURN_ON_ERR(free_rx_mempools(context, i), "Cleanup of rx mempools failed");
@@ -228,11 +229,11 @@ int init_rx_mempools(struct mlx5_global_context *context,
     return 0;
 }
 
-int free_rx_mempools(struct  mlx5_global_context *context, size_t max_idx) {
+int custom_mlx5_free_rx_mempools(struct custom_mlx5_global_context *context, size_t max_idx) {
     int ret = 0;
     for (size_t i = 0; i < max_idx; i++) {
-        struct mlx5_per_thread_context *per_thread_context = get_per_thread_context(context, i);
-        ret = deregister_and_free_registered_mempool(&per_thread_context->rx_mempool);
+        struct custom_mlx5_per_thread_context *per_thread_context = custom_mlx5_get_per_thread_context(context, i);
+        ret = custom_mlx5_deregister_and_free_registered_mempool(&per_thread_context->rx_mempool);
         if (ret != 0) {
             NETPERF_ERROR("Error freeing rx mempool for thread %lu", i);
         }
@@ -240,22 +241,22 @@ int free_rx_mempools(struct  mlx5_global_context *context, size_t max_idx) {
     return 0;
 }
 
-int init_external_mempools(struct mlx5_global_context *context, size_t num_pages, size_t pgsize) {
+int custom_mlx5_init_external_mempools(struct custom_mlx5_global_context *context, size_t num_pages, size_t pgsize) {
     int ret = 0;
     size_t total_len = num_pages * pgsize;
-    if (pgsize % sizeof(struct mbuf) != 0) {
-        NETPERF_DEBUG("Invalid params to create metadata mempool: (size of mbuf (%lu)) not aligned to pgsize %lu", sizeof(struct mbuf), pgsize);
+    if (pgsize % sizeof(struct custom_mlx5_mbuf) != 0) {
+        NETPERF_DEBUG("Invalid params to create metadata mempool: (size of mbuf (%lu)) not aligned to pgsize %lu", sizeof(struct custom_mlx5_mbuf), pgsize);
         return -EINVAL;
     }
     
     for (int i = 0; i < context->num_threads; i++) {
-        struct mlx5_per_thread_context *thread_context = get_per_thread_context(context, i);
-        ret = mempool_create(&thread_context->external_data_pool, total_len, pgsize, sizeof(struct mbuf));
+        struct custom_mlx5_per_thread_context *thread_context = custom_mlx5_get_per_thread_context(context, i);
+        ret = custom_mlx5_mempool_create(&thread_context->external_data_pool, total_len, pgsize, sizeof(struct custom_mlx5_mbuf));
         if (ret != 0) {
             NETPERF_ERROR("Error creating external data mempool: %s", strerror(ret));
             // destroy external mempools until now
             for (int mempool_id = 0; mempool_id < i; mempool_id++) {
-                mempool_destroy(&(get_per_thread_context(context, mempool_id))->external_data_pool);
+                custom_mlx5_mempool_destroy(&(custom_mlx5_get_per_thread_context(context, mempool_id))->external_data_pool);
             }
             return ret;
         }
@@ -263,7 +264,7 @@ int init_external_mempools(struct mlx5_global_context *context, size_t num_pages
     return 0;
 }
 
-struct registered_mempool *alloc_tx_pool(struct mlx5_per_thread_context *per_thread_context,
+struct registered_mempool *custom_mlx5_alloc_tx_pool(struct custom_mlx5_per_thread_context *per_thread_context,
                                                 size_t item_len,
                                                 size_t num_items,
                                                 size_t data_pgsize,
@@ -271,13 +272,15 @@ struct registered_mempool *alloc_tx_pool(struct mlx5_per_thread_context *per_thr
 
     int ret = 0;
     struct registered_mempool *mempool = (struct registered_mempool *)(malloc(sizeof(struct registered_mempool)));
+    custom_mlx5_clear_mempool(&(mempool->data_mempool));
+    custom_mlx5_clear_mempool(&(mempool->metadata_mempool));
     if (mempool == NULL) {
         NETPERF_WARN("no memory to malloc registered mempool node");
         errno = -ENOMEM;
         return NULL;
     }
 
-    ret = allocate_mempool(mempool, item_len, num_items, data_pgsize, metadata_pgsize);
+    ret = custom_mlx5_allocate_mempool(mempool, item_len, num_items, data_pgsize, metadata_pgsize);
     if (ret != 0) {
         NETPERF_WARN("Failed to allocate mempool: %s", strerror(-ret));
         errno = ret;
@@ -285,11 +288,6 @@ struct registered_mempool *alloc_tx_pool(struct mlx5_per_thread_context *per_thr
     }
     // traverse linked list to insert new tx pool
     struct registered_mempool *prev = NULL;
-    struct registered_mempool *last = per_thread_context->tx_mempools;
-    while (last != NULL) {
-        prev = last;
-        last = last->next;
-    }
     if (prev != NULL) {
         prev->next = mempool;
     }
@@ -297,21 +295,21 @@ struct registered_mempool *alloc_tx_pool(struct mlx5_per_thread_context *per_thr
     return mempool;
 }
 
-struct registered_mempool *alloc_and_register_tx_pool(struct mlx5_per_thread_context *per_thread_context,
+struct registered_mempool *custom_mlx5_alloc_and_register_tx_pool(struct custom_mlx5_per_thread_context *per_thread_context,
                                                         size_t item_len,
                                                         size_t num_items,
                                                         size_t data_pgsize,
                                                         size_t metadata_pgsize,
                                                         int registry_flags) {
     int ret = 0;
-    struct registered_mempool *mempool = alloc_tx_pool(per_thread_context, item_len, num_items, data_pgsize, metadata_pgsize);
+    struct registered_mempool *mempool = custom_mlx5_alloc_tx_pool(per_thread_context, item_len, num_items, data_pgsize, metadata_pgsize);
     if (mempool == NULL) {
         NETPERF_WARN("Could not allocate registered mempool: %s", strerror(-errno));
         return NULL;
     }
 
     // register this newly created mempool
-    ret = register_memory_pool(per_thread_context->global_context, mempool, registry_flags);
+    ret = custom_mlx5_register_memory_pool(per_thread_context->global_context, mempool, registry_flags);
     if (ret != 0) {
         NETPERF_WARN("Failed to register tx memory pool: %s", strerror(-ret));
         errno = ret;
@@ -320,13 +318,13 @@ struct registered_mempool *alloc_and_register_tx_pool(struct mlx5_per_thread_con
     return mempool;
 }
 
-int deallocate_tx_pool(struct mlx5_per_thread_context *per_thread_context, struct registered_mempool *mempool) {
+int custom_mlx5_deallocate_tx_pool(struct custom_mlx5_per_thread_context *per_thread_context, struct registered_mempool *mempool) {
     struct registered_mempool *tx_mempool = per_thread_context->tx_mempools;
     struct registered_mempool *prev = NULL;
     while (tx_mempool != NULL) {
         if (tx_mempool == mempool) {
             prev->next = tx_mempool->next;
-            deregister_and_free_registered_mempool(mempool);
+            custom_mlx5_deregister_and_free_registered_mempool(mempool);
             free(mempool);
             per_thread_context->num_allocated_tx_pools -= 1;
             return 0;
@@ -341,20 +339,20 @@ int deallocate_tx_pool(struct mlx5_per_thread_context *per_thread_context, struc
     
 }
 
-int teardown(struct mlx5_per_thread_context *per_thread_context) {
+int custom_mlx5_teardown(struct custom_mlx5_per_thread_context *per_thread_context) {
     // teardown the rx mempool
-    deregister_and_free_registered_mempool(&per_thread_context->rx_mempool);
+    custom_mlx5_deregister_and_free_registered_mempool(&per_thread_context->rx_mempool);
 
     // free the external data pool if necessary
-    if (is_allocated(&per_thread_context->external_data_pool)) {
-        mempool_destroy(&per_thread_context->external_data_pool);
+    if (custom_mlx5_is_allocated(&per_thread_context->external_data_pool)) {
+        custom_mlx5_mempool_destroy(&per_thread_context->external_data_pool);
     }
 
     // teardown each allocated tx mempool
     size_t num_tx_mempools = 0;
     struct registered_mempool *tx_mempool = per_thread_context->tx_mempools;
     while (tx_mempool != NULL) {
-        deregister_and_free_registered_mempool(tx_mempool);
+        custom_mlx5_deregister_and_free_registered_mempool(tx_mempool);
         struct registered_mempool *old = tx_mempool;
         tx_mempool = tx_mempool->next;
         free(old);
@@ -374,15 +372,38 @@ int teardown(struct mlx5_per_thread_context *per_thread_context) {
     return 0;
 }
 
-/* borrowed from DPDK */
+/* 
+ * pci_str_to_addr - converts is string to a PCI address
+ * @str: the input string
+ * @addr: a pointer to the output address
+ *
+ * String format is DDDD:BB:SS.f, where D = domain (hex), B = bus (hex),
+ * S = slot (hex), and f = function number (decimal).
+ *
+ * Returns 0 if successful, otherwise failure.
+ */
+int custom_mlx5_pci_str_to_addr(const char *str, struct custom_mlx5_pci_addr *addr)
+{
+	int ret;
+
+	ret = sscanf(str, "%04hx:%02hhx:%02hhx.%hhd",
+		     &addr->domain, &addr->bus,
+		     &addr->slot, &addr->func);
+
+	if (ret != 4)
+		return -EINVAL;
+	return 0;
+}
+
 int
-ibv_device_to_pci_addr(const struct ibv_device *device,
-                                   struct pci_addr *pci_addr)
+custom_mlx5_ibv_device_to_pci_addr(const struct ibv_device *device,
+                                   struct custom_mlx5_pci_addr *pci_addr)
 {
     FILE *file;
     char line[32];
     char path[strlen(device->ibdev_path) + strlen("/device/uevent") + 1];
     snprintf(path, sizeof(path), "%s/device/uevent", device->ibdev_path);
+    NETPERF_INFO("Path to open: %s", path);
 
     file = fopen(path, "rb");
     if (!file)
@@ -400,31 +421,33 @@ ibv_device_to_pci_addr(const struct ibv_device *device,
                     break;
                 line[(len - 1)] = ret;
             }
-            /* Extract information. */
-            if (sscanf(line,
-                "PCI_SLOT_NAME="
-                    "%04hx:%02hhx:%02hhx.%hhd\n",
-                    &pci_addr->domain,
-                    &pci_addr->bus,
-                    &pci_addr->slot,
-                    &pci_addr->func) == 4) {
-                    break;
-            }
+        }
+        /* Extract information. */
+        if (sscanf(line,
+            "PCI_SLOT_NAME="
+                "%04hx:%02hhx:%02hhx.%hhd\n",
+                &pci_addr->domain,
+                &pci_addr->bus,
+                &pci_addr->slot,
+                &pci_addr->func) == 4) {
+            NETPERF_INFO("breaking Domain: %u, bus: %u", pci_addr->domain, pci_addr->bus);
+            break;
         }
     }
     fclose(file);
     return 0;
 }
 
-int init_ibv_context(struct mlx5_global_context *global_context,
-                            struct pci_addr *nic_pci_addr) {
+int custom_mlx5_init_ibv_context(struct custom_mlx5_global_context *global_context,
+                            struct custom_mlx5_pci_addr *nic_pci_addr) {
+    NETPERF_INFO("Domain: %u, bus: %u, slot: %u, func: %u\n", nic_pci_addr->domain, nic_pci_addr->bus, nic_pci_addr->slot, nic_pci_addr->func);
     int i = 0;
     int ret = 0;
     
     struct ibv_device **dev_list;
     struct mlx5dv_context_attr attr = {0};
 
-    struct pci_addr pci_addr;
+    struct custom_mlx5_pci_addr pci_addr;
         
     dev_list = ibv_get_device_list(NULL);
     if (!dev_list) {
@@ -433,10 +456,11 @@ int init_ibv_context(struct mlx5_global_context *global_context,
     }
 
     for (i = 0; dev_list[i]; i++) {
-        if (strncmp(ibv_get_device_name(dev_list[i]), "mlx5", 4))
+        if (strncmp(ibv_get_device_name(dev_list[i]), "mlx5", 4)) {
             continue;
+        }
 
-        if (ibv_device_to_pci_addr(dev_list[i], &pci_addr)) {
+        if (custom_mlx5_ibv_device_to_pci_addr(dev_list[i], &pci_addr)) {
             NETPERF_WARN("failed to read pci addr for %s, skipping",
                             ibv_get_device_name(dev_list[i]));
             continue;
@@ -477,14 +501,14 @@ int init_ibv_context(struct mlx5_global_context *global_context,
     return ret;
 }
 
-int mlx5_qs_init_flows(struct mlx5_global_context *global_context,
+int custom_mlx5_qs_init_flows(struct custom_mlx5_global_context *global_context,
                         struct eth_addr *our_eth) {
     // this needs to be a power of 4
     // TODO: figure out exactly what this controls
     size_t SIZE = 4;
     struct ibv_wq *ind_tbl[SIZE];
     for (size_t i = 0; i < SIZE; i++) {
-        struct mlx5_rxq *rxq = &(global_context->thread_contexts[i % global_context->num_threads]->rxq);
+        struct custom_mlx5_rxq *rxq = &(global_context->thread_contexts[i % global_context->num_threads]->rxq);
         ind_tbl[i] = rxq->rx_wq;
     }
 	
@@ -552,7 +576,7 @@ int mlx5_qs_init_flows(struct mlx5_global_context *global_context,
     };
     // TODO: does turning this off prevent throughput past 80 Gbps?
     // E.g., having the NIC check that flows have the source mac address
-    rte_memcpy(&flow_attr.spec_eth.val.dst_mac, our_eth, 6);
+    custom_mlx5_rte_memcpy(&flow_attr.spec_eth.val.dst_mac, our_eth, 6);
     struct ibv_flow *eth_flow = ibv_create_flow(global_context->qp, &flow_attr.attr);
     if (!eth_flow) {
         NETPERF_ERROR("Not able to create eth_flow: %s", strerror(errno));
@@ -563,10 +587,10 @@ int mlx5_qs_init_flows(struct mlx5_global_context *global_context,
     
 }
 
-int mlx5_init_rxq(struct mlx5_per_thread_context *thread_context) {
+int custom_mlx5_init_rxq(struct custom_mlx5_per_thread_context *thread_context) {
     int i, ret;
-    struct mlx5_global_context *global_context = thread_context->global_context;
-    struct mlx5_rxq *v = &thread_context->rxq;
+    struct custom_mlx5_global_context *global_context = thread_context->global_context;
+    struct custom_mlx5_rxq *v = &(thread_context->rxq);
 
 	/* Create a CQ */
 	struct ibv_cq_init_attr_ex cq_attr = {
@@ -663,7 +687,7 @@ int mlx5_init_rxq(struct mlx5_per_thread_context *thread_context) {
 		struct mlx5_wqe_data_seg *seg = wq->buf + i * wq->stride;
 
 		/* fill queue with buffers */
-        struct mbuf *metadata_mbuf = allocate_data_and_metadata_mbuf(&thread_context->rx_mempool);
+        struct custom_mlx5_mbuf *metadata_mbuf = custom_mlx5_allocate_data_and_metadata_mbuf(&thread_context->rx_mempool);
         struct ibv_mr *mr = (&thread_context->rx_mempool)->mr;
         if (!metadata_mbuf) {
             NETPERF_WARN("Not able to initialize buffer in rxq for thread %lu", thread_context->thread_id);
@@ -689,10 +713,10 @@ int mlx5_init_rxq(struct mlx5_per_thread_context *thread_context) {
     return 0;
 }
 
-int mlx5_init_txq(struct mlx5_per_thread_context *thread_context) {
+int custom_mlx5_init_txq(struct custom_mlx5_per_thread_context *thread_context) {
     int ret = 0;
-    struct mlx5_global_context *global_context = thread_context->global_context;
-    struct mlx5_txq *v = &thread_context->txq;
+    struct custom_mlx5_global_context *global_context = thread_context->global_context;
+    struct custom_mlx5_txq *v = &thread_context->txq;
 
 	/* Create a CQ */
 	struct ibv_cq_init_attr_ex cq_attr = {

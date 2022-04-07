@@ -227,7 +227,7 @@ struct ip_pseudo {
 
 // taken from DPDK
  static inline uint32_t
- __rte_raw_cksum(const void *buf, size_t len, uint32_t sum)
+ __custom_mlx5_rte_raw_cksum(const void *buf, size_t len, uint32_t sum)
  {
      /* workaround gcc strict-aliasing warning */
      uintptr_t ptr = (uintptr_t)buf;
@@ -260,7 +260,7 @@ struct ip_pseudo {
  }
  
  static inline uint16_t
- __rte_raw_cksum_reduce(uint32_t sum)
+ __custom_mlx5_rte_raw_cksum_reduce(uint32_t sum)
  {
      sum = ((sum & 0xffff0000) >> 16) + (sum & 0xffff);
      sum = ((sum & 0xffff0000) >> 16) + (sum & 0xffff);
@@ -269,13 +269,13 @@ struct ip_pseudo {
  }
  
  static inline uint16_t
- rte_raw_cksum(const void *buf, size_t len)
+ custom_mlx5_rte_raw_cksum(const void *buf, size_t len)
  {
      uint32_t sum;
  
-     sum = __rte_raw_cksum(buf, len, 0);
-     return __rte_raw_cksum_reduce(sum);
+     sum = __custom_mlx5_rte_raw_cksum(buf, len, 0);
+     return __custom_mlx5_rte_raw_cksum_reduce(sum);
  }
 
-#define get_chksum(hdr) \
-    htons(rte_raw_cksum((void *)hdr, sizeof(hdr)))
+#define custom_mlx5_get_chksum(hdr) \
+    htons(custom_mlx5_rte_raw_cksum((void *)hdr, sizeof(hdr)))

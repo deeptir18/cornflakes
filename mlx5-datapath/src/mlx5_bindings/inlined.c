@@ -8,42 +8,42 @@
 #include <net/ip.h>
 #include <net/udp.h>
 
-void free_mbuf_(struct mbuf *metadata_mbuf) {
-    mbuf_free(metadata_mbuf);
+void custom_mlx5_free_mbuf_(struct custom_mlx5_mbuf *metadata_mbuf) {
+    custom_mlx5_mbuf_free(metadata_mbuf);
 }
 
 uint64_t ns_to_cycles_(uint64_t a) {
-    return ns_to_cycles(a);
+    return custom_mlx5_ns_to_cycles(a);
 }
 
 uint64_t cycles_to_ns_(uint64_t a) {
-    return cycles_to_us(a);
+    return custom_mlx5_cycles_to_us(a);
 }
 
-struct registered_mempool *get_recv_mempool_(struct mlx5_per_thread_context *context) {
+struct registered_mempool *custom_mlx5_get_recv_mempool_(struct custom_mlx5_per_thread_context *context) {
     return (struct registered_mempool *)(&(context->rx_mempool));
 }
 
 uint64_t current_cycles_() {
-    return microcycles();
+    return custom_mlx5_microcycles();
 }
 
 void *alloc_data_buf_(struct registered_mempool *mempool) {
-    return (void *)(mempool_alloc(&(mempool->data_mempool)));
+    return (void *)(custom_mlx5_mempool_alloc(&(mempool->data_mempool)));
 }
 
-struct mbuf *alloc_metadata_(struct registered_mempool *mempool, void *data_buf) {
-    int index = mempool_find_index(&(mempool->data_mempool), data_buf);
+struct custom_mlx5_mbuf *alloc_metadata_(struct registered_mempool *mempool, void *data_buf) {
+    int index = custom_mlx5_mempool_find_index(&(mempool->data_mempool), data_buf);
     if (index == -1) {
         return NULL;
     } else {
-        return (struct mbuf *)(mempool_alloc_by_idx(&(mempool->metadata_mempool), (size_t)index));
+        return (struct custom_mlx5_mbuf *)(custom_mlx5_mempool_alloc_by_idx(&(mempool->metadata_mempool), (size_t)index));
     }
     
 }
 
-void init_metadata_(struct mbuf *m, void *buf, struct mempool *data_mempool, struct mempool *metadata_mempool, size_t data_len, size_t offset) {
-    mbuf_clear(m);
+void init_metadata_(struct custom_mlx5_mbuf *m, void *buf, struct custom_mlx5_mempool *data_mempool, struct custom_mlx5_mempool *metadata_mempool, size_t data_len, size_t offset) {
+    custom_mlx5_mbuf_clear(m);
     m->buf_addr = buf;
     m->data_mempool = data_mempool;
     m->data_buf_len = data_mempool->item_len;
@@ -53,57 +53,57 @@ void init_metadata_(struct mbuf *m, void *buf, struct mempool *data_mempool, str
     m->offset = offset;
 }
 
-struct mempool *get_data_mempool_(struct registered_mempool *mempool) {
-    return (struct mempool *)(&(mempool->data_mempool));
+struct custom_mlx5_mempool *get_data_mempool_(struct registered_mempool *mempool) {
+    return (struct custom_mlx5_mempool *)(&(mempool->data_mempool));
 }
 
-struct mempool *get_metadata_mempool_(struct registered_mempool *mempool) {
-    return (struct mempool *)(&(mempool->metadata_mempool));
+struct custom_mlx5_mempool *get_metadata_mempool_(struct registered_mempool *mempool) {
+    return (struct custom_mlx5_mempool *)(&(mempool->metadata_mempool));
 }
 
-void *mbuf_offset_ptr_(struct mbuf *mbuf, size_t off) {
-    return (void *)mbuf_offset_ptr(mbuf, off);
+void *custom_mlx5_mbuf_offset_ptr_(struct custom_mlx5_mbuf *mbuf, size_t off) {
+    return (void *)custom_mlx5_mbuf_offset_ptr(mbuf, off);
 }
 
-uint16_t mbuf_refcnt_read_(struct mbuf *mbuf) {
-    return mbuf_refcnt_read(mbuf);
+uint16_t custom_mlx5_mbuf_refcnt_read_(struct custom_mlx5_mbuf *mbuf) {
+    return custom_mlx5_mbuf_refcnt_read(mbuf);
 }
 
-void mbuf_refcnt_update_or_free_(struct mbuf *mbuf, int16_t change) {
-    mbuf_refcnt_update_or_free(mbuf, change);
+void custom_mlx5_mbuf_refcnt_update_or_free_(struct custom_mlx5_mbuf *mbuf, int16_t change) {
+    custom_mlx5_mbuf_refcnt_update_or_free(mbuf, change);
 }
 
-void mbuf_free_(struct mbuf *mbuf) {
-    mbuf_free(mbuf);
+void custom_mlx5_mbuf_free_(struct custom_mlx5_mbuf *mbuf) {
+    custom_mlx5_mbuf_free(mbuf);
 }
 
-void mempool_free_(void *item, struct mempool *mempool) {
-    mempool_free(mempool, item);
+void custom_mlx5_mempool_free_(void *item, struct custom_mlx5_mempool *mempool) {
+    custom_mlx5_mempool_free(mempool, item);
 }
 
-struct mbuf *mbuf_at_index_(struct mempool *mempool, size_t index) {
-    return (struct mbuf *)((char *)mempool->buf + index * mempool->item_len);
+struct custom_mlx5_mbuf *custom_mlx5_mbuf_at_index_(struct custom_mlx5_mempool *mempool, size_t index) {
+    return (struct custom_mlx5_mbuf *)((char *)mempool->buf + index * mempool->item_len);
 }
 
 void mlx5_rte_memcpy_(void *dst, const void *src, size_t n) {
-    rte_memcpy(dst, src, n);
+    custom_mlx5_rte_memcpy(dst, src, n);
 }
 
-void fill_in_hdrs_(void *buffer, const void *hdr, uint32_t id, size_t data_len) {
+void custom_mlx5_fill_in_hdrs_(void *buffer, const void *hdr, uint32_t id, size_t data_len) {
     char *dst_ptr = buffer;
     const char *src_ptr = hdr;
     // copy ethernet header
-    rte_memcpy(dst_ptr, src_ptr, sizeof(struct eth_hdr));
+    custom_mlx5_rte_memcpy(dst_ptr, src_ptr, sizeof(struct eth_hdr));
     dst_ptr += sizeof(struct eth_hdr);
     src_ptr += sizeof(struct eth_hdr);
 
     // copy in the ipv4 header and reset the the data length and checksum
-    rte_memcpy(dst_ptr, src_ptr, sizeof(struct ip_hdr));
+    custom_mlx5_rte_memcpy(dst_ptr, src_ptr, sizeof(struct ip_hdr));
     struct ip_hdr *ip = (struct ip_hdr *)dst_ptr;
     dst_ptr += sizeof(struct ip_hdr);
     src_ptr += sizeof(struct ip_hdr);
 
-     rte_memcpy(dst_ptr, src_ptr, sizeof(struct udp_hdr));
+     custom_mlx5_rte_memcpy(dst_ptr, src_ptr, sizeof(struct udp_hdr));
      struct udp_hdr *udp = (struct udp_hdr *)dst_ptr;
      dst_ptr += sizeof(struct udp_hdr);
 
@@ -111,42 +111,42 @@ void fill_in_hdrs_(void *buffer, const void *hdr, uint32_t id, size_t data_len) 
 
     ip->len = htons(sizeof(struct ip_hdr) + sizeof(struct udp_hdr) + 4 + data_len);
     ip->chksum = 0;
-    ip->chksum = get_chksum(ip);
+    ip->chksum = custom_mlx5_get_chksum(ip);
 
      udp->len = htons(sizeof(struct udp_hdr) + 4 + data_len);
      udp->chksum = 0;
-     udp->chksum = get_chksum(udp);
+     udp->chksum = custom_mlx5_get_chksum(udp);
 
 }
 
-struct transmission_info *completion_start_(struct mlx5_per_thread_context *context) {
-    return completion_start(&context->txq);
+struct custom_mlx5_transmission_info *custom_mlx5_completion_start_(struct custom_mlx5_per_thread_context *context) {
+    return custom_mlx5_completion_start(&context->txq);
 }
 
-struct mlx5_wqe_data_seg *dpseg_start_(struct mlx5_per_thread_context *context, size_t inline_off) {
-    return dpseg_start(&context->txq, inline_off);
+struct mlx5_wqe_data_seg *custom_mlx5_dpseg_start_(struct custom_mlx5_per_thread_context *context, size_t inline_off) {
+    return custom_mlx5_dpseg_start(&context->txq, inline_off);
 }
 
-void flip_headers_mlx5_(struct mbuf *metadata_mbuf) {
+void flip_headers_mlx5_(struct custom_mlx5_mbuf *metadata_mbuf) {
     // flips all headers in this packet's data
-    struct eth_hdr *eth = mbuf_offset(metadata_mbuf, 0, struct eth_hdr *);
-    struct ip_hdr *ip = mbuf_offset(metadata_mbuf, sizeof(struct eth_hdr), struct ip_hdr *);
-    struct udp_hdr *udp = mbuf_offset(metadata_mbuf, sizeof(struct eth_hdr) + sizeof(struct ip_hdr), struct udp_hdr *);
+    struct eth_hdr *eth = custom_mlx5_mbuf_offset(metadata_mbuf, 0, struct eth_hdr *);
+    struct ip_hdr *ip = custom_mlx5_mbuf_offset(metadata_mbuf, sizeof(struct eth_hdr), struct ip_hdr *);
+    struct udp_hdr *udp = custom_mlx5_mbuf_offset(metadata_mbuf, sizeof(struct eth_hdr) + sizeof(struct ip_hdr), struct udp_hdr *);
     
     struct eth_addr tmp;
-    mlx5_rte_memcpy_(&tmp, &eth->dhost, sizeof(struct eth_addr));
-    mlx5_rte_memcpy_(&eth->dhost, &eth->shost, sizeof(struct eth_addr));
-    mlx5_rte_memcpy_(&eth->shost, &tmp, sizeof(struct eth_addr));
+    custom_mlx5_rte_memcpy(&tmp, &eth->dhost, sizeof(struct eth_addr));
+    custom_mlx5_rte_memcpy(&eth->dhost, &eth->shost, sizeof(struct eth_addr));
+    custom_mlx5_rte_memcpy(&eth->shost, &tmp, sizeof(struct eth_addr));
     
     uint32_t tmp_ip = ip->daddr;
     ip->daddr = ip->saddr;
     ip->saddr = tmp_ip;
     ip->chksum = 0;
-    ip->chksum = get_chksum(ip);
+    ip->chksum = custom_mlx5_get_chksum(ip);
 
     uint16_t tmp_udp = udp->dst_port;
     udp->dst_port = udp->src_port;
     udp->src_port = tmp_udp;
     udp->chksum = 0;
-    udp->chksum = get_chksum(udp);
+    udp->chksum = custom_mlx5_get_chksum(udp);
 }

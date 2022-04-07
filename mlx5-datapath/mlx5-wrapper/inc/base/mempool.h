@@ -7,7 +7,7 @@
 #include <base/stddef.h>
 #include <base/debug.h>
 
-struct mempool {
+struct custom_mlx5_mempool {
     void **free_items; /* Array of pointers to free items. */
     size_t allocated; /* Number of allocated items. */
     size_t capacity; /* Total capacity of memory pool. */
@@ -18,7 +18,7 @@ struct mempool {
     int32_t lkey; /* Lkey for the memory region backed by mempool. -1 if not registered. */
 };
 
-inline int is_allocated(struct mempool *mempool) {
+inline int custom_mlx5_is_allocated(struct custom_mlx5_mempool *mempool) {
     if (mempool->buf != NULL) {
         return 1;
     } else {
@@ -26,7 +26,7 @@ inline int is_allocated(struct mempool *mempool) {
     }
 }
 
-inline int is_registered(struct mempool *mempool) {
+inline int custom_mlx5_is_registered(struct custom_mlx5_mempool *mempool) {
     if (mempool->lkey != -1) {
         return 1;
     } else {
@@ -34,7 +34,7 @@ inline int is_registered(struct mempool *mempool) {
     }
 }
 
-inline void clear_mempool(struct mempool *mempool) {
+inline void custom_mlx5_clear_mempool(struct custom_mlx5_mempool *mempool) {
     mempool->free_items = NULL;
     mempool->allocated = 0;
     mempool->capacity = 0;
@@ -46,21 +46,21 @@ inline void clear_mempool(struct mempool *mempool) {
 }
 
 #ifdef DEBUG
-extern void __mempool_alloc_debug_check(struct mempool *m, void *item);
-extern void __mempool_free_debug_check(struct mempool *m, void *item);
+extern void __custom_mlx5_mempool_alloc_debug_check(struct custom_mlx5_mempool *m, void *item);
+extern void __custom_mlx5_mempool_free_debug_check(struct custom_mlx5_mempool *m, void *item);
 #else /* DEBUG */
-static inline void __mempool_alloc_debug_check(struct mempool *m, void *item) {}
-static inline void __mempool_free_debug_check(struct mempool *m, void *item) {}
+static inline void __custom_mlx5_mempool_alloc_debug_check(struct custom_mlx5_mempool *m, void *item) {}
+static inline void __custom_mlx5_mempool_free_debug_check(struct custom_mlx5_mempool *m, void *item) {}
 #endif /* DEBUG */
 
 
 /* Registers mempool to include lkey information. */
-static inline void register_mempool(struct mempool *mempool, uint32_t lkey) {
+static inline void custom_mlx5_register_mempool(struct custom_mlx5_mempool *mempool, uint32_t lkey) {
     mempool->lkey = (int32_t)lkey;
 }
 
 /* Removes lkey information from the mempool.*/
-static inline void deregister_mempool(struct mempool *mempool) {
+static inline void custom_mlx5_deregister_mempool(struct custom_mlx5_mempool *mempool) {
     mempool->lkey = -1;
 }
 
@@ -71,7 +71,7 @@ static inline void deregister_mempool(struct mempool *mempool) {
  *
  * Returns index of item; -1 if item not within bounds of pool.
  */
-static inline int mempool_find_index(struct mempool *m, void *item) {
+static inline int custom_mlx5_mempool_find_index(struct custom_mlx5_mempool *m, void *item) {
     if ((char *)item < (char *)m->buf && (char *)item >= ((char *)m->buf + m->len)) {
         return -1;
     }
@@ -86,17 +86,17 @@ static inline int mempool_find_index(struct mempool *m, void *item) {
  *
  * Returns an item, or NULL if the pool is empty.
  */
-static inline void *mempool_alloc(struct mempool *m)
+static inline void *custom_mlx5_mempool_alloc(struct custom_mlx5_mempool *m)
 {
 	void *item;
 	if (unlikely(m->allocated >= m->capacity))
 		return NULL;
 	item = m->free_items[m->allocated++];
-	__mempool_alloc_debug_check(m, item);
+	__custom_mlx5_mempool_alloc_debug_check(m, item);
 	return item;
 }
 
-static inline void *mempool_alloc_by_idx(struct mempool *m, size_t idx)
+static inline void *custom_mlx5_mempool_alloc_by_idx(struct custom_mlx5_mempool *m, size_t idx)
 {
     void *item;
     if (unlikely(m->allocated >= m->capacity)) {
@@ -108,7 +108,7 @@ static inline void *mempool_alloc_by_idx(struct mempool *m, size_t idx)
     item = m->free_items[idx];
     m->free_items[idx] = NULL;
     m->allocated++;
-	__mempool_alloc_debug_check(m, item);
+	__custom_mlx5_mempool_alloc_debug_check(m, item);
     return item;
 }
 
@@ -117,8 +117,8 @@ static inline void *mempool_alloc_by_idx(struct mempool *m, size_t idx)
  * @m: the memory pool the item was allocated from
  * @item: the item to return
  * */
-static inline void mempool_free(struct mempool *m, void *item) {
-	__mempool_free_debug_check(m, item);
+static inline void custom_mlx5_mempool_free(struct custom_mlx5_mempool *m, void *item) {
+	__custom_mlx5_mempool_free_debug_check(m, item);
     if (m->allocated == 0) {
         NETPERF_WARN("Freeing item %p item back into mempool %p with mem allocated 0.\n", m, item);
         return;
@@ -127,8 +127,8 @@ static inline void mempool_free(struct mempool *m, void *item) {
     NETPERF_ASSERT(m->allocated <= m->capacity, "Overflow in mempool"); /* ensure no overflow */
 }
 
-static inline void mempool_free_by_idx(struct mempool *m, void *item, size_t idx) {
-	__mempool_free_debug_check(m, item);
+static inline void custom_mlx5_mempool_free_by_idx(struct custom_mlx5_mempool *m, void *item, size_t idx) {
+	__custom_mlx5_mempool_free_debug_check(m, item);
     if (m->allocated == 0) {
         NETPERF_WARN("Freeing item %p item back into mempool %p with mem allocated 0.\n", m, item);
         return;
@@ -140,10 +140,10 @@ static inline void mempool_free_by_idx(struct mempool *m, void *item, size_t idx
 
 }
 
-extern int mempool_create(struct mempool *m,
+extern int custom_mlx5_mempool_create(struct custom_mlx5_mempool *m,
                             size_t len,
                             size_t pgsize,
                             size_t item_len);
 
-extern void mempool_destroy(struct mempool *m);
+extern void custom_mlx5_mempool_destroy(struct custom_mlx5_mempool *m);
 

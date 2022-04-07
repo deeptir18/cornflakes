@@ -39,9 +39,9 @@ tracing-error = "*"
 cornflakes-utils = { path = "../cornflakes-utils" }
 
 [features]
-mlx5 = []
 
 default = ["mlx5"]
+mlx5 = ["dpdk-datapath/mlx5"]
 profiler = ["cornflakes-libos/profiler"]
 
 

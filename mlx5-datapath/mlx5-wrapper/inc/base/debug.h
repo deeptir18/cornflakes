@@ -114,7 +114,7 @@ enum {
 #define NETPERF_DEBUG_RATE_LIMITED(fmt, ...) ({							\
 	static uint64_t __last_us = 0;			\
 	static uint64_t __suppressed = 0;		\
-	uint64_t __cur_us = microtime();		\
+	uint64_t __cur_us = custom_mlx5_microtime();		\
 	if (__cur_us - __last_us >= ONE_SECOND) {	\
 		if (__suppressed) {			\
 			NETPERF_DEBUG("%s:%d %s() suppressed %ld times", \

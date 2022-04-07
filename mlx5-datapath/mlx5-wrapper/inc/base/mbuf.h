@@ -16,7 +16,7 @@
 #include <base/debug.h>
 
 /* Mbuf data structure. Should be 64 byte aligned. */
-struct __attribute__((packed, aligned(1))) mbuf {
+struct __attribute__((packed, aligned(1))) custom_mlx5_mbuf {
     void *buf_addr; /* Data address of this mbuf */
     uint16_t refcnt; /* Reference count. Currently only supports single threaded code. */
     uint16_t nb_segs; /* Number of segments (if this is the head segment) in linked list.*/
@@ -30,20 +30,20 @@ struct __attribute__((packed, aligned(1))) mbuf {
     uint32_t pkt_len; /* Length of data across entire packet. */
     uint32_t num_wqes; /* Number of wqes this transmission used. Filled in at transmission. */
     uint32_t lkey; /* Lkey for mr region the data pointed by this mbuf points to. */
-    struct mbuf *next; /* Pointer to the next mbuf in the list */
-    struct mempool *metadata_mempool; /* Pointer to mempool where metadata was allocated */
-    struct mempool *data_mempool; /* Pointer to mempool where data was allocated. If NULL, freeing back to metadata pool frees data. */
-    struct mbuf *indirect_mbuf_ptr; /* This mbuf could just be "attached" to another mbuf, with a different offset. If null, not attached. */
+    struct custom_mlx5_mbuf *next; /* Pointer to the next mbuf in the list */
+    struct custom_mlx5_mempool *metadata_mempool; /* Pointer to mempool where metadata was allocated */
+    struct custom_mlx5_mempool *data_mempool; /* Pointer to mempool where data was allocated. If NULL, freeing back to metadata pool frees data. */
+    struct custom_mlx5_mbuf *indirect_mbuf_ptr; /* This mbuf could just be "attached" to another mbuf, with a different offset. If null, not attached. */
 };
 
-#define mbuf_offset(mbuf, off, t) \
-    (t)(mbuf_offset_ptr(mbuf, off))
+#define custom_mlx5_mbuf_offset(mbuf, off, t) \
+    (t)(custom_mlx5_mbuf_offset_ptr(mbuf, off))
 
-static inline unsigned char *mbuf_offset_ptr(const struct mbuf *m, size_t off) {
+static inline unsigned char *custom_mlx5_mbuf_offset_ptr(const struct custom_mlx5_mbuf *m, size_t off) {
     return (unsigned char *)m->buf_addr + m->offset + off;
 }
 
-static inline void mbuf_clear(struct mbuf *m) {
+static inline void custom_mlx5_mbuf_clear(struct custom_mlx5_mbuf *m) {
     m->buf_addr = NULL;
     m->refcnt = 0;
     m->nb_segs = 0;
@@ -61,12 +61,12 @@ static inline void mbuf_clear(struct mbuf *m) {
 }
 
 /* Initializes an mbuf to attach to another mbuf. */
-static inline void mbuf_init_external(struct mbuf *m,
-                                        struct mempool *metadata_mempool,
-                                        struct mbuf *indirect_mbuf,
+static inline void custom_mlx5_mbuf_init_external(struct custom_mlx5_mbuf *m,
+                                        struct custom_mlx5_mempool *metadata_mempool,
+                                        struct custom_mlx5_mbuf *indirect_mbuf,
                                         uint16_t offset,
                                         uint16_t len) {
-    rte_memcpy((char *)m, (char *)indirect_mbuf, sizeof(struct mbuf));
+    custom_mlx5_rte_memcpy((char *)m, (char *)indirect_mbuf, sizeof(struct custom_mlx5_mbuf));
     m->metadata_mempool = metadata_mempool;
     m->data_mempool = NULL;
     m->indirect_mbuf_ptr = indirect_mbuf;
@@ -76,11 +76,11 @@ static inline void mbuf_init_external(struct mbuf *m,
 }
 
 /* Initializes an mbuf. */
-static inline void mbuf_init(struct mbuf *m, 
+static inline void custom_mlx5_mbuf_init(struct custom_mlx5_mbuf *m, 
                                 void *data,  
-                                struct mempool *metadata_mempool,
-                                struct mempool *data_mempool) {
-    mbuf_clear(m);
+                                struct custom_mlx5_mempool *metadata_mempool,
+                                struct custom_mlx5_mempool *data_mempool) {
+    custom_mlx5_mbuf_clear(m);
     m->buf_addr = data;
     m->metadata_mempool = metadata_mempool;
     if (data_mempool != NULL) {
@@ -91,11 +91,11 @@ static inline void mbuf_init(struct mbuf *m,
 }
 
 /* Attaches the mbuf to an external buffer. */
-static inline void mbuf_attach_external(struct mbuf *m,
+static inline void custom_mlx5_mbuf_attach_external(struct custom_mlx5_mbuf *m,
                                             void *data,
                                             uint16_t data_offset,
                                             uint16_t data_len,
-                                            struct mempool *data_mempool) {
+                                            struct custom_mlx5_mempool *data_mempool) {
     m->data_mempool = data_mempool;
     m->buf_addr = data;
     m->offset = data_offset;
@@ -104,22 +104,22 @@ static inline void mbuf_attach_external(struct mbuf *m,
 }
 
 /* Returns the mbuf to the given memory pool(s). */    
-static inline void mbuf_free(struct mbuf *m) {
+static inline void custom_mlx5_mbuf_free(struct custom_mlx5_mbuf *m) {
     // Only free back to the data pool if:
     // 1. There is a data pointer.
     // 2. This is NOT an indirect mbuf.
     if (m->data_mempool != NULL && m->indirect_mbuf_ptr == NULL) {
         // calculate the index this mbuf is in the mempool
-        int index = mempool_find_index(m->data_mempool, m->buf_addr);
-        mempool_free(m->data_mempool, m->buf_addr);
-        mempool_free_by_idx(m->metadata_mempool, (void *)m, (size_t)index);
-        mempool_free(m->metadata_mempool, (void *)m);
+        int index = custom_mlx5_mempool_find_index(m->data_mempool, m->buf_addr);
+        custom_mlx5_mempool_free(m->data_mempool, m->buf_addr);
+        custom_mlx5_mempool_free_by_idx(m->metadata_mempool, (void *)m, (size_t)index);
+        custom_mlx5_mempool_free(m->metadata_mempool, (void *)m);
     } else {
-        mempool_free(m->metadata_mempool, (void *)m);
+        custom_mlx5_mempool_free(m->metadata_mempool, (void *)m);
     }
 }
 
-static inline uint16_t mbuf_refcnt_read(struct mbuf *m) {
+static inline uint16_t custom_mlx5_mbuf_refcnt_read(struct custom_mlx5_mbuf *m) {
     if (m->indirect_mbuf_ptr != NULL) {
         return m->indirect_mbuf_ptr->refcnt;
     } else {
@@ -128,28 +128,28 @@ static inline uint16_t mbuf_refcnt_read(struct mbuf *m) {
 }
 
 /* Updates the ref count of the given mbuf. */
-static inline void mbuf_refcnt_update(struct mbuf *m, int16_t change) {
+static inline void custom_mlx5_mbuf_refcnt_update(struct custom_mlx5_mbuf *m, int16_t change) {
     NETPERF_ASSERT(((int16_t)m->refcnt + change) >= 0, "Refcnt negative");
     m->refcnt += change;
 }
 
 /* Updates ref count of given mbuf and frees if refcnt has reached 0. */
-static inline void direct_mbuf_refcnt_update_or_free(struct mbuf *m, int16_t change) {
-    mbuf_refcnt_update(m, change);
+static inline void custom_mlx5_direct_mbuf_refcnt_update_or_free(struct custom_mlx5_mbuf *m, int16_t change) {
+    custom_mlx5_mbuf_refcnt_update(m, change);
     if (m->refcnt == 0) {
-        mbuf_free(m);
+        custom_mlx5_mbuf_free(m);
     }
 }
 
 /* Updates ref count of mbuf and frees mbuf if ref count has reached 0.
  * For indirect mbufs, works on indirect pointer.
  * */
-static inline void mbuf_refcnt_update_or_free(struct mbuf *m, int16_t change) {
+static inline void custom_mlx5_mbuf_refcnt_update_or_free(struct custom_mlx5_mbuf *m, int16_t change) {
     if (m->indirect_mbuf_ptr != NULL) {
         // update refcnt of underlying mbuf
-        direct_mbuf_refcnt_update_or_free(m->indirect_mbuf_ptr, change);
-        mbuf_free(m);
+        custom_mlx5_direct_mbuf_refcnt_update_or_free(m->indirect_mbuf_ptr, change);
+        custom_mlx5_mbuf_free(m);
     } else {
-        direct_mbuf_refcnt_update_or_free(m, change);
+        custom_mlx5_direct_mbuf_refcnt_update_or_free(m, change);
     }
 }

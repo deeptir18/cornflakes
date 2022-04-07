@@ -45,6 +45,11 @@ all: static
 
 static: build $(LIB).a
 
+shared: build $(LIB).so
+
+$(LIB).so: runtime.o init.o mempool.o mem.o time.o
+	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_SHARED)
+
 $(LIB).a: runtime.o init.o mempool.o mem.o time.o
 	ar rcs build/$@ build/runtime.o build/init.o build/mempool.o build/mem.o build/time.o
 

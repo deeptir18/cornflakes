@@ -76,8 +76,8 @@ impl MempoolAllocationParams {
     ) -> Result<Self> {
         // check that metadata_pgsize and data_pgsize are proper page sizes
         if metadata_pgsize != mem::PGSIZE_4KB
-            || metadata_pgsize != mem::PGSIZE_2MB
-            || metadata_pgsize != mem::PGSIZE_1GB
+            && metadata_pgsize != mem::PGSIZE_2MB
+            && metadata_pgsize != mem::PGSIZE_1GB
         {
             bail!(
                 "Metadata pgsize provided: {} not 4KB, 2MB, or 1GB",
@@ -85,8 +85,8 @@ impl MempoolAllocationParams {
             );
         }
         if data_pgsize != mem::PGSIZE_4KB
-            || data_pgsize != mem::PGSIZE_2MB
-            || data_pgsize != mem::PGSIZE_1GB
+            && data_pgsize != mem::PGSIZE_2MB
+            && data_pgsize != mem::PGSIZE_1GB
         {
             bail!("Data pgsize provided: {} not 4KB, 2MB, or 1GB", data_pgsize);
         }

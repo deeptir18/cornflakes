@@ -4,7 +4,7 @@ use std::ffi::CStr;
 
 pub unsafe fn check(func_name: &str, errno: ::std::os::raw::c_int) -> Result<()> {
     if errno != 0 {
-        let c_buf = mlx5_bindings::err_to_str(errno);
+        let c_buf = mlx5_bindings::custom_mlx5_err_to_str(errno);
         let c_str: &CStr = CStr::from_ptr(c_buf);
         let str_slice: &str = c_str.to_str().unwrap();
         bail!("Function {} failed from {} error", func_name, str_slice);

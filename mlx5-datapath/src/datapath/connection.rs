@@ -5,7 +5,7 @@ use super::{
 };
 use cornflakes_libos::{
     allocator::{MemoryPoolAllocator, MempoolID},
-    datapath::{Datapath, MetadataOps, ReceivedPkt},
+    datapath::{Datapath, InlineMode, MetadataOps, ReceivedPkt},
     mem::{PGSIZE_2MB, PGSIZE_4KB},
     serialize::Serializable,
     utils::AddressInfo,
@@ -25,7 +25,6 @@ use std::{
     net::Ipv4Addr,
     path::Path,
     ptr,
-    str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -38,36 +37,8 @@ const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 const COMPLETION_BUDGET: usize = 32;
 const RECEIVE_BURST_SIZE: usize = 32;
 
-#[derive(PartialEq, Eq, Debug, Copy, Clone)]
-pub enum InlineMode {
-    Nothing,
-    PacketHeader,
-    FirstEntry,
-}
-
-impl Default for InlineMode {
-    fn default() -> Self {
-        InlineMode::Nothing
-    }
-}
-
-impl FromStr for InlineMode {
-    type Err = color_eyre::eyre::Error;
-
-    fn from_str(s: &str) -> Result<InlineMode> {
-        match s {
-            "nothing" | "Nothing" | "0" | "NOTHING" => Ok(InlineMode::Nothing),
-            "packetheader" | "PacketHeader" | "PACKETHEADER" | "packet_header" => {
-                Ok(InlineMode::PacketHeader)
-            }
-            "firstentry" | "first_entry" | "FIRSTENTRY" | "FirstEntry" => {
-                Ok(InlineMode::FirstEntry)
-            }
-            x => {
-                bail!("Unknown inline mode: {:?}", x);
-            }
-        }
-    }
+pub fn hello_world() {
+    tracing::info!("Hello from this crate");
 }
 
 #[derive(PartialEq, Eq)]
@@ -150,7 +121,7 @@ impl Write for Mlx5Buffer {
 #[derive(PartialEq, Eq)]
 pub struct MbufMetadata {
     /// Pointer to allocated mbuf metadata.
-    pub mbuf: *mut mbuf,
+    pub mbuf: *mut custom_mlx5_mbuf,
     /// Application data offset
     pub offset: usize,
     /// Application data length
@@ -164,7 +135,7 @@ impl MbufMetadata {
         if metadata_buf.is_null() {
             // drop the data buffer
             unsafe {
-                mempool_free(buf, get_data_mempool(registered_mempool));
+                custom_mlx5_mempool_free(buf, get_data_mempool(registered_mempool));
             }
             return Ok(None);
         }
@@ -179,14 +150,14 @@ impl MbufMetadata {
                 data_len,
                 0,
             );
-            mbuf_refcnt_update_or_free(metadata_buf, 1);
+            custom_mlx5_mbuf_refcnt_update_or_free(metadata_buf, 1);
         }
         Ok(Some(MbufMetadata::new(metadata_buf, 0, Some(data_len))?))
     }
 
     pub fn increment_refcnt(&mut self) {
         unsafe {
-            mbuf_refcnt_update_or_free(self.mbuf, 1);
+            custom_mlx5_mbuf_refcnt_update_or_free(self.mbuf, 1);
         }
     }
 
@@ -195,13 +166,17 @@ impl MbufMetadata {
     /// @mbuf: mbuf structure that contains metadata
     /// @data_offset: Application data offset into this buffer.
     /// @data_len: Optional application data length into the buffer.
-    pub fn new(mbuf: *mut mbuf, data_offset: usize, data_len: Option<usize>) -> Result<Self> {
+    pub fn new(
+        mbuf: *mut custom_mlx5_mbuf,
+        data_offset: usize,
+        data_len: Option<usize>,
+    ) -> Result<Self> {
         ensure!(
             data_offset >= unsafe { access!(mbuf, data_buf_len, usize) },
             "Data offset too large"
         );
         unsafe {
-            mbuf_refcnt_update_or_free(mbuf, 1);
+            custom_mlx5_mbuf_refcnt_update_or_free(mbuf, 1);
         }
         let len = match data_len {
             Some(x) => {
@@ -220,7 +195,7 @@ impl MbufMetadata {
         })
     }
 
-    pub fn mbuf(&self) -> *mut mbuf {
+    pub fn mbuf(&self) -> *mut custom_mlx5_mbuf {
         self.mbuf
     }
 }
@@ -264,9 +239,9 @@ impl Drop for MbufMetadata {
     fn drop(&mut self) {
         unsafe {
             if USING_REF_COUNTING {
-                mbuf_refcnt_update_or_free(self.mbuf, -1);
+                custom_mlx5_mbuf_refcnt_update_or_free(self.mbuf, -1);
             } else {
-                mbuf_free(self.mbuf);
+                custom_mlx5_mbuf_free(self.mbuf);
             }
         }
     }
@@ -276,7 +251,7 @@ impl Clone for MbufMetadata {
     fn clone(&self) -> MbufMetadata {
         unsafe {
             if USING_REF_COUNTING {
-                mbuf_refcnt_update_or_free(self.mbuf, 1);
+                custom_mlx5_mbuf_refcnt_update_or_free(self.mbuf, 1);
             }
         }
         MbufMetadata {
@@ -301,7 +276,7 @@ impl AsRef<[u8]> for MbufMetadata {
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 struct Mlx5GlobalContext {
-    pub ptr: *mut mlx5_global_context,
+    pub ptr: *mut custom_mlx5_global_context,
 }
 
 unsafe impl Send for Mlx5GlobalContext {}
@@ -316,14 +291,14 @@ pub struct Mlx5PerThreadContext {
     /// Source address info (ethernet, ip, port)
     address_info: AddressInfo,
     /// Pointer to datapath specific thread information
-    context: *mut mlx5_per_thread_context,
+    context: *mut custom_mlx5_per_thread_context,
 }
 
 unsafe impl Send for Mlx5PerThreadContext {}
 unsafe impl Sync for Mlx5PerThreadContext {}
 
 impl Mlx5PerThreadContext {
-    pub fn get_context_ptr(&self) -> *mut mlx5_per_thread_context {
+    pub fn get_context_ptr(&self) -> *mut custom_mlx5_per_thread_context {
         self.context
     }
 
@@ -343,12 +318,12 @@ impl Mlx5PerThreadContext {
 impl Drop for Mlx5PerThreadContext {
     fn drop(&mut self) {
         unsafe {
-            teardown(self.context);
+            custom_mlx5_teardown(self.context);
         }
         if Arc::<Mlx5GlobalContext>::strong_count(&self.global_context_rc) == 1 {
             // safe to drop global context because this is the last reference
             unsafe {
-                free_global_context(
+                custom_mlx5_free_global_context(
                     (*Arc::<Mlx5GlobalContext>::as_ptr(&self.global_context_rc)).ptr,
                 )
             }
@@ -358,7 +333,7 @@ impl Drop for Mlx5PerThreadContext {
 
 #[derive(Debug, Clone)]
 pub struct Mlx5DatapathSpecificParams {
-    pci_addr: MaybeUninit<pci_addr>,
+    custom_mlx5_pci_addr: MaybeUninit<custom_mlx5_pci_addr>,
     eth_addr: MaybeUninit<eth_addr>,
     our_ip: Ipv4Addr,
     our_eth: MacAddress,
@@ -367,8 +342,8 @@ pub struct Mlx5DatapathSpecificParams {
 }
 
 impl Mlx5DatapathSpecificParams {
-    pub unsafe fn get_pci_addr(&mut self) -> *mut pci_addr {
-        self.pci_addr.as_mut_ptr()
+    pub unsafe fn get_custom_mlx5_pci_addr(&mut self) -> *mut custom_mlx5_pci_addr {
+        self.custom_mlx5_pci_addr.as_mut_ptr()
     }
 
     pub unsafe fn get_eth_addr(&mut self) -> *mut eth_addr {
@@ -416,18 +391,10 @@ pub struct Mlx5Connection {
     /// Maximum data that can be inlined
     max_inline_size: usize,
     /// Array of mbuf pointers used to receive packets
-    recv_mbufs: [*mut mbuf; RECEIVE_BURST_SIZE],
+    recv_mbufs: [*mut custom_mlx5_mbuf; RECEIVE_BURST_SIZE],
 }
 
 impl Mlx5Connection {
-    pub fn set_copying_threshold(&mut self, thresh: usize) {
-        self.copying_threshold = thresh;
-    }
-
-    pub fn set_inline_mode(&mut self, inline_mode: InlineMode) {
-        self.inline_mode = inline_mode;
-    }
-
     fn insert_into_outgoing_map(&mut self, msg_id: MsgID, conn_id: ConnID) {
         if self.mode == AppMode::Client {
             if !self.outgoing_window.contains_key(&(msg_id, conn_id)) {
@@ -574,7 +541,7 @@ impl Mlx5Connection {
         let eth_hdr = hdr_bytes[0..cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE].as_mut_ptr()
             as *mut eth_hdr;
         unsafe {
-            inline_eth_hdr(
+            custom_mlx5_inline_eth_hdr(
                 self.thread_context.get_context_ptr(),
                 eth_hdr,
                 inline_len as _,
@@ -587,7 +554,7 @@ impl Mlx5Connection {
                 + cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE)]
             .as_mut_ptr() as *mut ip_hdr;
         unsafe {
-            inline_ipv4_hdr(
+            custom_mlx5_inline_ipv4_hdr(
                 self.thread_context.get_context_ptr(),
                 ip_hdr,
                 data_len as _,
@@ -601,7 +568,7 @@ impl Mlx5Connection {
             ..cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE]
             .as_mut_ptr() as *mut udp_hdr;
         unsafe {
-            inline_udp_hdr(
+            custom_mlx5_inline_udp_hdr(
                 self.thread_context.get_context_ptr(),
                 udp_hdr,
                 data_len as _,
@@ -611,7 +578,7 @@ impl Mlx5Connection {
 
         // write packet id
         unsafe {
-            inline_packet_id(self.thread_context.get_context_ptr(), msg_id as _);
+            custom_mlx5_inline_packet_id(self.thread_context.get_context_ptr(), msg_id as _);
         }
         Ok(())
     }
@@ -625,7 +592,9 @@ impl Mlx5Connection {
         let mut ret: Option<*mut mlx5_wqe_ctrl_seg> = first_ctrl_seg;
         match ret {
             Some(seg) => {
-                if unsafe { post_transmissions(self.thread_context.get_context_ptr(), seg) != 0 } {
+                if unsafe {
+                    custom_mlx5_post_transmissions(self.thread_context.get_context_ptr(), seg) != 0
+                } {
                     bail!("Failed to post transmissions so far");
                 }
                 ret = None;
@@ -635,7 +604,7 @@ impl Mlx5Connection {
 
         // check for completions
         if unsafe {
-            mlx5_process_completions(
+            custom_mlx5_process_completions(
                 self.thread_context.get_context_ptr(),
                 COMPLETION_BUDGET as _,
             )
@@ -659,7 +628,7 @@ impl Mlx5Connection {
     ) -> Result<*mut mlx5_wqe_ctrl_seg> {
         // can process this sga
         let ctrl_seg = unsafe {
-            fill_in_hdr_segment(
+            custom_mlx5_fill_in_hdr_segment(
                 self.thread_context.get_context_ptr(),
                 num_wqes_required as _,
                 inline_len as _,
@@ -689,7 +658,7 @@ impl Mlx5Connection {
                     // inline whatever is in the first scatter-gather entry
                     let first_entry = rc_sga.get(0).addr();
                     unsafe {
-                        copy_inline_data(
+                        custom_mlx5_copy_inline_data(
                             self.thread_context.get_context_ptr(),
                             cornflakes_libos::utils::TOTAL_HEADER_SIZE as _,
                             first_entry.as_ptr() as _,
@@ -703,10 +672,11 @@ impl Mlx5Connection {
         }
 
         // get first data segment and corresponding completion segment on ring buffers
-        let mut curr_data_seg: *mut mlx5_wqe_data_seg =
-            unsafe { dpseg_start(self.thread_context.get_context_ptr(), inline_len as _) };
-        let mut curr_completion: *mut transmission_info =
-            unsafe { completion_start(self.thread_context.get_context_ptr()) };
+        let mut curr_data_seg: *mut mlx5_wqe_data_seg = unsafe {
+            custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), inline_len as _)
+        };
+        let mut curr_completion: *mut custom_mlx5_transmission_info =
+            unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
 
         // fill in all entries
         while entry_idx < rc_sga.len() {
@@ -715,7 +685,7 @@ impl Mlx5Connection {
                 mbuf_metadata.increment_refcnt();
 
                 curr_data_seg = unsafe {
-                    add_dpseg(
+                    custom_mlx5_add_dpseg(
                         self.thread_context.get_context_ptr(),
                         curr_data_seg,
                         mbuf_metadata.mbuf(),
@@ -725,7 +695,7 @@ impl Mlx5Connection {
                 };
 
                 curr_completion = unsafe {
-                    add_completion_info(
+                    custom_mlx5_add_completion_info(
                         self.thread_context.get_context_ptr(),
                         curr_completion,
                         mbuf_metadata.mbuf(),
@@ -795,7 +765,7 @@ impl Mlx5Connection {
 
                 // post this data buffer to the ring buffer
                 unsafe {
-                    curr_data_seg = add_dpseg(
+                    curr_data_seg = custom_mlx5_add_dpseg(
                         self.thread_context.get_context_ptr(),
                         curr_data_seg,
                         metadata_mbuf.mbuf(),
@@ -803,7 +773,7 @@ impl Mlx5Connection {
                         metadata_mbuf.data_len() as _,
                     );
 
-                    curr_completion = add_completion_info(
+                    curr_completion = custom_mlx5_add_completion_info(
                         self.thread_context.get_context_ptr(),
                         curr_completion,
                         metadata_mbuf.mbuf(),
@@ -816,7 +786,10 @@ impl Mlx5Connection {
 
         // finish the transmission
         unsafe {
-            finish_single_transmission(self.thread_context.get_context_ptr(), num_wqes_required);
+            custom_mlx5_finish_single_transmission(
+                self.thread_context.get_context_ptr(),
+                num_wqes_required,
+            );
         }
 
         return Ok(ctrl_seg);
@@ -834,7 +807,7 @@ impl Mlx5Connection {
     ) -> Result<*mut mlx5_wqe_ctrl_seg> {
         // can process this sga
         let ctrl_seg = unsafe {
-            fill_in_hdr_segment(
+            custom_mlx5_fill_in_hdr_segment(
                 self.thread_context.get_context_ptr(),
                 num_wqes_required as _,
                 inline_len as _,
@@ -864,7 +837,7 @@ impl Mlx5Connection {
                     // inline whatever is in the first scatter-gather entry
                     let first_entry = sga.get(0).addr();
                     unsafe {
-                        copy_inline_data(
+                        custom_mlx5_copy_inline_data(
                             self.thread_context.get_context_ptr(),
                             cornflakes_libos::utils::TOTAL_HEADER_SIZE as _,
                             first_entry.as_ptr() as _,
@@ -878,10 +851,11 @@ impl Mlx5Connection {
         }
 
         // get first data segment and corresponding completion segment on ring buffers
-        let mut curr_data_seg: *mut mlx5_wqe_data_seg =
-            unsafe { dpseg_start(self.thread_context.get_context_ptr(), inline_len as _) };
-        let mut curr_completion: *mut transmission_info =
-            unsafe { completion_start(self.thread_context.get_context_ptr()) };
+        let mut curr_data_seg: *mut mlx5_wqe_data_seg = unsafe {
+            custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), inline_len as _)
+        };
+        let mut curr_completion: *mut custom_mlx5_transmission_info =
+            unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
 
         // fill in all entries
         while entry_idx < sga.len() {
@@ -891,7 +865,7 @@ impl Mlx5Connection {
                 let mut mbuf_metadata = self.allocator.recover_buffer(curr_seg)?.unwrap();
                 mbuf_metadata.increment_refcnt();
                 curr_data_seg = unsafe {
-                    add_dpseg(
+                    custom_mlx5_add_dpseg(
                         self.thread_context.get_context_ptr(),
                         curr_data_seg,
                         mbuf_metadata.mbuf(),
@@ -901,7 +875,7 @@ impl Mlx5Connection {
                 };
 
                 curr_completion = unsafe {
-                    add_completion_info(
+                    custom_mlx5_add_completion_info(
                         self.thread_context.get_context_ptr(),
                         curr_completion,
                         mbuf_metadata.mbuf(),
@@ -971,7 +945,7 @@ impl Mlx5Connection {
 
                 // post this data buffer to the ring buffer
                 unsafe {
-                    curr_data_seg = add_dpseg(
+                    curr_data_seg = custom_mlx5_add_dpseg(
                         self.thread_context.get_context_ptr(),
                         curr_data_seg,
                         metadata_mbuf.mbuf(),
@@ -979,7 +953,7 @@ impl Mlx5Connection {
                         metadata_mbuf.data_len() as _,
                     );
 
-                    curr_completion = add_completion_info(
+                    curr_completion = custom_mlx5_add_completion_info(
                         self.thread_context.get_context_ptr(),
                         curr_completion,
                         metadata_mbuf.mbuf(),
@@ -992,7 +966,10 @@ impl Mlx5Connection {
 
         // finish the transmission
         unsafe {
-            finish_single_transmission(self.thread_context.get_context_ptr(), num_wqes_required);
+            custom_mlx5_finish_single_transmission(
+                self.thread_context.get_context_ptr(),
+                num_wqes_required,
+            );
         }
 
         return Ok(ctrl_seg);
@@ -1113,7 +1090,7 @@ impl Datapath for Mlx5Connection {
         let (ip_to_mac, _mac_to_ip, server_port, client_port) =
             parse_yaml_map(config_file).wrap_err("Failed to parse yaml map")?;
 
-        let pci_addr =
+        let custom_mlx5_pci_addr =
             parse_pci_addr(config_file).wrap_err("Failed to parse pci addr from config")?;
 
         // for this datapath, knowing our IP address is required (to find our mac address)
@@ -1135,17 +1112,16 @@ impl Datapath for Mlx5Connection {
             );
         }
 
-        let pci_str = CString::new(pci_addr.as_str()).expect("CString::new failed");
-        let mut pci_addr_c: MaybeUninit<pci_addr> = MaybeUninit::zeroed();
+        let pci_str = CString::new(custom_mlx5_pci_addr.as_str()).expect("CString::new failed");
+        let mut custom_mlx5_pci_addr_c: MaybeUninit<custom_mlx5_pci_addr> = MaybeUninit::zeroed();
         unsafe {
-            mlx5_rte_memcpy(
-                pci_addr_c.as_mut_ptr() as _,
+            custom_mlx5_pci_str_to_addr(
                 pci_str.as_ptr() as _,
-                pci_addr.len(),
+                custom_mlx5_pci_addr_c.as_mut_ptr() as _,
             );
         }
         Ok(Mlx5DatapathSpecificParams {
-            pci_addr: pci_addr_c,
+            custom_mlx5_pci_addr: custom_mlx5_pci_addr_c,
             eth_addr: ether_addr,
             our_ip: our_ip.clone(),
             our_eth: eth_addr.clone(),
@@ -1186,7 +1162,7 @@ impl Datapath for Mlx5Connection {
     ) -> Result<Vec<Self::PerThreadContext>> {
         // do time init
         unsafe {
-            time_init();
+            custom_mlx5_time_init();
         }
 
         ensure!(
@@ -1200,11 +1176,14 @@ impl Datapath for Mlx5Connection {
         // allocate the global context
         let global_context: Arc<Mlx5GlobalContext> = {
             unsafe {
-                let ptr = alloc_global_context(num_queues as _);
+                let ptr = custom_mlx5_alloc_global_context(num_queues as _);
                 ensure!(!ptr.is_null(), "Allocated global context is null");
 
                 // initialize ibv context
-                check_ok!(init_ibv_context(ptr, datapath_params.get_pci_addr()));
+                check_ok!(custom_mlx5_init_ibv_context(
+                    ptr,
+                    datapath_params.get_custom_mlx5_pci_addr()
+                ));
 
                 // initialize and register the rx mempools
                 let rx_mempool_params: sizes::MempoolAllocationParams =
@@ -1215,7 +1194,7 @@ impl Datapath for Mlx5Connection {
                         sizes::RX_MEMPOOL_DATA_LEN,
                     )
                     .wrap_err("Incorrect rx allocation params")?;
-                check_ok!(init_rx_mempools(
+                check_ok!(custom_mlx5_init_rx_mempools(
                     ptr,
                     rx_mempool_params.get_item_len() as _,
                     rx_mempool_params.get_num_items() as _,
@@ -1226,13 +1205,16 @@ impl Datapath for Mlx5Connection {
 
                 // init queues
                 for i in 0..num_queues {
-                    let per_thread_context = get_per_thread_context(ptr, i as u64);
-                    check_ok!(mlx5_init_rxq(per_thread_context));
-                    check_ok!(mlx5_init_txq(per_thread_context));
+                    let per_thread_context = custom_mlx5_get_per_thread_context(ptr, i as u64);
+                    check_ok!(custom_mlx5_init_rxq(per_thread_context));
+                    check_ok!(custom_mlx5_init_txq(per_thread_context));
                 }
 
                 // init queue steering
-                check_ok!(mlx5_qs_init_flows(ptr, datapath_params.get_eth_addr()));
+                check_ok!(custom_mlx5_qs_init_flows(
+                    ptr,
+                    datapath_params.get_eth_addr()
+                ));
                 Arc::new(Mlx5GlobalContext { ptr: ptr })
             }
         };
@@ -1242,7 +1224,7 @@ impl Datapath for Mlx5Connection {
             .map(|(i, addr)| {
                 let global_context_copy = global_context.clone();
                 let context_ptr = unsafe {
-                    get_per_thread_context(
+                    custom_mlx5_get_per_thread_context(
                         (*Arc::<Mlx5GlobalContext>::as_ptr(&global_context_copy)).ptr,
                         i as u64,
                     )
@@ -1367,11 +1349,14 @@ impl Datapath for Mlx5Connection {
                 false => 1,
             };
 
-            let num_wqes_required = unsafe { num_wqes_required(inline_len as _, num_segs as _) };
+            let num_wqes_required =
+                unsafe { custom_mlx5_num_wqes_required(inline_len as _, num_segs as _) };
 
             if unsafe {
-                tx_descriptors_available(self.thread_context.get_context_ptr(), num_wqes_required)
-                    != 1
+                custom_mlx5_tx_descriptors_available(
+                    self.thread_context.get_context_ptr(),
+                    num_wqes_required,
+                ) != 1
             } {
                 first_ctrl_seg = self.post_curr_transmissions(first_ctrl_seg)?;
             } else {
@@ -1392,7 +1377,7 @@ impl Datapath for Mlx5Connection {
                                 <= self.max_inline_size)
                         {
                             unsafe {
-                                copy_inline_data(
+                                custom_mlx5_copy_inline_data(
                                     self.thread_context.get_context_ptr(),
                                     cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE as _,
                                     buf.as_ptr() as _,
@@ -1444,10 +1429,13 @@ impl Datapath for Mlx5Connection {
 
                     // post this data buffer to the ring buffer
                     unsafe {
-                        let dpseg =
-                            dpseg_start(self.thread_context.get_context_ptr(), inline_len as _);
-                        let completion = completion_start(self.thread_context.get_context_ptr());
-                        add_dpseg(
+                        let dpseg = custom_mlx5_dpseg_start(
+                            self.thread_context.get_context_ptr(),
+                            inline_len as _,
+                        );
+                        let completion =
+                            custom_mlx5_completion_start(self.thread_context.get_context_ptr());
+                        custom_mlx5_add_dpseg(
                             self.thread_context.get_context_ptr(),
                             dpseg,
                             metadata_mbuf.mbuf(),
@@ -1455,14 +1443,14 @@ impl Datapath for Mlx5Connection {
                             metadata_mbuf.data_len() as _,
                         );
 
-                        add_completion_info(
+                        custom_mlx5_add_completion_info(
                             self.thread_context.get_context_ptr(),
                             completion,
                             metadata_mbuf.mbuf(),
                         );
 
                         // finish transmission
-                        finish_single_transmission(
+                        custom_mlx5_finish_single_transmission(
                             self.thread_context.get_context_ptr(),
                             num_wqes_required,
                         );
@@ -1487,18 +1475,21 @@ impl Datapath for Mlx5Connection {
             let received_pkt = &mut pkts[pkt_idx];
             let inline_len = 0;
             let num_segs = received_pkt.num_segs();
-            let num_wqes_required = unsafe { num_wqes_required(inline_len as _, num_segs as _) };
+            let num_wqes_required =
+                unsafe { custom_mlx5_num_wqes_required(inline_len as _, num_segs as _) };
 
             if unsafe {
-                tx_descriptors_available(self.thread_context.get_context_ptr(), num_wqes_required)
-                    != 1
+                custom_mlx5_tx_descriptors_available(
+                    self.thread_context.get_context_ptr(),
+                    num_wqes_required,
+                ) != 1
             } {
                 first_ctrl_seg = self.post_curr_transmissions(first_ctrl_seg)?;
             } else {
                 // ASSUMES THAT THE PACKET HAS A FULL HEADER TO FLIP
                 unsafe {
                     flip_headers(received_pkt.seg(0).mbuf());
-                    let ctrl_seg = fill_in_hdr_segment(
+                    let ctrl_seg = custom_mlx5_fill_in_hdr_segment(
                         self.thread_context.get_context_ptr(),
                         num_wqes_required as _,
                         inline_len as _,
@@ -1509,12 +1500,13 @@ impl Datapath for Mlx5Connection {
                         first_ctrl_seg = Some(ctrl_seg);
                     }
                     // add a dpseg and a completion info for each received packet in the mbuf
-                    let mut curr_dpseg = dpseg_start(self.thread_context.get_context_ptr(), 0);
+                    let mut curr_dpseg =
+                        custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), 0);
                     let mut curr_completion =
-                        completion_start(self.thread_context.get_context_ptr());
+                        custom_mlx5_completion_start(self.thread_context.get_context_ptr());
                     for seg in received_pkt.iter_mut() {
                         seg.increment_refcnt();
-                        curr_dpseg = add_dpseg(
+                        curr_dpseg = custom_mlx5_add_dpseg(
                             self.thread_context.get_context_ptr(),
                             curr_dpseg,
                             seg.mbuf(),
@@ -1522,7 +1514,7 @@ impl Datapath for Mlx5Connection {
                             seg.data_len() as _,
                         );
 
-                        curr_completion = add_completion_info(
+                        curr_completion = custom_mlx5_add_completion_info(
                             self.thread_context.get_context_ptr(),
                             curr_completion,
                             seg.mbuf(),
@@ -1530,7 +1522,7 @@ impl Datapath for Mlx5Connection {
                     }
 
                     // now finish the transmission
-                    finish_single_transmission(
+                    custom_mlx5_finish_single_transmission(
                         self.thread_context.get_context_ptr(),
                         num_wqes_required,
                     );
@@ -1562,11 +1554,14 @@ impl Datapath for Mlx5Connection {
             let (msg_id, conn_id, ref mut sga) = &mut rc_sgas[sga_idx];
             self.insert_into_outgoing_map(*msg_id, *conn_id);
             let (inline_len, num_segs) = self.calculate_shape_rc(&sga)?;
-            let num_wqes_required = unsafe { num_wqes_required(inline_len as _, num_segs as _) };
+            let num_wqes_required =
+                unsafe { custom_mlx5_num_wqes_required(inline_len as _, num_segs as _) };
 
             if unsafe {
-                tx_descriptors_available(self.thread_context.get_context_ptr(), num_wqes_required)
-                    != 1
+                custom_mlx5_tx_descriptors_available(
+                    self.thread_context.get_context_ptr(),
+                    num_wqes_required,
+                ) != 1
             } {
                 first_ctrl_seg = self.post_curr_transmissions(first_ctrl_seg)?;
             } else {
@@ -1595,12 +1590,15 @@ impl Datapath for Mlx5Connection {
             let (msg_id, conn_id, sga) = &sgas[sga_idx];
             self.insert_into_outgoing_map(*msg_id, *conn_id);
             let (inline_len, num_segs) = self.calculate_shape(&sga)?;
-            let num_wqes_required = unsafe { num_wqes_required(inline_len as _, num_segs as _) };
+            let num_wqes_required =
+                unsafe { custom_mlx5_num_wqes_required(inline_len as _, num_segs as _) };
 
             // enough descriptors to transmit this sga?
             if unsafe {
-                tx_descriptors_available(self.thread_context.get_context_ptr(), num_wqes_required)
-                    != 1
+                custom_mlx5_tx_descriptors_available(
+                    self.thread_context.get_context_ptr(),
+                    num_wqes_required,
+                ) != 1
             } {
                 first_ctrl_seg = self.post_curr_transmissions(first_ctrl_seg)?;
             } else {
@@ -1629,7 +1627,7 @@ impl Datapath for Mlx5Connection {
         Self: Sized,
     {
         let received = unsafe {
-            mlx5_gather_rx(
+            custom_mlx5_gather_rx(
                 self.thread_context.get_context_ptr(),
                 self.recv_mbufs.as_mut_ptr(),
                 RECEIVE_BURST_SIZE as _,
@@ -1650,7 +1648,7 @@ impl Datapath for Mlx5Connection {
                         // free the rest of the packets
                         for _ in (i + 1)..received as usize {
                             unsafe {
-                                free_mbuf(self.recv_mbufs[i]);
+                                custom_mlx5_free_mbuf(self.recv_mbufs[i]);
                             }
                         }
                         bail!(
@@ -1664,7 +1662,7 @@ impl Datapath for Mlx5Connection {
             } else {
                 // free the mbuf
                 unsafe {
-                    free_mbuf(self.recv_mbufs[i]);
+                    custom_mlx5_free_mbuf(self.recv_mbufs[i]);
                 }
                 self.recv_mbufs[i] = ptr::null_mut();
             }
@@ -1678,7 +1676,7 @@ impl Datapath for Mlx5Connection {
         Self: Sized,
     {
         let received = unsafe {
-            mlx5_gather_rx(
+            custom_mlx5_gather_rx(
                 self.thread_context.get_context_ptr(),
                 self.recv_mbufs.as_mut_ptr(),
                 RECEIVE_BURST_SIZE as _,
@@ -1694,7 +1692,7 @@ impl Datapath for Mlx5Connection {
             } else {
                 // free the mbuf
                 unsafe {
-                    free_mbuf(self.recv_mbufs[i]);
+                    custom_mlx5_free_mbuf(self.recv_mbufs[i]);
                 }
                 self.recv_mbufs[i] = ptr::null_mut();
             }
@@ -1736,7 +1734,7 @@ impl Datapath for Mlx5Connection {
                 .wrap_err("Incorrect mempool allocation params")?;
         // add tx memory pool
         let tx_mempool_ptr = unsafe {
-            alloc_and_register_tx_pool(
+            custom_mlx5_alloc_and_register_tx_pool(
                 self.thread_context.get_context_ptr(),
                 mempool_params.get_item_len() as _,
                 mempool_params.get_num_items() as _,
@@ -1777,5 +1775,13 @@ impl Datapath for Mlx5Connection {
 
     fn current_cycles(&self) -> u64 {
         unsafe { current_cycles() }
+    }
+
+    fn set_copying_threshold(&mut self, thresh: usize) {
+        self.copying_threshold = thresh;
+    }
+
+    fn set_inline_mode(&mut self, inline_mode: InlineMode) {
+        self.inline_mode = inline_mode;
     }
 }

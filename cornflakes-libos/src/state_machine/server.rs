@@ -24,21 +24,22 @@ pub trait ServerSM {
     ) -> Result<()>;
 
     fn run_state_machine(&mut self, datapath: &mut Self::Datapath) -> Result<()> {
-        let pkts = datapath.pop()?;
-        if pkts.len() > 0 {
-            match self.push_buf_type() {
-                PushBufType::SingleBuf => {
-                    self.process_requests_single_buf(pkts, datapath)?;
-                }
-                PushBufType::Sga => {
-                    self.process_requests_sga(pkts, datapath)?;
-                }
-                PushBufType::RcSga => {
-                    self.process_requests_rc_sga(pkts, datapath)?;
+        loop {
+            let pkts = datapath.pop()?;
+            if pkts.len() > 0 {
+                match self.push_buf_type() {
+                    PushBufType::SingleBuf => {
+                        self.process_requests_single_buf(pkts, datapath)?;
+                    }
+                    PushBufType::Sga => {
+                        self.process_requests_sga(pkts, datapath)?;
+                    }
+                    PushBufType::RcSga => {
+                        self.process_requests_rc_sga(pkts, datapath)?;
+                    }
                 }
             }
         }
-        unreachable!();
     }
 
     /// Initializes any internal state with any datapath specific configuration,

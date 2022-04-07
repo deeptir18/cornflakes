@@ -7,24 +7,24 @@
 #include <base/time.h>
 #include <base/debug.h>
 
-int cycles_per_us __attribute__(( aligned(CACHE_LINE_SIZE) ));
-float cycles_per_ns;
-uint64_t start_tsc;
+int custom_mlx5_cycles_per_us __attribute__(( aligned(CACHE_LINE_SIZE) ));
+float custom_mlx5_cycles_per_ns;
+uint64_t custom_mlx5_start_tsc;
 
 /**
  * __timer_delay_us - spins the CPU for the specified delay
  * @us: the delay in microseconds
  */
-void __time_delay_us(uint64_t us)
+void __custom_mlx5_time_delay_us(uint64_t us)
 {
-	uint64_t cycles = us * cycles_per_us;
+	uint64_t cycles = us * custom_mlx5_cycles_per_us;
 	unsigned long start = rdtsc();
 
 	while (rdtsc() - start < cycles)
 		cpu_relax();
 }
 
-static void rdtsc_benchmark(void) {
+static void custom_mlx5_rdtsc_benchmark(void) {
 
 	struct timespec t_start, t_end;
     uint64_t ns;
@@ -41,9 +41,9 @@ static void rdtsc_benchmark(void) {
 }
 
 /* derived from DPDK */
-static int time_calibrate_tsc(void)
+static int custom_mlx5_time_calibrate_tsc(void)
 {
-    rdtsc_benchmark();
+    custom_mlx5_rdtsc_benchmark();
 	/* TODO: New Intel CPUs report this value in CPUID */
 	struct timespec sleeptime = {.tv_nsec = 5E8 }; /* 1/2 second */
 	struct timespec t_start, t_end;
@@ -61,14 +61,14 @@ static int time_calibrate_tsc(void)
 		ns += (t_end.tv_nsec - t_start.tv_nsec);
 
 		secs = (double)ns / 1000;
-		cycles_per_us = (uint64_t)((end - start) / secs);
-        cycles_per_ns = (float)((float)(end - start) / (float)ns);
+		custom_mlx5_cycles_per_us = (uint64_t)((end - start) / secs);
+        custom_mlx5_cycles_per_ns = (float)((float)(end - start) / (float)ns);
         NETPERF_INFO("cycles: %lu, time: %lu ns", (end - start), ns);
-		NETPERF_INFO("time: detected %d ticks / us", cycles_per_us);
-        NETPERF_INFO("time: detected %f ticks / ns", cycles_per_ns);
+		NETPERF_INFO("time: detected %d ticks / us", custom_mlx5_cycles_per_us);
+        NETPERF_INFO("time: detected %f ticks / ns", custom_mlx5_cycles_per_ns);
 
 		/* record the start time of the binary */
-		start_tsc = rdtsc();
+		custom_mlx5_start_tsc = rdtsc();
 		return 0;
 	}
 
@@ -80,7 +80,7 @@ static int time_calibrate_tsc(void)
  *
  * Returns 0 if successful, otherwise fail.
  */
-int time_init(void)
+int custom_mlx5_time_init(void)
 {
-	return time_calibrate_tsc();
+	return custom_mlx5_time_calibrate_tsc();
 }

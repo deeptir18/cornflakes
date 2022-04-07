@@ -461,7 +461,7 @@ impl Pkt {
     }
 }
 
-fn dpdk_eal_init(eal_init: Vec<String>) -> Result<()> {
+pub fn dpdk_eal_init(eal_init: Vec<String>) -> Result<()> {
     let mut args = vec![];
     let mut ptrs = vec![];
     for entry in eal_init.iter() {
@@ -823,7 +823,7 @@ fn dpdk_init_helper(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
 /// (2) One that allocates empty mbuf structs, meant for attaching external data buffers.
 ///
 /// Arguments:
-/// * config_path: - A string slice that holds the path to a config file with DPDK initialization.
+/// * config_path: - A string as usize slice that holds the path to a config file with DPDK initialization.
 /// information.
 pub fn dpdk_init(config_path: &str, num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
     // EAL initialization

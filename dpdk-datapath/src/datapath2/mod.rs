@@ -119,4 +119,4 @@ pub mod connection;
 mod dpdk_utils;
 pub mod echo;
 pub mod fast_echo;
-mod wrapper;
+pub mod wrapper;

@@ -15,42 +15,42 @@
 #define SQ_CLEAN_MAX			SQ_CLEAN_THRESH
 #define MAX_TX_MEMPOOLS_PER_THREAD 64 /* Maximum number of 'extra mempools' a thread can have. */
 #define POW2MOD(num, size) ((num & (size - 1)))
-#define current_segment(v) (POW2MOD(v->sq_head, v->tx_qp_dv.sq.wqe_cnt))
+#define custom_mlx5_current_segment(v) (POW2MOD(v->sq_head, v->tx_qp_dv.sq.wqe_cnt))
 
-#define work_requests_size(v)(v->tx_qp_dv.sq.wqe_cnt * v->tx_qp_dv.sq.stride)
-#define work_requests_start(v)((char *)v->tx_qp_dv.sq.buf)
-#define work_requests_end(v)((char *)(work_requests_start(v) + work_requests_size(v)))
-#define get_work_request(v, idx)((char *)(v->tx_qp_dv.sq.buf + (idx << v->tx_sq_log_stride)))
+#define custom_mlx5_work_requests_size(v)(v->tx_qp_dv.sq.wqe_cnt * v->tx_qp_dv.sq.stride)
+#define custom_mlx5_work_requests_start(v)((char *)v->tx_qp_dv.sq.buf)
+#define custom_mlx5_work_requests_end(v)((char *)(custom_mlx5_work_requests_start(v) + custom_mlx5_work_requests_size(v)))
+#define custom_mlx5_get_work_request(v, idx)((char *)(v->tx_qp_dv.sq.buf + (idx << v->tx_sq_log_stride)))
 
-#define completion_buffer_start(v)((char *)(v->pending_transmissions[0]))
-#define completion_buffer_end(v)(completion_buffer_start(v) + work_requests_size(v))
-#define get_completion_segment(v, idx)((struct transmission_info *)(v->pending_transmissions[idx * 8]))
+#define custom_mlx5_completion_buffer_start(v)((char *)(v->pending_transmissions[0]))
+#define custom_mlx5_completion_buffer_end(v)(custom_mlx5_completion_buffer_start(v) + custom_mlx5_work_requests_size(v))
+#define custom_mlx5_get_completion_segment(v, idx)((struct custom_mlx5_transmission_info *)(v->pending_transmissions[idx * 8]))
 
-#define incr_ring_buffer(ptr, start, end, type, ptr_type) \
+#define custom_mlx5_incr_ring_buffer(ptr, start, end, type, ptr_type) \
     ((((char *)ptr + sizeof(type)) == end) ? ((ptr_type)start) : ((ptr_type)((char *)ptr + (sizeof(type)))) )
 
 /*
  * Direct hardware queue support
  */
 
-struct __attribute__((__packed__)) transmission_info {
+struct __attribute__((__packed__)) custom_mlx5_transmission_info {
     union {
-        struct __attribute__((__packed__)) transmission_metadata {
+        struct __attribute__((__packed__)) custom_mlx5_transmission_metadata {
             uint32_t num_wqes; // number of descriptors used by this transmission
             uint32_t num_mbufs; // number of mbufs to decrease the reference count on
         } metadata;
-        struct mbuf *mbuf;
+        struct custom_mlx5_mbuf *mbuf;
     } info;
 };
 
 
-#define incr_dpseg(v, dpseg) (incr_ring_buffer(dpseg,  work_requests_start(v), work_requests_end(v), struct mlx5_wqe_data_seg, struct mlx5_wqe_data_seg *))
+#define custom_mlx5_incr_dpseg(v, dpseg) (custom_mlx5_incr_ring_buffer(dpseg,  custom_mlx5_work_requests_start(v), custom_mlx5_work_requests_end(v), struct mlx5_wqe_data_seg, struct mlx5_wqe_data_seg *))
 
-#define incr_transmission_info(v, transmission) (incr_ring_buffer(transmission, completion_buffer_start(v), completion_buffer_end(v), struct transmission_info, struct transmission_info *))
+#define custom_mlx5_incr_transmission_info(v, transmission) (custom_mlx5_incr_ring_buffer(transmission, custom_mlx5_completion_buffer_start(v), custom_mlx5_completion_buffer_end(v), struct custom_mlx5_transmission_info, struct custom_mlx5_transmission_info *))
 
-const char *err_to_str(int no);
+const char *custom_mlx5_err_to_str(int no);
 
-struct hardware_q {
+struct custom_mlx5_hardware_q {
 	void		*descriptor_table;
 	uint32_t	*consumer_idx;
 	uint32_t	*shadow_tail;
@@ -60,11 +60,11 @@ struct hardware_q {
 	uint32_t	parity_bit_mask;
 };
 
-struct direct_txq {};
+struct custom_mlx5_direct_txq {};
 
-struct mlx5_rxq {
+struct custom_mlx5_rxq {
     /* handle for runtime */
-	struct hardware_q rxq;
+	struct custom_mlx5_hardware_q rxq;
 
 	uint32_t consumer_idx;
 
@@ -85,13 +85,13 @@ struct mlx5_rxq {
     size_t rx_hw_drop;
 } __aligned(CACHE_LINE_SIZE);
 
-struct mlx5_txq {
+struct custom_mlx5_txq {
     /* handle for runtime */
-	struct direct_txq txq;
+	struct custom_mlx5_direct_txq txq;
 
 	/* direct verbs qp */
-	struct mbuf **buffers; // pending DMA
-    struct transmission_info **pending_transmissions; // completion info for pending transmissions
+	struct custom_mlx5_mbuf **buffers; // pending DMA
+    struct custom_mlx5_transmission_info **pending_transmissions; // completion info for pending transmissions
 
 	struct mlx5dv_qp tx_qp_dv;
 	uint32_t sq_head;
@@ -111,24 +111,24 @@ struct mlx5_txq {
  * TODO: is it right for each mempool to have a unique registered / MR region.
  * Or can different `mempools` share the same backing registered region? */
 struct registered_mempool {
-    struct mempool data_mempool;
-    struct mempool metadata_mempool;
+    struct custom_mlx5_mempool data_mempool;
+    struct custom_mlx5_mempool metadata_mempool;
     struct ibv_mr *mr; /* If this is null, this means the mempool isn't registered. */
     struct registered_mempool *next; /* Next allocated registered mempool in the list. */
 };
 
-inline void clear_registered_mempool(struct registered_mempool *mempool) {
+inline void custom_mlx5_clear_registered_mempool(struct registered_mempool *mempool) {
     mempool->mr = NULL;
     mempool->next = NULL;
-    clear_mempool(&mempool->data_mempool);
-    clear_mempool(&mempool->metadata_mempool);
+    custom_mlx5_clear_mempool(&mempool->data_mempool);
+    custom_mlx5_clear_mempool(&mempool->metadata_mempool);
 }
 
-struct mlx5_global_context {
+struct custom_mlx5_global_context {
     struct ibv_context *ibv_context; /* IBV Context */
     struct ibv_pd *pd; /* pd variable */
     size_t num_threads; /* Number of total threads */
-    struct mlx5_per_thread_context **thread_contexts; /* Per thread contexts */
+    struct custom_mlx5_per_thread_context **thread_contexts; /* Per thread contexts */
     struct eth_addr *our_eth;
     struct ibv_rwq_ind_table *rwq_ind_table;
     struct ibv_qp *qp;
@@ -139,31 +139,31 @@ struct mlx5_global_context {
  * send queue
  * rx metadata pool / data pool
  * */
-struct mlx5_per_thread_context {
+struct custom_mlx5_per_thread_context {
     size_t thread_id;
-    struct mlx5_global_context *global_context; /* Pointer back to the global context. */
-    struct mlx5_rxq rxq; /* Rxq for receiving packets. */
-    struct mlx5_txq txq; /* Txq for sending packets. */
+    struct custom_mlx5_global_context *global_context; /* Pointer back to the global context. */
+    struct custom_mlx5_rxq rxq; /* Rxq for receiving packets. */
+    struct custom_mlx5_txq txq; /* Txq for sending packets. */
     struct registered_mempool rx_mempool; /* Receive mempool associated with the rxq. */
-    struct mempool external_data_pool; /* Memory pool used for attaching external data.*/
+    struct custom_mlx5_mempool external_data_pool; /* Memory pool used for attaching external data.*/
     struct registered_mempool *tx_mempools;  /* Tx mempools linked list. */
     size_t num_allocated_tx_pools; /* Number of allocated tx pools. */
 };
 
 /* Given index into threads array, get per thread context. */
-struct mlx5_per_thread_context *get_per_thread_context(struct mlx5_global_context *context, size_t idx);
+struct custom_mlx5_per_thread_context *custom_mlx5_get_per_thread_context(struct custom_mlx5_global_context *context, size_t idx);
 
 /* Clears state in per thread context. */
-inline void clear_per_thread_context(struct mlx5_global_context *context, size_t idx) {
-    struct mlx5_per_thread_context *per_thread_context = get_per_thread_context(context, idx);
+inline void custom_mlx5_clear_per_thread_context(struct custom_mlx5_global_context *context, size_t idx) {
+    struct custom_mlx5_per_thread_context *per_thread_context = custom_mlx5_get_per_thread_context(context, idx);
     per_thread_context->global_context = NULL;
-    clear_registered_mempool(&per_thread_context->rx_mempool);
-    clear_mempool(&per_thread_context->external_data_pool);
+    custom_mlx5_clear_registered_mempool(&per_thread_context->rx_mempool);
+    custom_mlx5_clear_mempool(&per_thread_context->external_data_pool);
     per_thread_context->tx_mempools = NULL;
     per_thread_context->num_allocated_tx_pools = 0;
 }
 
-static inline unsigned int nr_inflight_tx(struct mlx5_txq *v)
+static inline unsigned int custom_mlx5_nr_inflight_tx(struct custom_mlx5_txq *v)
 {
 	return v->sq_head - v->true_cq_head;
 }
@@ -176,7 +176,7 @@ static inline unsigned int nr_inflight_tx(struct mlx5_txq *v)
  *
  * returns CQE status enum (MLX5_CQE_INVALID is -1)
  */
-static inline uint8_t cqe_status(struct mlx5_cqe64 *cqe, uint32_t cqe_cnt, uint32_t head)
+static inline uint8_t custom_mlx5_cqe_status(struct mlx5_cqe64 *cqe, uint32_t cqe_cnt, uint32_t head)
 {
 	uint16_t parity = head & cqe_cnt;
 	uint8_t op_own = ACCESS_ONCE(cqe->op_own);
@@ -186,28 +186,28 @@ static inline uint8_t cqe_status(struct mlx5_cqe64 *cqe, uint32_t cqe_cnt, uint3
 	return ((op_owner == !parity) * MLX5_CQE_INVALID) | op_code;
 }
 
-static inline int mlx5_csum_ok(struct mlx5_cqe64 *cqe)
+static inline int custom_mlx5_mlx5_csum_ok(struct mlx5_cqe64 *cqe)
 {
 	return ((cqe->hds_ip_ext & (MLX5_CQE_L4_OK | MLX5_CQE_L3_OK)) ==
 		 (MLX5_CQE_L4_OK | MLX5_CQE_L3_OK)) &
 		(((cqe->l4_hdr_type_etc >> 2) & 0x3) == MLX5_CQE_L3_HDR_TYPE_IPV4);
 }
 
-static inline int mlx5_get_cqe_opcode(struct mlx5_cqe64 *cqe)
+static inline int custom_mlx5_get_cqe_opcode(struct mlx5_cqe64 *cqe)
 {
 	return (cqe->op_own & 0xf0) >> 4;
 }
 
-static inline int mlx5_get_cqe_format(struct mlx5_cqe64 *cqe)
+static inline int custom_mlx5_get_cqe_format(struct mlx5_cqe64 *cqe)
 {
 	return (cqe->op_own & 0xc) >> 2;
 }
 
-static inline int get_error_syndrome(struct mlx5_cqe64 *cqe) {
+static inline int custom_mlx5_get_error_syndrome(struct mlx5_cqe64 *cqe) {
     return ((struct mlx5_err_cqe *)cqe)->syndrome;
 }
 
-static inline uint32_t mlx5_get_rss_result(struct mlx5_cqe64 *cqe)
+static inline uint32_t custom_mlx5_get_rss_result(struct mlx5_cqe64 *cqe)
 {
 	return ntoh32(*((uint32_t *)cqe + 3));
 }

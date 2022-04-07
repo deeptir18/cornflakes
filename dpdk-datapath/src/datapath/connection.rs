@@ -1,10 +1,9 @@
 use super::{
-    super::dpdk_bindings::*, allocator::MempoolInfo, dpdk_check, dpdk_error, dpdk_utils::*,
-    wrapper::*,
+    super::dpdk_bindings::*, allocator::MempoolInfo, dpdk_check, dpdk_utils::*, wrapper::*,
 };
 use cornflakes_libos::{
     allocator::{MemoryPoolAllocator, MempoolID},
-    datapath::{Datapath, MetadataOps, ReceivedPkt},
+    datapath::{Datapath, InlineMode, MetadataOps, ReceivedPkt},
     serialize::Serializable,
     utils::AddressInfo,
     ConnID, MsgID, RcSga, RcSge, Sga, Sge, USING_REF_COUNTING,
@@ -386,8 +385,8 @@ pub struct DpdkDatapathSpecificParams {
 }
 
 impl DpdkDatapathSpecificParams {
-    fn get_eal_params(&self) -> &Vec<String> {
-        &self.eal_init
+    fn get_eal_params(&self) -> Vec<String> {
+        self.eal_init.clone()
     }
 
     fn set_physical_port(&mut self, port: u16) {
@@ -443,10 +442,6 @@ pub struct DpdkConnection {
 }
 
 impl DpdkConnection {
-    pub fn set_copying_threshold(&mut self, thresh: usize) {
-        self.copying_threshold = thresh;
-    }
-
     fn check_received_pkt(&mut self, i: usize) -> Result<Option<ReceivedPkt<Self>>> {
         let recv_mbuf = self.recv_mbufs[i];
         let eth_hdr = unsafe {
@@ -1006,10 +1001,11 @@ impl Datapath for DpdkConnection {
             args.push(s);
         }
 
-        tracing::debug!("DPDK init args: {:?}", args);
         unsafe {
-            dpdk_check_not_failed!(rte_eal_init(ptrs.len() as i32, ptrs.as_ptr() as *mut _));
+            let ret = rte_eal_init(ptrs.len() as i32, ptrs.as_mut_ptr() as *mut _);
+            tracing::info!("Eal init returned {}", ret);
         }
+        tracing::debug!("DPDK init args: {:?}", args);
 
         // Find and set physical port
         let nb_ports = unsafe { rte_eth_dev_count_avail() };
@@ -1496,4 +1492,10 @@ impl Datapath for DpdkConnection {
     fn current_cycles(&self) -> u64 {
         unsafe { rte_get_timer_cycles() }
     }
+
+    fn set_copying_threshold(&mut self, thresh: usize) {
+        self.copying_threshold = thresh;
+    }
+
+    fn set_inline_mode(&mut self, _inline_mode: InlineMode) {}
 }

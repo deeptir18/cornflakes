@@ -17,7 +17,7 @@
 
 #ifdef DEBUG
 
-static void mempool_common_check(struct mempool *m, void *item)
+static void custom_mlx5_mempool_common_check(struct custom_mlx5_mempool *m, void *item)
 {
 	uintptr_t pos = (uintptr_t)item;
 	uintptr_t start = (uintptr_t)m->buf;
@@ -29,17 +29,17 @@ static void mempool_common_check(struct mempool *m, void *item)
 	assert((start & (m->pgsize - 1)) % m->item_len == 0);
 }
 
-void __mempool_alloc_debug_check(struct mempool *m, void *item)
+void __custom_mlx5_mempool_alloc_debug_check(struct custom_mlx5_mempool *m, void *item)
 {
-	mempool_common_check(m, item);
+	custom_mlx5_mempool_common_check(m, item);
 
 	/* poison the item */
 	memset(item, 0xAB, m->item_len);
 }
 
-void __mempool_free_debug_check(struct mempool *m, void *item)
+void __custom_mlx5_mempool_free_debug_check(struct custom_mlx5_mempool *m, void *item)
 {
-	mempool_common_check(m, item);
+	custom_mlx5_mempool_common_check(m, item);
 
 	/* poison the item */
 	memset(item, 0xCD, m->item_len);
@@ -47,14 +47,14 @@ void __mempool_free_debug_check(struct mempool *m, void *item)
 
 #endif /* DEBUG */
 
-static int mempool_populate(struct mempool *m, void *buf, size_t len,
+static int custom_mlx5_mempool_populate(struct custom_mlx5_mempool *m, void *buf, size_t len,
 			    size_t pgsize, size_t item_len)
 {
 	size_t items_per_page = pgsize / item_len;
 	size_t nr_pages = len / pgsize;
 	int i, j;
 
-    NETPERF_DEBUG("Items per page: %u, # pages: %u", (unsigned)items_per_page, (unsigned)nr_pages);
+    NETPERF_DEBUG("Items per page: %u, item_len: %zu, # pages: %u, LEN: %zu, current capacity: %zu", (unsigned)items_per_page, m->item_len, (unsigned)nr_pages, len, m->capacity);
 	m->free_items = calloc(nr_pages * items_per_page, sizeof(void *));
 	if (!m->free_items) {
         NETPERF_DEBUG("Calloc didn't allocate free items list.");
@@ -78,7 +78,7 @@ static int mempool_populate(struct mempool *m, void *buf, size_t len,
  * @pgsize: the size of the pages in the buffer region (must be uniform)
  * @item_len: the length of each item in the pool
  */
-int mempool_create(struct mempool *m, size_t len,
+int custom_mlx5_mempool_create(struct custom_mlx5_mempool *m, size_t len,
 		   size_t pgsize, size_t item_len)
 {
 	if (item_len == 0 || !is_power_of_two(pgsize) || len % pgsize != 0) {
@@ -86,7 +86,7 @@ int mempool_create(struct mempool *m, size_t len,
 		return -EINVAL;
 	}
 
-    void *buf = mem_map_anom(NULL, len, pgsize, 0);
+    void *buf = custom_mlx5_mem_map_anom(NULL, len, pgsize, 0);
     if (buf ==  NULL) {
         NETPERF_DEBUG("mem_map_anom failed: resulting buffer is null.");
         return -EINVAL;
@@ -99,7 +99,7 @@ int mempool_create(struct mempool *m, size_t len,
 	m->pgsize = pgsize;
 	m->item_len = item_len;
 
-	return mempool_populate(m, buf, len, pgsize, item_len);
+	return custom_mlx5_mempool_populate(m, buf, len, pgsize, item_len);
 }
 
 /**
@@ -108,7 +108,7 @@ int mempool_create(struct mempool *m, size_t len,
  * Note: if the memory pool was registered, remember to unregister the region
  * with the NIC.
  */
-void mempool_destroy(struct mempool *m)
+void custom_mlx5_mempool_destroy(struct custom_mlx5_mempool *m)
 {
 	free(m->free_items);
     munmap(m->buf, m->len);

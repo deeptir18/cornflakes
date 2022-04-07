@@ -15,7 +15,7 @@
  * @inline_len: size_t - Amount of data to be inlined.
  * @num_segs: size_t - Number of data segments to write in,
  * */
-size_t num_wqes_required(size_t inline_len, size_t num_segs);
+size_t custom_mlx5_num_wqes_required(size_t inline_len, size_t num_segs);
 
 /* 
  * Check if this amount of inlined data and dpsegs can be transmitted.
@@ -27,7 +27,7 @@ size_t num_wqes_required(size_t inline_len, size_t num_segs);
  * 1 if enough descriptors are available.
  * 0 if not enough descriptors are available.
  * */
-int tx_descriptors_available(struct mlx5_per_thread_context *per_thread_context, size_t num_wqes_required);
+int custom_mlx5_tx_descriptors_available(struct custom_mlx5_per_thread_context *per_thread_context, size_t num_wqes_required);
 
 /* 
  * Process completion - processes completion for specific work request.
@@ -35,7 +35,7 @@ int tx_descriptors_available(struct mlx5_per_thread_context *per_thread_context,
  * @wqe_idx: index into ring buffer for completion.
  * @v: transmission queue.
  * */
-void process_completion(uint16_t wqe_idx, struct mlx5_txq *v);
+void custom_mlx5_process_completion(uint16_t wqe_idx, struct custom_mlx5_txq *v);
 
 /*
  * Process completions - processes any transmission completions.
@@ -48,7 +48,7 @@ void process_completion(uint16_t wqe_idx, struct mlx5_txq *v);
  * Returns:
  * Number of processed completions.
  * */
-int mlx5_process_completions(struct mlx5_per_thread_context *per_thread_context,
+int custom_mlx5_process_completions(struct custom_mlx5_per_thread_context *per_thread_context,
                                 unsigned int budget);
 
 /* 
@@ -61,8 +61,8 @@ int mlx5_process_completions(struct mlx5_per_thread_context *per_thread_context,
  * Returns:
  * Number of packets received.
  * */
-int mlx5_gather_rx(struct mlx5_per_thread_context *per_thread_context,
-                    struct mbuf **ms,
+int custom_mlx5_gather_rx(struct custom_mlx5_per_thread_context *per_thread_context,
+                    struct custom_mlx5_mbuf **ms,
                     unsigned int budget);
                     
 
@@ -76,7 +76,7 @@ int mlx5_gather_rx(struct mlx5_per_thread_context *per_thread_context,
  * Returns:
  * 0 on success, error if error ocurred.
  * */
-int mlx5_refill_rxqueue(struct mlx5_per_thread_context *per_thread_context, size_t rx_cnt, struct registered_mempool *rx_mempool);
+int custom_mlx5_refill_rxqueue(struct custom_mlx5_per_thread_context *per_thread_context, size_t rx_cnt, struct registered_mempool *rx_mempool);
 
 /* 
  * Starts the next transmission by writing in the header segment.
@@ -97,7 +97,7 @@ int mlx5_refill_rxqueue(struct mlx5_per_thread_context *per_thread_context, size
  * errno set.
  *
  * */
-struct mlx5_wqe_ctrl_seg *fill_in_hdr_segment(struct mlx5_per_thread_context *per_thread_context,
+struct mlx5_wqe_ctrl_seg *custom_mlx5_fill_in_hdr_segment(struct custom_mlx5_per_thread_context *per_thread_context,
                             size_t num_wqes,
                             size_t inline_len,
                             size_t num_segs,
@@ -117,10 +117,10 @@ struct mlx5_wqe_ctrl_seg *fill_in_hdr_segment(struct mlx5_per_thread_context *pe
  * Pointer to end of inline data (which could be wrapped around to the front
  * of the ring buffer).
  * */
-inline char *work_request_inline_off(struct mlx5_txq *v, size_t inline_off, bool round_to_16) {
-    uint32_t current_idx = current_segment(v);
-    struct mlx5_wqe_eth_seg *eseg = (struct mlx5_wqe_eth_seg *)((char *)get_work_request(v, current_idx) + sizeof(struct mlx5_wqe_ctrl_seg));
-    char *end_ptr = work_requests_end(v);
+inline char *custom_mlx5_work_request_inline_off(struct custom_mlx5_txq *v, size_t inline_off, bool round_to_16) {
+    uint32_t current_idx = custom_mlx5_current_segment(v);
+    struct mlx5_wqe_eth_seg *eseg = (struct mlx5_wqe_eth_seg *)((char *)custom_mlx5_get_work_request(v, current_idx) + sizeof(struct mlx5_wqe_ctrl_seg));
+    char *end_ptr = custom_mlx5_work_requests_end(v);
 
     char *current_segment_ptr = (char *)eseg + offsetof(struct mlx5_wqe_eth_seg, inline_hdr_start);
     // wrap around to front of ring buffer
@@ -167,8 +167,8 @@ inline char *work_request_inline_off(struct mlx5_txq *v, size_t inline_off, bool
  * Returns:
  * Pointer to first data segment for this transmission.
  * */
-inline struct mlx5_wqe_data_seg *dpseg_start(struct mlx5_txq *v, size_t inline_off) {
-    return (struct mlx5_wqe_data_seg *)(work_request_inline_off(v, inline_off, 1));
+inline struct mlx5_wqe_data_seg *custom_mlx5_dpseg_start(struct custom_mlx5_txq *v, size_t inline_off) {
+    return (struct mlx5_wqe_data_seg *)(custom_mlx5_work_request_inline_off(v, inline_off, 1));
 }
 
 /* 
@@ -181,9 +181,9 @@ inline struct mlx5_wqe_data_seg *dpseg_start(struct mlx5_txq *v, size_t inline_o
  * Returns:
  * Pointer to second transmission info struct.
  * */
-inline struct transmission_info *completion_start(struct mlx5_txq *v) {
-    struct transmission_info *current_completion_info = get_completion_segment(v, current_segment(v));
-    return incr_transmission_info(v, current_completion_info);
+inline struct custom_mlx5_transmission_info *custom_mlx5_completion_start(struct custom_mlx5_txq *v) {
+    struct custom_mlx5_transmission_info *current_completion_info = custom_mlx5_get_completion_segment(v, custom_mlx5_current_segment(v));
+    return custom_mlx5_incr_transmission_info(v, current_completion_info);
 }
 
 /* 
@@ -200,7 +200,7 @@ inline struct transmission_info *completion_start(struct mlx5_txq *v) {
  * Amount of data copied. Truncates to minimum of (inline_size -
  * inline_offset, copy_len)
  * */
-size_t copy_inline_data(struct mlx5_per_thread_context *per_thread_context, size_t inline_offset, const char *src, size_t copy_len, size_t inline_size);
+size_t custom_mlx5_copy_inline_data(struct custom_mlx5_per_thread_context *per_thread_context, size_t inline_offset, const char *src, size_t copy_len, size_t inline_size);
 
 /* 
  * Inline and write in ethernet header.
@@ -209,7 +209,7 @@ size_t copy_inline_data(struct mlx5_per_thread_context *per_thread_context, size
  * @eth - ethernet header to inline
  * @total_inline_size - total amount of data being inlined in this transmission
  * */
-void inline_eth_hdr(struct mlx5_per_thread_context *per_thread_context, struct eth_hdr *eth, size_t total_inline_size);
+void custom_mlx5_inline_eth_hdr(struct custom_mlx5_per_thread_context *per_thread_context, struct eth_hdr *eth, size_t total_inline_size);
 
 /* 
  * Inline and write in ipv4 header.
@@ -223,7 +223,7 @@ void inline_eth_hdr(struct mlx5_per_thread_context *per_thread_context, struct e
  * Note this function is NOT threadsafe. It temporarily modifies the data inside
  * ip_hdr in order to calculate the checksum.
  * */
-void inline_ipv4_hdr(struct mlx5_per_thread_context *per_thread_context, struct ip_hdr *ipv4, size_t payload_size, size_t total_inline_size);
+void custom_mlx5_inline_ipv4_hdr(struct custom_mlx5_per_thread_context *per_thread_context, struct ip_hdr *ipv4, size_t payload_size, size_t total_inline_size);
 
 /* 
  * Inline and write udp header.
@@ -236,14 +236,14 @@ void inline_ipv4_hdr(struct mlx5_per_thread_context *per_thread_context, struct 
  * Note this function is NOT threadsafe. It temporarily modifies the data inside
  * udp_hdr in order to calculate the checksum.
  * */
-void inline_udp_hdr(struct mlx5_per_thread_context *per_thread_context, struct udp_hdr *udp, size_t payload_size, size_t total_inline_size);
+void custom_mlx5_inline_udp_hdr(struct custom_mlx5_per_thread_context *per_thread_context, struct udp_hdr *udp, size_t payload_size, size_t total_inline_size);
 
 /* Inlines packet header after ethernet, ip and udp headers.
  * Arguments:
  * @per_thread_context: Mlx5 per thread context
  * @packet_id - packet id to inline
  * */
-void inline_packet_id(struct mlx5_per_thread_context *per_thread_context,  uint32_t packet_id);
+void custom_mlx5_inline_packet_id(struct custom_mlx5_per_thread_context *per_thread_context,  uint32_t packet_id);
 
 /*
  * add_dpseg - Adds next dpseg into this transmission.
@@ -257,9 +257,9 @@ void inline_packet_id(struct mlx5_per_thread_context *per_thread_context,  uint3
  * Returns:
  * Pointer to next dpseg to add to.
  * */
-struct mlx5_wqe_data_seg *add_dpseg(struct mlx5_per_thread_context *per_thread_context,
+struct mlx5_wqe_data_seg *custom_mlx5_add_dpseg(struct custom_mlx5_per_thread_context *per_thread_context,
                 struct mlx5_wqe_data_seg *dpseg,
-                struct mbuf *m, 
+                struct custom_mlx5_mbuf *m, 
                 size_t data_off,
                 size_t data_len);
 
@@ -274,9 +274,9 @@ struct mlx5_wqe_data_seg *add_dpseg(struct mlx5_per_thread_context *per_thread_c
  * Returns:
  * location to record next transmission info.
  * */
-struct transmission_info *add_completion_info(struct mlx5_per_thread_context *per_thread_context,
-                struct transmission_info *transmission_info,
-                struct mbuf *m);
+struct custom_mlx5_transmission_info *custom_mlx5_add_completion_info(struct custom_mlx5_per_thread_context *per_thread_context,
+                struct custom_mlx5_transmission_info *transmission_info,
+                struct custom_mlx5_mbuf *m);
 
 /* 
  * finish_one_transmission - Finishes a single transmission.
@@ -285,7 +285,7 @@ struct transmission_info *add_completion_info(struct mlx5_per_thread_context *pe
  * @inline_len - Amount of data to be inlined.
  * @num_segs - Number of data segments.
  * */
-int finish_single_transmission(struct mlx5_per_thread_context *per_thread_context,
+int custom_mlx5_finish_single_transmission(struct custom_mlx5_per_thread_context *per_thread_context,
                                 size_t num_wqes);
 
 /* 
@@ -296,7 +296,7 @@ int finish_single_transmission(struct mlx5_per_thread_context *per_thread_contex
  * @first_ctrl - Control segment of the first transmission. Possibly required
  * for bluefield register.
  * */
-int post_transmissions(struct mlx5_per_thread_context *per_thread_context, 
+int custom_mlx5_post_transmissions(struct custom_mlx5_per_thread_context *per_thread_context, 
                         struct mlx5_wqe_ctrl_seg *first_ctrl);
                         
 

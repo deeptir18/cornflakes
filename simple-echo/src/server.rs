@@ -132,6 +132,7 @@ where
         let min_elts = 8192;
         loop {
             // add a tx pool with buf size
+            tracing::info!("Adding memory pool of size {}", buf_size);
             connection.add_memory_pool(buf_size, min_elts)?;
             buf_size *= 2;
             if buf_size > max_data_size {

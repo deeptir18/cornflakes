@@ -11,36 +11,36 @@
 #define ONE_MS		1000
 #define ONE_US		1
 
-extern uint64_t cycles_per_sec;
-extern int cycles_per_us;
-extern float cycles_per_ns;
-extern uint64_t start_tsc; 
+extern uint64_t custom_mlx5_cycles_per_sec;
+extern int custom_mlx5_cycles_per_us;
+extern float custom_mlx5_cycles_per_ns;
+extern uint64_t custom_mlx5_start_tsc; 
 
-static inline uint64_t cycles_to_us(uint64_t a)
+static inline uint64_t custom_mlx5_cycles_to_us(uint64_t a)
 {
-    return a / cycles_per_us;
+    return a / custom_mlx5_cycles_per_us;
 }
 
-static inline uint64_t us_to_cycles(uint64_t a)
+static inline uint64_t custom_mlx5_us_to_cycles(uint64_t a)
 {
-    return a * cycles_per_us;
+    return a * custom_mlx5_cycles_per_us;
 }
 
-static inline uint64_t ns_to_cycles(uint64_t a) {
-    return (uint64_t)((float)a * cycles_per_ns);
+static inline uint64_t custom_mlx5_ns_to_cycles(uint64_t a) {
+    return (uint64_t)((float)a * custom_mlx5_cycles_per_ns);
 }
 
-static inline uint64_t cycles_offset(uint64_t base)
+static inline uint64_t custom_mlx5_cycles_offset(uint64_t base)
 {
-    return (rdtsc() - start_tsc) - base;
+    return (rdtsc() - custom_mlx5_start_tsc) - base;
 }
 
-static inline uint64_t cycles_intersend(uint64_t rate_pps)
+static inline uint64_t custom_mlx5_cycles_intersend(uint64_t rate_pps)
 {
-    return (ONE_SECOND / rate_pps) * (cycles_per_us);
+    return (ONE_SECOND / rate_pps) * (custom_mlx5_cycles_per_us);
 }
 
-static inline uint64_t time_intersend(uint64_t rate_pps)
+static inline uint64_t custom_mlx5_time_intersend(uint64_t rate_pps)
 {
     return ONE_SECOND * 1000 / rate_pps;
 }
@@ -48,27 +48,27 @@ static inline uint64_t time_intersend(uint64_t rate_pps)
 /** 
  * Converts seconds to cycles
  */
-static inline uint64_t seconds_to_cycles(uint64_t sec)
+static inline uint64_t custom_mlx5_seconds_to_cycles(uint64_t sec)
 {
-    return sec * cycles_per_us * ONE_SECOND;
+    return sec * custom_mlx5_cycles_per_us * ONE_SECOND;
 }
 
 /**
  * Return the number of cycles since program init.
  * */
-static inline uint64_t microcycles(void)
+static inline uint64_t custom_mlx5_microcycles(void)
 {
-    return rdtsc() - start_tsc;
+    return rdtsc() - custom_mlx5_start_tsc;
 }
 
-static inline uint64_t cycletime(void)
+static inline uint64_t custom_mlx5_cycletime(void)
 {
-    return rdtsc() - start_tsc;
+    return rdtsc() - custom_mlx5_start_tsc;
 }
 
-static inline uint64_t cycles_to_ns(uint64_t cycles)
+static inline uint64_t custom_mlx5_cycles_to_ns(uint64_t cycles)
 {
-    float nanos = (float)cycles / (float)cycles_per_ns;
+    float nanos = (float)cycles / (float)custom_mlx5_cycles_per_ns;
     return (uint64_t)nanos;
 }
 
@@ -76,39 +76,39 @@ static inline uint64_t cycles_to_ns(uint64_t cycles)
  * microtime - gets the number of microseconds since the process started
  * This routine is very inexpensive, even compared to clock_gettime().
  */
-static inline uint64_t nanotime(void)
+static inline uint64_t custom_mlx5_nanotime(void)
 {
-	return (uint64_t)((float)(rdtsc() - start_tsc) / (float)cycles_per_ns);
+	return (uint64_t)((float)(rdtsc() - custom_mlx5_start_tsc) / (float)custom_mlx5_cycles_per_ns);
 }
 
 /**
  * microtime - gets the number of microseconds since the process started
  * This routine is very inexpensive, even compared to clock_gettime().
  */
-static inline uint64_t microtime(void)
+static inline uint64_t custom_mlx5_microtime(void)
 {
-	return (rdtsc() - start_tsc) / cycles_per_us;
+	return (rdtsc() - custom_mlx5_start_tsc) / custom_mlx5_cycles_per_us;
 }
 
-extern void __time_delay_us(uint64_t us);
+extern void __custom_mlx5_time_delay_us(uint64_t us);
 
 /**
  * delay_us - pauses the CPU for microseconds
  * @us: the number of microseconds
  */
-static inline void delay_us(uint64_t us)
+static inline void custom_mlx5_delay_us(uint64_t us)
 {
-	__time_delay_us(us);
+	__custom_mlx5_time_delay_us(us);
 }
 
 /**
  * delay_ms - pauses the CPU for milliseconds
  * @ms: the number of milliseconds
  */
-static inline void delay_ms(uint64_t ms)
+static inline void custom_mlx5_delay_ms(uint64_t ms)
 {
 	/* TODO: yield instead of spin */
-	__time_delay_us(ms * ONE_MS);
+	__custom_mlx5_time_delay_us(ms * ONE_MS);
 }
 
 /**
@@ -116,4 +116,4 @@ static inline void delay_ms(uint64_t ms)
  *
  * Returns 0 if successful, otherwise fail.
  */
-extern int time_init(void);
+extern int custom_mlx5_time_init(void);

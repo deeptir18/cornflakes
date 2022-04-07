@@ -1,11 +1,14 @@
 use super::super::{
     datapath::{Datapath, ReceivedPkt},
-    loadgen::request_schedule::PacketSchedule,
+    high_timeout_at_start,
+    loadgen::{client_threads::ThreadStats, request_schedule::PacketSchedule},
+    no_retries_timeout,
     timing::ManualHistogram,
     utils::AddressInfo,
     MsgID,
 };
 use color_eyre::eyre::{Result, WrapErr};
+use cornflakes_utils::get_thread_latlog;
 use std::time::{Duration, Instant};
 
 pub trait ClientSM {
@@ -214,4 +217,53 @@ pub trait ClientSM {
         tracing::debug!("Finished sending");
         Ok(())
     }
+}
+
+pub fn run_client_loadgen<D>(
+    thread_id: usize,
+    client: &mut impl ClientSM<Datapath = D>,
+    connection: &mut D,
+    retries: bool,
+    total_time: u64,
+    logfile: Option<String>,
+    rate: u64,
+    message_size: usize,
+    schedule: &PacketSchedule,
+) -> Result<ThreadStats>
+where
+    D: Datapath,
+{
+    let start_run = Instant::now();
+    let timeout = match retries {
+        true => high_timeout_at_start,
+        false => no_retries_timeout,
+    };
+
+    client.run_open_loop(connection, schedule, total_time, timeout, !retries)?;
+
+    let exp_duration = start_run.elapsed().as_nanos();
+    client.sort_rtts(0)?;
+
+    // per thread log latency
+    match logfile {
+        Some(x) => {
+            let path = get_thread_latlog(&x, thread_id)?;
+            client.log_rtts(&path, 0)?;
+        }
+        None => {}
+    }
+
+    let stats = ThreadStats::new(
+        thread_id as u16,
+        client.num_sent_cutoff(0),
+        client.num_received_cutoff(0),
+        client.num_retried(),
+        exp_duration as _,
+        rate,
+        message_size,
+        client.get_mut_rtts(),
+        0,
+    )?;
+
+    Ok(stats)
 }

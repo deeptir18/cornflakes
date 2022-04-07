@@ -22,17 +22,17 @@ impl DataMempool {
     }
 
     #[inline]
-    pub unsafe fn get_data_mempool(&self) -> *mut mempool {
+    pub unsafe fn get_data_mempool(&self) -> *mut custom_mlx5_mempool {
         get_data_mempool(self.mempool)
     }
 
     /*#[inline]
-    pub unsafe fn get_metadata_mempool(&self) -> *mut mempool {
+    pub unsafe fn get_metadata_mempool(&self) -> *mut custom_mlx5_mempool {
         get_metadata_mempool(self.mempool)
     }*/
 
     /*#[inline]
-    pub unsafe fn check_mempool(&self, mempool: *mut mempool) -> bool {
+    pub unsafe fn check_mempool(&self, mempool: *mut custom_mlx5_mempool) -> bool {
         get_data_mempool(self.mempool) == mempool
     }*/
 
@@ -51,11 +51,11 @@ impl DataMempool {
 impl DatapathMemoryPool for DataMempool {
     type DatapathImpl = Mlx5Connection;
 
-    type RegistrationContext = *mut mlx5_per_thread_context;
+    type RegistrationContext = *mut custom_mlx5_per_thread_context;
 
     fn register(&mut self, registration_context: Self::RegistrationContext) -> Result<()> {
         unsafe {
-            if register_memory_pool_from_thread(
+            if custom_mlx5_register_memory_pool_from_thread(
                 registration_context,
                 self.mempool,
                 ibv_access_flags_IBV_ACCESS_LOCAL_WRITE as _,
@@ -69,7 +69,7 @@ impl DatapathMemoryPool for DataMempool {
 
     fn unregister(&mut self) -> Result<()> {
         unsafe {
-            if deregister_memory_pool(self.mempool) != 0 {
+            if custom_mlx5_deregister_memory_pool(self.mempool) != 0 {
                 bail!("Failed to deregister memory pool");
             }
         }
@@ -118,7 +118,7 @@ impl DatapathMemoryPool for DataMempool {
         let item_len = unsafe { access!(data_pool, item_len, usize) };
         let offset_within_alloc = (ptr as usize - mempool_start) % item_len;
         let index = ((ptr as usize - offset_within_alloc) - mempool_start) / item_len;
-        let mbuf = unsafe { mbuf_at_index(metadata_pool, index) };
+        let mbuf = unsafe { custom_mlx5_mbuf_at_index(metadata_pool, index) };
         let offset = ptr as usize - unsafe { access!(mbuf, buf_addr, *const u8) as usize };
         MbufMetadata::new(mbuf, offset, Some(buf.len()))
     }

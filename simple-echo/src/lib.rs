@@ -1,4 +1,5 @@
 pub mod client;
+pub mod run_datapath;
 pub mod server;
 
 use color_eyre::eyre::{bail, Result};

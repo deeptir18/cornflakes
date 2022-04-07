@@ -20,17 +20,17 @@ struct pci_bar {
 #define PCI_BAR_READONLY	0x00004000 /* typically option ROMs */
 #define PCI_MAX_BARS		7
 
-struct __attribute__((packed)) pci_addr {
+struct __attribute__((packed)) custom_mlx5_pci_addr {
 	uint16_t domain;
 	uint8_t bus;
 	uint8_t slot;
 	uint8_t func;
 };
 
-//extern int pci_str_to_addr(const char *str, struct pci_addr *addr);
+int custom_mlx5_pci_str_to_addr(const char *str, struct custom_mlx5_pci_addr *addr);
 
 struct pci_dev {
-	struct pci_addr addr;
+	struct custom_mlx5_pci_addr addr;
 	//struct kref ref;
 
 	uint16_t vendor_id;

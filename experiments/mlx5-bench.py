@@ -22,24 +22,25 @@ RECV_SIZE_SEGMENTS_TO_LOOP = [2]
 RECV_SIZE_TOTAL_SIZES_TO_LOOP = [256, 4096]
 
 # used for total size experiment
-COMPLETE_TOTAL_SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096]
+COMPLETE_TOTAL_SIZES_TO_LOOP = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
 
 # used for other experiments, which total sizes to check
-TOTAL_SIZES_TO_LOOP = [256, 4096]
+# TOTAL_SIZES_TO_LOOP = [256, 4096]
+TOTAL_SIZES_TO_LOOP = [4096]
 
 # used for segment size experiment
 COMPLETE_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16, 32]
 
 # used for other experiment, which segment amounts to check
-# SEGMENTS_TO_LOOP = [2, 8]
-SEGMENTS_TO_LOOP = [1]
+SEGMENTS_TO_LOOP = [2, 8]
+# SEGMENTS_TO_LOOP = [2]
 
 NUM_THREADS = 4
 NUM_CLIENTS = 3
 rates = [5000, 10000, 50000, 100000, 200000,
          300000, 400000, 410000, 420000, 431000]
 # max rates to get "knee" (for smallest working set size, 0 extra busy work)
-max_rates = {256: 425000, 512: 400000, 1024: 375000, 2048: 350000, 4096: 225000,
+max_rates = {32: 750000, 64: 600000, 128: 500000, 256: 425000, 512: 400000, 1024: 375000, 2048: 350000, 4096: 225000,
              8192: 150000}
 sample_percentages = [10, 30, 40, 45, 50, 53, 55, 57,
                       60, 63, 66, 69, 72, 75, 78, 81, 83, 85, 88, 91, 93, 95, 100]
@@ -81,7 +82,7 @@ def parse_log_info(log):
 class ScatterGatherIteration(runner.Iteration):
     def __init__(self, client_rates, segment_size,
                  num_segments, with_copy, as_one, num_threads, trial=None,
-                 array_size=8192, busy_cycles=0, recv_pkt_size=0):
+                 array_size=8192, busy_cycles=0, recv_pkt_size=0, echo_mode=False):
         """
         Arguments:
         * client_rates: Mapping from {int, int} specifying rates and how many
@@ -101,6 +102,10 @@ class ScatterGatherIteration(runner.Iteration):
         self.array_size = array_size
         self.busy_cycles = busy_cycles
         self.recv_pkt_size = recv_pkt_size
+        self.echo_mode = echo_mode
+
+    def get_echo_mode(self):
+        return self.echo_mode
 
     def get_busy_cycles(self):
         return self.busy_cycles
@@ -189,6 +194,12 @@ class ScatterGatherIteration(runner.Iteration):
         else:
             return "recv_size_{}".format(self.recv_pkt_size)
 
+    def get_with_echo_string(self):
+        if self.echo_mode:
+            return "echo_on"
+        else:
+            return "echo_off"
+
     def get_with_copy_string(self):
         if self.with_copy:
             if self.as_one:
@@ -228,6 +239,7 @@ class ScatterGatherIteration(runner.Iteration):
             "segment size: {}, "\
             " num_segments: {}, "\
             " with_copy: {},"\
+            "echo: {},"\
             "array size: {},"\
             "busy cycles us: {},"\
             "num client threads: {},"\
@@ -236,6 +248,7 @@ class ScatterGatherIteration(runner.Iteration):
                                 self.get_segment_size_string(),
                                 self.get_num_segments_string(),
                                 self.get_with_copy_string(),
+                                self.get_with_echo_string(),
                                 self.get_array_size(),
                                 self.get_busy_cycles(),
                                 self.get_num_threads(),
@@ -321,6 +334,10 @@ class ScatterGatherIteration(runner.Iteration):
         ret["cornflakes_dir"] = config_yaml["cornflakes_dir"]
         ret["folder"] = str(folder)
         if program == "start_server":
+            if (self.echo_mode):
+                ret["echo_str"] = " --echo"
+            else:
+                ret["echo_str"] = ""
             if (self.recv_pkt_size != 0):
                 ret["read_pkt_str"] = " --read_incoming_packet"
             else:
@@ -377,14 +394,39 @@ class ScatterGather(runner.Experiment):
                                         total_args.num_threads,
                                         array_size=total_args.array_size,
                                         busy_cycles=total_args.busy_cycles,
-                                        recv_pkt_size=total_args.recv_size)
+                                        recv_pkt_size=total_args.recv_size,
+                                        echo_mode=total_args.echo)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             it.set_trial(num_trials_finished)
             return [it]
         else:
             ret = []
-            if total_args.looping_variable == "recv_size":
+            if total_args.looping_variable == "total_segment_cross":
+                for trial in range(utils.NUM_TRIALS):
+                    array_size = 65536
+                    for total_size in COMPLETE_TOTAL_SIZES_TO_LOOP:
+                        max_rate = max_rates[total_size]
+                        for sampling in sample_percentages:
+                            rate = int(float(sampling/100) *
+                                       max_rate)
+                            for num_segments in COMPLETE_SEGMENTS_TO_LOOP:
+                                for with_copy in [False, True]:
+                                    segment_size = int(
+                                        total_size / num_segments)
+                                    as_one = False
+                                    it = ScatterGatherIteration([(rate,
+                                                                  NUM_CLIENTS)],
+                                                                segment_size,
+                                                                num_segments,
+                                                                with_copy,
+                                                                as_one,
+                                                                NUM_THREADS,
+                                                                trial=trial,
+                                                                array_size=array_size)
+                                    ret.append(it)
+
+            elif total_args.looping_variable == "recv_size":
                 for trial in range(utils.NUM_TRIALS):
                     array_size = 65536
                     for total_size in RECV_SIZE_TOTAL_SIZES_TO_LOOP:
@@ -421,14 +463,14 @@ class ScatterGather(runner.Experiment):
                                 for num_segments in SEGMENTS_TO_LOOP:
                                     segment_size = int(
                                         total_size / num_segments)
-                                    as_one = False
-                                    it = ScatterGatherIteration([(rate,
-                                                                 NUM_CLIENTS)],
+                                    as_one = false
+                                    it = scattergatheriteration([(rate,
+                                                                 num_clients)],
                                                                 segment_size,
                                                                 num_segments,
                                                                 with_copy,
                                                                 as_one,
-                                                                NUM_THREADS,
+                                                                num_threads,
                                                                 trial=trial,
                                                                 array_size=array_size)
                                     ret.append(it)
@@ -498,6 +540,10 @@ class ScatterGather(runner.Experiment):
                             type=int,
                             default=10000,
                             help="Array size")
+        parser.add_argument("-echo", "--echo",
+                            dest="echo",
+                            action='store_true',
+                            help="Whether the server should use zero-copy echo mode or not.")
         parser.add_argument("-rs", "--recv_size",
                             dest="recv_size",
                             type=int,
@@ -538,7 +584,8 @@ class ScatterGather(runner.Experiment):
             parser.add_argument("-lp", "--looping_variable",
                                 dest="looping_variable",
                                 choices=["array_total_size", "total_size",
-                                         "num_segments", "recv_size"],
+                                         "num_segments", "recv_size",
+                                         "total_segment_cross"],
                                 default="array_total_size",
                                 help="What variable to loop over")
         args = parser.parse_args(namespace=namespace)
@@ -627,7 +674,17 @@ class ScatterGather(runner.Experiment):
         df = pd.read_csv(folder_path / logfile)
         out.write(header_str)
 
-        if total_args.looping_variable == "recv_size":
+        if total_args.looping_variable == "total_segment_cross":
+            array_size = 65536
+            recv_size = 0
+            for total_size in COMPLETE_TOTAL_SIZES_TO_LOOP:
+                for num_segments in COMPLETE_SEGMENTS_TO_LOOP:
+                    segment_size = int(total_size / num_segments)
+                    for with_copy in [False, True]:
+                        self.run_summary_analysis(df, out,
+                                                  array_size, recv_size,
+                                                  num_segments, segment_size, with_copy)
+        elif total_args.looping_variable == "recv_size":
             array_size = 65536
             for total_size in RECV_SIZE_TOTAL_SIZES_TO_LOOP:
                 for recv_size in COMPLETE_RECV_SIZES_TO_LOOP:
@@ -822,8 +879,44 @@ class ScatterGather(runner.Experiment):
                 args = [str(plotting_script), str(full_log), str(post_process_log), str(output_file),
                         metric, "full", factor_name]
                 self.run_plot_cmd(args)
+        if total_args.looping_variable == "total_segment_cross":
+            for metric in metrics:
+                for num_segments in COMPLETE_SEGMENTS_TO_LOOP:
+                    individual_plot_path = plot_path /\
+                        "numsegments_{}".format(num_segments)
+                    individual_plot_path.mkdir(
+                        parents=True, exist_ok=True)
 
-        if total_args.looping_variable == "total_size":
+                    metric_name = metric
+                    if metric_name == "tput":
+                        metric_name = "tput_gbps"
+                    pdf = individual_plot_path /\
+                        "numsegments_{}_{}.pdf".format(num_segments, metric)
+                    total_plot_args = [str(plotting_script), str(full_log),
+                                       str(post_process_log), str(pdf),
+                                       metric_name, "individual", factor_name,
+                                       "foo", str(num_segments)]
+                    self.run_plot_cmd(total_plot_args)
+
+                    for total_size in COMPLETE_TOTAL_SIZES_TO_LOOP:
+                        if metric == "tput":
+                            continue
+                        segment_size = int(total_size / num_segments)
+                        individual_plot_path = plot_path /\
+                            "numsegments_{}".format(num_segments) /\
+                            "totalsize_{}".format(total_size)
+                        individual_plot_path.mkdir(
+                            parents=True, exist_ok=True)
+                        pdf = individual_plot_path /\
+                            "total_size_{}_numsegments_{}_{}.pdf".format(
+                                total_size, num_segments, metric)
+                        total_plot_args = [str(plotting_script), str(full_log),
+                                           str(post_process_log), str(pdf),
+                                           metric, "tput_latency", factor_name,
+                                           str(total_size), str(num_segments)]
+                        self.run_plot_cmd(total_plot_args)
+
+        elif total_args.looping_variable == "total_size":
             for metric in metrics:
                 for num_segments in SEGMENTS_TO_LOOP:
                     individual_plot_path = plot_path /\

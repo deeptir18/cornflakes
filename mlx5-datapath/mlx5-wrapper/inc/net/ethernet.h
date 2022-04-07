@@ -41,7 +41,7 @@ static const struct eth_addr eth_addr_broadcast = ETH_ADDR_BROADCAST;
 static inline void
 ether_addr_copy(struct eth_addr *from, struct eth_addr *to)
 {
-    rte_memcpy(to, from, sizeof(struct eth_addr));
+    custom_mlx5_rte_memcpy(to, from, sizeof(struct eth_addr));
 }
 
 

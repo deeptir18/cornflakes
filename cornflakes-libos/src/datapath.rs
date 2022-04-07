@@ -4,6 +4,38 @@ use super::{
 use color_eyre::eyre::{bail, Result};
 use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
 
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+pub enum InlineMode {
+    Nothing,
+    PacketHeader,
+    FirstEntry,
+}
+
+impl Default for InlineMode {
+    fn default() -> Self {
+        InlineMode::Nothing
+    }
+}
+
+impl FromStr for InlineMode {
+    type Err = color_eyre::eyre::Error;
+
+    fn from_str(s: &str) -> Result<InlineMode> {
+        match s {
+            "nothing" | "Nothing" | "0" | "NOTHING" => Ok(InlineMode::Nothing),
+            "packetheader" | "PacketHeader" | "PACKETHEADER" | "packet_header" => {
+                Ok(InlineMode::PacketHeader)
+            }
+            "firstentry" | "first_entry" | "FIRSTENTRY" | "FirstEntry" => {
+                Ok(InlineMode::FirstEntry)
+            }
+            x => {
+                bail!("Unknown inline mode: {:?}", x);
+            }
+        }
+    }
+}
+
 /// Represents if app is using:
 /// (1) Scatter-gather API without manual ref counting
 /// (2) Manually Reference counted scatter-gather API
@@ -308,4 +340,10 @@ pub trait Datapath {
 
     /// Current cycles.
     fn current_cycles(&self) -> u64;
+
+    /// Set copying threshold for serialization.
+    fn set_copying_threshold(&mut self, threshold: usize);
+
+    /// Set inline mode (may not be available in all datapaths)
+    fn set_inline_mode(&mut self, mode: InlineMode);
 }

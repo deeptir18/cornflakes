@@ -3,8 +3,14 @@ all: build
 # TODO: make it so that if mlx5 drivers are not present on this machine, it only
 # tries to build the dpdk version of things
 
+CARGOFLAGS = 
+ifneq ($(DEBUG), y)
+	CARGOFLAGS += --release
+endif
+
+
 build: mlx5-datapath
-	cargo b --release
+	cargo b $(CARGOFLAGS)
 
 .PHONY: mlx5-datapath mlx5-netperf
 

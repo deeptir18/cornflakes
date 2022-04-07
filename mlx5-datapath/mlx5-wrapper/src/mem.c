@@ -29,19 +29,19 @@
 #endif*/
 
 
-long mbind(void *start, size_t len, int mode,
+long custom_mlx5_mbind(void *start, size_t len, int mode,
 	   const unsigned long *nmask, unsigned long maxnode,
 	   unsigned flags)
 {
 	return syscall(__NR_mbind, start, len, mode, nmask, maxnode, flags);
 }
 
-static void sigbus_error(int sig)
+static void custom_mlx5_sigbus_error(int sig)
 {
 	NETPERF_PANIC("couldn't map pages");
 }
 
-static void touch_mapping(void *base, size_t len, size_t pgsize)
+static void custom_mlx5_touch_mapping(void *base, size_t len, size_t pgsize)
 {
 	__sighandler_t s;
 	char *pos;
@@ -51,14 +51,14 @@ static void touch_mapping(void *base, size_t len, size_t pgsize)
 	 * because of insufficient memory. Therefore, we manually force a write
 	 * on each page to make sure the mapping was successful.
 	 */
-	s = signal(SIGBUS, sigbus_error);
+	s = signal(SIGBUS, custom_mlx5_sigbus_error);
 	for (pos = (char *)base; pos < (char *)base + len; pos += pgsize)
 		ACCESS_ONCE(*pos);
 	signal(SIGBUS, s);
 } 
 
 static void *
-__mem_map_anom(void *base, size_t len, size_t pgsize,
+__custom_mlx5_mem_map_anom(void *base, size_t len, size_t pgsize,
 	       unsigned long *mask, int numa_policy)
 {
 	void *addr;
@@ -94,11 +94,11 @@ __mem_map_anom(void *base, size_t len, size_t pgsize,
 		return MAP_FAILED;
 
 	NETPERF_ASSERT(sizeof(unsigned long) * 8 >= NNUMA, "Long size incorrect");
-	if (mbind(addr, len, numa_policy, mask ? mask : NULL,
+	if (custom_mlx5_mbind(addr, len, numa_policy, mask ? mask : NULL,
 		  mask ? NNUMA : 0, MPOL_MF_STRICT))
 		goto fail;
 
-	touch_mapping(addr, len, pgsize);
+	custom_mlx5_touch_mapping(addr, len, pgsize);
 	return addr;
 
 fail:
@@ -115,10 +115,10 @@ fail:
  *
  * Returns the base address, or MAP_FAILED if out of memory
  */
-void *mem_map_anom(void *base, size_t len, size_t pgsize, int node)
+void *custom_mlx5_mem_map_anom(void *base, size_t len, size_t pgsize, int node)
 {
 	unsigned long mask = (1 << node);
-	return __mem_map_anom(base, len, pgsize, &mask, MPOL_BIND);
+	return __custom_mlx5_mem_map_anom(base, len, pgsize, &mask, MPOL_BIND);
 }
 
 /**
@@ -130,7 +130,7 @@ void *mem_map_anom(void *base, size_t len, size_t pgsize, int node)
  *
  * Returns the address of the mapping or MAP_FAILED if failure.
  */
-void *mem_map_file(void *base, size_t len, int fd, off_t offset)
+void *custom_mlx5_mem_map_file(void *base, size_t len, int fd, off_t offset)
 {
 	return mmap(base, len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, offset);
 }
@@ -145,7 +145,7 @@ void *mem_map_file(void *base, size_t len, int fd, off_t offset)
  *
  * Returns a pointer to the mapping, or NULL if the mapping failed.
  */
-void *mem_map_shm(mem_key_t key, void *base, size_t len, size_t pgsize,
+void *custom_mlx5_mem_map_shm(mem_key_t key, void *base, size_t len, size_t pgsize,
 		  bool exclusive)
 {
 	void *addr;
@@ -184,7 +184,7 @@ void *mem_map_shm(mem_key_t key, void *base, size_t len, size_t pgsize,
 	if (addr == MAP_FAILED)
 		return MAP_FAILED;
 
-	touch_mapping(addr, len, pgsize);
+	custom_mlx5_touch_mapping(addr, len, pgsize);
 	return addr;
 }
 
@@ -194,7 +194,7 @@ void *mem_map_shm(mem_key_t key, void *base, size_t len, size_t pgsize,
  *
  * Returns 0 if successful, otherwise fail.
  */
-int mem_unmap_shm(void *addr)
+int custom_mlx5_mem_unmap_shm(void *addr)
 {
 	if (shmdt(addr) == -1)
 		return -errno;
@@ -216,7 +216,7 @@ int mem_unmap_shm(void *addr)
  *
  * Returns 0 if successful, otherwise failure.
  */
-int mem_lookup_page_phys_addrs(void *addr, size_t len,
+int custom_mlx5_mem_lookup_page_phys_addrs(void *addr, size_t len,
 			       size_t pgsize, physaddr_t *paddrs)
 {
 	uintptr_t pos;
