@@ -10,7 +10,6 @@ CXX = g++
 # all source are stored in SRCS-y
 SRCS-y := main.c rand_exp.cc thread_info.cc
 
-
 # Build using pkg-config variables if possible
 # ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
 # $(error "no installation of DPDK found")

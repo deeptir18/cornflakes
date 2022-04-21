@@ -101,6 +101,7 @@ static uint8_t sym_rss_key[] = {
 #define NNUMA 2
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
+#define DEFAULT_CHAR 'c'
 
 /******************************************/
 /******************************************/
@@ -114,6 +115,7 @@ static char* latency_log = NULL;
 static char *threads_log = NULL;
 static int has_threads_log = 0;
 static int has_latency_log = 0;
+static int echo_mode = 0;
 
 
 struct tx_pktmbuf_priv
@@ -467,6 +469,7 @@ static struct OutgoingHeader outgoing_headers[MAX_THREADS];
 static struct Summary_Statistics_t summary_statistics[MAX_THREADS];
 static char *tx_pool_names[MAX_THREADS] = {"tx_pool_0", "tx_pool_1", "tx_pool_2", "tx_pool_3", "tx_pool_4", "tx_pool_5", "tx_pool_6", "tx_pool_7"};
 static char *rx_pool_names[MAX_THREADS] = {"rx_pool_0", "rx_pool_1", "rx_pool_2", "rx_pool_3", "rx_pool_4", "rx_pool_5", "rx_pool_6", "rx_pool_7"};
+static char *server_payload_regions[MAX_THREADS];
 
 #ifdef __TIMERS__
 static Latency_Dist_t server_processing_dist = { .min = LONG_MAX, .max = 0, .total_count = 0, .latency_sum = 0 };
@@ -583,6 +586,21 @@ static void initialize_client_requests_common(size_t num_total_clients) {
         } else {
             printf("Initialized client requests at %p\n", client_requests);
         }
+
+        server_payload_regions[client_id] = malloc(array_size / segment_size);
+        if (server_payload_regions[client_id] == NULL) {
+            printf("Fail to malloc server regions array\n");
+            exit(1);
+        }
+        const char* alphabet = "abcdefghijklmnopqrstuvwxyz";
+
+        int current_index = 0;
+        for (size_t i = 0; i < array_size / segment_size; i++) {
+            char *cur_pointer = server_payload_regions[client_id] + i;
+            *cur_pointer = alphabet[current_index];
+            current_index = (current_index + 1) % 26;
+        }
+
         struct ClientRequest *current_req = (struct ClientRequest*)client_requests[client_id];
         size_t num_segments_within_region = array_size / segment_size;
         size_t client_thread_id = (machine_id * num_client_threads) + client_id;
@@ -700,10 +718,11 @@ static void custom_pkt_init_with_header(struct rte_mempool *mp __attribute__((un
     memset(s, 0, 46);
     p += 46;
     s = (char *)(p);
-    memset(s, 'a', 2048);
-    memset(s + 2048, 'b', 2048);
-    memset(s + 2048 * 2, 'c', 2048);
-    memset(s + 2048 * 3, 'd', 2048);
+    memset(s, DEFAULT_CHAR, 8192);
+    //memset(s, 'a', 2048);
+    //memset(s + 2048, 'b', 2048);
+    //memset(s + 2048 * 2, 'c', 2048);
+    //memset(s + 2048 * 3, 'd', 2048);
 }
 
 static void custom_pkt_init_whole(struct rte_mempool *mp __attribute__((unused)), void *opaque_arg __attribute__((unused)), void *m, unsigned i __attribute__((unused))) {
@@ -746,10 +765,11 @@ static int parse_args(int argc, char *argv[]) {
         {"send_packet_size", optional_argument, 0, 'd'},
         {"with_copy", no_argument, 0, 'k'},
         {"has_send_packet_size", no_argument, 0, 'e'},
+        {"echo_mode", no_argument, 0, 'f'},
         {0,           0,                 0,  0   }
     };
     int long_index = 0;
-    while ((opt = getopt_long(argc, argv,"m:i:s:l:p:c:z:t:r:n:a:k:b:x:q:v:w:d:e:",
+    while ((opt = getopt_long(argc, argv,"m:i:s:l:p:c:z:t:r:n:a:k:b:x:q:v:w:d:e:f:",
                    long_options, &long_index )) != -1) {
         switch (opt) {
             case 'm':
@@ -855,6 +875,9 @@ static int parse_args(int argc, char *argv[]) {
             case 'j':
                 str_to_long(optarg, &tmp);
                 machine_id = (size_t)tmp;
+                break;
+            case 'f':
+                echo_mode = 1;
                 break;
             default: print_usage();
                  exit(EXIT_FAILURE);
@@ -1181,8 +1204,41 @@ static uint64_t time_now(uint64_t offset) {
     return raw_time() - offset;
 }
 
-static int parse_packet(struct sockaddr_in *src,
-                        struct sockaddr_in *dst,
+static int check_packet_payload(char *payload, size_t payload_size, ClientRequest *client_request, char *server_payload) {
+    size_t expected_size = (num_mbufs * segment_size);
+    if (payload_size != expected_size) {
+        NETPERF_WARN("Expected payload to be size %lu, instead got %lu", expected_size, payload_size);
+        return -EINVAL;
+    }
+
+    if (echo_mode) {
+        for (size_t i = 0; i < expected_size; i++) {
+            char *cur = payload + i;
+            if (*cur != DEFAULT_CHAR) {
+                NETPERF_WARN("[Echo mode] At index %lu, expected %c, got %c", i, DEFAULT_CHAR, *cur);
+                return -EINVAL;
+            }
+        }
+        return 0;
+    }
+
+    for (size_t seg = 0; seg < num_mbufs; seg++) {
+        size_t index = client_request->segment_offsets[seg];
+        char *expected = server_payload + index;
+        for (size_t i = 0; i < segment_size; i++) {
+            size_t off = (seg * segment_size) + i;
+            char *cur = payload + off;
+            if (*cur != *expected) {
+                NETPERF_WARN("At index %lu (seg %lu, off %lu), expected %c, instead found %c", off, seg, i, *expected, *cur);
+                return -EINVAL;
+            }
+        }
+    }
+    return 0;
+}
+
+static int parse_packet(uint32_t our_client_ip,
+                        uint16_t our_client_port,
                         void **payload,
                         size_t *payload_len,
                         struct rte_mbuf *pkt,
@@ -1203,7 +1259,7 @@ static int parse_packet(struct sockaddr_in *src,
     // check the ethernet header
     struct rte_ether_hdr * const eth_hdr = (struct rte_ether_hdr *)(p);
     // print all the bytes in the ethernet header:
-    /*printf("eth header: ");
+    printf("eth header: ");
     for (size_t i = 0; i < sizeof(struct rte_ether_hdr); i++) {
         printf("%x ", *cur_byte);
         if ((i+1) % 4 == 0) {
@@ -1211,7 +1267,7 @@ static int parse_packet(struct sockaddr_in *src,
         }
         cur_byte++;
     }
-    printf("\n");*/
+    printf("\n");
     p += sizeof(*eth_hdr);
     header += sizeof(*eth_hdr);
     uint16_t eth_type = ntohs(eth_hdr->ether_type);
@@ -1226,8 +1282,9 @@ static int parse_packet(struct sockaddr_in *src,
 			eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
         return 1;
     }
+
     if (RTE_ETHER_TYPE_IPV4 != eth_type) {
-        printf("Bad ether type.\n");
+        NETPERF_WARN("Bad ether type");
         return 1;
     }
 
@@ -1235,6 +1292,10 @@ static int parse_packet(struct sockaddr_in *src,
     struct rte_ipv4_hdr *const ip_hdr = (struct rte_ipv4_hdr *)(p);
     p += sizeof(*ip_hdr);
     header += sizeof(*ip_hdr);
+    if (IPPROTO_UDP != ip_hdr->next_proto_id) {
+        NETPERF_WARN("Bad next proto_id");
+        return 1;
+    }
     /*printf("ip header: ");
     for (size_t i = 0; i < sizeof(struct rte_ipv4_hdr); i++) {
         printf("%x", *cur_byte);
@@ -1247,23 +1308,20 @@ static int parse_packet(struct sockaddr_in *src,
 
 
     // In network byte order.
-    in_addr_t ipv4_src_addr = ip_hdr->src_addr;
-    in_addr_t ipv4_dst_addr = ip_hdr->dst_addr;
-
-    if (IPPROTO_UDP != ip_hdr->next_proto_id) {
-        printf("Bad next proto_id\n");
+    if (ntohl(ip_hdr->dst_addr) != our_client_ip) {
+        NETPERF_WARN("Incorrect dst addr, expected: %u, got %u", our_client_ip, ntohl(ip_hdr->src_addr));
         return 1;
     }
-    
-    src->sin_addr.s_addr = ipv4_src_addr;
-    dst->sin_addr.s_addr = ipv4_dst_addr;
 
     // check udp header
     struct rte_udp_hdr * const udp_hdr = (struct rte_udp_hdr *)(p);
+    if (ntohs(udp_hdr->dst_port) != our_client_port) {
+        NETPERF_WARN("Incorrect udp dst port, expected: %u, got: %u", our_client_port, ntohs(udp_hdr->dst_port));
+    }
     p += sizeof(*udp_hdr);
     header += sizeof(*udp_hdr);
     
-    /*printf("udp header: ");
+    printf("udp header: ");
     for (size_t i = 0; i < sizeof(struct rte_udp_hdr); i++) {
         printf("%x", *cur_byte);
         if ((i+1) % 4 == 0) {
@@ -1271,21 +1329,24 @@ static int parse_packet(struct sockaddr_in *src,
         }
         cur_byte++;
     }
-    printf("\n");*/
+    printf("\n");
     // In network byte order.
     in_port_t udp_src_port = udp_hdr->src_port;
     in_port_t udp_dst_port = udp_hdr->dst_port;
-    NETPERF_DEBUG("Received packet with ip checksum of %u, to dst ip %u, udp checksum of %u", ntohs(ip_hdr->hdr_checksum), ntohl(ip_hdr->dst_addr), ntohs(udp_hdr->dgram_cksum));
 
-    src->sin_port = udp_src_port;
-    dst->sin_port = udp_dst_port;
-    src->sin_family = AF_INET;
-    dst->sin_family = AF_INET;
-    
+    uint64_t id = *(uint64_t *)p;
+    uint64_t ts = *((uint64_t *)(p) + 1);
+    NETPERF_DEBUG("Received packet with ID %lu, TS: %lu, ip checksum of %u, to dst ip %u, udp checksum of %u", id, ts, ntohs(ip_hdr->hdr_checksum), ntohl(ip_hdr->dst_addr), ntohs(udp_hdr->dgram_cksum));
+
     *payload_len = pkt->pkt_len - header;
     *payload = (void *)p;
-    return 0;
 
+    size_t expected_size = (size_t)num_mbufs * (size_t)segment_size;
+    if ((*payload_len - 16) != expected_size) {
+        NETPERF_WARN("Received packet with size %lu, expected %lu", *payload_len, expected_size);
+        return 1;
+    }
+    return 0;
 }
 
 static uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **tx_pkts, uint16_t nb_pkts) {
@@ -1384,6 +1445,7 @@ static void * do_client(void *client) {
     static __thread int thread_id;
     thread_id = (size_t)client;
     size_t client_id = (size_t)client;
+    char *server_payloads = server_payload_regions[client_id];
     // find the IP and pair for this client to send from so received RSS brings
     // back packets to this queue
     uint8_t starting_octets[4] = {client_ip_octets[0], client_ip_octets[1], client_ip_octets[2], client_ip_octets[3]};
@@ -1493,10 +1555,24 @@ static void * do_client(void *client) {
             }
 
             for (int i = 0; i < nb_rx; i++) {
-                struct sockaddr_in src, dst;
                 void *payload = NULL;
                 size_t payload_length = 0;
-                int valid = parse_packet(&src, &dst, &payload, &payload_length, pkts[i], client_id);
+                int valid = parse_packet(our_client_ip, our_client_port, &payload, &payload_length, pkts[i], client_id);
+#ifdef __DEBUG__
+                if (valid == 0) {
+                    // check that the payload is actually correct
+                    uint64_t id = *(uint64_t *)payload;
+                    char *real_payload_start = payload + sizeof(uint64_t) * 2;
+                    ClientRequest *recvd_req = (ClientRequest *)((char *)client_requests[client_id] + (sizeof(ClientRequest) * (size_t)(id)));
+                    valid = check_packet_payload(real_payload_start, payload_length - (sizeof(uint64_t) * 2), recvd_req, server_payloads);
+                    if (valid != 0) {
+                        NETPERF_WARN("Received packet (id %lu) with invalid payload", id);
+                        exit(1);
+                    } else {
+                        NETPERF_INFO("Received packet (id %lu) with valid payload", id);
+                    }
+                }
+#endif
                 if (valid == 0) {
                     /* parse the timestamp and record it */
                     uint64_t now = (uint64_t)time_now(clock_offset);
@@ -1666,10 +1742,9 @@ static int do_server(void) {
 #ifdef __TIMERS__
             uint64_t start_processing = time_now(clock_offset);
 #endif
-            struct sockaddr_in src, dst;
             void *payload = NULL;
             size_t payload_length = 0;
-            int valid = parse_packet(&src, &dst, &payload, &payload_length, rx_bufs[i], 0);
+            int valid = parse_packet(server_ip, server_port, &payload, &payload_length, rx_bufs[i], 0);
             struct rte_mbuf* secondary = NULL;
             
             if (valid == 0) {
