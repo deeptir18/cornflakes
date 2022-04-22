@@ -1259,7 +1259,7 @@ static int parse_packet(uint32_t our_client_ip,
     // check the ethernet header
     struct rte_ether_hdr * const eth_hdr = (struct rte_ether_hdr *)(p);
     // print all the bytes in the ethernet header:
-    printf("eth header: ");
+    /*printf("eth header: ");
     for (size_t i = 0; i < sizeof(struct rte_ether_hdr); i++) {
         printf("%x ", *cur_byte);
         if ((i+1) % 4 == 0) {
@@ -1267,7 +1267,7 @@ static int parse_packet(uint32_t our_client_ip,
         }
         cur_byte++;
     }
-    printf("\n");
+    printf("\n");*/
     p += sizeof(*eth_hdr);
     header += sizeof(*eth_hdr);
     uint16_t eth_type = ntohs(eth_hdr->ether_type);
@@ -1321,7 +1321,7 @@ static int parse_packet(uint32_t our_client_ip,
     p += sizeof(*udp_hdr);
     header += sizeof(*udp_hdr);
     
-    printf("udp header: ");
+    /*printf("udp header: ");
     for (size_t i = 0; i < sizeof(struct rte_udp_hdr); i++) {
         printf("%x", *cur_byte);
         if ((i+1) % 4 == 0) {
@@ -1329,7 +1329,7 @@ static int parse_packet(uint32_t our_client_ip,
         }
         cur_byte++;
     }
-    printf("\n");
+    printf("\n");*/
     // In network byte order.
     in_port_t udp_src_port = udp_hdr->src_port;
     in_port_t udp_dst_port = udp_hdr->dst_port;
@@ -1558,7 +1558,7 @@ static void * do_client(void *client) {
                 void *payload = NULL;
                 size_t payload_length = 0;
                 int valid = parse_packet(our_client_ip, our_client_port, &payload, &payload_length, pkts[i], client_id);
-#ifdef __DEBUG__
+#ifdef __CHECK__
                 if (valid == 0) {
                     // check that the payload is actually correct
                     uint64_t id = *(uint64_t *)payload;
@@ -1568,8 +1568,6 @@ static void * do_client(void *client) {
                     if (valid != 0) {
                         NETPERF_WARN("Received packet (id %lu) with invalid payload", id);
                         exit(1);
-                    } else {
-                        NETPERF_INFO("Received packet (id %lu) with valid payload", id);
                     }
                 }
 #endif
