@@ -515,7 +515,7 @@ impl DpdkConnection {
         let datapath_metadata = RteMbufMetadata::new(
             recv_mbuf,
             cornflakes_libos::utils::TOTAL_HEADER_SIZE,
-            Some(data_len - 4 - cornflakes_libos::utils::UDP_HEADER2_SIZE),
+            Some(data_len),
         )?;
 
         let received_pkt = ReceivedPkt::new(vec![datapath_metadata], msg_id, conn_id);
@@ -619,6 +619,7 @@ impl DpdkConnection {
         conn_id: ConnID,
         msg_id: MsgID,
         buffer_size: usize,
+        data_len: usize,
     ) -> Result<DpdkBuffer> {
         let mut dpdk_buffer = match self.allocator.allocate_buffer(buffer_size)? {
             Some(x) => x,
@@ -628,7 +629,7 @@ impl DpdkConnection {
         };
         let mutable_slice =
             dpdk_buffer.mutable_slice(0, cornflakes_libos::utils::TOTAL_HEADER_SIZE)?;
-        self.copy_hdr(conn_id, msg_id, mutable_slice)?;
+        self.copy_hdr(conn_id, msg_id, mutable_slice, data_len)?;
         Ok(dpdk_buffer)
     }
 
@@ -658,6 +659,7 @@ impl DpdkConnection {
         let mut written_header = false;
         let mut nb_segs = 0;
         let mut pkt_len = 0;
+        let msg_size = sga.data_len();
 
         while sga_idx < sga.len() {
             let curr_seg = sga.get(sga_idx);
@@ -667,6 +669,8 @@ impl DpdkConnection {
                         conn_id,
                         msg_id,
                         cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                        msg_size,
+
                     )?;
                     self.place_copy_buf_into_send_mbufs(
                         dpdk_buffer,
@@ -708,6 +712,7 @@ impl DpdkConnection {
                                 conn_id,
                                 msg_id,
                                 cornflakes_libos::utils::TOTAL_HEADER_SIZE + data_segment_length,
+                                msg_size,
                             )?,
                         )
                     }
@@ -759,6 +764,7 @@ impl DpdkConnection {
         let mut written_header = false;
         let mut nb_segs = 0;
         let mut pkt_len = 0;
+        let data_len = rc_sga.data_len();
 
         while sga_idx < rc_sga.len() {
             let curr_seg = rc_sga.get_mut(sga_idx);
@@ -768,6 +774,8 @@ impl DpdkConnection {
                         conn_id,
                         msg_id,
                         cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                        data_len,
+                        
                     )?;
                     self.place_copy_buf_into_send_mbufs(
                         dpdk_buffer,
@@ -803,6 +811,7 @@ impl DpdkConnection {
                                 conn_id,
                                 msg_id,
                                 cornflakes_libos::utils::TOTAL_HEADER_SIZE + data_segment_length,
+                                data_len,
                             )?,
                         )
                     }
@@ -845,6 +854,19 @@ impl DpdkConnection {
 
     fn send_current_mbufs(&mut self, ct: u16) -> Result<()> {
         let mut num_sent: u16 = 0;
+        for i in 0..ct {
+            let head_mbuf = self.send_mbufs[0][i as usize];
+            unsafe {
+                tracing::debug!(
+                    pkt_len = access!(head_mbuf, pkt_len, usize), 
+                    data_len = access!(head_mbuf, data_len, usize), 
+                    nb_segs = access!(head_mbuf, nb_segs, usize), 
+                    next=? access!(head_mbuf, next, *mut rte_mbuf), 
+                    send_index = i, "Head mbuf metadata to send");
+            }
+
+            // TODO: also print the segments
+        }
         while num_sent < ct {
             let mbuf_ptr = &mut self.send_mbufs[0][num_sent as usize] as _;
             num_sent += unsafe {
@@ -859,7 +881,7 @@ impl DpdkConnection {
         Ok(())
     }
 
-    fn copy_hdr(&self, conn_id: ConnID, msg_id: MsgID, buffer: &mut [u8]) -> Result<()> {
+    fn copy_hdr(&self, conn_id: ConnID, msg_id: MsgID, buffer: &mut [u8], data_len: usize) -> Result<()> {
         let hdr_bytes: &[u8; cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE] =
             match &self.active_connections[conn_id as usize] {
                 Some((_, hdr_bytes_vec)) => hdr_bytes_vec,
@@ -872,7 +894,7 @@ impl DpdkConnection {
                 buffer.as_mut_ptr() as _,
                 hdr_bytes.as_ptr() as _,
                 msg_id,
-                buffer.len(),
+                data_len as _,
             );
         }
         Ok(())
@@ -1201,20 +1223,20 @@ impl Datapath for DpdkConnection {
             // allocate buffer to copy data into
             let mut dpdk_buffer = match self
                 .allocator
-                .allocate_buffer(buf.len() + cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE)
-                .wrap_err("Could not allocate buf to copy into")?
+                .allocate_buffer(buf.len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE)
+                .wrap_err(format!("Could not allocate buf to copy into for buf size {}", buf.len()))?
             {
                 Some(buf) => buf,
                 None => {
-                    bail!("Could not allocate buffer to copy into");
+                    bail!("Could not allocate buffer to copy into for buf size: {}", buf.len());
                 }
             };
             // write header into the dpdk buffer
             let mut mutable_slice =
-                dpdk_buffer.mutable_slice(0, cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE)?;
-            self.copy_hdr(*conn_id, *msg_id, &mut mutable_slice)
+                dpdk_buffer.mutable_slice(0, cornflakes_libos::utils::TOTAL_HEADER_SIZE)?;
+            self.copy_hdr(*conn_id, *msg_id, &mut mutable_slice, buf.len())
                 .wrap_err("Could not copy header into mutable slice")?;
-            dpdk_buffer.copy_data(buf, cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE)?;
+            dpdk_buffer.copy_data(buf, cornflakes_libos::utils::TOTAL_HEADER_SIZE)?;
 
             // turn dpdk buffer back into metadata object
             let mut metadata_mbuf = match self.get_metadata(dpdk_buffer)? {
@@ -1383,6 +1405,7 @@ impl Datapath for DpdkConnection {
                 .check_received_pkt(i)
                 .wrap_err(format!("Error checking received pkt {}", i))?
             {
+                tracing::debug!("Received pkt with msg ID {}, conn ID {}", received_pkt.msg_id(), received_pkt.conn_id());
                 ret.push(received_pkt);
             } else {
                 unsafe {

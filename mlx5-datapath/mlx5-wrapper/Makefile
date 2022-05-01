@@ -2,7 +2,7 @@ ROOT_PATH=.
 
 # shared toolchain definitions
 INC = -I$(ROOT_PATH)/inc
-CFLAGS  = -g -Wall -D_GNU_SOURCE $(INC) -lstdc++ -O3 -fsanitize=unreachable 
+CFLAGS  = -g -Wall -D_GNU_SOURCE $(INC) -lstdc++ -fsanitize=unreachable 
 EXTRA_CFLAGS = -lm
 LDFLAGS_SHARED =
 LDFLAGS_STATIC =
@@ -12,12 +12,21 @@ LDXX	= g++
 CXX	= g++
 AR      = ar
 
+ifeq ($(DEBUG), n)
+ifeq ($(GDB), n)
+	CFLAGS += -O3
+endif
+endif
+
 ifeq ($(DEBUG), y)
-	CFLAGS += -D__DEBUG__
+	CFLAGS += -O0 -D__DEBUG__
 endif
 
 ifeq ($(TIMERS), y)
 	CFLAGS += -D__TIMERS__
+endif
+ifeq ($(GDB), y)
+	CFLAGS += -O0 -ggdb
 endif
 
 MLX5_INC = -I$(ROOT_PATH)/rdma-core/build/include
@@ -45,19 +54,17 @@ all: static
 
 static: build $(LIB).a
 
-shared: build $(LIB).so
-
-$(LIB).so: runtime.o init.o mempool.o mem.o time.o
-	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_SHARED)
-
-$(LIB).a: runtime.o init.o mempool.o mem.o time.o
-	ar rcs build/$@ build/runtime.o build/init.o build/mempool.o build/mem.o build/time.o
+$(LIB).a: runtime.o init.o mbuf.o mempool.o mem.o time.o
+	ar rcs build/$@ build/runtime.o build/init.o build/mbuf.o build/mempool.o build/mem.o build/time.o
 
 runtime.o:
 	$(CC) $(CFLAGS) src/runtime.c -c -o build/$@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_STATIC)
 
 init.o:
 	$(CC) $(CFLAGS) src/init.c -c -o build/$@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_STATIC)
+
+mbuf.o:
+	$(CC) $(CFLAGS) src/mbuf.c -c -o build/$@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_STATIC)
 
 mempool.o:
 	$(CC) $(CFLAGS) src/mempool.c -c -o build/$@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_STATIC)

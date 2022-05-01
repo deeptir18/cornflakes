@@ -24,12 +24,14 @@ RECV_SIZE_TOTAL_SIZES_TO_LOOP = [256, 4096]
 # used for total size experiment
 COMPLETE_TOTAL_SIZES_TO_LOOP = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
 
+
 # used for other experiments, which total sizes to check
 # TOTAL_SIZES_TO_LOOP = [256, 4096]
 TOTAL_SIZES_TO_LOOP = [4096]
 
 # used for segment size experiment
-COMPLETE_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16, 32]
+# COMPLETE_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16, 32]
+COMPLETE_SEGMENTS_TO_LOOP = [1, 2]
 
 # used for other experiment, which segment amounts to check
 SEGMENTS_TO_LOOP = [2, 8]
@@ -44,6 +46,7 @@ max_rates = {32: 750000, 64: 600000, 128: 500000, 256: 425000, 512: 400000, 1024
              8192: 150000}
 sample_percentages = [10, 30, 40, 45, 50, 53, 55, 57,
                       60, 63, 66, 69, 72, 75, 78, 81, 83, 85, 88, 91, 93, 95, 100]
+# sample_percentages = [50, 60, 70, 75, 80, 85, 90, 95, 100]
 
 
 def parse_client_time_and_pkts(line):
@@ -333,11 +336,11 @@ class ScatterGatherIteration(runner.Iteration):
                 ret["num_segments"] = self.num_segments
         ret["cornflakes_dir"] = config_yaml["cornflakes_dir"]
         ret["folder"] = str(folder)
+        if (self.echo_mode):
+            ret["echo_str"] = " --echo_mode"
+        else:
+            ret["echo_str"] = ""
         if program == "start_server":
-            if (self.echo_mode):
-                ret["echo_str"] = " --echo"
-            else:
-                ret["echo_str"] = ""
             if (self.recv_pkt_size != 0):
                 ret["read_pkt_str"] = " --read_incoming_packet"
             else:
@@ -642,8 +645,12 @@ class ScatterGather(runner.Experiment):
                                                 aggfunc="mean"),
             achieved_load_gbps_sd=pd.NamedAgg(column="achieved_load_gbps",
                                               aggfunc=ourstd))
-        clustered_df = clustered_df[clustered_df["percent_achieved_rate"] >=
-                                    .95]
+        # print("before filtering: ", clustered_df)
+        # clustered_df = clustered_df[clustered_df["percent_achieved_rate"] >=
+        #                            .95]
+        # print("after filtering: ", clustered_df)
+        # print("idx max: ", clustered_df["achieved_load_pps_mean"].idxmax())
+        # print("not getting here")
 
         max_achieved_pps = clustered_df["achieved_load_pps_mean"].max()
         max_achieved_gbps = clustered_df["achieved_load_gbps_mean"].max()
@@ -881,12 +888,13 @@ class ScatterGather(runner.Experiment):
                 self.run_plot_cmd(args)
         if total_args.looping_variable == "total_segment_cross":
             for metric in metrics:
+                # for each set of num segments, do a size plot
                 for num_segments in COMPLETE_SEGMENTS_TO_LOOP:
+                    factor_name = "total_size"
                     individual_plot_path = plot_path /\
                         "numsegments_{}".format(num_segments)
                     individual_plot_path.mkdir(
                         parents=True, exist_ok=True)
-
                     metric_name = metric
                     if metric_name == "tput":
                         metric_name = "tput_gbps"
@@ -897,7 +905,29 @@ class ScatterGather(runner.Experiment):
                                        metric_name, "individual", factor_name,
                                        "foo", str(num_segments)]
                     self.run_plot_cmd(total_plot_args)
+                # make a num segments plot for each size
+                for total_size in COMPLETE_TOTAL_SIZES_TO_LOOP:
+                    factor_name = "num_segments"
+                    individual_plot_path = plot_path /\
+                        "totalsize_{}".format(total_size)
 
+                    individual_plot_path.mkdir(
+                        parents=True, exist_ok=True)
+
+                    pdf = individual_plot_path /\
+                        "totalsize_{}_{}.pdf".format(total_size,
+                                                     metric)
+
+                    metric_name = metric
+                    if metric_name == "tput":
+                        metric_name = "tput_gbps"
+                    total_plot_args = [str(plotting_script), str(full_log),
+                                       str(post_process_log), str(pdf),
+                                       metric_name, "individual", factor_name,
+                                       str(total_size), "foo"]
+                    self.run_plot_cmd(total_plot_args)
+                # run throughput latency curves
+                for num_segments in COMPLETE_SEGMENTS_TO_LOOP:
                     for total_size in COMPLETE_TOTAL_SIZES_TO_LOOP:
                         if metric == "tput":
                             continue
@@ -915,6 +945,13 @@ class ScatterGather(runner.Experiment):
                                            metric, "tput_latency", factor_name,
                                            str(total_size), str(num_segments)]
                         self.run_plot_cmd(total_plot_args)
+                # run heatmap (summary) plot
+                pdf = plot_path /\
+                    "heatmap_{}.pdf".format(metric)
+
+                total_plot_args = [str(plotting_script), str(full_log),
+                                   str(post_process_log), str(
+                                       pdf), metric, "heatmap"]
 
         elif total_args.looping_variable == "total_size":
             for metric in metrics:

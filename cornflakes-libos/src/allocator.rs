@@ -144,13 +144,18 @@ where
             .mempool_ids
             .keys()
             .sorted()
-            .filter(|size| *size >= &buf_size)
+            .filter(|size| {
+                tracing::debug!("Size: {}, given size: {}", *size, buf_size);
+                *size >= &buf_size
+            })
             .collect();
+
         for size in mempool_sizes {
             for mempool_id in self.mempool_ids.get(size).unwrap() {
                 let mempool = self.mempools.get_mut(mempool_id).unwrap();
                 match mempool.alloc_data_buf()? {
                     Some(x) => {
+                        tracing::debug!("Successfully allocated from mempool size {}", size);
                         return Ok(Some(x));
                     }
                     None => {}

@@ -45,12 +45,6 @@ extern "C" {
         off: usize,
     ) -> *mut ::std::os::raw::c_void;
 
-    fn custom_mlx5_mbuf_refcnt_read_(mbuf: *mut custom_mlx5_mbuf) -> u16;
-
-    fn custom_mlx5_mbuf_refcnt_update_or_free_(mbuf: *mut custom_mlx5_mbuf, change: i16);
-
-    fn custom_mlx5_mbuf_free_(mbuf: *mut custom_mlx5_mbuf);
-
     fn custom_mlx5_mempool_free_(
         item: *mut ::std::os::raw::c_void,
         mempool: *mut custom_mlx5_mempool,
@@ -149,26 +143,12 @@ pub unsafe fn get_metadata_mempool(mempool: *mut registered_mempool) -> *mut cus
     get_metadata_mempool_(mempool)
 }
 
+#[inline]
 pub unsafe fn custom_mlx5_mbuf_offset_ptr(
     mbuf: *mut custom_mlx5_mbuf,
     off: usize,
 ) -> *mut ::std::os::raw::c_void {
     custom_mlx5_mbuf_offset_ptr_(mbuf, off)
-}
-
-#[inline]
-pub unsafe fn custom_mlx5_mbuf_refcnt_read(mbuf: *mut custom_mlx5_mbuf) -> u16 {
-    custom_mlx5_mbuf_refcnt_read_(mbuf)
-}
-
-#[inline]
-pub unsafe fn custom_mlx5_mbuf_refcnt_update_or_free(mbuf: *mut custom_mlx5_mbuf, change: i16) {
-    custom_mlx5_mbuf_refcnt_update_or_free_(mbuf, change);
-}
-
-#[inline]
-pub unsafe fn custom_mlx5_mbuf_free(mbuf: *mut custom_mlx5_mbuf) {
-    custom_mlx5_mbuf_free_(mbuf);
 }
 
 #[inline]

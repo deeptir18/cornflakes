@@ -427,6 +427,8 @@ class Iteration(metaclass=abc.ABCMeta):
         # spawn the commands
         for command in commands:
             program_name = command["program"]
+            # if (program_name == "start_server"):
+            #    continue
             program = programs[program_name]
             program_hosts = program["hosts"]
             kill_cmd = None
@@ -505,7 +507,8 @@ class Iteration(metaclass=abc.ABCMeta):
                 utils.debug("Starting program {} on host {}, args: {}".format(
                     program_name, host, program_args))
                 proc.start()
-                #input('press enter to cont.')
+                # if program_name == "start_server":
+                #    input('press enter to cont.')
 
                 if kill_cmd == None:
                     programs_to_join_immediately[host] = program_counter

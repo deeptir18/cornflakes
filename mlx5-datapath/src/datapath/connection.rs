@@ -18,6 +18,7 @@ use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
+    boxed::Box,
     ffi::CString,
     fs::read_to_string,
     io::Write,
@@ -73,16 +74,27 @@ impl Mlx5Buffer {
     }
 
     pub fn mutable_slice(&mut self, start: usize, end: usize) -> Result<&mut [u8]> {
+        tracing::debug!(
+            start = start,
+            end = end,
+            item_len = unsafe { access!(get_data_mempool(self.mempool), item_len, usize) },
+            "Getting mutable slice from buffer"
+        );
         let item_len = unsafe { access!(get_data_mempool(self.mempool), item_len, usize) };
         if start > item_len || end > item_len {
             bail!("Invalid bounnds for buf of len {}", item_len);
         }
-        let buf = unsafe { std::slice::from_raw_parts_mut(self.data as *mut u8, end - start) };
+        let buf = unsafe {
+            std::slice::from_raw_parts_mut(
+                (self.data as *mut u8).offset(start as isize),
+                end - start,
+            )
+        };
         if self.data_len <= end {
             // TODO: is this not a great way to do this?
             self.data_len = end;
         }
-        Ok(&mut buf[start..end])
+        Ok(buf)
     }
 }
 
@@ -150,12 +162,12 @@ impl MbufMetadata {
                 data_len,
                 0,
             );
-            custom_mlx5_mbuf_refcnt_update_or_free(metadata_buf, 1);
         }
         Ok(Some(MbufMetadata::new(metadata_buf, 0, Some(data_len))?))
     }
 
     pub fn increment_refcnt(&mut self) {
+        tracing::debug!(mbuf =? self.mbuf, "Incrementing ref count on mbuf");
         unsafe {
             custom_mlx5_mbuf_refcnt_update_or_free(self.mbuf, 1);
         }
@@ -171,9 +183,14 @@ impl MbufMetadata {
         data_offset: usize,
         data_len: Option<usize>,
     ) -> Result<Self> {
+        tracing::debug!("Returning mbuf {:?}", mbuf);
         ensure!(
-            data_offset >= unsafe { access!(mbuf, data_buf_len, usize) },
-            "Data offset too large"
+            data_offset <= unsafe { access!(mbuf, data_buf_len, usize) },
+            format!(
+                "Data offset too large: off: {}, data_buf_len: {}",
+                data_offset,
+                unsafe { access!(mbuf, data_buf_len, usize) }
+            ),
         );
         unsafe {
             custom_mlx5_mbuf_refcnt_update_or_free(mbuf, 1);
@@ -239,6 +256,7 @@ impl Drop for MbufMetadata {
     fn drop(&mut self) {
         unsafe {
             if USING_REF_COUNTING {
+                tracing::debug!(mbuf =? self.mbuf, "Dropping");
                 custom_mlx5_mbuf_refcnt_update_or_free(self.mbuf, -1);
             } else {
                 custom_mlx5_mbuf_free(self.mbuf);
@@ -251,6 +269,7 @@ impl Clone for MbufMetadata {
     fn clone(&self) -> MbufMetadata {
         unsafe {
             if USING_REF_COUNTING {
+                tracing::debug!(mbuf = ?self.mbuf, "Incrementing ref count");
                 custom_mlx5_mbuf_refcnt_update_or_free(self.mbuf, 1);
             }
         }
@@ -276,7 +295,22 @@ impl AsRef<[u8]> for MbufMetadata {
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 struct Mlx5GlobalContext {
-    pub ptr: *mut custom_mlx5_global_context,
+    global_context_ptr: *mut [u8],
+    thread_context_ptr: *mut [u8],
+}
+
+impl Mlx5GlobalContext {
+    fn ptr(&self) -> *mut custom_mlx5_global_context {
+        self.global_context_ptr as *mut custom_mlx5_global_context
+    }
+
+    fn global_context_ptr(&self) -> *mut [u8] {
+        self.global_context_ptr
+    }
+
+    fn thread_context_ptr(&self) -> *mut [u8] {
+        self.thread_context_ptr
+    }
 }
 
 unsafe impl Send for Mlx5GlobalContext {}
@@ -292,6 +326,8 @@ pub struct Mlx5PerThreadContext {
     address_info: AddressInfo,
     /// Pointer to datapath specific thread information
     context: *mut custom_mlx5_per_thread_context,
+    /// Receive mempool ptr
+    rx_mempool_ptr: *mut [u8],
 }
 
 unsafe impl Send for Mlx5PerThreadContext {}
@@ -302,8 +338,8 @@ impl Mlx5PerThreadContext {
         self.context
     }
 
-    pub fn get_recv_mempool(&self) -> *mut registered_mempool {
-        unsafe { get_recv_mempool(self.context) }
+    pub fn get_recv_mempool_ptr(&self) -> *mut [u8] {
+        self.rx_mempool_ptr
     }
 
     pub fn get_queue_id(&self) -> u16 {
@@ -322,10 +358,20 @@ impl Drop for Mlx5PerThreadContext {
         }
         if Arc::<Mlx5GlobalContext>::strong_count(&self.global_context_rc) == 1 {
             // safe to drop global context because this is the last reference
+
+            let thread_ptr = unsafe {
+                (*Arc::<Mlx5GlobalContext>::as_ptr(&self.global_context_rc)).thread_context_ptr()
+            };
+
+            let global_context_ptr = unsafe {
+                (*Arc::<Mlx5GlobalContext>::as_ptr(&self.global_context_rc)).global_context_ptr()
+            };
+
             unsafe {
-                custom_mlx5_free_global_context(
-                    (*Arc::<Mlx5GlobalContext>::as_ptr(&self.global_context_rc)).ptr,
-                )
+                Box::from_raw(thread_ptr);
+            }
+            unsafe {
+                Box::from_raw(global_context_ptr);
             }
         }
     }
@@ -474,10 +520,11 @@ impl Mlx5Connection {
             NetworkEndian::read_u32(&slice[0..4])
         };
 
+        tracing::debug!("Received packet with length of {}", data_len);
         let datapath_metadata = MbufMetadata::new(
             recv_mbuf,
             cornflakes_libos::utils::TOTAL_HEADER_SIZE,
-            Some(data_len - 4 - cornflakes_libos::utils::UDP_HEADER2_SIZE),
+            Some(data_len),
         )?;
 
         let received_pkt = ReceivedPkt::new(vec![datapath_metadata], msg_id, conn_id);
@@ -602,7 +649,7 @@ impl Mlx5Connection {
             None => {}
         }
 
-        // check for completions
+        // check for completions: ONLY WHEN IN FLIGHT > THRESH
         if unsafe {
             custom_mlx5_process_completions(
                 self.thread_context.get_context_ptr(),
@@ -622,6 +669,7 @@ impl Mlx5Connection {
         rc_sga: &mut RcSga<Self>,
         conn_id: ConnID,
         msg_id: MsgID,
+        num_octowords: u64,
         num_wqes_required: u64,
         inline_len: usize,
         num_segs: usize,
@@ -630,6 +678,7 @@ impl Mlx5Connection {
         let ctrl_seg = unsafe {
             custom_mlx5_fill_in_hdr_segment(
                 self.thread_context.get_context_ptr(),
+                num_octowords as _,
                 num_wqes_required as _,
                 inline_len as _,
                 num_segs as _,
@@ -801,6 +850,7 @@ impl Mlx5Connection {
         sga: &Sga,
         conn_id: ConnID,
         msg_id: MsgID,
+        num_octowords: u64,
         num_wqes_required: u64,
         inline_len: usize,
         num_segs: usize,
@@ -809,6 +859,7 @@ impl Mlx5Connection {
         let ctrl_seg = unsafe {
             custom_mlx5_fill_in_hdr_segment(
                 self.thread_context.get_context_ptr(),
+                num_octowords as _,
                 num_wqes_required as _,
                 inline_len as _,
                 num_segs as _,
@@ -1174,14 +1225,41 @@ impl Datapath for Mlx5Connection {
             )
         );
         // allocate the global context
-        let global_context: Arc<Mlx5GlobalContext> = {
+        let (global_context, rx_mempool_ptrs): (Arc<Mlx5GlobalContext>, Vec<*mut [u8]>) = {
             unsafe {
-                let ptr = custom_mlx5_alloc_global_context(num_queues as _);
-                ensure!(!ptr.is_null(), "Allocated global context is null");
+                // create a box for both the per-thread and global memory
+                let global_context_size = custom_mlx5_get_global_context_size();
+                let thread_context_size = custom_mlx5_get_per_thread_context_size(num_queues as _);
+                let global_context_box: Box<[u8]> =
+                    vec![0; global_context_size as _].into_boxed_slice();
+                let thread_context_box: Box<[u8]> =
+                    vec![0; thread_context_size as _].into_boxed_slice();
+
+                let global_context_ptr = Box::<[u8]>::into_raw(global_context_box);
+                let thread_context_ptr = Box::<[u8]>::into_raw(thread_context_box);
+
+                custom_mlx5_alloc_global_context(
+                    num_queues as _,
+                    global_context_ptr as _,
+                    thread_context_ptr as _,
+                );
+
+                let mut rx_mempool_ptrs: Vec<*mut [u8]> = Vec::with_capacity(num_queues as _);
+                for i in 0..num_queues {
+                    let rx_mempool_box: Box<[u8]> =
+                        vec![0; custom_mlx5_get_registered_mempool_size() as _].into_boxed_slice();
+                    let rx_mempool_ptr = Box::<[u8]>::into_raw(rx_mempool_box);
+                    custom_mlx5_set_rx_mempool_ptr(
+                        global_context_ptr as _,
+                        i as _,
+                        rx_mempool_ptr as _,
+                    );
+                    rx_mempool_ptrs.push(rx_mempool_ptr);
+                }
 
                 // initialize ibv context
                 check_ok!(custom_mlx5_init_ibv_context(
-                    ptr,
+                    global_context_ptr as _,
                     datapath_params.get_custom_mlx5_pci_addr()
                 ));
 
@@ -1195,7 +1273,7 @@ impl Datapath for Mlx5Connection {
                     )
                     .wrap_err("Incorrect rx allocation params")?;
                 check_ok!(custom_mlx5_init_rx_mempools(
-                    ptr,
+                    global_context_ptr as _,
                     rx_mempool_params.get_item_len() as _,
                     rx_mempool_params.get_num_items() as _,
                     rx_mempool_params.get_data_pgsize() as _,
@@ -1205,17 +1283,24 @@ impl Datapath for Mlx5Connection {
 
                 // init queues
                 for i in 0..num_queues {
-                    let per_thread_context = custom_mlx5_get_per_thread_context(ptr, i as u64);
+                    let per_thread_context =
+                        custom_mlx5_get_per_thread_context(global_context_ptr as _, i as u64);
                     check_ok!(custom_mlx5_init_rxq(per_thread_context));
                     check_ok!(custom_mlx5_init_txq(per_thread_context));
                 }
 
                 // init queue steering
                 check_ok!(custom_mlx5_qs_init_flows(
-                    ptr,
+                    global_context_ptr as _,
                     datapath_params.get_eth_addr()
                 ));
-                Arc::new(Mlx5GlobalContext { ptr: ptr })
+                (
+                    Arc::new(Mlx5GlobalContext {
+                        global_context_ptr: global_context_ptr,
+                        thread_context_ptr: thread_context_ptr,
+                    }),
+                    rx_mempool_ptrs,
+                )
             }
         };
         let per_thread_contexts: Vec<Mlx5PerThreadContext> = addresses
@@ -1225,15 +1310,17 @@ impl Datapath for Mlx5Connection {
                 let global_context_copy = global_context.clone();
                 let context_ptr = unsafe {
                     custom_mlx5_get_per_thread_context(
-                        (*Arc::<Mlx5GlobalContext>::as_ptr(&global_context_copy)).ptr,
+                        (*Arc::<Mlx5GlobalContext>::as_ptr(&global_context_copy)).ptr(),
                         i as u64,
                     )
                 };
+                let rx_mempool_ptr = rx_mempool_ptrs[i];
                 Mlx5PerThreadContext {
                     global_context_rc: global_context_copy,
                     queue_id: i as u16,
                     address_info: addr,
                     context: context_ptr,
+                    rx_mempool_ptr: rx_mempool_ptr,
                 }
             })
             .collect();
@@ -1249,7 +1336,7 @@ impl Datapath for Mlx5Connection {
         Self: Sized,
     {
         let mut allocator = MemoryPoolAllocator::default();
-        allocator.add_recv_mempool(DataMempool::new(context.get_recv_mempool())?);
+        allocator.add_recv_mempool(DataMempool::new_from_ptr(context.get_recv_mempool_ptr()));
 
         Ok(Mlx5Connection {
             thread_context: context,
@@ -1325,6 +1412,7 @@ impl Datapath for Mlx5Connection {
     }
 
     fn push_buffers_with_copy(&mut self, pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()> {
+        tracing::debug!("Pushing batch of pkts of length {}", pkts.len());
         let mut pkt_idx = 0;
         let mut first_ctrl_seg: Option<*mut mlx5_wqe_ctrl_seg> = None;
         while pkt_idx < pkts.len() {
@@ -1349,9 +1437,20 @@ impl Datapath for Mlx5Connection {
                 false => 1,
             };
 
-            let num_wqes_required =
-                unsafe { custom_mlx5_num_wqes_required(inline_len as _, num_segs as _) };
+            let num_octowords =
+                unsafe { custom_mlx5_num_octowords(inline_len as _, num_segs as _) };
 
+            let num_wqes_required = unsafe { custom_mlx5_num_wqes_required(num_octowords as _) };
+            tracing::debug!(
+                num_wqes_required = num_wqes_required,
+                available = unsafe {
+                    custom_mlx5_tx_descriptors_available(
+                        self.thread_context.get_context_ptr(),
+                        num_wqes_required,
+                    )
+                },
+                "Pkt to send"
+            );
             if unsafe {
                 custom_mlx5_tx_descriptors_available(
                     self.thread_context.get_context_ptr(),
@@ -1360,6 +1459,19 @@ impl Datapath for Mlx5Connection {
             } {
                 first_ctrl_seg = self.post_curr_transmissions(first_ctrl_seg)?;
             } else {
+                let ctrl_seg = unsafe {
+                    custom_mlx5_fill_in_hdr_segment(
+                        self.thread_context.get_context_ptr(),
+                        num_octowords as _,
+                        num_wqes_required as _,
+                        inline_len as _,
+                        num_segs as _,
+                        MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
+                    )
+                };
+                if first_ctrl_seg == None {
+                    first_ctrl_seg = Some(ctrl_seg);
+                }
                 // add next segment
                 let mut written_header = false;
                 let allocation_size;
@@ -1475,8 +1587,10 @@ impl Datapath for Mlx5Connection {
             let received_pkt = &mut pkts[pkt_idx];
             let inline_len = 0;
             let num_segs = received_pkt.num_segs();
-            let num_wqes_required =
-                unsafe { custom_mlx5_num_wqes_required(inline_len as _, num_segs as _) };
+            let num_octowords =
+                unsafe { custom_mlx5_num_octowords(inline_len as _, num_segs as _) };
+
+            let num_wqes_required = unsafe { custom_mlx5_num_wqes_required(num_octowords as _) };
 
             if unsafe {
                 custom_mlx5_tx_descriptors_available(
@@ -1491,6 +1605,7 @@ impl Datapath for Mlx5Connection {
                     flip_headers(received_pkt.seg(0).mbuf());
                     let ctrl_seg = custom_mlx5_fill_in_hdr_segment(
                         self.thread_context.get_context_ptr(),
+                        num_octowords as _,
                         num_wqes_required as _,
                         inline_len as _,
                         num_segs as _,
@@ -1554,8 +1669,9 @@ impl Datapath for Mlx5Connection {
             let (msg_id, conn_id, ref mut sga) = &mut rc_sgas[sga_idx];
             self.insert_into_outgoing_map(*msg_id, *conn_id);
             let (inline_len, num_segs) = self.calculate_shape_rc(&sga)?;
-            let num_wqes_required =
-                unsafe { custom_mlx5_num_wqes_required(inline_len as _, num_segs as _) };
+            let num_octowords =
+                unsafe { custom_mlx5_num_octowords(inline_len as _, num_segs as _) };
+            let num_wqes_required = unsafe { custom_mlx5_num_wqes_required(num_octowords as _) };
 
             if unsafe {
                 custom_mlx5_tx_descriptors_available(
@@ -1569,6 +1685,7 @@ impl Datapath for Mlx5Connection {
                     sga,
                     *conn_id,
                     *msg_id,
+                    num_octowords,
                     num_wqes_required,
                     inline_len,
                     num_segs,
@@ -1590,8 +1707,9 @@ impl Datapath for Mlx5Connection {
             let (msg_id, conn_id, sga) = &sgas[sga_idx];
             self.insert_into_outgoing_map(*msg_id, *conn_id);
             let (inline_len, num_segs) = self.calculate_shape(&sga)?;
-            let num_wqes_required =
-                unsafe { custom_mlx5_num_wqes_required(inline_len as _, num_segs as _) };
+            let num_octowords =
+                unsafe { custom_mlx5_num_octowords(inline_len as _, num_segs as _) };
+            let num_wqes_required = unsafe { custom_mlx5_num_wqes_required(num_octowords as _) };
 
             // enough descriptors to transmit this sga?
             if unsafe {
@@ -1606,6 +1724,7 @@ impl Datapath for Mlx5Connection {
                     sga,
                     *conn_id,
                     *msg_id,
+                    num_octowords,
                     num_wqes_required,
                     inline_len,
                     num_segs,
@@ -1732,19 +1851,7 @@ impl Datapath for Mlx5Connection {
         let mempool_params =
             sizes::MempoolAllocationParams::new(min_elts, metadata_pgsize, PGSIZE_2MB, size)
                 .wrap_err("Incorrect mempool allocation params")?;
-        // add tx memory pool
-        let tx_mempool_ptr = unsafe {
-            custom_mlx5_alloc_and_register_tx_pool(
-                self.thread_context.get_context_ptr(),
-                mempool_params.get_item_len() as _,
-                mempool_params.get_num_items() as _,
-                mempool_params.get_data_pgsize() as _,
-                mempool_params.get_metadata_pgsize() as _,
-                ibv_access_flags_IBV_ACCESS_LOCAL_WRITE as _,
-            )
-        };
-        ensure!(!tx_mempool_ptr.is_null(), "Allocated tx mempool is null");
-        let data_mempool = DataMempool::new(tx_mempool_ptr)?;
+        let data_mempool = DataMempool::new(&mempool_params, &self.thread_context)?;
         let id = self
             .allocator
             .add_mempool(mempool_params.get_item_len(), data_mempool)?;

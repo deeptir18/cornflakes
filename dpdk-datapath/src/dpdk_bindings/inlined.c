@@ -309,20 +309,22 @@ void set_checksums_(struct rte_mbuf *pkt) {
 uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **tx_pkts, uint16_t nb_pkts) {
     /*for (uint16_t i = 0; i < nb_pkts; i++) {
         struct rte_mbuf *first_mbuf = tx_pkts[i];
-        //printf("First packet addr: %p\n", first_mbuf);
-        //printf("[rte_eth_tx_burst_] first mbuf num segs: %u\n", first_mbuf->nb_segs);
-        //printf("[rte_eth_tx_burst_] first mbuf data_len: %u, pkt_len: %u\n", first_mbuf->data_len, first_mbuf->pkt_len);
-        //printf("[rte_eth_tx_burst_] first mbuf next is null: %d\n", (first_mbuf->next == NULL));
+        printf("First packet addr: %p\n", first_mbuf);
+        printf("[rte_eth_tx_burst_] first mbuf num segs: %u\n", first_mbuf->nb_segs);
+        printf("[rte_eth_tx_burst_] first mbuf data_len: %u, pkt_len: %u\n", first_mbuf->data_len, first_mbuf->pkt_len);
+        printf("[rte_eth_tx_burst_] first mbuf next is null: %d\n", (first_mbuf->next == NULL));
         struct rte_mbuf *cur_pkt = first_mbuf;
         for (uint16_t j = 1; j < first_mbuf->nb_segs; j++) {
             cur_pkt = cur_pkt->next;
-            //printf("[rte_eth_tx_burst_] mbuf # %u, addr: %p\n", (unsigned)j, cur_pkt);
-            //printf("[rte_eth_tx_burst_]  mbuf # %u data_len: %u, pkt_len: %u\n", (unsigned)j, cur_pkt->data_len, cur_pkt->pkt_len);
-            //printf("[rte_eth_tx_burst_] mbuf # %u next is null: %d\n", (unsigned)j, (cur_pkt->next == NULL));
+            printf("[rte_eth_tx_burst_] mbuf # %u, addr: %p\n", (unsigned)j, cur_pkt);
+            printf("[rte_eth_tx_burst_]  mbuf # %u data_len: %u, pkt_len: %u\n", (unsigned)j, cur_pkt->data_len, cur_pkt->pkt_len);
+            printf("[rte_eth_tx_burst_] mbuf # %u next is null: %d\n", (unsigned)j, (cur_pkt->next == NULL));
         }
         uint8_t *p = rte_pktmbuf_mtod(first_mbuf, uint8_t *);
         struct rte_ether_hdr * const eth_hdr = (struct rte_ether_hdr *)(p);
         struct rte_ipv4_hdr *const ipv4 = (struct rte_ipv4_hdr *)(p + sizeof(struct rte_ether_hdr));
+        struct rte_udp_hdr *const udp = (struct rte_udp_hdr *)(p + sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+        uint32_t *id_ptr = (uint32_t *)(p + sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
         if (eth_hdr->ether_type != ntohs(RTE_ETHER_TYPE_IPV4)) {
             printf("[rte_eth_tx_burst_] Ether type is not RTE_ETHER_TYPE_IPV4\n");
         }
@@ -336,7 +338,7 @@ uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf 
             eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
             eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
             eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
-        printf("[rte_eth_tx_burst_] Queue: %u, Scp IP: %u, dst IP: %u, checksum: %u\n", queue_id, ipv4->src_addr, ipv4->dst_addr, ipv4->hdr_checksum);
+        printf("[rte_eth_tx_burst_] Queue: %u, Scp IP: %u, dst IP: %u, checksum: %u, udp data len: %u, ID: %u\n", queue_id, ipv4->src_addr, ipv4->dst_addr, ipv4->hdr_checksum, ntohs(udp->dgram_len), *id_ptr);
     }*/
     return rte_eth_tx_burst(port_id, queue_id, tx_pkts, nb_pkts);
 }
@@ -450,6 +452,7 @@ size_t fill_in_packet_header_(struct rte_mbuf *mbuf, struct rte_ether_addr *my_e
     udp_hdr->dgram_cksum = 0;
     ptr += sizeof(*udp_hdr);
     header_size += sizeof(*udp_hdr);
+    printf("[write hdrs dpdk] dgram len for udp: %u", rte_be_to_cpu_16(udp_hdr->dgram_len));
 
     mbuf->l2_len = RTE_ETHER_HDR_LEN;
     mbuf->l3_len = sizeof(struct rte_ipv4_hdr);
@@ -814,12 +817,14 @@ void fill_in_hdrs_dpdk_(void *buffer, const void *hdr, uint32_t id, size_t data_
      dst_ptr += sizeof(struct rte_udp_hdr);
 
     *(uint32_t *)dst_ptr = id;
+    //printf("[fill_in_hdrs_dpdk_] dpdk ID that was filled in: %u, [given] %u\n", *dst_ptr, id);
 
     ip->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) +  4 + data_len);
     ip->hdr_checksum = 0;
     ip->hdr_checksum = rte_ipv4_cksum(ip);
-
-     udp->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + 4 + data_len);
-     udp->dgram_cksum = 0;
+    
+    udp->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + 4 + data_len);
+    //printf("[fill_in_hdrs_dpdk_] dpdk udp header length 1, data_len: %u: %lu\n", rte_be_to_cpu_16(udp->dgram_len), data_len);
+    udp->dgram_cksum = 0;
     udp->dgram_cksum = rte_cpu_to_be_16(rte_raw_cksum((void *)udp, sizeof(struct rte_udp_hdr)));
 }

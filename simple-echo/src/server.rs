@@ -99,6 +99,7 @@ where
         pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
         datapath: &mut Self::Datapath,
     ) -> Result<()> {
+        tracing::debug!("Processing batch of pkts of length {}", pkts.len());
         let outgoing_bufs_result: Result<Vec<(MsgID, ConnID, Bytes)>> = pkts
             .iter()
             .map(|pkt| {
@@ -116,10 +117,15 @@ where
             })
             .collect();
         let outgoing_bufs = outgoing_bufs_result?;
-        let outgoing_pkts: Vec<(MsgID, ConnID, &[u8])> = outgoing_bufs
-            .iter()
-            .map(|(msg, conn, bytes)| (*msg, *conn, bytes.as_ref()))
-            .collect();
+        let mut outgoing_pkts: Vec<(MsgID, ConnID, &[u8])> =
+            Vec::with_capacity(outgoing_bufs.len());
+        for (msg, conn, bytes) in outgoing_bufs.iter() {
+            outgoing_pkts.push((*msg, *conn, bytes.as_ref()));
+        }
+        /*let outgoing_pkts: Vec<(MsgID, ConnID, &[u8])> = outgoing_bufs
+        .iter()
+        .map(|(msg, conn, bytes)| (*msg, *conn, bytes.as_ref()))
+        .collect();*/
         datapath
             .push_buffers_with_copy(outgoing_pkts)
             .wrap_err("Failed to push buffers with copy to the datapath")?;
@@ -127,15 +133,15 @@ where
     }
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
-        let max_data_size = self.response_data_len + connection.header_size();
         let mut buf_size = 256;
+        let max_size = 8192;
         let min_elts = 8192;
         loop {
             // add a tx pool with buf size
             tracing::info!("Adding memory pool of size {}", buf_size);
             connection.add_memory_pool(buf_size, min_elts)?;
             buf_size *= 2;
-            if buf_size > max_data_size {
+            if buf_size > max_size {
                 break;
             }
         }

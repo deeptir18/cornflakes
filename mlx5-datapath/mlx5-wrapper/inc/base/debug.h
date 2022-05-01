@@ -47,7 +47,7 @@ enum {
 #endif
 #ifdef __DEBUG__
 #define NETPERF_ASSERT(cond, msg, ...) \
-    if (unlikely(!cond)) {  \
+    if (unlikely(!(cond))) {  \
         printf(RED "[%s, %s, line %d] *NETPERF Assertion failed**: \n" RESET, __FILE__, __FUNCTION__, __LINE__); \
         printf("\t\u2192 "); \
         printf(msg, ##__VA_ARGS__); \

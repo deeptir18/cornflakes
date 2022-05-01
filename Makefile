@@ -15,7 +15,7 @@ build: mlx5-datapath
 .PHONY: mlx5-datapath mlx5-netperf
 
 mlx5-datapath:
-	$(MAKE) -C mlx5-datapath/mlx5-wrapper CONFIG_MLX5=$(CONFIG_MLX5) DEBUG=$(DEBUG)
+	$(MAKE) -C mlx5-datapath/mlx5-wrapper CONFIG_MLX5=$(CONFIG_MLX5) DEBUG=$(DEBUG) GDB=$(GDB)
 
 # mlx5 netperf microbenchmark
 mlx5-netperf:

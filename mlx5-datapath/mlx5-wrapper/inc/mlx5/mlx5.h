@@ -4,6 +4,7 @@
 #include <infiniband/verbs.h>
 #include <base/byteorder.h>
 #include <base/mempool.h>
+#include <string.h>
 
 #define PORT_NUM 1
 
@@ -22,9 +23,9 @@
 #define custom_mlx5_work_requests_end(v)((char *)(custom_mlx5_work_requests_start(v) + custom_mlx5_work_requests_size(v)))
 #define custom_mlx5_get_work_request(v, idx)((char *)(v->tx_qp_dv.sq.buf + (idx << v->tx_sq_log_stride)))
 
-#define custom_mlx5_completion_buffer_start(v)((char *)(v->pending_transmissions[0]))
+#define custom_mlx5_completion_buffer_start(v)((char *)(v->pending_transmissions))
 #define custom_mlx5_completion_buffer_end(v)(custom_mlx5_completion_buffer_start(v) + custom_mlx5_work_requests_size(v))
-#define custom_mlx5_get_completion_segment(v, idx)((struct custom_mlx5_transmission_info *)(v->pending_transmissions[idx * 8]))
+#define custom_mlx5_get_completion_segment(v, idx)((struct custom_mlx5_transmission_info *)(custom_mlx5_completion_buffer_start(v) + v->tx_qp_dv.sq.stride * idx))
 
 #define custom_mlx5_incr_ring_buffer(ptr, start, end, type, ptr_type) \
     ((((char *)ptr + sizeof(type)) == end) ? ((ptr_type)start) : ((ptr_type)((char *)ptr + (sizeof(type)))) )
@@ -90,8 +91,9 @@ struct custom_mlx5_txq {
 	struct custom_mlx5_direct_txq txq;
 
 	/* direct verbs qp */
-	struct custom_mlx5_mbuf **buffers; // pending DMA
-    struct custom_mlx5_transmission_info **pending_transmissions; // completion info for pending transmissions
+	//struct custom_mlx5_mbuf **buffers; // pending DMA
+    void **buffers;
+    void *pending_transmissions;
 
 	struct mlx5dv_qp tx_qp_dv;
 	uint32_t sq_head;
@@ -117,18 +119,15 @@ struct registered_mempool {
     struct registered_mempool *next; /* Next allocated registered mempool in the list. */
 };
 
-inline void custom_mlx5_clear_registered_mempool(struct registered_mempool *mempool) {
-    mempool->mr = NULL;
-    mempool->next = NULL;
-    custom_mlx5_clear_mempool(&mempool->data_mempool);
-    custom_mlx5_clear_mempool(&mempool->metadata_mempool);
-}
+void check_wqe_cnt(struct custom_mlx5_txq *v, size_t original_cnt);
+
+void custom_mlx5_clear_registered_mempool(struct registered_mempool *mempool);
 
 struct custom_mlx5_global_context {
     struct ibv_context *ibv_context; /* IBV Context */
     struct ibv_pd *pd; /* pd variable */
     size_t num_threads; /* Number of total threads */
-    struct custom_mlx5_per_thread_context **thread_contexts; /* Per thread contexts */
+    void *thread_contexts; /* Per thread contexts */
     struct eth_addr *our_eth;
     struct ibv_rwq_ind_table *rwq_ind_table;
     struct ibv_qp *qp;
@@ -144,24 +143,15 @@ struct custom_mlx5_per_thread_context {
     struct custom_mlx5_global_context *global_context; /* Pointer back to the global context. */
     struct custom_mlx5_rxq rxq; /* Rxq for receiving packets. */
     struct custom_mlx5_txq txq; /* Txq for sending packets. */
-    struct registered_mempool rx_mempool; /* Receive mempool associated with the rxq. */
+    struct registered_mempool *rx_mempool; /* Receive mempool associated with the rxq. */
     struct custom_mlx5_mempool external_data_pool; /* Memory pool used for attaching external data.*/
-    struct registered_mempool *tx_mempools;  /* Tx mempools linked list. */
-    size_t num_allocated_tx_pools; /* Number of allocated tx pools. */
 };
 
 /* Given index into threads array, get per thread context. */
 struct custom_mlx5_per_thread_context *custom_mlx5_get_per_thread_context(struct custom_mlx5_global_context *context, size_t idx);
 
 /* Clears state in per thread context. */
-inline void custom_mlx5_clear_per_thread_context(struct custom_mlx5_global_context *context, size_t idx) {
-    struct custom_mlx5_per_thread_context *per_thread_context = custom_mlx5_get_per_thread_context(context, idx);
-    per_thread_context->global_context = NULL;
-    custom_mlx5_clear_registered_mempool(&per_thread_context->rx_mempool);
-    custom_mlx5_clear_mempool(&per_thread_context->external_data_pool);
-    per_thread_context->tx_mempools = NULL;
-    per_thread_context->num_allocated_tx_pools = 0;
-}
+void custom_mlx5_clear_per_thread_context(struct custom_mlx5_global_context *context, size_t idx);
 
 static inline unsigned int custom_mlx5_nr_inflight_tx(struct custom_mlx5_txq *v)
 {

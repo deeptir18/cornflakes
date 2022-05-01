@@ -9,13 +9,22 @@
 #include <net/udp.h>
 
 
+
 /* 
- * Check the number of wqes required for a particular transmission.
+ * Check the number of octowords required for a particular transmission.
  * Args:
  * @inline_len: size_t - Amount of data to be inlined.
  * @num_segs: size_t - Number of data segments to write in,
  * */
-size_t custom_mlx5_num_wqes_required(size_t inline_len, size_t num_segs);
+size_t custom_mlx5_num_octowords(size_t inline_len, size_t num_segs);
+
+
+/* 
+ * Check the number of wqes required for a particular transmission.
+ * Args:
+ * @num_octowords - Number of 16 byte segments needed by this transmission.
+ * */
+size_t custom_mlx5_num_wqes_required(size_t num_octowords);
 
 /* 
  * Check if this amount of inlined data and dpsegs can be transmitted.
@@ -82,6 +91,7 @@ int custom_mlx5_refill_rxqueue(struct custom_mlx5_per_thread_context *per_thread
  * Starts the next transmission by writing in the header segment.
  * Args:
  * @per_thread_context: Mlx5 per thread context
+ * @num_octowords - Number of octowords required for a particular transmission,
  * @num_wqes - Number of wqes required to transmit this inline length and number
  * @of segments.
  * @inline_len - Amount of data to inline in this segment
@@ -98,6 +108,7 @@ int custom_mlx5_refill_rxqueue(struct custom_mlx5_per_thread_context *per_thread
  *
  * */
 struct mlx5_wqe_ctrl_seg *custom_mlx5_fill_in_hdr_segment(struct custom_mlx5_per_thread_context *per_thread_context,
+                            size_t num_octowords,
                             size_t num_wqes,
                             size_t inline_len,
                             size_t num_segs,
@@ -117,46 +128,7 @@ struct mlx5_wqe_ctrl_seg *custom_mlx5_fill_in_hdr_segment(struct custom_mlx5_per
  * Pointer to end of inline data (which could be wrapped around to the front
  * of the ring buffer).
  * */
-inline char *custom_mlx5_work_request_inline_off(struct custom_mlx5_txq *v, size_t inline_off, bool round_to_16) {
-    uint32_t current_idx = custom_mlx5_current_segment(v);
-    struct mlx5_wqe_eth_seg *eseg = (struct mlx5_wqe_eth_seg *)((char *)custom_mlx5_get_work_request(v, current_idx) + sizeof(struct mlx5_wqe_ctrl_seg));
-    char *end_ptr = custom_mlx5_work_requests_end(v);
-
-    char *current_segment_ptr = (char *)eseg + offsetof(struct mlx5_wqe_eth_seg, inline_hdr_start);
-    // wrap around to front of ring buffer
-    if ((current_segment_ptr + inline_off) >= end_ptr) {
-        size_t second_segment = inline_off - (end_ptr - current_segment_ptr);
-        current_segment_ptr = (char *)v->tx_qp_dv.sq.buf;
-        if (round_to_16) {
-            current_segment_ptr += (second_segment + 15) & 0xf;
-        } else {
-            current_segment_ptr += second_segment;
-        }
-    } else {
-        char *end_inline = current_segment_ptr + inline_off;
-        // wrap around to front of ring buffer.
-        if (((end_ptr - end_inline) <= 15) && round_to_16) {
-            current_segment_ptr = v->tx_qp_dv.sq.buf;
-        } else {
-            if (inline_off <= 2) {
-                if (round_to_16) {
-                    current_segment_ptr += 2;
-                } else {
-                    current_segment_ptr += inline_off;
-                }
-            } else {
-                current_segment_ptr += 2;
-                if (round_to_16) {
-                    current_segment_ptr += (inline_off - 2 + 15) & 0xf;
-                } else {
-                    current_segment_ptr += (inline_off - 2);
-                }
-            }
-        }
-    }
-
-    return current_segment_ptr;
-}
+char *custom_mlx5_work_request_inline_off(struct custom_mlx5_txq *v, size_t inline_off, bool round_to_16);
 
 /* 
  * For current segment being transmitted, return start of data segments pointer.
@@ -183,6 +155,7 @@ inline struct mlx5_wqe_data_seg *custom_mlx5_dpseg_start(struct custom_mlx5_txq 
  * */
 inline struct custom_mlx5_transmission_info *custom_mlx5_completion_start(struct custom_mlx5_txq *v) {
     struct custom_mlx5_transmission_info *current_completion_info = custom_mlx5_get_completion_segment(v, custom_mlx5_current_segment(v));
+    NETPERF_DEBUG("Current completion info: %p", current_completion_info); 
     return custom_mlx5_incr_transmission_info(v, current_completion_info);
 }
 

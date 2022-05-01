@@ -65,18 +65,6 @@ void *custom_mlx5_mbuf_offset_ptr_(struct custom_mlx5_mbuf *mbuf, size_t off) {
     return (void *)custom_mlx5_mbuf_offset_ptr(mbuf, off);
 }
 
-uint16_t custom_mlx5_mbuf_refcnt_read_(struct custom_mlx5_mbuf *mbuf) {
-    return custom_mlx5_mbuf_refcnt_read(mbuf);
-}
-
-void custom_mlx5_mbuf_refcnt_update_or_free_(struct custom_mlx5_mbuf *mbuf, int16_t change) {
-    custom_mlx5_mbuf_refcnt_update_or_free(mbuf, change);
-}
-
-void custom_mlx5_mbuf_free_(struct custom_mlx5_mbuf *mbuf) {
-    custom_mlx5_mbuf_free(mbuf);
-}
-
 void custom_mlx5_mempool_free_(void *item, struct custom_mlx5_mempool *mempool) {
     custom_mlx5_mempool_free(mempool, item);
 }
@@ -112,10 +100,10 @@ void custom_mlx5_fill_in_hdrs_(void *buffer, const void *hdr, uint32_t id, size_
     ip->len = htons(sizeof(struct ip_hdr) + sizeof(struct udp_hdr) + 4 + data_len);
     ip->chksum = 0;
     ip->chksum = custom_mlx5_get_chksum(ip);
-
-     udp->len = htons(sizeof(struct udp_hdr) + 4 + data_len);
-     udp->chksum = 0;
-     udp->chksum = custom_mlx5_get_chksum(udp);
+    
+    udp->len = htons(sizeof(struct udp_hdr) + 4 + data_len);
+    udp->chksum = 0;
+    udp->chksum = custom_mlx5_get_chksum(udp);
 
 }
 

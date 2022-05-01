@@ -47,6 +47,33 @@ void __custom_mlx5_mempool_free_debug_check(struct custom_mlx5_mempool *m, void 
 
 #endif /* DEBUG */
 
+int custom_mlx5_is_allocated(struct custom_mlx5_mempool *mempool) {
+    if (mempool->buf != NULL) {
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+int custom_mlx5_is_registered(struct custom_mlx5_mempool *mempool) {
+    if (mempool->lkey != -1) {
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+void custom_mlx5_clear_mempool(struct custom_mlx5_mempool *mempool) {
+    mempool->free_items = NULL;
+    mempool->allocated = 0;
+    mempool->capacity = 0;
+    mempool->buf = NULL;
+    mempool->len = 0;
+    mempool->pgsize = 0;
+    mempool->item_len = 0;
+    mempool->lkey = -1;
+}
+
 static int custom_mlx5_mempool_populate(struct custom_mlx5_mempool *m, void *buf, size_t len,
 			    size_t pgsize, size_t item_len)
 {

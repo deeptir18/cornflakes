@@ -18,32 +18,11 @@ struct custom_mlx5_mempool {
     int32_t lkey; /* Lkey for the memory region backed by mempool. -1 if not registered. */
 };
 
-inline int custom_mlx5_is_allocated(struct custom_mlx5_mempool *mempool) {
-    if (mempool->buf != NULL) {
-        return 1;
-    } else {
-        return 0;
-    }
-}
+int custom_mlx5_is_allocated(struct custom_mlx5_mempool *mempool);
 
-inline int custom_mlx5_is_registered(struct custom_mlx5_mempool *mempool) {
-    if (mempool->lkey != -1) {
-        return 1;
-    } else {
-        return 0;
-    }
-}
+int custom_mlx5_is_registered(struct custom_mlx5_mempool *mempool);
 
-inline void custom_mlx5_clear_mempool(struct custom_mlx5_mempool *mempool) {
-    mempool->free_items = NULL;
-    mempool->allocated = 0;
-    mempool->capacity = 0;
-    mempool->buf = NULL;
-    mempool->len = 0;
-    mempool->pgsize = 0;
-    mempool->item_len = 0;
-    mempool->lkey = -1;
-}
+void custom_mlx5_clear_mempool(struct custom_mlx5_mempool *mempool);
 
 #ifdef DEBUG
 extern void __custom_mlx5_mempool_alloc_debug_check(struct custom_mlx5_mempool *m, void *item);
@@ -72,6 +51,7 @@ static inline void custom_mlx5_deregister_mempool(struct custom_mlx5_mempool *me
  * Returns index of item; -1 if item not within bounds of pool.
  */
 static inline int custom_mlx5_mempool_find_index(struct custom_mlx5_mempool *m, void *item) {
+    // todo: MAKE THIS PANIC ON TRUE?
     if ((char *)item < (char *)m->buf && (char *)item >= ((char *)m->buf + m->len)) {
         return -1;
     }

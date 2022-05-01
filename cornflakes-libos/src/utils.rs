@@ -213,7 +213,11 @@ pub fn check_udp_hdr(hdr_buf: &[u8], my_udp_port: u16) -> Result<(u16, u16, usiz
         );
     }
 
-    Ok((src_port, dst_port, data_len))
+    Ok((
+        src_port,
+        dst_port,
+        data_len - UDP_HEADER2_SIZE - HEADER_ID_SIZE,
+    ))
 }
 
 #[inline]

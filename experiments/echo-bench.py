@@ -29,7 +29,8 @@ SERIALIZATION_LIBRARIES = ["cornflakes-dynamic",  # "cereal", "capnproto", "prot
 MOTIVATION_SERIALIZATION_LIBRARIES = ["ideal", "onecopy", "twocopy",
                                       "flatbuffers", "capnproto", "cereal", "protobuf"]
 ALL_SERIALIZATION_LIBRARIES = [
-    "cornflakes-dynamic", "cornflakes1c-dynamic", "flatbuffers", "capnproto", "cereal", "protobuf"]
+    "cornflakes-dynamic", "cornflakes1c-dynamic", "flatbuffers", "capnproto",
+    "cereal", "protobuf", "onecopy", "twocopy", "ideal"]
 MOTIVATION_MESSAGE_TYPE = "list-2"
 MOTIVATION_SIZES_TO_LOOP = [1024, 4096]
 

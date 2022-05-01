@@ -12,7 +12,7 @@ showtext_auto()
 x_labels_arrays <- c("65536" = "65536\nIn L1", "819200" = "819200\nIn L2", "4096000" = "4096K\nIn L3", "65536000" = "65536K\n~4X L3", "655360000" = "655360K\n~40x L3")
 x_labels_recv_size <- c("256" = "256", "512" = "512", "1024" = "1024", "2048" = "2048", "4096" = "4096")
 
-x_labels_total_size <- c("256" = "256", "512" = "512", "1024" = "1024", "2048" = "2048", "4096" = "4096")
+x_labels_total_size <- c("256" = "256", "512" = "512", "1024" = "1024", "2048" = "2048", "4096" = "4096", "8192" = "8192")
 x_labels_num_segments <- c("1" = "1", "2" = "2", "4" = "4", "8" = "8", "16" = "16", "32"="32")
 
 x_labels_none <- c()
@@ -314,6 +314,83 @@ full_plot <- function(data, metric, factor_name) {
     return(plot)
 }
 
+label_heatmap <- function(row) {
+    scatter_gather <- round(row["scatter_gather"], digits = 1)
+    copy <- round(row["copy_each_segment"], digits = 1)
+    difference <- round(row["difference"], digits = 2)
+    label <- paste("SG: ", scatter_gather)
+    label <- paste(label, "\n")
+    label <- paste(label, "Copy: ")
+    label <- paste(label, copy)
+    label <- paste(label, "\n( ")
+    label <- paste(label, difference)
+    label <- paste(label, " )")
+    return (label)
+
+}
+
+calculate_latency_difference <- function(row) {
+    res <- (row["copy_each_segment"] - row["scatter_gather"]) / row["scatter+gather"]
+    return (res)
+}
+
+calculate_tput_difference <- function(row) {
+    res <- (row["scatter_gather"] - row["copy_each_segment"]) / row["copy_each_segment"]
+    return (res)
+}
+normalize <- function(x, min_val, max_val) {
+    return ((x["difference"] - min_val) / (max_val - min_val))
+}
+heatmap_plot <- function(data, metric) {
+    subset <- ddply(data, c("system_name", "num_segments", "total_size"), summarise, tput = mean(maxtputgbps))
+    heatmap_data <- subset %>% spread(key = system_name, value = tput)
+    heatmap_data$difference <- apply(heatmap_data, 1, calculate_tput_difference)
+    if (metric == "p99") {
+        subset <- ddply(data, c("system_name", "num_segments", "total_size"), summarise, tput = mean(mp99))
+        heatmap_data <- subset %>% spread(key = system_name, value = p99)
+        heatmap_data$difference <- apply(heatmap_data, 1, calculate_latency_difference)
+    } else if (metric == "median") {
+        subset <- ddply(data, c("system_name", "num_segments", "total_size"), summarise, tput = mean(mmedian))
+        heatmap_data <- subset %>% spread(key = system_name, value = median)
+        heatmap_data$difference <- apply(heatmap_data, 1, calculate_latency_difference)
+    }
+    min_value  <- min(heatmap_data[,"difference"])
+    max_value  <- max(heatmap_data[,"difference"])
+    heatmap_data$norm_difference <- apply(heatmap_data, 1, normalize, min_value, max_value)
+    heatmap_data$label <- apply(heatmap_data, 1, label_heatmap)
+
+    plot<-ggplot(heatmap_data,
+        aes(x = factor(total_size),
+            y = factor(num_segments),
+            fill = difference,
+            )) +
+        coord_fixed(ratio = 1) +
+        geom_tile() +
+        xlab(label = "Total Request Size (bytes)") +
+        ylab(label = "Number of Segments Requested") + 
+        geom_text(aes(label=label, family = "Fira Sans")) +
+        scale_fill_gradient2(low = "#f1a340", mid = "#f7f7f7", high = "#998ec3") +
+        expand_limits(x = 0, y = 1) +
+        theme_bw() +
+        theme(legend.position = "top",
+                text = element_text(family="Fira Sans"),
+                legend.title = element_blank(),
+                legend.key.size = unit(10, 'mm'),
+                legend.spacing.x = unit(0.1, 'cm'),
+                panel.grid.major = element_blank(), 
+                panel.border = element_blank(),
+                panel.grid.minor = element_blank(),
+                # plot.margin = unit(c(0, 0, 0, 0), "cm"),
+                legend.text=element_text(size=15),
+                axis.title=element_text(size=27,face="plain", colour="#000000"),
+                axis.ticks.y = element_blank(),
+                axis.ticks.x= element_blank(),
+                axis.text.y=element_text(size=27, colour="#000000"),
+                axis.text.x=element_text(size=27, colour="#000000", angle = 23))
+    print(plot)
+    return(plot)
+}
+
 if (!("recv_size" %in% colnames(d)))
 {
     d$recv_size <- 0
@@ -377,5 +454,9 @@ if (plot_type == "full") {
     }
     plot <- tput_latency_plot(summarized, metric)
     ggsave("tmp.pdf", width = 9, height=6)
+    embed_fonts("tmp.pdf", outfile=plot_pdf)
+} else if (plot_type == "heatmap") {
+    plot <- heatmap_plot(d_postprocess, metric)
+    ggsave("tmp.pdf", width=9, height=9)
     embed_fonts("tmp.pdf", outfile=plot_pdf)
 }

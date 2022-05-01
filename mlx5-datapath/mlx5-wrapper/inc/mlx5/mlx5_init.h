@@ -11,11 +11,21 @@
 #include <infiniband/verbs.h>
 #include <infiniband/mlx5dv.h>
 
-/* Allocates global context. */
-struct custom_mlx5_global_context *custom_mlx5_alloc_global_context(size_t num_threads);
+size_t custom_mlx5_get_registered_mempool_size();
 
-/* Frees global context, including per thread context array. */
-void custom_mlx5_free_global_context(struct custom_mlx5_global_context *context);
+size_t custom_mlx5_get_global_context_size();
+
+size_t custom_mlx5_get_per_thread_context_size(size_t num_threads);
+
+void *custom_mlx5_get_raw_threads_ptr(struct custom_mlx5_global_context *global_context);
+
+/* Allocates global context. */
+void custom_mlx5_alloc_global_context(size_t num_threads, unsigned char *global_context_ptr, unsigned char *per_thread_info);
+
+/* Attaches rx_mempool pointer to thread context. */
+void custom_mlx5_set_rx_mempool_ptr(struct custom_mlx5_global_context *global_context,
+                                        size_t thread_id,
+                                        struct registered_mempool *rx_mempool_ptr);
 
 /* Allocates data and metadata for an mbuf from this registered mempool object. */
 struct custom_mlx5_mbuf *custom_mlx5_allocate_data_and_metadata_mbuf(struct registered_mempool *mempool);
@@ -72,30 +82,27 @@ int custom_mlx5_init_external_mempools(struct custom_mlx5_global_context *contex
                             size_t num_pages, 
                             size_t pgsize);
 
-/* Just allocate a new tx pool. */
-struct registered_mempool *custom_mlx5_alloc_tx_pool(struct custom_mlx5_per_thread_context *per_thread_context,
+/* Allocate pages for a new tx pool, given pointer to registered mempool data
+ * structure */
+int custom_mlx5_alloc_tx_pool(struct registered_mempool *mempool,
                                             size_t item_len,
                                             size_t num_items,
                                             size_t data_pgsize,
                                             size_t metadata_pgsize);
 
-/* Allocate and register a new tx mempool. */
-struct registered_mempool *custom_mlx5_alloc_and_register_tx_pool(struct custom_mlx5_per_thread_context *per_thread_context,
+/* Allocate and register a new tx mempool, given pointer to registered mempool. */
+int custom_mlx5_alloc_and_register_tx_pool(struct custom_mlx5_per_thread_context *per_thread_context,
+                                                        struct registered_mempool *mempool,
                                                         size_t item_len, 
                                                         size_t num_items, 
                                                         size_t data_pgsize,
                                                         size_t metadata_pgsize,
                                                         int registry_flags);
 
-/* Deallocate a tx mempool, unregistering and freeing the backing memory if
- * necessary. */
-int custom_mlx5_deallocate_tx_pool(struct custom_mlx5_per_thread_context *per_thread_context, struct registered_mempool *tx_mempool);
-
 /* Tearsdown state in the mlx5 per thread context. 
  * Includes:
  *  Freeing rx mempool
- *  Freeing metadata mempool (if allocated)
- *  Freeing and deregistering any allocated tx mempools. */
+ *  Freeing metadata mempool (if allocated)*/
 int custom_mlx5_teardown(struct custom_mlx5_per_thread_context *per_thread_context);
 
 /* Helper function borrowed from DPDK. */

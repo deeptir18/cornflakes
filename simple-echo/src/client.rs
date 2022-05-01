@@ -107,6 +107,7 @@ where
         sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
     ) -> Result<()> {
         // if in debug mode, check whether the bytes are what they should be
+        tracing::debug!(id = sga.msg_id(), "Received sga");
         if cfg!(debug_assertions) {
             let bytes = sga.flatten();
             assert!(bytes == self.bytes_to_transmit);
