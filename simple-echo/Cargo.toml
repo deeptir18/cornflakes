@@ -14,8 +14,9 @@ structopt="0.2.16"
 structopt-derive="0.2.16"
 cornflakes-libos = { path = "../cornflakes-libos" }
 cornflakes-utils = { path = "../cornflakes-utils" }
-mlx5-datapath = { path = "../mlx5-datapath" }
-dpdk-datapath = { path = "../dpdk-datapath" }
+linux-datapath = { path = "../linux-datapath" }
+mlx5-datapath = { path = "../mlx5-datapath", optional = true }
+dpdk-datapath = { path = "../dpdk-datapath", optional = true }
 perftools = {git = "https://github.com/demikernel/perftools", rev = "94031ae", optional = true}
 yaml-rust = "0.4.3"
 hashbrown = "0.11.*"
@@ -24,7 +25,17 @@ byteorder = "1.3.4"
 affinity = "0.1.1"
 
 [features]
-default = ["mlx5"]
-mlx5 = ["dpdk-datapath/mlx5"]
+default = []
+mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath", "dpdk-datapath"]
 profiler = ["cornflakes-libos/profiler"]
 
+[[bin]]
+name = "simple_echo_dpdk"
+required-features = ["mlx5"]
+
+[[bin]]
+name = "simple_echo_mlx5"
+required-features = ["mlx5"]
+
+[[bin]]
+name = "simple_echo_linux"
