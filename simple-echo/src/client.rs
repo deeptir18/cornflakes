@@ -111,6 +111,7 @@ where
         if cfg!(debug_assertions) {
             let bytes = sga.flatten();
             assert!(bytes == self.bytes_to_transmit);
+            tracing::debug!(id = sga.msg_id(), "Sga passed debug test");
         }
         Ok(())
     }

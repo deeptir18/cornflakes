@@ -57,6 +57,7 @@ void custom_mlx5_alloc_global_context(size_t num_threads, unsigned char *global_
 void custom_mlx5_set_rx_mempool_ptr(struct custom_mlx5_global_context *global_context, 
                                         size_t thread_id, 
                                         struct registered_mempool *rx_mempool_ptr) {
+    NETPERF_DEBUG("Setting rx ptr: %p", rx_mempool_ptr);
     struct custom_mlx5_per_thread_context *t_context = custom_mlx5_get_per_thread_context(global_context, thread_id);
     t_context->rx_mempool = rx_mempool_ptr;
     custom_mlx5_clear_registered_mempool(t_context->rx_mempool);
@@ -94,7 +95,6 @@ struct custom_mlx5_mbuf *custom_mlx5_allocate_data_and_metadata_mbuf(struct regi
 
 void custom_mlx5_clear_registered_mempool(struct registered_mempool *mempool) {
     mempool->mr = NULL;
-    mempool->next = NULL;
     custom_mlx5_clear_mempool(&mempool->data_mempool);
     custom_mlx5_clear_mempool(&mempool->metadata_mempool);
 }
@@ -203,6 +203,7 @@ int custom_mlx5_create_and_register_mempool(struct custom_mlx5_global_context *c
         return ret;
     }
 
+    NETPERF_DEBUG("Successfully created and registered memory pool %p", mempool);
     return 0;
 }
 
@@ -254,6 +255,7 @@ int custom_mlx5_init_rx_mempools(struct custom_mlx5_global_context *context,
     for (int i = 0; i < context->num_threads; i++) {
         struct custom_mlx5_per_thread_context *thread_context = custom_mlx5_get_per_thread_context(context, i);
         struct registered_mempool *mempool = thread_context->rx_mempool;
+        NETPERF_DEBUG("Initializing rx mempool at %p", thread_context->rx_mempool);
         ret = custom_mlx5_create_and_register_mempool(context, mempool, item_len, num_items, data_pgsize, metadata_pgsize, registry_flags);
         if (ret != 0) {
             NETPERF_ERROR("Creation of rx mempool for thread %d failed: %s", i, strerror(-ret));

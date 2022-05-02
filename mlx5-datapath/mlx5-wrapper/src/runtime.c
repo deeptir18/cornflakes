@@ -106,7 +106,7 @@ int custom_mlx5_gather_rx(struct custom_mlx5_per_thread_context *per_thread_cont
 			break;
 
 		if (unlikely(opcode != MLX5_CQE_RESP_SEND)) {
-			NETPERF_PANIC("got opcode %02X", opcode);
+			NETPERF_PANIC("got opcode %d", opcode);
 			exit(1);
 		}
 
@@ -325,7 +325,7 @@ void custom_mlx5_inline_eth_hdr(struct custom_mlx5_per_thread_context *per_threa
 void custom_mlx5_inline_ipv4_hdr(struct custom_mlx5_per_thread_context *per_thread_context, struct ip_hdr *ipv4, size_t payload_size, size_t total_inline_size) {
     uint16_t original_len = ipv4->len;
     uint16_t original_checksum = ipv4->chksum;
-    ipv4->len = htons(sizeof(struct ip_hdr) + sizeof(struct udp_hdr) + payload_size);
+    ipv4->len = htons(sizeof(struct ip_hdr) + sizeof(struct udp_hdr) + 4 + payload_size);
     ipv4->chksum = 0;
     ipv4->chksum = custom_mlx5_get_chksum(ipv4);
     custom_mlx5_copy_inline_data(per_thread_context, sizeof(struct eth_hdr), (char *)ipv4, sizeof(struct ip_hdr), total_inline_size);
@@ -336,7 +336,7 @@ void custom_mlx5_inline_ipv4_hdr(struct custom_mlx5_per_thread_context *per_thre
 void custom_mlx5_inline_udp_hdr(struct custom_mlx5_per_thread_context *per_thread_context, struct udp_hdr *udp, size_t payload_size, size_t total_inline_size) {
     uint16_t original_len = udp->len;
     uint16_t original_checksum = udp->chksum;
-    udp->len = htons(sizeof(struct udp_hdr) + payload_size);
+    udp->len = htons(sizeof(struct udp_hdr) + 4 + payload_size);
     udp->chksum = custom_mlx5_get_chksum(udp);
     custom_mlx5_copy_inline_data(per_thread_context, sizeof(struct eth_hdr) + sizeof(struct ip_hdr), (char *)udp, sizeof(struct udp_hdr), total_inline_size);
     udp->len = original_len;

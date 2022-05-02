@@ -96,6 +96,7 @@ where
 
     pub fn add_recv_mempool(&mut self, mempool: M) {
         self.recv_mempools.push(mempool);
+        tracing::debug!("Pushing recv mempool into vector");
     }
 
     /// Registers the backing region behind the given mempool.

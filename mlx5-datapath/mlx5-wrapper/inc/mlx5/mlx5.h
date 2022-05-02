@@ -116,7 +116,6 @@ struct registered_mempool {
     struct custom_mlx5_mempool data_mempool;
     struct custom_mlx5_mempool metadata_mempool;
     struct ibv_mr *mr; /* If this is null, this means the mempool isn't registered. */
-    struct registered_mempool *next; /* Next allocated registered mempool in the list. */
 };
 
 void check_wqe_cnt(struct custom_mlx5_txq *v, size_t original_cnt);

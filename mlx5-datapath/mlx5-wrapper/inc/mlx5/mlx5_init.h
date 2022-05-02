@@ -51,7 +51,7 @@ int custom_mlx5_register_memory_pool(struct custom_mlx5_global_context *context,
 
 /* Create a data mempool, corresponding metadata mempool, and register the data
  * mempool and store information in registered_mempool object.*/
-int custom_mlx5_reate_and_register_mempool(struct custom_mlx5_global_context *context, 
+int custom_mlx5_create_and_register_mempool(struct custom_mlx5_global_context *context, 
                                     struct registered_mempool *mempool,
                                     size_t item_len,
                                     size_t num_items,

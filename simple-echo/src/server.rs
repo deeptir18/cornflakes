@@ -49,6 +49,7 @@ where
     ) -> Result<()> {
         let outgoing_sgas_result: Result<Vec<(MsgID, ConnID, Sga)>> = pkts.iter().map(|pkt| {
             let sge_results: Result<Vec<Sge>> = self.range_vec.iter().map(|range| {
+                tracing::debug!("Getting contiguous slice out of received pkt [{}, {}]", range.0, range.0 + range.1);
                 match pkt.contiguous_slice(range.0, range.1) {
                     Some(s) => Ok(Sge::new(s)),
                     None => {

@@ -7,7 +7,7 @@ use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{allocator::DatapathMemoryPool, datapath::Datapath};
 use std::boxed::Box;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DataMempool {
     mempool_ptr: *mut [u8],
 }
@@ -23,6 +23,7 @@ impl Drop for DataMempool {
                     self.mempool()
                 );
             }
+            tracing::warn!("Dropping data mempool {:?}", self.mempool_ptr);
             Box::from_raw(self.mempool_ptr);
         }
     }

@@ -691,7 +691,7 @@ impl Mlx5Connection {
 
         let mut entry_idx = 0;
         let mut header_written = false;
-        let data_len = rc_sga.data_len() + cornflakes_libos::utils::HEADER_ID_SIZE;
+        let data_len = rc_sga.data_len();
         match self.inline_mode {
             InlineMode::Nothing => {}
             InlineMode::PacketHeader => {
@@ -730,6 +730,49 @@ impl Mlx5Connection {
         // fill in all entries
         while entry_idx < rc_sga.len() {
             if self.zero_copy_rc_seg(rc_sga.get(entry_idx)) {
+                if entry_idx == 0 && !header_written {
+                    // write in header
+                    let mut data_buffer = match self
+                        .allocator
+                        .allocate_buffer(cornflakes_libos::utils::TOTAL_HEADER_SIZE)?
+                    {
+                        Some(buf) => buf,
+                        None => {
+                            bail!("No tx mempools to allocate outgoing packet");
+                        }
+                    };
+                    // copy in the header into a buffer
+                    self.copy_hdr(&mut data_buffer, conn_id, msg_id, data_len)?;
+                    // attach this data buffer to a metadata buffer
+                    let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
+                        Some(m) => m,
+                        None => {
+                            bail!(
+                            "Could not allocate corresponding metadata for allocated data buffer"
+                        );
+                        }
+                    };
+                    metadata_mbuf.increment_refcnt();
+
+                    // post this data buffer to the ring buffer
+                    unsafe {
+                        curr_data_seg = custom_mlx5_add_dpseg(
+                            self.thread_context.get_context_ptr(),
+                            curr_data_seg,
+                            metadata_mbuf.mbuf(),
+                            metadata_mbuf.offset() as _,
+                            metadata_mbuf.data_len() as _,
+                        );
+
+                        curr_completion = custom_mlx5_add_completion_info(
+                            self.thread_context.get_context_ptr(),
+                            curr_completion,
+                            metadata_mbuf.mbuf(),
+                        );
+                    }
+
+                    header_written = true;
+                }
                 let mbuf_metadata = rc_sga.get_mut(entry_idx).inner_datapath_pkt_mut().unwrap();
                 mbuf_metadata.increment_refcnt();
 
@@ -773,12 +816,7 @@ impl Mlx5Connection {
                 let mut write_offset = match !header_written && curr_idx == 0 {
                     true => {
                         // copy in the header into a buffer
-                        self.copy_hdr(
-                            &mut data_buffer,
-                            conn_id,
-                            msg_id,
-                            mbuf_length - cornflakes_libos::utils::TOTAL_HEADER_SIZE,
-                        )?
+                        self.copy_hdr(&mut data_buffer, conn_id, msg_id, data_len)?
                     }
                     false => 0,
                 };
@@ -872,7 +910,7 @@ impl Mlx5Connection {
 
         let mut entry_idx = 0;
         let mut header_written = false;
-        let data_len = sga.data_len() + cornflakes_libos::utils::HEADER_ID_SIZE;
+        let data_len = sga.data_len();
         match self.inline_mode {
             InlineMode::Nothing => {}
             InlineMode::PacketHeader => {
@@ -912,6 +950,50 @@ impl Mlx5Connection {
         while entry_idx < sga.len() {
             // TODO: can make this more optimal to not search through mempools twice
             if self.zero_copy_seg(sga.get(entry_idx).addr()) {
+                if entry_idx == 0 && !header_written {
+                    // write in header
+                    let mut data_buffer = match self
+                        .allocator
+                        .allocate_buffer(cornflakes_libos::utils::TOTAL_HEADER_SIZE)?
+                    {
+                        Some(buf) => buf,
+                        None => {
+                            bail!("No tx mempools to allocate outgoing packet");
+                        }
+                    };
+                    // copy in the header into a buffer
+                    self.copy_hdr(&mut data_buffer, conn_id, msg_id, data_len)?;
+                    // attach this data buffer to a metadata buffer
+                    let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
+                        Some(m) => m,
+                        None => {
+                            bail!(
+                            "Could not allocate corresponding metadata for allocated data buffer"
+                        );
+                        }
+                    };
+                    metadata_mbuf.increment_refcnt();
+
+                    // post this data buffer to the ring buffer
+                    unsafe {
+                        curr_data_seg = custom_mlx5_add_dpseg(
+                            self.thread_context.get_context_ptr(),
+                            curr_data_seg,
+                            metadata_mbuf.mbuf(),
+                            metadata_mbuf.offset() as _,
+                            metadata_mbuf.data_len() as _,
+                        );
+
+                        curr_completion = custom_mlx5_add_completion_info(
+                            self.thread_context.get_context_ptr(),
+                            curr_completion,
+                            metadata_mbuf.mbuf(),
+                        );
+                    }
+
+                    header_written = true;
+                }
+
                 let curr_seg = sga.get(entry_idx).addr();
                 let mut mbuf_metadata = self.allocator.recover_buffer(curr_seg)?.unwrap();
                 mbuf_metadata.increment_refcnt();
@@ -956,12 +1038,7 @@ impl Mlx5Connection {
                 let mut write_offset = match !header_written && curr_idx == 0 {
                     true => {
                         // copy in the header into a buffer
-                        self.copy_hdr(
-                            &mut data_buffer,
-                            conn_id,
-                            msg_id,
-                            mbuf_length - cornflakes_libos::utils::TOTAL_HEADER_SIZE,
-                        )?
+                        self.copy_hdr(&mut data_buffer, conn_id, msg_id, data_len)?
                     }
                     false => 0,
                 };
@@ -1026,23 +1103,23 @@ impl Mlx5Connection {
         return Ok(ctrl_seg);
     }
 
-    fn calculate_inline_size(&self, first_entry_size: usize) -> (usize, usize) {
+    fn calculate_inline_size(&self, first_entry_size: usize) -> (usize, usize, usize) {
         let mut sga_idx = 0;
-        let inline_size = match self.inline_mode {
-            InlineMode::Nothing => 0,
-            InlineMode::PacketHeader => cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+        let (inline_size, num_segs) = match self.inline_mode {
+            InlineMode::Nothing => (0, 1),
+            InlineMode::PacketHeader => (cornflakes_libos::utils::TOTAL_HEADER_SIZE, 0),
             InlineMode::FirstEntry => {
                 let inline_size = first_entry_size + cornflakes_libos::utils::TOTAL_HEADER_SIZE;
                 match inline_size <= self.max_inline_size {
                     true => {
                         sga_idx += 1;
-                        inline_size
+                        (inline_size, 0)
                     }
-                    false => cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                    false => (cornflakes_libos::utils::TOTAL_HEADER_SIZE, 0),
                 }
             }
         };
-        (inline_size, sga_idx)
+        (inline_size, sga_idx, num_segs)
     }
 
     /// Given a reference-counted scatter-gather array,
@@ -1050,18 +1127,22 @@ impl Mlx5Connection {
     /// Returns:
     /// Result<(inline size, number of data segments)>
     fn calculate_shape_rc(&self, rc_sga: &RcSga<Self>) -> Result<(usize, usize)> {
-        let (inline_size, mut sga_idx) = self.calculate_inline_size(rc_sga.get(0).len());
-        let mut num_segs = 0;
+        let (inline_size, mut sga_idx, mut num_segs) =
+            self.calculate_inline_size(rc_sga.get(0).len());
         while sga_idx < rc_sga.len() {
             if self.zero_copy_rc_seg(rc_sga.get(sga_idx)) {
                 num_segs += 1;
+                sga_idx += 1;
             } else {
                 let mut cur_idx = sga_idx;
                 while !self.zero_copy_rc_seg(rc_sga.get(cur_idx)) {
                     cur_idx += 1;
                 }
+                if !(sga_idx == 0 && num_segs == 1) {
+                    // past first entry (which can be copied with object header)
+                    num_segs += 1;
+                }
                 sga_idx = cur_idx;
-                num_segs += 1;
             }
         }
         Ok((inline_size, num_segs))
@@ -1072,15 +1153,18 @@ impl Mlx5Connection {
     /// Returns:
     /// Result<(inline size, number of data segments)>
     fn calculate_shape(&self, sga: &Sga) -> Result<(usize, usize)> {
-        let (inline_size, mut sga_idx) = self.calculate_inline_size(sga.get(0).len());
+        let (inline_size, mut sga_idx, mut num_segs) = self.calculate_inline_size(sga.get(0).len());
 
-        let mut num_segs = 0;
         while sga_idx < sga.len() {
             let curr_seg = sga.get(sga_idx);
             if self.zero_copy_seg(curr_seg.addr()) {
                 // each zero copy seg is counted as a separate segment
                 sga_idx += 1;
                 num_segs += 1;
+                tracing::debug!(
+                    "Adding zero-copy seg for seg {:?}",
+                    curr_seg.addr().as_ptr()
+                );
             } else {
                 // iterate until the next non-zero copy segment
                 let mut forward_index = sga_idx;
@@ -1089,8 +1173,11 @@ impl Mlx5Connection {
                     if !self.zero_copy_seg(seg.addr()) {
                         forward_index += 1;
                     } else {
+                        if !(sga_idx == 0 && num_segs == 1) {
+                            // past first entry (which can be copied into header segment)
+                            num_segs += 1;
+                        }
                         sga_idx = forward_index;
-                        num_segs += 1;
                         break;
                     }
                 }
@@ -1249,6 +1336,7 @@ impl Datapath for Mlx5Connection {
                     let rx_mempool_box: Box<[u8]> =
                         vec![0; custom_mlx5_get_registered_mempool_size() as _].into_boxed_slice();
                     let rx_mempool_ptr = Box::<[u8]>::into_raw(rx_mempool_box);
+                    tracing::debug!("Allocated rx mempool ptr at {:?}", rx_mempool_ptr);
                     custom_mlx5_set_rx_mempool_ptr(
                         global_context_ptr as _,
                         i as _,
@@ -1315,6 +1403,7 @@ impl Datapath for Mlx5Connection {
                     )
                 };
                 let rx_mempool_ptr = rx_mempool_ptrs[i];
+                tracing::debug!(rx_mempool_ptr =? rx_mempool_ptr, thread_context_ptr =? context_ptr, "Registering per thread context");
                 Mlx5PerThreadContext {
                     global_context_rc: global_context_copy,
                     queue_id: i as u16,
@@ -1336,7 +1425,8 @@ impl Datapath for Mlx5Connection {
         Self: Sized,
     {
         let mut allocator = MemoryPoolAllocator::default();
-        allocator.add_recv_mempool(DataMempool::new_from_ptr(context.get_recv_mempool_ptr()));
+        let mempool = DataMempool::new_from_ptr(context.get_recv_mempool_ptr());
+        allocator.add_recv_mempool(mempool);
 
         Ok(Mlx5Connection {
             thread_context: context,
@@ -1344,7 +1434,7 @@ impl Datapath for Mlx5Connection {
             outgoing_window: HashMap::default(),
             active_connections: [None; MAX_CONCURRENT_CONNECTIONS],
             address_to_conn_id: HashMap::default(),
-            allocator: MemoryPoolAllocator::default(),
+            allocator: allocator,
             copying_threshold: 256,
             inline_mode: InlineMode::default(),
             max_inline_size: 256,
@@ -1663,16 +1753,30 @@ impl Datapath for Mlx5Connection {
     where
         Self: Sized,
     {
+        tracing::debug!(len = rc_sgas.len(), "Pushing rc_sgas");
         let mut first_ctrl_seg: Option<*mut mlx5_wqe_ctrl_seg> = None;
         let mut sga_idx = 0;
         while sga_idx < rc_sgas.len() {
+            tracing::debug!(sga_idx = sga_idx, "In rc sga process loop");
             let (msg_id, conn_id, ref mut sga) = &mut rc_sgas[sga_idx];
             self.insert_into_outgoing_map(*msg_id, *conn_id);
             let (inline_len, num_segs) = self.calculate_shape_rc(&sga)?;
+            tracing::debug!(
+                inline_len = inline_len,
+                num_segs = num_segs,
+                "Params for rc sga"
+            );
             let num_octowords =
                 unsafe { custom_mlx5_num_octowords(inline_len as _, num_segs as _) };
             let num_wqes_required = unsafe { custom_mlx5_num_wqes_required(num_octowords as _) };
 
+            tracing::debug!(
+                inline_len = inline_len,
+                num_segs = num_segs,
+                num_octowords = num_octowords,
+                num_wqes_required = num_wqes_required,
+                "Parameters for rc sga"
+            );
             if unsafe {
                 custom_mlx5_tx_descriptors_available(
                     self.thread_context.get_context_ptr(),
@@ -1703,6 +1807,7 @@ impl Datapath for Mlx5Connection {
     fn push_sgas(&mut self, sgas: &Vec<(MsgID, ConnID, Sga)>) -> Result<()> {
         let mut first_ctrl_seg: Option<*mut mlx5_wqe_ctrl_seg> = None;
         let mut sga_idx = 0;
+        tracing::debug!(len = sgas.len(), "Pushing sgas");
         while sga_idx < sgas.len() {
             let (msg_id, conn_id, sga) = &sgas[sga_idx];
             self.insert_into_outgoing_map(*msg_id, *conn_id);
@@ -1711,6 +1816,14 @@ impl Datapath for Mlx5Connection {
                 unsafe { custom_mlx5_num_octowords(inline_len as _, num_segs as _) };
             let num_wqes_required = unsafe { custom_mlx5_num_wqes_required(num_octowords as _) };
 
+            tracing::debug!(
+                id = *msg_id,
+                inline_len = inline_len,
+                num_segs = num_segs,
+                num_octowords = num_octowords,
+                num_wqes_required = num_wqes_required,
+                "Calculated shape for sga transmission"
+            );
             // enough descriptors to transmit this sga?
             if unsafe {
                 custom_mlx5_tx_descriptors_available(
@@ -1736,6 +1849,7 @@ impl Datapath for Mlx5Connection {
                 sga_idx += 1;
             }
         }
+        tracing::debug!("Posting transmissions with ctrl seg {:?}", first_ctrl_seg);
         let _ = self.post_curr_transmissions(first_ctrl_seg)?;
 
         Ok(())

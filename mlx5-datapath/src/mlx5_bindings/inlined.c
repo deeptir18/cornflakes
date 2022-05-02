@@ -20,10 +20,6 @@ uint64_t cycles_to_ns_(uint64_t a) {
     return custom_mlx5_cycles_to_us(a);
 }
 
-struct registered_mempool *custom_mlx5_get_recv_mempool_(struct custom_mlx5_per_thread_context *context) {
-    return (struct registered_mempool *)(&(context->rx_mempool));
-}
-
 uint64_t current_cycles_() {
     return custom_mlx5_microcycles();
 }
