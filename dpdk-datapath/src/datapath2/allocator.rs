@@ -1,17 +1,33 @@
 use super::{super::dpdk_call, dpdk_bindings::*, wrapper};
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
-use cornflakes_libos::mem::closest_2mb_page;
+use cornflakes_libos::{
+    allocator::MempoolID,
+    mem::closest_2mb_page,
+};
 use hashbrown::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+trait IDCounter {
+    fn id_counter() -> u32 {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        println!("ID Counter: Adding {} Mempool ID", COUNTER.fetch_add(1, Ordering::Relaxed));
+        COUNTER.clone().into_inner()
+    }
+
+    fn id_counter_dummy() -> u32;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MempoolInfo {
     handle: *mut rte_mempool,
-    hugepage_size: usize, // how big are the huge pages used in this mempool
+    hugepage_size: usize,    // how big are the huge pages used in this mempool
     start: usize,
     size: usize,
     object_size: usize,      // includes padding
     beginning_offset: usize, // page offset at beginning of region
     page_offset: usize,      // offset on each page
     headroom: usize,         // headroom at front of mbuf
+    id: MempoolID,           // Unique MempoolID
 }
 
 impl Default for MempoolInfo {
@@ -20,6 +36,12 @@ impl Default for MempoolInfo {
             handle: std::ptr::null_mut(),
             ..Default::default()
         }
+    }
+}
+
+impl IDCounter for MempoolInfo {
+    fn id_counter_dummy() -> u32 {
+        0
     }
 }
 
@@ -42,7 +64,12 @@ impl MempoolInfo {
             beginning_offset: beginning_offset,
             page_offset: page_offset,
             headroom: headroom,
+            id: IDCounter::id_counter(),
         })
+    }
+
+    pub fn get_mempool_id(&self) -> u32 {
+        self.id
     }
 
     pub fn is_within_bounds(&self, buf: &[u8]) -> bool {
@@ -102,7 +129,6 @@ impl MempoolInfo {
                 base_mbuf as usize,
                 ptr_offset,
                 offset_within_alloc,
-
             );
         }
 

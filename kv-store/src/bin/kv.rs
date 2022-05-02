@@ -141,6 +141,12 @@ struct Opt {
         default_value = "1"
     )]
     splits_per_chunk: usize,
+    #[structopt(
+        long = "epoch_duration",
+        help = "Length in mu-seconds of each epoch for working set measurements",
+        default_value = "100"
+    )]
+    epoch_duration: usize,
 }
 
 /// Given a path, calculates the number of lines in the file.
@@ -177,9 +183,10 @@ fn get_num_requests(opt: &Opt) -> Result<usize> {
 macro_rules! init_kv_server(
     ($serializer: ty, $datapath: ty, $datapath_init: expr, $opt: ident) => {
         let mut connection = $datapath_init?;
-        let mut kv_server: KVServer<$serializer,$datapath> = KVServer::new($opt.use_native_buffers)?;
+        let mut kv_server: KVServer<$serializer,$datapath> = KVServer::new($opt.use_native_buffers, connection.num_mempool_ids, $opt.epoch_duration)?;
         set_ctrlc_handler(&kv_server)?;
         // load values into kv store
+        let working_set_hist = ManualHistogram::new(1);
         kv_server.init(&mut connection)?;
         kv_server.load(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;
         kv_server.run_state_machine(&mut connection)?;
@@ -247,17 +254,25 @@ where
     D: Datapath,
 {
     let echo_histograms = server.get_histograms();
+    // get max # of epochs
+    let trace_histogram = server.get_epoch_requests_per_mempool_histogram(/* epoch # */);
     {
         let h = echo_histograms;
+        let runtime_stats = trace_histogram; // ARC : Atomic Ref Counting
         ctrlc::set_handler(move || {
             tracing::info!("In ctrl-c handler");
             for timer_m in h.iter() {
                 let timer = timer_m.lock().unwrap();
                 timer.dump_stats();
             }
+            for stats in runtime_stats.iter() {
+                let stat = runtime_stats.lock().unwrap();
+                stat.dump_stats();
+            }
             exit(0);
         })?;
     }
+    
     Ok(())
 }
 

@@ -271,10 +271,12 @@ impl DPDKConnection {
         }
 
         let mut mempool_allocator = allocator::MempoolAllocator::default();
+        let mut num_mempools : u32 = 0;
         for mempool in mempools.iter() {
             mempool_allocator
                 .add_mempool(*mempool, wrapper::MBUF_BUF_SIZE as _)
                 .wrap_err("Failed to add DPDK default mempool to mempool allocator")?;
+            num_mempools += 1;
         }
 
         tracing::debug!("Use scatter_gather: {}", use_scatter_gather);
@@ -295,6 +297,7 @@ impl DPDKConnection {
                 wrapper::MAX_SCATTERS],
             recv_mbufs: [ptr::null_mut(); wrapper::RECEIVE_BURST_SIZE as usize],
             splits_per_chunk: 1,
+            num_mempool_ids: num_mempools,
         })
     }
 

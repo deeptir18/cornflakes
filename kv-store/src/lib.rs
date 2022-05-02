@@ -10,6 +10,7 @@ use cornflakes_libos::{
     timing::{HistogramWrapper, ManualHistogram},
     utils::AddressInfo,
     CfBuf, ClientSM, Datapath, MsgID, RcCornflake, ReceivedPkt, ScatterGather, ServerSM,
+    allocator::{MempoolID, Epoch},
     USING_REF_COUNTING,
 };
 use hashbrown::HashMap;
@@ -579,6 +580,35 @@ where
 {
     map: HashMap<String, CfBuf<D>>,
     serializer: S,
+    mempool_accesses: HashMap<Epoch, ManualHistogram>,
+    current_epoch: Arc<Mutex<u64>>,
+    max_mempool_id: Arc<MempoolID>,
+    epoch_duration: u64,
+}
+
+impl<S, D> WorkingSetStats for KVServer<S, D>
+where
+    D: Datapath,
+    S: KVSerializer<D>, 
+{
+    fn get_epoch_requests_per_mempool_histogram_mut(&mut self, epoch: u64) -> &mut Histogram<u64>;
+    fn get_epoch_requests_per_mempool_histogram(&self, epoch:u64) -> &Histogram<u64>;
+    fn get_overall_requests_per_mempool_histogram(&self) -> &Histogram<u64>; // total # of requests over the entire length of the program
+
+    // Gets list of epochs, where each epoch contains a list of mempool_ids sorted from most to least accessed
+    fn get_mempool_ranking_per_epoch_mut(epoch: Epoch) -> &mut Vec<MempoolID>;
+    fn get_mempool_ranking_per_epoch(epoch: Epoch) -> &Vec<MempoolID>;
+
+    fn increment_epoch(&mut self) -> u64 {
+        let v = self.current_epoch.fetch_add(1, Ordering::SeqCst);
+        static COUNTER : AtomicU32 = AtomicU32::new(0);
+        println!("ID Counter: Adding {} Mempool ID", COUNTER.fetch_add(1, Ordering::Relaxed));
+        COUNTER.clone().into_inner()
+    }
+
+    fn get_current_epoch(&self) -> u64 {
+        Arc::try_unwrap(self.current_epoch.clone())
+    }
 }
 
 impl<S, D> KVServer<S, D>
@@ -586,13 +616,40 @@ where
     D: Datapath,
     S: KVSerializer<D>,
 {
-    pub fn new(serialize_to_native_buffers: bool) -> Result<Self> {
+    pub fn new(serialize_to_native_buffers: bool,
+                max_mempool_id: u32
+               epoch_duration: usize) -> Result<Self> {
         let serializer = S::new_server(serialize_to_native_buffers)
             .wrap_err("Could not initialize server serializer.")?;
         Ok(KVServer {
             map: HashMap::default(),
             serializer: serializer,
+            mempool_accesses: HashMap::default(),
+            current_epoch: Arc::new(Mutex::new(0)),
+            max_mempool_id: Arc::new(max_mempool_id),
+            epoch_duration: epoch_duration,
         })
+    }
+
+    pub fn add_mempool_access(&mut self, id: MempoolID) -> u64 {
+        self.mempool_accesses[id] += 1
+    }
+
+    pub fn get_mut_mempool_accesses(&mut self) -> &mut ManualHistogram {
+        // TODO
+
+    } 
+
+    pub fn dump(
+        &mut self,
+        epoch: u64,
+    ) -> Result<()> {
+        for elt in self.mempool_accesses {
+            tracing::info!("Mempool accesses for ID {} in epoch {} is {}", 
+                           elt.first, 
+                           epoch, 
+                           elt.second);
+        }
     }
 
     pub fn load(
@@ -699,6 +756,10 @@ where
     }
 
     fn get_histograms(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {
+        Vec::default()
+    }
+
+    fn get_epoch_requests_per_mempool_histogram(&self, epoch: u64) -> Vec<Arc<Mutex<HistogramWrapper>>> {
         Vec::default()
     }
 }

@@ -27,7 +27,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use timing::HistogramWrapper;
+use timing::{HistogramWrapper, StatsWrapper};
 use utils::AddressInfo;
 
 #[cfg(feature = "profiler")]
@@ -1352,4 +1352,8 @@ pub trait ServerSM {
     fn cleanup(&mut self, connection: &mut Self::Datapath) -> Result<()>;
 
     fn get_histograms(&self) -> Vec<Arc<Mutex<HistogramWrapper>>>;
+
+    fn get_epoch_requests_per_mempool_histogram(&self, epoch: u64) -> Vec<Arc<Mutex<HistogramWrapper>>>;
+
+    fn get_all_requests_per_mempool_histogram(&self) -> Vec<Arc<Mutex<HistogramWrapper>>>;
 }

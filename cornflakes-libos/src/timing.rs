@@ -322,3 +322,56 @@ impl RTTHistogram for HistogramWrapper {
         &self.hist
     }
 }
+
+/// General Setup of the statistics tracking:
+/// Each epoch:
+///     Record: # requests/memory pool
+/// At the end, we want to see:
+///     Print out histogram of requests/Mempool_ID over time
+///     Get ranking of mempool_ids for a given epoch from most to least accessed
+///     Reach Goal: Get detailed information on the values that were actually accessed in the mempool
+pub trait WorkingSetStats {
+    // Gets histogram of requests/epoch for each mempool 
+    fn get_epoch_requests_per_mempool_histogram_mut(&mut self, epoch: Epoch) -> &mut Histogram<u64>;
+    fn get_epoch_requests_per_mempool_histogram(&self, epoch: Epoch) -> &Histogram<u64>;
+    fn get_overall_requests_per_mempool_histogram(&self) -> &Histogram<u64>; // total # of requests over the entire length of the program
+
+    // Gets list of epochs, where each epoch contains a list of mempool_ids sorted from most to least accessed
+    fn get_mempool_ranking_per_epoch_mut(epoch: Epoch) -> &mut Vec<MempoolID>;
+    fn get_mempool_ranking_per_epoch(epoch: Epoch) -> &Vec<MempoolID>;
+
+    fn increment_epoch(&mut self) -> u64;
+    fn get_current_epoch(&self) -> u64;
+
+    fn add_request(&mut self, epoch: u64, mempool_id: u64) -> Result<()> {
+        tracing::debug!("Recording request for mempool {} in epoch {}", mempool_id, epoch);
+        self.get_epoch_requests_per_mempool_histogram_mut(epoch).record(1)?; //TODO: NOT RIGHT
+        Ok(())
+    }
+
+    // Dumps statistics from the current epoch
+    fn dump(&self, msg: &str, epoch: u64) {
+        if self.get_epoch_requests_per_mempool_histogram(epoch).len() == 0 {
+            return;
+        }
+        tracing::info!(
+            msg,
+            p5_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.05),
+            p25_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.25),
+            p50_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.5),
+            p75_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.75),
+            p95_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.95),
+            p99_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.99),
+            pkts_sent = self.get_epoch_requests_per_mempool_histogram().len(),
+            min_ns = self.get_epoch_requests_per_mempool_histogram().min(),
+            max_ns = self.get_epoch_requests_per_mempool_histogram().max(),
+            avg_ns = ?self.get_epoch_requests_per_mempool_histogram().mean(),
+        );
+        tracing::info!(
+            msg = ?format!("{}: summary statistics:", msg),
+            p50_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.5),
+            avg_ns = ?self.get_epoch_requests_per_mempool_histogram().mean(),
+            p99_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.99)
+        );
+    }
+}
