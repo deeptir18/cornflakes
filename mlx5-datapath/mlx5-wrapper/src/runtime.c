@@ -395,10 +395,6 @@ int custom_mlx5_post_transmissions(struct custom_mlx5_per_thread_context *per_th
     mmio_write64_be(v->tx_qp_dv.bf.reg, *(__be64 *)first_ctrl);
     mmio_flush_writes();
 
-    // check for completions
-    if (custom_mlx5_nr_inflight_tx(v) >= SQ_CLEAN_THRESH) {
-        custom_mlx5_process_completions(per_thread_context, SQ_CLEAN_MAX);
-    }
     return 0;
 }
 
