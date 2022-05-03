@@ -10,6 +10,9 @@ members = ["cornflakes-codegen",
             "linux-datapath",
             "dpdk-datapath",
             "kv-store-ds",
+            "redis-dpdk",
+            "redis-common",
+            "redis-mlx5",
             "simple-echo"]
             #"data-shuffle"]
 
