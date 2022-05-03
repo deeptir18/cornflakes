@@ -378,6 +378,7 @@ impl MempoolInfo {
 
 impl Drop for MempoolInfo {
     fn drop(&mut self) {
+        tracing::info!("Dropping mempool {:?}", self.handle);
         unsafe {
             rte_mempool_free(self.handle);
         }

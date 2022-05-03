@@ -365,9 +365,7 @@ impl DpdkPerThreadContext {
 
 impl Drop for DpdkPerThreadContext {
     fn drop(&mut self) {
-        unsafe {
-            rte_mempool_free(self.recv_mempool);
-        }
+        tracing::info!("In drop for dpdk  per thread context");
         unsafe {
             rte_mempool_free(self.extbuf_mempool);
         };

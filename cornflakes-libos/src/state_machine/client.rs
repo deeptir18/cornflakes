@@ -240,10 +240,12 @@ where
     };
 
     client.run_open_loop(connection, schedule, total_time, timeout, !retries)?;
+    tracing::info!(thread = thread_id, "Finished running open loop");
 
     let exp_duration = start_run.elapsed().as_nanos();
     client.sort_rtts(0)?;
 
+    tracing::info!(thread = thread_id, "Sorted RTTs");
     // per thread log latency
     match logfile {
         Some(x) => {
@@ -253,6 +255,7 @@ where
         None => {}
     }
 
+    tracing::info!(thread = thread_id, "About to calculate stats");
     let stats = ThreadStats::new(
         thread_id as u16,
         client.num_sent_cutoff(0),
