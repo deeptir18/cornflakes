@@ -1879,6 +1879,7 @@ impl Datapath for Mlx5Connection {
                 ) != 1
             } {
                 first_ctrl_seg = self.post_curr_transmissions(first_ctrl_seg)?;
+                self.poll_for_completions()?;
             } else {
                 let ctrl_seg = self.post_rc_sga(
                     sga,
@@ -1896,6 +1897,7 @@ impl Datapath for Mlx5Connection {
             }
         }
         let _ = self.post_curr_transmissions(first_ctrl_seg)?;
+        self.poll_for_completions()?;
         Ok(())
     }
 

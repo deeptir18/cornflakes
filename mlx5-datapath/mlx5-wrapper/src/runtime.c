@@ -45,6 +45,7 @@ int custom_mlx5_process_completions(struct custom_mlx5_per_thread_context *per_t
     struct custom_mlx5_txq *v = &per_thread_context->txq;
 
     if (custom_mlx5_nr_inflight_tx(v) < SQ_CLEAN_THRESH) {
+        NETPERF_DEBUG("IN FLIGHT: %u", custom_mlx5_nr_inflight_tx(v));
         return 0;
     }
     unsigned int compl_cnt;
