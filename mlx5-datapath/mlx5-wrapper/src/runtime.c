@@ -194,6 +194,11 @@ size_t custom_mlx5_num_wqes_required(size_t num_octowords) {
     return (num_octowords + 3) / 4;
 }
 
+size_t custom_mlx5_num_wqes_available(struct custom_mlx5_per_thread_context *per_thread_context) {
+    struct custom_mlx5_txq *v = &per_thread_context->txq;
+    return (v->tx_qp_dv.sq.wqe_cnt - custom_mlx5_nr_inflight_tx(v));
+}
+
 int custom_mlx5_tx_descriptors_available(struct custom_mlx5_per_thread_context *per_thread_context,
                                 size_t num_wqes_required) {
     struct custom_mlx5_txq *v = &per_thread_context->txq;
@@ -394,7 +399,7 @@ int custom_mlx5_post_transmissions(struct custom_mlx5_per_thread_context *per_th
     mmio_wc_start();
     mmio_write64_be(v->tx_qp_dv.bf.reg, *(__be64 *)first_ctrl);
     mmio_flush_writes();
-
+    
     return 0;
 }
 

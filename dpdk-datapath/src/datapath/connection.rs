@@ -2,11 +2,11 @@ use super::{
     super::dpdk_bindings::*, allocator::MempoolInfo, dpdk_check, dpdk_utils::*, wrapper::*,
 };
 use cornflakes_libos::{
-    allocator::{MemoryPoolAllocator, MempoolID},
+    allocator::{MemoryPoolAllocator, MempoolID, align_up},
     datapath::{Datapath, InlineMode, MetadataOps, ReceivedPkt},
     serialize::Serializable,
     utils::AddressInfo,
-    ConnID, MsgID, RcSga, RcSge, Sga, Sge, USING_REF_COUNTING,
+    ConnID, MsgID, RcSga, RcSge, Sga, Sge, USING_REF_COUNTING,OrderedSga,
 };
 
 use byteorder::{ByteOrder, NetworkEndian};
@@ -1322,6 +1322,10 @@ impl Datapath for DpdkConnection {
         Ok(())
     }
 
+    fn push_ordered_sgas(&mut self, _ordered_sgas: &Vec<(MsgID, ConnID, OrderedSga)>) -> Result<()> {
+        unimplemented!();
+    }
+
     fn push_sgas(&mut self, sgas: &Vec<(MsgID, ConnID, Sga)>) -> Result<()> {
         for (pkt_idx, (msg, conn, sga)) in sgas.iter().enumerate() {
             self.insert_into_outgoing_map(*msg, *conn);
@@ -1460,18 +1464,19 @@ impl Datapath for DpdkConnection {
             };
             (num_elts / num_mempools, num_mempools)
         };
-        tracing::info!("Creating {} mempools of size {}", num_mempools, num_values);
+        let actual_value_size = align_up(value_size + RTE_PKTMBUF_HEADROOM as usize, 256);
+        tracing::info!("Creating {} mempools of amount {}, actual value size {}", num_mempools, num_values, actual_value_size);
         for i in 0..num_mempools {
             let mempool_name = format!("{}_{}", name, i);
             let mempool = create_mempool(
                 &mempool_name,
                 1,
-                value_size + RTE_PKTMBUF_HEADROOM as usize,
+                actual_value_size,
                 num_values - 1,
             )
             .wrap_err(format!(
-                "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}",
-                name, value_size, num_values
+                "Unable to add mempool {:?} to mempool allocator; actual value_size {}, num_values {}",
+                name,actual_value_size, num_values
             ))?;
             tracing::debug!(
                 "Created mempool avail count: {}, in_use count: {}",
@@ -1480,10 +1485,10 @@ impl Datapath for DpdkConnection {
             );
             let id = self
                 .allocator
-                .add_mempool(value_size, MempoolInfo::new(mempool)?)
+                .add_mempool(actual_value_size, MempoolInfo::new(mempool)?)
                 .wrap_err(format!(
                     "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}",
-                    name, value_size, num_values
+                    name, actual_value_size, num_values
                 ))?;
             ret.push(id);
         }

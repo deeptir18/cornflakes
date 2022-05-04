@@ -6,6 +6,16 @@ use std::collections::HashSet;
 
 pub type MempoolID = u32;
 
+pub fn align_up(x: usize, align_size: usize) -> usize {
+    let divisor = x / align_size;
+    if (divisor * align_size) < x {
+        return (divisor + 1) * align_size;
+    } else {
+        assert!(divisor * align_size == x);
+        return x;
+    }
+}
+
 /// Trait that datapath's can implement to pr
 pub trait DatapathMemoryPool {
     type DatapathImpl: Datapath;

@@ -194,6 +194,7 @@ fn get_mempool_memzone_area(
         headroom, // headroom between buf address and beginning of mbuf, discounting private data and mbuf struct size
     ))
 }
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MempoolInfo {
     handle: *mut rte_mempool,

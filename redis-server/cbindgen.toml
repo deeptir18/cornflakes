@@ -137,8 +137,8 @@ bitflags = false
 ############## Options for How Your Rust library Should Be Parsed ##############
 
 [parse]
-parse_deps = false
-# include = []
+parse_deps = true
+include = ["cornflakes-libos"]
 exclude = []
 clean = false
 extra_bindings = []

@@ -40,6 +40,8 @@ pub static mut USING_REF_COUNTING: bool = true;
 pub type MsgID = u32;
 pub type ConnID = usize;
 
+pub static MAX_SCATTER_GATHER_ENTRIES: usize = 32;
+
 pub fn turn_off_ref_counting() {
     unsafe {
         USING_REF_COUNTING = false;
@@ -293,14 +295,26 @@ impl<'registered, 'normal> Cornflake<'registered, 'normal> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Default)]
+/// cbindgen:field-names=[addr, len]
+#[derive(Debug, PartialEq, Eq, Clone)]
+#[repr(C)]
+pub struct CSge(pub *mut ::std::os::raw::c_void, pub usize);
+
+impl CSge {
+    pub fn to_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.0 as _, self.1) }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Default, Clone)]
 pub struct Sge<'a> {
     addr: &'a [u8],
 }
 
-#[derive(Debug, PartialEq, Eq, Default)]
+#[derive(Debug, PartialEq, Eq, Default, Clone)]
 pub struct Sga<'a> {
     entries: Vec<Sge<'a>>,
+    length: usize,
 }
 
 impl<'a> Sge<'a> {
@@ -321,25 +335,52 @@ impl<'a> Sga<'a> {
     pub fn with_capacity(size: usize) -> Self {
         Sga {
             entries: Vec::with_capacity(size),
+            length: 0,
         }
     }
 
+    pub fn allocate(size: usize) -> Self {
+        let entries = vec![Sge::default(); size];
+        Sga {
+            entries: entries,
+            length: 0,
+        }
+    }
+
+    pub fn from_static_array(
+        &mut self,
+        addrs: &[*mut ::std::os::raw::c_void; 32],
+        sizes: &[usize; 32],
+        num_entries: usize,
+    ) {
+        for i in 0..num_entries {
+            let slice = unsafe { std::slice::from_raw_parts(addrs[i] as *mut u8, sizes[i]) };
+            let sge = Sge::new(slice);
+            self.replace(i, sge);
+        }
+        self.length = num_entries;
+    }
+
     pub fn with_entries(entries: Vec<Sge<'a>>) -> Self {
-        Sga { entries: entries }
+        Sga {
+            length: entries.len(),
+            entries: entries,
+        }
     }
 
     pub fn add_entry(&mut self, entry: Sge<'a>) {
         self.entries.push(entry);
+        self.length += 1;
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.length
     }
 
     pub fn data_len(&self) -> usize {
         let mut sum = 0;
-        for entry in self.entries.iter() {
-            sum += entry.len();
+        for i in 0..self.length {
+            sum += &self.entries[i].len();
         }
         sum
     }
@@ -353,7 +394,30 @@ impl<'a> Sga<'a> {
     }
 
     pub fn iter(&self) -> Iter<Sge<'a>> {
-        self.entries.iter()
+        self.entries[0..self.length].iter()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
+pub struct OrderedSga<'a> {
+    /// Underlying scatter-gather array, where entries have been ordered according to heuristics.
+    sga: Sga<'a>,
+    /// Number of sg entries that will be sent as "zero-copy". Assumes that first (sga.len() -
+    /// num_zc_entries) will be copied together; the further entries will be zero-copied.
+    num_zc_entries: usize,
+}
+
+impl<'a> OrderedSga<'a> {
+    pub fn sga(&self) -> &Sga {
+        &self.sga
+    }
+
+    pub fn len(&self) -> usize {
+        self.sga.len()
+    }
+
+    pub fn num_zero_copy_entries(&self) -> usize {
+        self.num_zc_entries
     }
 }
 

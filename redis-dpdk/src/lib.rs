@@ -1,4 +1,4 @@
-use cornflakes_libos::{datapath::Datapath, ConnID, MsgID, Sga};
+use cornflakes_libos::{datapath::Datapath, CSge, ConnID, MsgID, Sga};
 use cornflakes_utils::{global_debug_init, AppMode, TraceLevel};
 use dpdk_datapath::{datapath::connection::DpdkConnection, dpdk_bindings};
 use std::{boxed::Box, ffi::CStr, net::Ipv4Addr, str::FromStr};
@@ -181,6 +181,24 @@ pub extern "C" fn push_sga(
     }
 
     Box::into_raw(allocated_sga_box);
+    Box::into_raw(connection_box);
+    return 0;
+}
+
+#[no_mangle]
+pub extern "C" fn push_buf(
+    conn: *mut ::std::os::raw::c_void,
+    msg_id: MsgID,
+    conn_id: ConnID,
+    buf: CSge,
+) -> ::std::os::raw::c_int {
+    // convert connection into DPDK connection
+    let mut connection_box = unsafe { Box::from_raw(conn as *mut DpdkConnection) };
+    let connection_ptr = connection_box.as_mut();
+
+    connection_ptr
+        .push_buffers_with_copy(vec![(msg_id, conn_id, buf.to_slice())])
+        .unwrap();
     Box::into_raw(connection_box);
     return 0;
 }

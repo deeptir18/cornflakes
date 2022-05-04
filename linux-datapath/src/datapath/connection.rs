@@ -5,7 +5,7 @@ use cornflakes_libos::{
     datapath::{Datapath, InlineMode, MetadataOps, ReceivedPkt},
     serialize::Serializable,
     utils::AddressInfo,
-    ConnID, MsgID, RcSga, Sga,
+    ConnID, MsgID, OrderedSga, RcSga, Sga,
 };
 use std::{io::Write, net::Ipv4Addr, time::Duration};
 
@@ -225,6 +225,13 @@ impl Datapath for LinuxConnection {
     where
         Self: Sized,
     {
+        unimplemented!();
+    }
+
+    fn push_ordered_sgas(
+        &mut self,
+        _ordered_sgas: &Vec<(MsgID, ConnID, OrderedSga)>,
+    ) -> Result<()> {
         unimplemented!();
     }
 

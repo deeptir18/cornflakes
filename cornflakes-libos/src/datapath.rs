@@ -1,5 +1,6 @@
 use super::{
-    allocator::MempoolID, serialize::Serializable, utils::AddressInfo, ConnID, MsgID, RcSga, Sga,
+    allocator::MempoolID, serialize::Serializable, utils::AddressInfo, ConnID, MsgID, OrderedSga,
+    RcSga, Sga,
 };
 use color_eyre::eyre::{bail, Result};
 use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
@@ -278,6 +279,12 @@ pub trait Datapath {
     fn push_rc_sgas(&mut self, rc_sgas: &mut Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
     where
         Self: Sized;
+
+    /// Send scatter-gather arrays that are ORDERED.
+    /// OrderedSgas must be ordered such that the last "num_zero_copy_entries()" are
+    /// zero-copy-able and pass the to-copy or not heuristics.
+    /// First sga.len() - num_zero_copy_entries() will be copied together.
+    fn push_ordered_sgas(&mut self, ordered_sgas: &Vec<(MsgID, ConnID, OrderedSga)>) -> Result<()>;
 
     /// Send scatter-gather arrays of addresses.
     /// Args:
