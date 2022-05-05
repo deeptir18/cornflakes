@@ -11,8 +11,8 @@ mlx5:
 
 lwip:
   known_hosts:
-    "XX:XX:XX:XX:XX:XX": 127.0.0.1
-    "XX:XX:XX:XX:XX:XY": 127.0.0.2
+    "ff:ff:ff:ff:ff:ff": 127.0.0.1
+    "ff:ff:ff:ff:ff:fe": 127.0.0.2
 
 port: 54323 # for the server
 client_port: 12345
@@ -21,11 +21,11 @@ hosts:
     server:
         addr: localhost
         ip: 127.0.0.1
-        mac: "XX:XX:XX:XX:XX:XX"
+        mac: "ff:ff:ff:ff:ff:ff"
     client1:
         addr: machine2.machine
         ip: 127.0.0.2
-        mac: "XX:XX:XX:XX:XX:XY"
+        mac: "ff:ff:ff:ff:ff:fe"
 cornflakes_dir: $HOME/cornflakes
 max_clients: 1
 key: <$HOME/.ssh/id_rsa>

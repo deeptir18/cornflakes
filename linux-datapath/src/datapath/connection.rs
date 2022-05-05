@@ -7,6 +7,9 @@ use cornflakes_libos::{
     utils::AddressInfo,
     ConnID, MsgID, RcSga, Sga,
 };
+use color_eyre::eyre::WrapErr;
+use cornflakes_utils::parse_yaml_map;
+use eui48::MacAddress;
 use std::{io::Write, net::Ipv4Addr, time::Duration};
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -135,7 +138,11 @@ pub struct LinuxPerThreadContext {
 #[derive(Debug, Clone)]
 pub struct LinuxDatapathSpecificParams {
     // TODO: insert datapath specific params:
-// Server UDP port, Server IP address, potentially server interface name
+    // Server UDP port, Server IP address, potentially server interface name
+    our_ip: Ipv4Addr,
+    our_eth: MacAddress,
+    client_port: u16,
+    server_port: u16,
 }
 
 pub struct LinuxConnection {
@@ -162,10 +169,25 @@ impl Datapath for LinuxConnection {
     type DatapathSpecificParams = LinuxDatapathSpecificParams;
 
     fn parse_config_file(
-        _config_file: &str,
-        _our_ip: &Ipv4Addr,
+        config_file: &str,
+        our_ip: &Ipv4Addr,
     ) -> Result<Self::DatapathSpecificParams> {
-        unimplemented!();
+        let (ip_to_mac, _mac_to_ip, udp_port, client_port) =
+            parse_yaml_map(config_file).wrap_err("Failed to parse yaml mapping")?;
+
+        let eth_addr = match ip_to_mac.get(our_ip) {
+            Some(e) => e.clone(),
+            None => {
+                bail!("Could not find eth addr for passed in ipv4 addr {:?} in config_file ip_to_mac map: {:?}", our_ip, ip_to_mac);
+            }
+        };
+
+        Ok(LinuxDatapathSpecificParams{
+            our_ip: our_ip.clone(),
+            our_eth: eth_addr,
+            client_port: client_port,
+            server_port: udp_port,
+        })
     }
 
     fn compute_affinity(
