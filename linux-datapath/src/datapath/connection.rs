@@ -8,7 +8,7 @@ use cornflakes_libos::{
     ConnID, MsgID, RcSga, Sga,
 };
 use color_eyre::eyre::WrapErr;
-use cornflakes_utils::parse_yaml_map;
+use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
 use std::{io::Write, net::Ipv4Addr, time::Duration};
 
@@ -145,6 +145,24 @@ pub struct LinuxDatapathSpecificParams {
     server_port: u16,
 }
 
+impl LinuxDatapathSpecificParams {
+    pub fn get_ipv4(&self) -> Ipv4Addr {
+        self.our_ip.clone()
+    }
+
+    pub fn get_mac(&self) -> MacAddress {
+        self.our_eth.clone()
+    }
+
+    pub fn get_client_port(&self) -> u16 {
+        self.client_port
+    }
+
+    pub fn get_server_port(&self) -> u16 {
+        self.server_port
+    }
+}
+
 pub struct LinuxConnection {
     // TODO: insert linux connection params
 }
@@ -191,12 +209,28 @@ impl Datapath for LinuxConnection {
     }
 
     fn compute_affinity(
-        _datapath_params: &Self::DatapathSpecificParams,
-        _num_queues: usize,
+        datapath_params: &Self::DatapathSpecificParams,
+        num_queues: usize,
         _remote_ip: Option<Ipv4Addr>,
-        _app_mode: cornflakes_utils::AppMode,
+        app_mode: cornflakes_utils::AppMode,
     ) -> Result<Vec<AddressInfo>> {
-        unimplemented!();
+        if num_queues > 1 {
+            bail!("Currently, linux datapath does not support more than one
+               queue");
+        }
+        match app_mode {
+            AppMode::Client => Ok(vec![AddressInfo::new(
+                datapath_params.get_client_port(),
+                datapath_params.get_ipv4(),
+                datapath_params.get_mac(),
+            )]),
+
+            AppMode::Server => Ok(vec![AddressInfo::new(
+                datapath_params.get_server_port(),
+                datapath_params.get_ipv4(),
+                datapath_params.get_mac(),
+            )]),
+        }
     }
 
     fn global_init(
