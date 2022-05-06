@@ -10,7 +10,14 @@ use cornflakes_libos::{
 use color_eyre::eyre::WrapErr;
 use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
-use std::{io::Write, net::Ipv4Addr, time::{Duration, Instant}};
+use hashbrown::HashMap;
+use std::{
+    io::Write,
+    net::{Ipv4Addr, UdpSocket},
+    time::{Duration, Instant},
+};
+
+const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct MutableByteBuffer {
@@ -132,7 +139,10 @@ impl MetadataOps for ByteBuffer {
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct LinuxPerThreadContext {
-    // TODO: insert per thread context
+    /// Queue id
+    queue_id: u16,
+    /// Source address info
+    address_info: AddressInfo,
 }
 
 #[derive(Debug, Clone)]
@@ -166,6 +176,16 @@ impl LinuxDatapathSpecificParams {
 pub struct LinuxConnection {
     /// Start time.
     start: Instant,
+    /// Per thread context.
+    thread_context: LinuxPerThreadContext,
+    /// Server or client mode
+    mode: AppMode,
+    /// UDP socket
+    socket: UdpSocket,
+    /// Map from AddressInfo to connection id
+    address_to_conn_id: HashMap<AddressInfo, ConnID>,
+    /// Addresses of active connections, indexed by connection id
+    active_connections: [Option<AddressInfo>; MAX_CONCURRENT_CONNECTIONS],
 }
 
 impl LinuxConnection {
@@ -235,26 +255,75 @@ impl Datapath for LinuxConnection {
     }
 
     fn global_init(
-        _num_queues: usize,
+        num_queues: usize,
         _datapath_params: &mut Self::DatapathSpecificParams,
-        _addresses: Vec<AddressInfo>,
+        addresses: Vec<AddressInfo>,
     ) -> Result<Vec<Self::PerThreadContext>> {
-        unimplemented!();
+        assert_eq!(num_queues, 1);
+        assert_eq!(addresses.len(), num_queues);
+        let mut ret: Vec<Self::PerThreadContext> = Vec::with_capacity(num_queues);
+        for (i, addr) in addresses.into_iter().enumerate() {
+            ret.push(LinuxPerThreadContext {
+                queue_id: i as _,
+                address_info: addr,
+            });
+        }
+        Ok(ret)
     }
 
     fn per_thread_init(
         _datapath_params: Self::DatapathSpecificParams,
-        _context: Self::PerThreadContext,
-        _mode: cornflakes_utils::AppMode,
+        context: Self::PerThreadContext,
+        mode: cornflakes_utils::AppMode,
     ) -> Result<Self>
     where
         Self: Sized,
     {
-        unimplemented!();
+        let addr = format!(
+            "{}:{}",
+            context.address_info.ipv4_addr,
+            context.address_info.udp_port,
+        );
+        tracing::debug!("Binding to {}", addr);
+        let socket = UdpSocket::bind(addr).unwrap();
+        Ok(LinuxConnection {
+            start: Instant::now(),
+            thread_context: context,
+            mode,
+            socket,
+            address_to_conn_id: HashMap::default(),
+            active_connections: [None; MAX_CONCURRENT_CONNECTIONS],
+        })
     }
 
-    fn connect(&mut self, _addr: AddressInfo) -> Result<ConnID> {
-        unimplemented!();
+    fn connect(&mut self, addr: AddressInfo) -> Result<ConnID> {
+        if self.address_to_conn_id.contains_key(&addr) {
+            return Ok(*self.address_to_conn_id.get(&addr).unwrap());
+        } else {
+            if self.address_to_conn_id.len() >= MAX_CONCURRENT_CONNECTIONS {
+                bail!("too many concurrent connections; cannot connect to more");
+            }
+            let mut idx: Option<usize> = None;
+            for (i, addr_option) in self.active_connections.iter().enumerate() {
+                match addr_option {
+                    Some(_) => {}
+                    None => {
+                        self.address_to_conn_id.insert(addr.clone(), i);
+                        idx = Some(i);
+                        break;
+                    }
+                }
+            }
+            match idx {
+                Some(i) => {
+                    self.active_connections[i] = Some(addr);
+                    return Ok(i);
+                }
+                None => {
+                    bail!("too many concurrent connections; cannot connect to more");
+                }
+            }
+        }
     }
 
     fn push_buffers_with_copy(&mut self, _pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()> {
@@ -320,7 +389,7 @@ impl Datapath for LinuxConnection {
     }
 
     fn add_memory_pool(&mut self, _size: usize, _min_elts: usize) -> Result<Vec<MempoolID>> {
-        unimplemented!();
+        Ok(vec![])
     }
 
     fn register_mempool(&mut self, _id: MempoolID) -> Result<()> {
