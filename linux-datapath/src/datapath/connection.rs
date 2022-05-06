@@ -4,20 +4,23 @@ use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, InlineMode, MetadataOps, ReceivedPkt},
     serialize::Serializable,
-    utils::AddressInfo,
+    utils::{AddressInfo, HEADER_ID_SIZE},
     ConnID, MsgID, RcSga, Sga,
 };
+use byteorder::{ByteOrder, NetworkEndian};
 use color_eyre::eyre::WrapErr;
 use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
-    io::Write,
-    net::{Ipv4Addr, UdpSocket},
+    io::{self, Write},
+    net::{IpAddr, Ipv4Addr, UdpSocket, SocketAddr},
     time::{Duration, Instant},
 };
 
+const FILLER_MAC: &str = "ff:ff:ff:ff:ff:ff";
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
+const RECEIVE_BURST_SIZE: usize = 32;
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct MutableByteBuffer {
@@ -193,8 +196,22 @@ impl LinuxConnection {
         unimplemented!();
     }
 
-    fn _check_received_pkt(&self) -> Result<Option<ReceivedPkt<Self>>> {
-        unimplemented!();
+    fn check_received_pkt(&mut self, buf: Vec<u8>, addr: SocketAddr)
+        -> Result<ReceivedPkt<Self>> {
+        let msg_id = NetworkEndian::read_u32(&buf[0..4]);
+        let conn_id = {
+            let ipv4 = match addr.ip() {
+                IpAddr::V4(ip) => ip,
+                _ => { panic!("expected ipv4 address") },
+            };
+            let src_addr = cornflakes_libos::utils::AddressInfo::new(
+                addr.port(), ipv4, MacAddress::parse_str(FILLER_MAC).unwrap());
+            self.connect(src_addr)
+                .wrap_err("TOO MANY CONCURRENT CONNECTIONS")?
+        };
+        let bytes = ByteBuffer::new(&buf, HEADER_ID_SIZE, None)?;
+        let received_pkt = ReceivedPkt::new(vec![bytes], msg_id, conn_id);
+        Ok(received_pkt)
     }
 }
 
@@ -211,19 +228,11 @@ impl Datapath for LinuxConnection {
         config_file: &str,
         our_ip: &Ipv4Addr,
     ) -> Result<Self::DatapathSpecificParams> {
-        let (ip_to_mac, _mac_to_ip, udp_port, client_port) =
+        let (_ip_to_mac, _mac_to_ip, udp_port, client_port) =
             parse_yaml_map(config_file).wrap_err("Failed to parse yaml mapping")?;
-
-        let eth_addr = match ip_to_mac.get(our_ip) {
-            Some(e) => e.clone(),
-            None => {
-                bail!("Could not find eth addr for passed in ipv4 addr {:?} in config_file ip_to_mac map: {:?}", our_ip, ip_to_mac);
-            }
-        };
-
         Ok(LinuxDatapathSpecificParams{
             our_ip: our_ip.clone(),
-            our_eth: eth_addr,
+            our_eth: MacAddress::parse_str(FILLER_MAC).unwrap(),
             client_port: client_port,
             server_port: udp_port,
         })
@@ -326,8 +335,20 @@ impl Datapath for LinuxConnection {
         }
     }
 
-    fn push_buffers_with_copy(&mut self, _pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()> {
-        unimplemented!();
+    fn push_buffers_with_copy(&mut self, pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()> {
+        tracing::debug!("Pushing batch of pkts of length {}", pkts.len());
+        for (msg_id, conn_id, data) in pkts.iter() {
+            let mut buf = vec![0, 0, 0, 0];
+            NetworkEndian::write_u32(&mut buf, *msg_id);
+            buf.extend_from_slice(data);
+            let addr = {
+                let address_info = self.active_connections[*conn_id].unwrap();
+                format!("{}:{}", address_info.ipv4_addr, address_info.udp_port)
+            };
+            self.socket.send_to(&buf, &addr).expect(
+                &format!("Failed to send data (len {}) to {}", buf.len(), addr));
+        }
+        Ok(())
     }
 
     fn serialize_and_send(
@@ -369,7 +390,27 @@ impl Datapath for LinuxConnection {
     where
         Self: Sized,
     {
-        unimplemented!();
+        self.socket.set_nonblocking(true)?;
+        let mut ret: Vec<ReceivedPkt<Self>> = Vec::with_capacity(RECEIVE_BURST_SIZE);
+        for _ in 0..RECEIVE_BURST_SIZE {
+            let mut buf = Vec::new();
+            let addr = match self.socket.recv_from(&mut buf) {
+                Ok((n, addr)) => if n == 0 {
+                    break;
+                } else {
+                    assert!(n > HEADER_ID_SIZE, "received {} bytes", n);
+                    tracing::debug!("Received {} bytes", n);
+                    addr
+                },
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    break;
+                }
+                Err(e) => panic!("encountered IO error: {}", e),
+            };
+            let received_pkt = self.check_received_pkt(buf, addr)?;
+            ret.push(received_pkt);
+        }
+        Ok(ret)
     }
 
     fn timed_out(&self, _time_out: Duration) -> Result<Vec<(MsgID, ConnID)>> {
