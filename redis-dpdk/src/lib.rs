@@ -190,7 +190,7 @@ pub extern "C" fn push_buf(
     conn: *mut ::std::os::raw::c_void,
     msg_id: MsgID,
     conn_id: ConnID,
-    buf: CSge,
+    buf: &CSge,
 ) -> ::std::os::raw::c_int {
     // convert connection into DPDK connection
     let mut connection_box = unsafe { Box::from_raw(conn as *mut DpdkConnection) };

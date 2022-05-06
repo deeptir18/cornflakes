@@ -59,7 +59,7 @@ where
                 }
             }).collect();
             let sga = Sga::with_entries(sge_results?);
-            let num_copy_entries = sga.iter().take_while(|seg| !(seg.len() > datapath.get_copying_threshold() && datapath.is_registered(seg.addr()))).count();
+            let num_copy_entries = sga.iter().take_while(|seg| !(seg.len() > datapath.get_copying_threshold())).count();
             tracing::debug!(num_copy_entries, sga_len = sga.len(),"Constructing ordered sga");
             Ok((pkt.msg_id(), pkt.conn_id(), OrderedSga::new(sga, num_copy_entries)))
         }).collect();
