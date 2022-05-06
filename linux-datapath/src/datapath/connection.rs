@@ -14,7 +14,7 @@ use eui48::MacAddress;
 use hashbrown::HashMap;
 use std::{
     io::{self, Write},
-    net::{IpAddr, Ipv4Addr, UdpSocket, SocketAddr},
+    net::{IpAddr, Ipv4Addr, UdpSocket},
     time::{Duration, Instant},
 };
 
@@ -179,10 +179,10 @@ impl LinuxDatapathSpecificParams {
 pub struct LinuxConnection {
     /// Start time.
     start: Instant,
-    /// Per thread context.
-    thread_context: LinuxPerThreadContext,
     /// Server or client mode
     mode: AppMode,
+    /// Current window of outstanding packets (used for keeping track of RTTs).
+    outgoing_window: HashMap<(MsgID, ConnID), Instant>,
     /// UDP socket
     socket: UdpSocket,
     /// Map from AddressInfo to connection id
@@ -192,12 +192,31 @@ pub struct LinuxConnection {
 }
 
 impl LinuxConnection {
-    fn _insert_into_outgoing_map(&mut self, _msg_id: MsgID, _conn_id: ConnID) {
-        unimplemented!();
+    fn insert_into_outgoing_map(&mut self, msg_id: MsgID, conn_id: ConnID) {
+        if self.mode == AppMode::Client {
+            if !self.outgoing_window.contains_key(&(msg_id, conn_id)) {
+                self.outgoing_window
+                    .insert((msg_id, conn_id), Instant::now());
+            }
+        }
     }
 
-    fn check_received_pkt(&mut self, buf: Vec<u8>, addr: SocketAddr)
-        -> Result<ReceivedPkt<Self>> {
+    fn check_received_pkt(&mut self) -> Result<Option<ReceivedPkt<Self>>> {
+        let mut buf = Vec::new();
+        let addr = match self.socket.recv_from(&mut buf) {
+            Ok((n, addr)) => if n == 0 {
+                tracing::debug!("Received {} bytes from {:?}", n, addr);
+                return Ok(None);
+            } else {
+                assert!(n > HEADER_ID_SIZE);
+                tracing::debug!("Received {} bytes from {:?}", n, addr);
+                addr
+            },
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                return Ok(None);
+            }
+            Err(e) => panic!("encountered IO error: {}", e),
+        };
         let msg_id = NetworkEndian::read_u32(&buf[0..4]);
         let conn_id = {
             let ipv4 = match addr.ip() {
@@ -211,7 +230,7 @@ impl LinuxConnection {
         };
         let bytes = ByteBuffer::new(&buf, HEADER_ID_SIZE, None)?;
         let received_pkt = ReceivedPkt::new(vec![bytes], msg_id, conn_id);
-        Ok(received_pkt)
+        Ok(Some(received_pkt))
     }
 }
 
@@ -293,12 +312,13 @@ impl Datapath for LinuxConnection {
             context.address_info.ipv4_addr,
             context.address_info.udp_port,
         );
-        tracing::debug!("Binding to {}", addr);
+        tracing::info!("Binding to {}", addr);
         let socket = UdpSocket::bind(addr).unwrap();
+        socket.set_nonblocking(true)?;
         Ok(LinuxConnection {
             start: Instant::now(),
-            thread_context: context,
             mode,
+            outgoing_window: HashMap::default(),
             socket,
             address_to_conn_id: HashMap::default(),
             active_connections: [None; MAX_CONCURRENT_CONNECTIONS],
@@ -338,6 +358,7 @@ impl Datapath for LinuxConnection {
     fn push_buffers_with_copy(&mut self, pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()> {
         tracing::debug!("Pushing batch of pkts of length {}", pkts.len());
         for (msg_id, conn_id, data) in pkts.iter() {
+            self.insert_into_outgoing_map(*msg_id, *conn_id);
             let mut buf = vec![0, 0, 0, 0];
             NetworkEndian::write_u32(&mut buf, *msg_id);
             buf.extend_from_slice(data);
@@ -345,8 +366,10 @@ impl Datapath for LinuxConnection {
                 let address_info = self.active_connections[*conn_id].unwrap();
                 format!("{}:{}", address_info.ipv4_addr, address_info.udp_port)
             };
-            self.socket.send_to(&buf, &addr).expect(
+            tracing::debug!("Sending {} bytes to {}", buf.len(), addr);
+            let n = self.socket.send_to(&buf, &addr).expect(
                 &format!("Failed to send data (len {}) to {}", buf.len(), addr));
+            assert_eq!(n, buf.len());
         }
         Ok(())
     }
@@ -383,32 +406,48 @@ impl Datapath for LinuxConnection {
     where
         Self: Sized,
     {
-        unimplemented!();
+        let mut ret: Vec<(ReceivedPkt<Self>, Duration)> =
+            Vec::with_capacity(RECEIVE_BURST_SIZE);
+        for _ in 0..RECEIVE_BURST_SIZE {
+            let received_pkt = match self.check_received_pkt()? {
+                Some(received_pkt) => { received_pkt },
+                None => { break; },
+            };
+            let dur = match self
+                .outgoing_window
+                .remove(&(received_pkt.msg_id(), received_pkt.conn_id()))
+            {
+                Some(start_time) => start_time.elapsed(),
+                None => {
+                    bail!(
+                        "Cannot find msg id {} and conn id {} in outgoing window",
+                        received_pkt.msg_id(),
+                        received_pkt.conn_id()
+                    );
+                }
+            };
+            ret.push((received_pkt, dur));
+        }
+        if !ret.is_empty() {
+            tracing::debug!("Received {} packets", ret.len());
+        }
+        Ok(ret)
     }
 
     fn pop(&mut self) -> Result<Vec<ReceivedPkt<Self>>>
     where
         Self: Sized,
     {
-        self.socket.set_nonblocking(true)?;
         let mut ret: Vec<ReceivedPkt<Self>> = Vec::with_capacity(RECEIVE_BURST_SIZE);
         for _ in 0..RECEIVE_BURST_SIZE {
-            let mut buf = Vec::new();
-            let addr = match self.socket.recv_from(&mut buf) {
-                Ok((n, addr)) => if n == 0 {
-                    break;
-                } else {
-                    assert!(n > HEADER_ID_SIZE, "received {} bytes", n);
-                    tracing::debug!("Received {} bytes", n);
-                    addr
-                },
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    break;
-                }
-                Err(e) => panic!("encountered IO error: {}", e),
+            let received_pkt = match self.check_received_pkt()? {
+                Some(received_pkt) => { received_pkt },
+                None => { break; },
             };
-            let received_pkt = self.check_received_pkt(buf, addr)?;
             ret.push(received_pkt);
+        }
+        if !ret.is_empty() {
+            tracing::debug!("Received {} packets", ret.len());
         }
         Ok(ret)
     }
