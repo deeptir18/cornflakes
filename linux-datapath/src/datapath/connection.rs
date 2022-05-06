@@ -399,8 +399,25 @@ impl Datapath for LinuxConnection {
         unimplemented!();
     }
 
-    fn push_sgas(&mut self, _sgas: &Vec<(MsgID, ConnID, Sga)>) -> Result<()> {
-        unimplemented!();
+    fn push_sgas(&mut self, sgas: &Vec<(MsgID, ConnID, Sga)>) -> Result<()> {
+        let bufs = sgas
+            .iter()
+            .map(|(_, _, sga)| {
+                let mut buf = vec![];
+                for sge in sga.iter() {
+                    buf.extend_from_slice(sge.addr());
+                }
+                buf
+            })
+            .collect::<Vec<_>>();
+        let pkts = sgas
+            .iter()
+            .enumerate()
+            .map(|(i, (msg_id, conn_id, _))| {
+                (*msg_id, *conn_id, &bufs[i][..])
+            })
+            .collect::<Vec<_>>();
+        self.push_buffers_with_copy(pkts)
     }
 
     fn pop_with_durations(&mut self) -> Result<Vec<(ReceivedPkt<Self>, Duration)>>
