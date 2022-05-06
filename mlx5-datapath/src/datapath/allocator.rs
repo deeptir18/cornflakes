@@ -4,7 +4,10 @@ use super::{
     sizes,
 };
 use color_eyre::eyre::{bail, Result};
-use cornflakes_libos::{allocator::DatapathMemoryPool, datapath::Datapath};
+use cornflakes_libos::{
+    allocator::{DatapathMemoryPool, MempoolID},
+    datapath::Datapath,
+};
 use std::boxed::Box;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -177,6 +180,7 @@ impl DatapathMemoryPool for DataMempool {
 
     fn alloc_data_buf(
         &mut self,
+        context: MempoolID,
     ) -> Result<Option<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>>
     {
         let buffer = unsafe { alloc_data_buf(self.mempool()) };
@@ -188,6 +192,6 @@ impl DatapathMemoryPool for DataMempool {
             buffer =? buffer,
             "Allocating from mempool with item len"
         );
-        Ok(Some(Mlx5Buffer::new(buffer, self.mempool(), 0)))
+        Ok(Some(Mlx5Buffer::new(buffer, self.mempool(), 0, context)))
     }
 }

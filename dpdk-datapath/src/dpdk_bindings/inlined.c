@@ -816,8 +816,7 @@ void fill_in_hdrs_dpdk_(void *buffer, const void *hdr, uint32_t id, size_t data_
      struct rte_udp_hdr *udp = (struct rte_udp_hdr *)dst_ptr;
      dst_ptr += sizeof(struct rte_udp_hdr);
 
-    *(uint32_t *)dst_ptr = id;
-    //printf("[fill_in_hdrs_dpdk_] dpdk ID that was filled in: %u, [given] %u\n", *dst_ptr, id);
+    *((uint32_t *)dst_ptr) = id;
 
     ip->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) +  4 + data_len);
     ip->hdr_checksum = 0;

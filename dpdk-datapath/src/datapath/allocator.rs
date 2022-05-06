@@ -3,7 +3,11 @@ use super::{
     connection::{DpdkBuffer, DpdkConnection, RteMbufMetadata},
 };
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
-use cornflakes_libos::{allocator::DatapathMemoryPool, datapath::Datapath, mem::closest_2mb_page};
+use cornflakes_libos::{
+    allocator::{DatapathMemoryPool, MempoolID},
+    datapath::Datapath,
+    mem::closest_2mb_page,
+};
 
 /// Determine three parameters about the memory in the DPDK mempool:
 /// 1. (Start address, length)
@@ -318,11 +322,12 @@ impl DatapathMemoryPool for MempoolInfo {
 
     fn alloc_data_buf(
         &mut self,
+        context: MempoolID,
     ) -> Result<Option<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>>
     {
         let mbuf = unsafe { rte_pktmbuf_alloc(self.handle) };
         if !mbuf.is_null() {
-            return Ok(Some(DpdkBuffer::new(mbuf)));
+            return Ok(Some(DpdkBuffer::new(mbuf, context)));
         } else {
             return Ok(None);
         }

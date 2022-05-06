@@ -1,4 +1,4 @@
-use super::datapath::Datapath;
+use super::datapath::{Datapath, ExposeMempoolID};
 use color_eyre::eyre::{bail, Result, WrapErr};
 use hashbrown::HashMap;
 use itertools::Itertools;
@@ -45,8 +45,10 @@ pub trait DatapathMemoryPool {
     ) -> Result<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata>;
 
     /// Allocate datapath buffer
+    /// Given context to refer back to memory pool.
     fn alloc_data_buf(
         &mut self,
+        context: MempoolID,
     ) -> Result<Option<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>>;
 }
 
@@ -66,7 +68,7 @@ where
     next_id_to_allocate: MempoolID,
 
     /// Mempools that cannot be allocated from, but must be searched for recovery.
-    recv_mempools: Vec<M>,
+    recv_mempools: HashMap<MempoolID, M>,
 }
 
 impl<M> Default for MemoryPoolAllocator<M>
@@ -78,7 +80,7 @@ where
             mempool_ids: HashMap::default(),
             mempools: HashMap::default(),
             next_id_to_allocate: 0,
-            recv_mempools: Vec::default(),
+            recv_mempools: HashMap::default(),
         }
     }
 }
@@ -105,7 +107,8 @@ where
     }
 
     pub fn add_recv_mempool(&mut self, mempool: M) {
-        self.recv_mempools.push(mempool);
+        self.recv_mempools.insert(self.next_id_to_allocate, mempool);
+        self.next_id_to_allocate += 1;
         tracing::debug!("Pushing recv mempool into vector");
     }
 
@@ -164,7 +167,7 @@ where
         for size in mempool_sizes {
             for mempool_id in self.mempool_ids.get(size).unwrap() {
                 let mempool = self.mempools.get_mut(mempool_id).unwrap();
-                match mempool.alloc_data_buf()? {
+                match mempool.alloc_data_buf(*mempool_id)? {
                     Some(x) => {
                         tracing::debug!("Successfully allocated from mempool size {}", size);
                         return Ok(Some(x));
@@ -183,7 +186,7 @@ where
     ) -> Result<Option<<<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata>>
     {
         // search through recv mempools first
-        for mempool in self.recv_mempools.iter() {
+        for (_id, mempool) in self.recv_mempools.iter() {
             if mempool.is_buf_within_bounds(buffer) {
                 if mempool.is_registered() {
                     let metadata = mempool
@@ -231,40 +234,32 @@ where
         buf: <<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer,
     ) -> Result<Option<<<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata>>
     {
-        // search through recv mempools first
-        for mempool in self.recv_mempools.iter() {
-            if mempool.is_buf_within_bounds(buf.as_ref()) {
+        let mempool_id = buf.get_mempool_id();
+        match self.recv_mempools.get(&mempool_id) {
+            Some(mempool) => {
                 if mempool.is_registered() {
                     let metadata = mempool
                         .recover_metadata(buf)
-                        .wrap_err("unable to recover metadata")?;
+                        .wrap_err("Unable to recover metadata")?;
                     return Ok(Some(metadata));
                 } else {
                     return Ok(None);
                 }
             }
+            None => {}
         }
-
-        let mempool_sizes: Vec<&usize> = self
-            .mempool_ids
-            .keys()
-            .sorted()
-            .filter(|size| *size >= &buf.as_ref().len())
-            .collect();
-        for size in mempool_sizes {
-            for mempool_id in self.mempool_ids.get(size).unwrap() {
-                let mempool = self.mempools.get(mempool_id).unwrap();
-                if mempool.is_buf_within_bounds(buf.as_ref()) {
-                    if mempool.is_registered() {
-                        let metadata = mempool
-                            .recover_metadata(buf)
-                            .wrap_err("unable to recover metadata")?;
-                        return Ok(Some(metadata));
-                    } else {
-                        return Ok(None);
-                    }
+        match self.mempools.get(&mempool_id) {
+            Some(mempool) => {
+                if mempool.is_registered() {
+                    let metadata = mempool
+                        .recover_metadata(buf)
+                        .wrap_err("Unable to recover metadata")?;
+                    return Ok(Some(metadata));
+                } else {
+                    return Ok(None);
                 }
             }
+            None => {}
         }
         return Ok(None);
     }
@@ -272,7 +267,7 @@ where
     /// Checks whether a given datapath buffer is in registered memory or not.
     pub fn is_registered(&self, buf: &[u8]) -> bool {
         // search through recv mempools first
-        for mempool in self.recv_mempools.iter() {
+        for (_i, mempool) in self.recv_mempools.iter() {
             if mempool.is_buf_within_bounds(buf.as_ref()) {
                 if mempool.is_registered() {
                     return true;

@@ -402,12 +402,18 @@ impl<'a> Sga<'a> {
 pub struct OrderedSga<'a> {
     /// Underlying scatter-gather array, where entries have been ordered according to heuristics.
     sga: Sga<'a>,
-    /// Number of sg entries that will be sent as "zero-copy". Assumes that first (sga.len() -
-    /// num_zc_entries) will be copied together; the further entries will be zero-copied.
-    num_zc_entries: usize,
+    /// Number of sg entries that will be sent as "copy".
+    num_copy_entries: usize,
 }
 
 impl<'a> OrderedSga<'a> {
+    pub fn new(sga: Sga<'a>, num_copy_entries: usize) -> OrderedSga<'a> {
+        OrderedSga {
+            sga: sga,
+            num_copy_entries: num_copy_entries,
+        }
+    }
+
     pub fn sga(&self) -> &Sga {
         &self.sga
     }
@@ -416,8 +422,20 @@ impl<'a> OrderedSga<'a> {
         self.sga.len()
     }
 
+    pub fn num_copy_entries(&self) -> usize {
+        self.num_copy_entries
+    }
+
     pub fn num_zero_copy_entries(&self) -> usize {
-        self.num_zc_entries
+        self.sga.len() - self.num_copy_entries
+    }
+
+    pub fn copy_length(&self) -> usize {
+        self.sga
+            .iter()
+            .take(self.num_copy_entries)
+            .map(|seg| seg.len())
+            .sum()
     }
 }
 

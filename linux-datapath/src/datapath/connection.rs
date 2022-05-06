@@ -2,7 +2,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use color_eyre::eyre::{bail, ensure, Result};
 use cornflakes_libos::{
     allocator::MempoolID,
-    datapath::{Datapath, InlineMode, MetadataOps, ReceivedPkt},
+    datapath::{Datapath, ExposeMempoolID, InlineMode, MetadataOps, ReceivedPkt},
     serialize::Serializable,
     utils::AddressInfo,
     ConnID, MsgID, OrderedSga, RcSga, Sga,
@@ -12,6 +12,14 @@ use std::{io::Write, net::Ipv4Addr, time::Duration};
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct MutableByteBuffer {
     buf: BytesMut,
+}
+
+impl ExposeMempoolID for MutableByteBuffer {
+    fn set_mempool_id(&mut self, _id: MempoolID) {}
+
+    fn get_mempool_id(&self) -> MempoolID {
+        0
+    }
 }
 
 impl MutableByteBuffer {
@@ -298,6 +306,10 @@ impl Datapath for LinuxConnection {
     }
 
     fn set_copying_threshold(&mut self, _threshold: usize) {}
+
+    fn get_copying_threshold(&self) -> usize {
+        std::usize::MAX
+    }
 
     fn set_inline_mode(&mut self, _mode: InlineMode) {}
 }

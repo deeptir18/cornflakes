@@ -46,6 +46,7 @@ pub enum PushBufType {
     Sga,
     RcSga,
     SingleBuf,
+    OrderedSga,
 }
 
 impl FromStr for PushBufType {
@@ -56,6 +57,9 @@ impl FromStr for PushBufType {
             "sga" | "SGA" | "Sga" => Ok(PushBufType::Sga),
             "rcsga" | "RcSga" | "RCSGA" => Ok(PushBufType::RcSga),
             "singlebuf" | "single_buf" | "SingleBuf" | "SINGLEBUF" => Ok(PushBufType::SingleBuf),
+            "orderedsga" | "ordered_sga" | "OrderedSga" | "ORDEREDSGA" => {
+                Ok(PushBufType::OrderedSga)
+            }
             x => {
                 bail!("Unknown push buf type: {:?}", x);
             }
@@ -185,9 +189,15 @@ pub trait MetadataOps {
     fn set_data_len_and_offset(&mut self, data_len: usize, offset: usize) -> Result<()>;
 }
 
+pub trait ExposeMempoolID {
+    fn set_mempool_id(&mut self, id: MempoolID);
+
+    fn get_mempool_id(&self) -> MempoolID;
+}
+
 pub trait Datapath {
     /// Mutable buffer type that can be written into.
-    type DatapathBuffer: AsRef<[u8]> + Write + PartialEq + Eq + std::fmt::Debug;
+    type DatapathBuffer: AsRef<[u8]> + Write + PartialEq + Eq + std::fmt::Debug + ExposeMempoolID;
 
     /// Metadata that wraps around a datapath buffer.
     type DatapathMetadata: AsRef<[u8]> + PartialEq + Eq + Clone + std::fmt::Debug + MetadataOps;
@@ -350,6 +360,9 @@ pub trait Datapath {
 
     /// Set copying threshold for serialization.
     fn set_copying_threshold(&mut self, threshold: usize);
+
+    /// Get current copying threshold for serialization.
+    fn get_copying_threshold(&self) -> usize;
 
     /// Set inline mode (may not be available in all datapaths)
     fn set_inline_mode(&mut self, mode: InlineMode);

@@ -2,14 +2,13 @@ use super::{
     super::dpdk_bindings::*, allocator::MempoolInfo, dpdk_check, dpdk_utils::*, wrapper::*,
 };
 use cornflakes_libos::{
-    allocator::{MemoryPoolAllocator, MempoolID, align_up},
-    datapath::{Datapath, InlineMode, MetadataOps, ReceivedPkt},
+    allocator::{align_up, MemoryPoolAllocator, MempoolID},
+    datapath::{Datapath, ExposeMempoolID, InlineMode, MetadataOps, ReceivedPkt},
     serialize::Serializable,
     utils::AddressInfo,
-    ConnID, MsgID, RcSga, RcSge, Sga, Sge, USING_REF_COUNTING,OrderedSga,
+    ConnID, MsgID, OrderedSga, RcSga, RcSge, Sga, Sge, USING_REF_COUNTING,
 };
 
-use byteorder::{ByteOrder, NetworkEndian};
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
@@ -55,11 +54,26 @@ const TX_RING_SIZE: u16 = 2048;
 pub struct DpdkBuffer {
     /// Underlying allocated mbuf
     mbuf: *mut rte_mbuf,
+    /// Mempool ID
+    mempool_id: MempoolID,
+}
+
+impl ExposeMempoolID for DpdkBuffer {
+    fn set_mempool_id(&mut self, id: MempoolID) {
+        self.mempool_id = id;
+    }
+
+    fn get_mempool_id(&self) -> MempoolID {
+        self.mempool_id
+    }
 }
 
 impl DpdkBuffer {
-    pub fn new(mbuf: *mut rte_mbuf) -> Self {
-        DpdkBuffer { mbuf: mbuf }
+    pub fn new(mbuf: *mut rte_mbuf, mempool_id: MempoolID) -> Self {
+        DpdkBuffer {
+            mbuf: mbuf,
+            mempool_id: mempool_id,
+        }
     }
 
     pub fn get_inner(self) -> *mut rte_mbuf {
@@ -440,6 +454,106 @@ pub struct DpdkConnection {
 }
 
 impl DpdkConnection {
+    fn _debug_check_received_pkt(
+        &mut self,
+        i: usize,
+        prev_id: Option<(usize, MsgID, ConnID)>,
+        recv_mbufs: &[*mut rte_mbuf; RECEIVE_BURST_SIZE],
+        num_received: u16,
+    ) -> Result<Option<ReceivedPkt<Self>>> {
+        let recv_mbuf = recv_mbufs[i];
+        let eth_hdr = unsafe {
+            mbuf_slice!(
+                recv_mbuf,
+                0,
+                cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE
+            )
+        };
+        let (src_eth, _) = match cornflakes_libos::utils::check_eth_hdr(
+            eth_hdr,
+            &self.thread_context.address_info.ether_addr,
+        ) {
+            Ok(r) => r,
+            Err(_) => {
+                return Ok(None);
+            }
+        };
+
+        let ipv4_hdr = unsafe {
+            mbuf_slice!(
+                recv_mbuf,
+                cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE,
+                cornflakes_libos::utils::IPV4_HEADER2_SIZE
+            )
+        };
+        let (src_ip, _) = match cornflakes_libos::utils::check_ipv4_hdr(
+            ipv4_hdr,
+            &self.thread_context.address_info.ipv4_addr,
+        ) {
+            Ok(r) => r,
+            Err(_) => {
+                return Ok(None);
+            }
+        };
+
+        let udp_hdr = unsafe {
+            mbuf_slice!(
+                recv_mbuf,
+                cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE
+                    + cornflakes_libos::utils::IPV4_HEADER2_SIZE,
+                cornflakes_libos::utils::UDP_HEADER2_SIZE
+            )
+        };
+
+        let (src_port, _, data_len) = match cornflakes_libos::utils::check_udp_hdr(
+            udp_hdr,
+            self.thread_context.address_info.udp_port,
+        ) {
+            Ok(p) => p,
+            Err(_) => {
+                return Ok(None);
+            }
+        };
+
+        // check if this address info is within a current conn_id
+        let src_addr = cornflakes_libos::utils::AddressInfo::new(src_port, src_ip, src_eth);
+        let conn_id = self
+            .connect(src_addr)
+            .wrap_err("TOO MANY CONCURRENT CONNECTIONS")?;
+
+        let msg_id = unsafe {
+            let slice = mbuf_slice!(
+                recv_mbuf,
+                cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE,
+                cornflakes_libos::utils::HEADER_ID_SIZE
+            );
+            cornflakes_libos::utils::parse_msg_id(slice)
+        };
+        if let Some((old_idx, old_msg_id, old_conn_id)) = prev_id {
+            if old_msg_id == msg_id && old_conn_id == conn_id {
+                tracing::info!(
+                    num_received,
+                    conn_id,
+                    "Current packet address: {:?}, old packet address: {:?}, msg id: {}, idx: {}, old_idx: {}",
+                    recv_mbufs[i],
+                    recv_mbufs[old_idx],
+                    msg_id,
+                    i,
+                    old_idx
+                );
+            }
+        }
+
+        let datapath_metadata = RteMbufMetadata::new(
+            recv_mbuf,
+            cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+            Some(data_len),
+        )?;
+
+        let received_pkt = ReceivedPkt::new(vec![datapath_metadata], msg_id, conn_id);
+        Ok(Some(received_pkt))
+    }
+
     fn check_received_pkt(&mut self, i: usize) -> Result<Option<ReceivedPkt<Self>>> {
         let recv_mbuf = self.recv_mbufs[i];
         let eth_hdr = unsafe {
@@ -507,7 +621,7 @@ impl DpdkConnection {
                 cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE,
                 cornflakes_libos::utils::HEADER_ID_SIZE
             );
-            NetworkEndian::read_u32(&slice[0..4])
+            cornflakes_libos::utils::parse_msg_id(slice)
         };
 
         let datapath_metadata = RteMbufMetadata::new(
@@ -525,6 +639,8 @@ impl DpdkConnection {
             if !self.outgoing_window.contains_key(&(msg_id, conn_id)) {
                 self.outgoing_window
                     .insert((msg_id, conn_id), Instant::now());
+            } else {
+                tracing::error!(msg_id, conn_id, "Already sent");
             }
         }
     }
@@ -668,7 +784,6 @@ impl DpdkConnection {
                         msg_id,
                         cornflakes_libos::utils::TOTAL_HEADER_SIZE,
                         msg_size,
-
                     )?;
                     self.place_copy_buf_into_send_mbufs(
                         dpdk_buffer,
@@ -773,7 +888,6 @@ impl DpdkConnection {
                         msg_id,
                         cornflakes_libos::utils::TOTAL_HEADER_SIZE,
                         data_len,
-                        
                     )?;
                     self.place_copy_buf_into_send_mbufs(
                         dpdk_buffer,
@@ -855,19 +969,14 @@ impl DpdkConnection {
         for i in 0..ct {
             let head_mbuf = self.send_mbufs[0][i as usize];
             unsafe {
-                tracing::debug!(
-                    pkt_len = access!(head_mbuf, pkt_len, usize), 
-                    data_len = access!(head_mbuf, data_len, usize), 
-                    nb_segs = access!(head_mbuf, nb_segs, usize), 
-                    next=? access!(head_mbuf, next, *mut rte_mbuf), 
-                    send_index = i, "Head mbuf metadata to send");
+                tracing::debug!(pkt_len = access!(head_mbuf, pkt_len, usize), data_len = access!(head_mbuf, data_len, usize), nb_segs = access!(head_mbuf, nb_segs, usize), next=? access!(head_mbuf, next, *mut rte_mbuf), send_index = i, "Head mbuf metadata to send");
             }
 
             // TODO: also print the segments
         }
         while num_sent < ct {
             let mbuf_ptr = &mut self.send_mbufs[0][num_sent as usize] as _;
-            num_sent += unsafe {
+            let sent = unsafe {
                 rte_eth_tx_burst(
                     self.thread_context.get_physical_port(),
                     self.thread_context.get_queue_id(),
@@ -875,11 +984,26 @@ impl DpdkConnection {
                     ct - num_sent,
                 )
             };
+            num_sent += sent;
+            if num_sent != ct {
+                tracing::debug!(
+                    "Failed to send {} mbufs, sent {}, {} so far",
+                    ct,
+                    sent,
+                    num_sent
+                );
+            }
         }
         Ok(())
     }
 
-    fn copy_hdr(&self, conn_id: ConnID, msg_id: MsgID, buffer: &mut [u8], data_len: usize) -> Result<()> {
+    fn copy_hdr(
+        &self,
+        conn_id: ConnID,
+        msg_id: MsgID,
+        buffer: &mut [u8],
+        data_len: usize,
+    ) -> Result<()> {
         let hdr_bytes: &[u8; cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE] =
             match &self.active_connections[conn_id as usize] {
                 Some((_, hdr_bytes_vec)) => hdr_bytes_vec,
@@ -1222,11 +1346,16 @@ impl Datapath for DpdkConnection {
             let mut dpdk_buffer = match self
                 .allocator
                 .allocate_buffer(buf.len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE)
-                .wrap_err(format!("Could not allocate buf to copy into for buf size {}", buf.len()))?
-            {
+                .wrap_err(format!(
+                    "Could not allocate buf to copy into for buf size {}",
+                    buf.len()
+                ))? {
                 Some(buf) => buf,
                 None => {
-                    bail!("Could not allocate buffer to copy into for buf size: {}", buf.len());
+                    bail!(
+                        "Could not allocate buffer to copy into for buf size: {}",
+                        buf.len()
+                    );
                 }
             };
             // write header into the dpdk buffer
@@ -1322,7 +1451,10 @@ impl Datapath for DpdkConnection {
         Ok(())
     }
 
-    fn push_ordered_sgas(&mut self, _ordered_sgas: &Vec<(MsgID, ConnID, OrderedSga)>) -> Result<()> {
+    fn push_ordered_sgas(
+        &mut self,
+        _ordered_sgas: &Vec<(MsgID, ConnID, OrderedSga)>,
+    ) -> Result<()> {
         unimplemented!();
     }
 
@@ -1357,33 +1489,38 @@ impl Datapath for DpdkConnection {
                 .check_received_pkt(i)
                 .wrap_err(format!("Error checking received pkt {}", i))?
             {
-                let dur = match self
+                tracing::debug!(
+                    "Received pkt with msg ID {}, conn ID {}",
+                    received_pkt.msg_id(),
+                    received_pkt.conn_id()
+                );
+                match self
                     .outgoing_window
                     .remove(&(received_pkt.msg_id(), received_pkt.conn_id()))
                 {
-                    Some(start_time) => start_time.elapsed(),
+                    Some(start_time) => {
+                        let dur = start_time.elapsed();
+                        ret.push((received_pkt, dur));
+                    }
                     None => {
                         // free the rest of the packets
-                        for _ in (i + 1)..num_received as usize {
-                            unsafe {
-                                rte_pktmbuf_free(self.recv_mbufs[i]);
-                            }
-                            self.recv_mbufs[i] = ptr::null_mut();
-                        }
-                        bail!(
+                        tracing::warn!(
                             "Cannot find msg id {} and conn id {} in outgoing window",
                             received_pkt.msg_id(),
                             received_pkt.conn_id()
                         );
+                        unsafe {
+                            rte_pktmbuf_free(self.recv_mbufs[i]);
+                        }
                     }
-                };
-                ret.push((received_pkt, dur));
+                }
             } else {
+                tracing::debug!("Received invalid packet at addr {:?}", self.recv_mbufs[i]);
                 unsafe {
                     rte_pktmbuf_free(self.recv_mbufs[i]);
                 }
-                self.recv_mbufs[i] = ptr::null_mut();
             }
+            self.recv_mbufs[i] = ptr::null_mut();
         }
         Ok(ret)
     }
@@ -1401,20 +1538,29 @@ impl Datapath for DpdkConnection {
             )
         };
 
+        if num_received == 0 {
+            return Ok(vec![]);
+        }
+
         let mut ret: Vec<ReceivedPkt<Self>> = Vec::with_capacity(RECEIVE_BURST_SIZE);
+
         for i in 0..num_received as usize {
             if let Some(received_pkt) = self
                 .check_received_pkt(i)
                 .wrap_err(format!("Error checking received pkt {}", i))?
             {
-                tracing::debug!("Received pkt with msg ID {}, conn ID {}", received_pkt.msg_id(), received_pkt.conn_id());
+                tracing::debug!(
+                    "Received pkt with msg ID {}, conn ID {}",
+                    received_pkt.msg_id(),
+                    received_pkt.conn_id()
+                );
                 ret.push(received_pkt);
             } else {
                 unsafe {
                     rte_pktmbuf_free(self.recv_mbufs[i]);
                 }
-                self.recv_mbufs[i] = ptr::null_mut();
             }
+            self.recv_mbufs[i] = ptr::null_mut();
         }
         Ok(ret)
     }
@@ -1465,7 +1611,12 @@ impl Datapath for DpdkConnection {
             (num_elts / num_mempools, num_mempools)
         };
         let actual_value_size = align_up(value_size + RTE_PKTMBUF_HEADROOM as usize, 256);
-        tracing::info!("Creating {} mempools of amount {}, actual value size {}", num_mempools, num_values, actual_value_size);
+        tracing::info!(
+            "Creating {} mempools of amount {}, actual value size {}",
+            num_mempools,
+            num_values,
+            actual_value_size
+        );
         for i in 0..num_mempools {
             let mempool_name = format!("{}_{}", name, i);
             let mempool = create_mempool(
@@ -1521,6 +1672,10 @@ impl Datapath for DpdkConnection {
 
     fn set_copying_threshold(&mut self, thresh: usize) {
         self.copying_threshold = thresh;
+    }
+
+    fn get_copying_threshold(&self) -> usize {
+        self.copying_threshold
     }
 
     fn set_inline_mode(&mut self, _inline_mode: InlineMode) {}

@@ -82,7 +82,7 @@ macro_rules! run_client (
                     cornflakes_utils::AppMode::Client,
                 )?;
 
-                connection.set_copying_threshold(std::f64::INFINITY as _);
+                connection.set_copying_threshold(std::usize::MAX);
 
                 let mut client: $echo_client =
                     <$echo_client>::new(server_addr_clone, &request_shape, max_num_requests);

@@ -5,6 +5,12 @@ pub trait ServerSM {
 
     fn push_buf_type(&self) -> PushBufType;
 
+    fn process_requests_ordered_sga(
+        &mut self,
+        pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        datapath: &mut Self::Datapath,
+    ) -> Result<()>;
+
     fn process_requests_sga(
         &mut self,
         sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
@@ -36,6 +42,9 @@ pub trait ServerSM {
                     }
                     PushBufType::RcSga => {
                         self.process_requests_rc_sga(pkts, datapath)?;
+                    }
+                    PushBufType::OrderedSga => {
+                        self.process_requests_ordered_sga(pkts, datapath)?;
                     }
                 }
             }
