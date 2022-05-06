@@ -10,7 +10,7 @@ use cornflakes_libos::{
 use color_eyre::eyre::WrapErr;
 use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
-use std::{io::Write, net::Ipv4Addr, time::Duration};
+use std::{io::Write, net::Ipv4Addr, time::{Duration, Instant}};
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct MutableByteBuffer {
@@ -164,7 +164,8 @@ impl LinuxDatapathSpecificParams {
 }
 
 pub struct LinuxConnection {
-    // TODO: insert linux connection params
+    /// Start time.
+    start: Instant,
 }
 
 impl LinuxConnection {
@@ -335,15 +336,21 @@ impl Datapath for LinuxConnection {
     }
 
     fn timer_hz(&self) -> u64 {
-        unimplemented!();
+        // cycles in a second
+        // (arbitrary constant)
+        1_000_000
     }
 
-    fn cycles_to_ns(&self, _t: u64) -> u64 {
-        unimplemented!();
+    fn cycles_to_ns(&self, t: u64) -> u64 {
+        // 1mil cycles/s
+        // 1k   cycles/ms
+        // 1    cycle/us
+        // 1000 ns/cycle
+        t * 1_000
     }
 
     fn current_cycles(&self) -> u64 {
-        unimplemented!();
+        self.start.elapsed().as_micros() as _
     }
 
     fn set_copying_threshold(&mut self, _threshold: usize) {}
