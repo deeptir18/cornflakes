@@ -20,6 +20,7 @@ use std::{
 
 const FILLER_MAC: &str = "ff:ff:ff:ff:ff:ff";
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
+const RECEIVE_BUFFER_SIZE: usize = 1028;
 const RECEIVE_BURST_SIZE: usize = 32;
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -202,7 +203,7 @@ impl LinuxConnection {
     }
 
     fn check_received_pkt(&mut self) -> Result<Option<ReceivedPkt<Self>>> {
-        let mut buf = Vec::new();
+        let mut buf = [0; RECEIVE_BUFFER_SIZE];
         let addr = match self.socket.recv_from(&mut buf) {
             Ok((n, addr)) => if n == 0 {
                 tracing::debug!("Received {} bytes from {:?}", n, addr);
