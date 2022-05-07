@@ -364,6 +364,12 @@ pub trait Datapath {
     /// Get current copying threshold for serialization.
     fn get_copying_threshold(&self) -> usize;
 
+    /// Sets maximum segments sent in a packet.
+    fn set_max_segments(&mut self, max_entries: usize);
+
+    /// Gets current maximum segments
+    fn get_max_segments(&self) -> usize;
+
     /// Set inline mode (may not be available in all datapaths)
     fn set_inline_mode(&mut self, mode: InlineMode);
 }

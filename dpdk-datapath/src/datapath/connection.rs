@@ -447,6 +447,8 @@ pub struct DpdkConnection {
     allocator: MemoryPoolAllocator<MempoolInfo>,
     /// Threshold for copying a segment or leaving as a separate scatter-gather entry
     copying_threshold: usize,
+    /// Threshold for maximum segments when sending a scatter-gather array.
+    max_segments: usize,
     /// Array of mbuf pointers used to receive packets
     recv_mbufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE],
     /// Array of mbuf pointers used to send packets
@@ -1275,6 +1277,7 @@ impl Datapath for DpdkConnection {
             address_to_conn_id: HashMap::default(),
             allocator: allocator,
             copying_threshold: 256,
+            max_segments: 33,
             recv_mbufs: [ptr::null_mut(); RECEIVE_BURST_SIZE],
             send_mbufs: [[ptr::null_mut(); SEND_BURST_SIZE]; MAX_SCATTERS],
         })
@@ -1678,5 +1681,12 @@ impl Datapath for DpdkConnection {
         self.copying_threshold
     }
 
+    fn set_max_segments(&mut self, segs: usize) {
+        self.max_segments = segs
+    }
+
+    fn get_max_segments(&self) -> usize {
+        self.max_segments
+    }
     fn set_inline_mode(&mut self, _inline_mode: InlineMode) {}
 }

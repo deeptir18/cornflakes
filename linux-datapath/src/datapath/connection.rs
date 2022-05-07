@@ -311,5 +311,11 @@ impl Datapath for LinuxConnection {
         std::usize::MAX
     }
 
+    fn set_max_segments(&mut self, _segs: usize) {}
+
+    fn get_max_segments(&self) -> usize {
+        std::usize::MAX
+    }
+
     fn set_inline_mode(&mut self, _mode: InlineMode) {}
 }

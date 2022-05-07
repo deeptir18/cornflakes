@@ -1,7 +1,6 @@
 mod header_utils;
 pub mod rust_codegen;
 pub mod utils;
-
 use color_eyre::eyre::{bail, Result, WrapErr};
 use header_utils::ProtoReprInfo;
 use protobuf_parser::{FileDescriptor, Syntax};

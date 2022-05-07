@@ -445,6 +445,8 @@ pub struct Mlx5Connection {
     allocator: MemoryPoolAllocator<DataMempool>,
     /// Threshold for copying a segment or leaving as a separate scatter-gather entry.
     copying_threshold: usize,
+    /// Threshold for max number of segments when sending.
+    max_segments: usize,
     /// Inline mode,
     inline_mode: InlineMode,
     /// Maximum data that can be inlined
@@ -1594,6 +1596,7 @@ impl Datapath for Mlx5Connection {
             address_to_conn_id: HashMap::default(),
             allocator: allocator,
             copying_threshold: 256,
+            max_segments: 32,
             inline_mode: InlineMode::default(),
             max_inline_size: 256,
             recv_mbufs: [std::ptr::null_mut(); RECEIVE_BURST_SIZE],
@@ -2099,7 +2102,7 @@ impl Datapath for Mlx5Connection {
                 }
             }
         }
-        for i in 0..32 {
+        for i in 0..RECEIVE_BURST_SIZE as _ {
             self.recv_mbufs[i] = ptr::null_mut();
         }
         Ok(ret)
@@ -2176,6 +2179,14 @@ impl Datapath for Mlx5Connection {
 
     fn get_copying_threshold(&self) -> usize {
         self.copying_threshold
+    }
+
+    fn set_max_segments(&mut self, segs: usize) {
+        self.max_segments = segs;
+    }
+
+    fn get_max_segments(&self) -> usize {
+        self.max_segments
     }
 
     fn set_inline_mode(&mut self, inline_mode: InlineMode) {
