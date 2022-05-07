@@ -108,9 +108,9 @@ pub trait HeaderRepr<'a> {
         );
 
         // reorder entries according to size threshold and whether entries are registered.
-        ordered_sga.reorder_by_size_and_registration(datapath, &mut offsets);
+        ordered_sga.reorder_by_size_and_registration(datapath, &mut offsets)?;
         // reorder entries if current (zero-copy segments + 1) exceeds max zero-copy segments
-        ordered_sga.reorder_by_max_segs(datapath.get_max_segments(), &mut offsets);
+        ordered_sga.reorder_by_max_segs(datapath, &mut offsets)?;
 
         let mut cur_dynamic_offset = self.dynamic_header_size();
 
