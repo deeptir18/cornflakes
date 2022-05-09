@@ -633,6 +633,18 @@ where
     RefCounted(D::DatapathMetadata),
 }
 
+impl<'a, D> Clone for RcSge<'a, D>
+where
+    D: datapath::Datapath,
+{
+    fn clone(&self) -> RcSge<'a, D> {
+        match self {
+            RcSge::RawRef(buf) => RcSge::RawRef(buf),
+            RcSge::RefCounted(metadata) => RcSge::RefCounted(metadata.clone()),
+        }
+    }
+}
+
 impl<'a, D> Default for RcSge<'a, D>
 where
     D: datapath::Datapath,
@@ -671,6 +683,17 @@ where
         match self {
             RcSge::RawRef(_) => None,
             RcSge::RefCounted(ref mut m) => Some(m),
+        }
+    }
+
+    pub fn clone_with_bounds(&self, off: usize, size: usize) -> Result<RcSge<'a, D>> {
+        match self {
+            RcSge::RawRef(buf) => Ok(RcSge::RawRef(&buf[off..(off + size)])),
+            RcSge::RefCounted(metadata) => {
+                let mut new_metadata = metadata.clone();
+                new_metadata.set_data_len_and_offset(metadata.offset() + off, size)?;
+                Ok(RcSge::RefCounted(new_metadata))
+            }
         }
     }
 }

@@ -33,8 +33,8 @@ pub trait HeaderRepr<'a> {
     fn total_header_size(&self) -> usize {
         BITMAP_LENGTH_FIELD
             + <Self as HeaderRepr<'a>>::BITMAP_LENGTH as usize
-            + self.dynamic_header_size()
             + <Self as HeaderRepr<'a>>::CONSTANT_HEADER_SIZE
+            + self.dynamic_header_size()
     }
 
     /// Number of scatter-gather entries (pointers and nested pointers to variable bytes or string
@@ -43,7 +43,7 @@ pub trait HeaderRepr<'a> {
 
     /// Offset to start writing dynamic parts of the header (e.g., variable sized list and nested
     /// object header data).
-    fn dynamic_header_offset(&self) -> usize;
+    fn dynamic_header_start(&self) -> usize;
 
     /// Allocates context required for serialization: header vector and scatter-gather array with
     /// required capacity.
@@ -54,11 +54,46 @@ pub trait HeaderRepr<'a> {
         )
     }
 
+    fn inner_serialize_with_ref(
+        &self,
+        header: &mut [u8],
+        constant_header_offset: usize,
+        dynamic_header_start: usize,
+        scatter_gather_entries: &mut [Sge<'a>],
+        offsets: &mut [usize],
+        with_ref: bool,
+    ) -> Result<()> {
+        if with_ref {
+            // read forward pointer
+            let slice = &mut header
+                [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)]
+                .try_into()?;
+            let mut forward_pointer = MutForwardPointer(slice);
+            forward_pointer.write_offset(dynamic_header_start as _);
+            // TODO: write size?
+            self.inner_serialize(
+                header,
+                dynamic_header_start,
+                dynamic_header_start + self.dynamic_header_start(),
+                scatter_gather_entries,
+                offsets,
+            )
+        } else {
+            self.inner_serialize(
+                header,
+                constant_header_offset,
+                dynamic_header_start,
+                scatter_gather_entries,
+                offsets,
+            )
+        }
+    }
+
     /// Nested serialization function.
     /// Params:
     /// @header - mutable header bytes to write header.
     /// @constant_header_offset - offset into array to start writing constant part of header.
-    /// @dynamic_header_offset - offset into array to start writing dynamic parts of header (list,
+    /// @dynamic_header_start - offset into array to start writing dynamic parts of header (list,
     /// nested object)
     /// @scatter_gather_entries - mutable slice of (Sge) entries. to write in scatter-gather
     /// entry data
@@ -71,10 +106,26 @@ pub trait HeaderRepr<'a> {
         &self,
         header: &mut [u8],
         constant_header_offset: usize,
-        dynamic_header_offset: usize,
+        dynamic_header_start: usize,
         scatter_gather_entries: &mut [Sge<'a>],
         offsets: &mut [usize],
     ) -> Result<()>;
+
+    fn inner_deserialize_with_ref(
+        &mut self,
+        buffer: &'a [u8],
+        header_offset: usize,
+        with_ref: bool,
+    ) -> Result<()> {
+        if with_ref {
+            let slice =
+                &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
+            let forward_pointer = ForwardPointer(slice);
+            self.inner_deserialize(buffer, forward_pointer.get_offset() as usize)
+        } else {
+            self.inner_deserialize(buffer, header_offset)
+        }
+    }
 
     /// Nested deserialization function.
     /// Params:
@@ -103,12 +154,13 @@ pub trait HeaderRepr<'a> {
         let mut offsets: Vec<usize> = vec![0; required_entries];
 
         // recursive serialize each item
-        self.inner_serialize(
+        self.inner_serialize_with_ref(
             header_buffer,
             0,
-            self.dynamic_header_offset(),
+            self.dynamic_header_start(),
             ordered_sga.mut_entries_slice(1, required_entries),
             offsets.as_mut_slice(),
+            false,
         )?;
 
         // reorder entries according to size threshold and whether entries are registered.
@@ -192,7 +244,7 @@ impl<'a> HeaderRepr<'a> for CFString<'a> {
         1
     }
 
-    fn dynamic_header_offset(&self) -> usize {
+    fn dynamic_header_start(&self) -> usize {
         0
     }
 
@@ -200,7 +252,7 @@ impl<'a> HeaderRepr<'a> for CFString<'a> {
         &self,
         _header: &mut [u8],
         constant_header_offset: usize,
-        _dynamic_header_offset: usize,
+        _dynamic_header_start: usize,
         scatter_gather_entries: &mut [Sge<'a>],
         offsets: &mut [usize],
     ) -> Result<()> {
@@ -266,7 +318,7 @@ impl<'a> HeaderRepr<'a> for CFBytes<'a> {
         1
     }
 
-    fn dynamic_header_offset(&self) -> usize {
+    fn dynamic_header_start(&self) -> usize {
         0
     }
 
@@ -274,7 +326,7 @@ impl<'a> HeaderRepr<'a> for CFBytes<'a> {
         &self,
         _header: &mut [u8],
         constant_header_offset: usize,
-        _dynamic_header_offset: usize,
+        _dynamic_header_start: usize,
         scatter_gather_entries: &mut [Sge<'a>],
         offsets: &mut [usize],
     ) -> Result<()> {
@@ -380,7 +432,7 @@ where
         0
     }
 
-    fn dynamic_header_offset(&self) -> usize {
+    fn dynamic_header_start(&self) -> usize {
         0
     }
 
@@ -388,7 +440,7 @@ where
         &self,
         header: &mut [u8],
         constant_header_offset: usize,
-        dynamic_header_offset: usize,
+        dynamic_header_start: usize,
         scatter_gather_entries: &mut [Sge<'a>],
         offsets: &mut [usize],
     ) -> Result<()> {
@@ -396,14 +448,14 @@ where
             List::Owned(l) => l.inner_serialize(
                 header,
                 constant_header_offset,
-                dynamic_header_offset,
+                dynamic_header_start,
                 scatter_gather_entries,
                 offsets,
             ),
             List::Ref(l) => l.inner_serialize(
                 header,
                 constant_header_offset,
-                dynamic_header_offset,
+                dynamic_header_start,
                 scatter_gather_entries,
                 offsets,
             ),
@@ -500,7 +552,7 @@ where
         0
     }
 
-    fn dynamic_header_offset(&self) -> usize {
+    fn dynamic_header_start(&self) -> usize {
         0
     }
 
@@ -508,7 +560,7 @@ where
         &self,
         header: &mut [u8],
         constant_header_offset: usize,
-        dynamic_header_offset: usize,
+        dynamic_header_start: usize,
         _scatter_gather_entries: &mut [Sge<'a>],
         _offsets: &mut [usize],
     ) -> Result<()> {
@@ -517,9 +569,9 @@ where
             .try_into()?;
         let mut forward_pointer = MutForwardPointer(header_slice);
         forward_pointer.write_size(self.num_set as _);
-        forward_pointer.write_offset(dynamic_header_offset as _);
+        forward_pointer.write_offset(dynamic_header_start as _);
         let dest_slice = &mut header
-            [dynamic_header_offset..(dynamic_header_offset + self.num_set * size_of::<T>())];
+            [dynamic_header_start..(dynamic_header_start + self.num_set * size_of::<T>())];
         dest_slice.copy_from_slice(&self.list_ptr);
         Ok(())
     }
@@ -618,7 +670,7 @@ where
         0
     }
 
-    fn dynamic_header_offset(&self) -> usize {
+    fn dynamic_header_start(&self) -> usize {
         0
     }
 
@@ -626,7 +678,7 @@ where
         &self,
         header: &mut [u8],
         constant_header_offset: usize,
-        dynamic_header_offset: usize,
+        dynamic_header_start: usize,
         _scatter_gather_entries: &mut [Sge<'a>],
         _offsets: &mut [usize],
     ) -> Result<()> {
@@ -635,9 +687,9 @@ where
             .try_into()?;
         let mut forward_pointer = MutForwardPointer(header_slice);
         forward_pointer.write_size(self.num_space as _);
-        forward_pointer.write_offset(dynamic_header_offset as _);
+        forward_pointer.write_offset(dynamic_header_start as _);
         let list_slice = &mut header
-            [dynamic_header_offset..(dynamic_header_offset + self.num_space * size_of::<T>())];
+            [dynamic_header_start..(dynamic_header_start + self.num_space * size_of::<T>())];
         list_slice.copy_from_slice(&self.list_ptr[0..self.num_space * size_of::<T>()]);
         Ok(())
     }
@@ -722,7 +774,7 @@ where
             .sum()
     }
 
-    fn dynamic_header_offset(&self) -> usize {
+    fn dynamic_header_start(&self) -> usize {
         self.elts
             .iter()
             .take(self.num_set)
@@ -742,7 +794,7 @@ where
         &self,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
-        dynamic_header_offset: usize,
+        dynamic_header_start: usize,
         scatter_gather_entries: &mut [Sge<'a>],
         offsets: &mut [usize],
     ) -> Result<()> {
@@ -751,20 +803,20 @@ where
             .try_into()?;
         let mut forward_pointer = MutForwardPointer(header_slice);
         forward_pointer.write_size(self.num_set as u32);
-        forward_pointer.write_offset(dynamic_header_offset as u32);
+        forward_pointer.write_offset(dynamic_header_start as u32);
 
         let mut sge_idx = 0;
-        let mut cur_dynamic_off = dynamic_header_offset + self.dynamic_header_offset();
+        let mut cur_dynamic_off = dynamic_header_start + self.dynamic_header_start();
         tracing::debug!(num_elts = self.elts.len(), "Info about list items");
         for (i, elt) in self.elts.iter().take(self.num_set).enumerate() {
-            // recursively serialize
             let required_sges = elt.num_scatter_gather_entries();
-            elt.inner_serialize(
+            elt.inner_serialize_with_ref(
                 header_buffer,
-                dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
+                dynamic_header_start + T::CONSTANT_HEADER_SIZE * i,
                 cur_dynamic_off,
                 &mut scatter_gather_entries[sge_idx..(sge_idx + required_sges)],
                 &mut offsets[sge_idx..(sge_idx + required_sges)],
+                elt.dynamic_header_size() != 0,
             )?;
             sge_idx += required_sges;
             cur_dynamic_off += elt.dynamic_header_size();
@@ -786,7 +838,12 @@ where
         }
 
         for (i, elt) in self.elts.iter_mut().take(size).enumerate() {
-            elt.inner_deserialize(buffer, dynamic_offset + i * T::CONSTANT_HEADER_SIZE)?;
+            // for objects with no dynamic header size, no need to deserialize with ref
+            elt.inner_deserialize_with_ref(
+                buffer,
+                dynamic_offset + i * T::CONSTANT_HEADER_SIZE,
+                elt.dynamic_header_size() != 0,
+            )?;
         }
         Ok(())
     }
