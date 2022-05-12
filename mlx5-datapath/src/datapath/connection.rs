@@ -426,6 +426,7 @@ impl Mlx5DatapathSpecificParams {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct Mlx5Connection {
     /// Per thread context.
     thread_context: Mlx5PerThreadContext,

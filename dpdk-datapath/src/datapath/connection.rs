@@ -1682,7 +1682,7 @@ impl Datapath for DpdkConnection {
     }
 
     fn set_max_segments(&mut self, segs: usize) {
-        self.max_segments = segs
+        self.max_segments = segs;
     }
 
     fn get_max_segments(&self) -> usize {

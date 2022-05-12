@@ -18,7 +18,7 @@ pub const BITMAP_LENGTH_FIELD: usize = 4;
 
 pub trait HeaderRepr<'a, D>
 where
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     /// Maximum number of fields is max u32 * 8
     const NUMBER_OF_FIELDS: usize;
@@ -182,7 +182,7 @@ where
         datapath: &D,
     ) -> Result<()>
     where
-        D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+        D: Datapath,
     {
         let required_entries = self.num_scatter_gather_entries();
         let header_size = self.total_header_size(false);
@@ -246,14 +246,14 @@ where
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CFString<'a, D>
 where
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     ptr: RcSge<'a, D>,
 }
 
 impl<'a, D> CFString<'a, D>
 where
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     pub fn new(ptr: &'a str) -> Self {
         CFString {
@@ -286,7 +286,7 @@ where
 
 impl<'a, D> HeaderRepr<'a, D> for CFString<'a, D>
 where
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
@@ -341,14 +341,14 @@ where
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CFBytes<'a, D>
 where
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     ptr: RcSge<'a, D>,
 }
 
 impl<'a, D> CFBytes<'a, D>
 where
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     pub fn new(ptr: &'a str) -> Self {
         CFBytes {
@@ -373,7 +373,7 @@ where
 
 impl<'a, D> HeaderRepr<'a, D> for CFBytes<'a, D>
 where
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
@@ -428,7 +428,7 @@ where
 pub enum List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     Owned(OwnedList<'a, T>),
     Ref(RefList<'a, T, D>),
@@ -437,7 +437,7 @@ where
 impl<'a, T, D> Default for List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     fn default() -> Self {
         List::Owned(OwnedList::default())
@@ -447,7 +447,7 @@ where
 impl<'a, T, D> Index<usize> for List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     type Output = T;
     fn index(&self, idx: usize) -> &T {
@@ -461,7 +461,7 @@ where
 impl<'a, T, D> List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     pub fn init(size: usize) -> List<'a, T, D> {
         List::Owned(OwnedList::init(size))
@@ -498,7 +498,7 @@ where
 impl<'a, T, D> HeaderRepr<'a, D> for List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
@@ -627,7 +627,7 @@ where
 impl<'a, T, D> HeaderRepr<'a, D> for OwnedList<'a, T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
@@ -696,7 +696,7 @@ where
 pub struct RefList<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     num_space: usize,
     list_ptr: RcSge<'a, D>,
@@ -706,7 +706,7 @@ where
 impl<'a, T, D> Default for RefList<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     fn default() -> Self {
         RefList {
@@ -720,7 +720,7 @@ where
 impl<'a, T, D> RefList<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     pub fn replace(&mut self, idx: usize, val: T) {
         assert!(idx < self.num_space);
@@ -750,7 +750,7 @@ where
 impl<'a, T, D> Index<usize> for RefList<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     type Output = T;
     fn index(&self, idx: usize) -> &Self::Output {
@@ -761,7 +761,7 @@ where
 impl<'a, T, D> HeaderRepr<'a, D> for RefList<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
@@ -822,11 +822,11 @@ where
     }
 }
 
-#[derive(Default, Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub struct VariableList<'a, T, D>
 where
     T: HeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     num_space: usize,
     num_set: usize,
@@ -837,7 +837,7 @@ where
 impl<'a, T, D> VariableList<'a, T, D>
 where
     T: HeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     pub fn init(num: usize) -> VariableList<'a, T, D> {
         VariableList {
@@ -864,11 +864,10 @@ where
         self.num_set
     }
 }
-
 impl<'a, T, D> Index<usize> for VariableList<'a, T, D>
 where
     T: HeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     type Output = T;
     fn index(&self, idx: usize) -> &Self::Output {
@@ -880,7 +879,7 @@ where
 impl<'a, T, D> HeaderRepr<'a, D> for VariableList<'a, T, D>
 where
     T: HeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
-    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
+    D: Datapath,
 {
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 

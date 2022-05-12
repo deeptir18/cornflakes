@@ -2,7 +2,7 @@
 name = "kv-store-ds"
 version = "0.1.0"
 authors = ["deeptir <deeptir@cs.stanford.edu>"]
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 color-eyre = "0.5"

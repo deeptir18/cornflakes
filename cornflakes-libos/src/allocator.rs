@@ -54,9 +54,10 @@ pub trait DatapathMemoryPool {
 
 /// Datapaths can use this struct as their allocator, given an implementation of a
 /// DatapathMemoryPool.
+#[derive(Debug, PartialEq, Eq)]
 pub struct MemoryPoolAllocator<M>
 where
-    M: DatapathMemoryPool,
+    M: DatapathMemoryPool + PartialEq + Eq + std::fmt::Debug,
 {
     /// Map from pool size to list of currently allocated mempool IDs
     mempool_ids: HashMap<usize, HashSet<MempoolID>>,
@@ -73,7 +74,7 @@ where
 
 impl<M> Default for MemoryPoolAllocator<M>
 where
-    M: DatapathMemoryPool,
+    M: DatapathMemoryPool + PartialEq + Eq + std::fmt::Debug,
 {
     fn default() -> Self {
         MemoryPoolAllocator {
@@ -86,7 +87,7 @@ where
 }
 impl<M> MemoryPoolAllocator<M>
 where
-    M: DatapathMemoryPool,
+    M: DatapathMemoryPool + PartialEq + Eq + std::fmt::Debug,
 {
     pub fn add_mempool(&mut self, size: usize, handle: M) -> Result<MempoolID> {
         match self.mempool_ids.get_mut(&size) {
