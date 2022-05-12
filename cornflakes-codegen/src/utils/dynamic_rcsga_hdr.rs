@@ -1,4 +1,5 @@
-use super::{ForwardPointer, MutForwardPointer};
+use super::{align_up, ForwardPointer, MutForwardPointer};
+use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
 use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::{
@@ -17,7 +18,7 @@ pub const BITMAP_LENGTH_FIELD: usize = 4;
 
 pub trait HeaderRepr<'a, D>
 where
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     /// Maximum number of fields is max u32 * 8
     const NUMBER_OF_FIELDS: usize;
@@ -26,17 +27,53 @@ where
     /// sized fields. Does not include the bitmap.
     const CONSTANT_HEADER_SIZE: usize;
 
-    /// Number of bytes reprenting the bitmap (should be multiple of 4)
-    const BITMAP_LENGTH: u32;
+    /// Number of bits required to represent the bitmap.
+    /// Aligned to multiple of 4.
+    fn bitmap_length() -> usize {
+        align_up(Self::NUMBER_OF_FIELDS, 4)
+    }
+
+    fn get_bitmap_field(&self, field: usize) -> bool {
+        self.get_bitmap()[field] == 1
+    }
+
+    fn set_bitmap_field(&mut self, field: usize) {
+        self.get_mut_bitmap()[field] = 1;
+    }
+
+    fn get_bitmap(&self) -> &[u8];
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8];
+
+    fn set_bitmap(&mut self, bitmap: &[u8]);
+
+    fn serialize_bitmap(&self, header: &mut [u8], offset: usize) {
+        LittleEndian::write_u32(
+            &mut header[offset..(offset + BITMAP_LENGTH_FIELD)],
+            Self::bitmap_length() as u32,
+        );
+        let slice = &mut header[(offset + BITMAP_LENGTH_FIELD)
+            ..(offset + BITMAP_LENGTH_FIELD + Self::bitmap_length())];
+        slice.copy_from_slice(&self.get_bitmap());
+    }
+
+    fn deserialize_bitmap(&mut self, header: &RcSge<'a, D>, offset: usize) {
+        let bitmap_size =
+            LittleEndian::read_u32(&header.as_ref()[offset..(offset + BITMAP_LENGTH_FIELD)]);
+        self.set_bitmap(
+            &header.as_ref()[(offset + BITMAP_LENGTH_FIELD)
+                ..(offset + BITMAP_LENGTH_FIELD + (bitmap_size as usize))],
+        );
+    }
 
     /// Dynamic part of the header (actual bytes pointed to, lists, nested objects).
     fn dynamic_header_size(&self) -> usize;
 
     /// Total header size including the bitmap.
-    fn total_header_size(&self) -> usize {
+    fn total_header_size(&self, with_ref: bool) -> usize {
         BITMAP_LENGTH_FIELD
-            + <Self as HeaderRepr<'a, D>>::BITMAP_LENGTH as usize
-            + <Self as HeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE
+            + Self::bitmap_length()
+            + <Self as HeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE * with_ref as usize
             + self.dynamic_header_size()
     }
 
@@ -52,7 +89,7 @@ where
     /// required capacity.
     fn alloc_context(&self) -> (Vec<u8>, RcSga<'a, D>) {
         (
-            vec![0u8; self.total_header_size()],
+            vec![0u8; self.total_header_size(false)],
             RcSga::allocate(self.num_scatter_gather_entries() + 1),
         )
     }
@@ -145,10 +182,10 @@ where
         datapath: &D,
     ) -> Result<()>
     where
-        D: Datapath,
+        D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
     {
         let required_entries = self.num_scatter_gather_entries();
-        let header_size = self.total_header_size();
+        let header_size = self.total_header_size(false);
 
         if sga.len() < (required_entries + 1) || header_buffer.len() < header_size {
             bail!("Cannot serialize into sga with num entries {} ({} required) and header buffer length {} ({} required", sga.len(), required_entries + 1, header_buffer.len(), header_size);
@@ -209,14 +246,14 @@ where
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CFString<'a, D>
 where
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     ptr: RcSge<'a, D>,
 }
 
 impl<'a, D> CFString<'a, D>
 where
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     pub fn new(ptr: &'a str) -> Self {
         CFString {
@@ -249,13 +286,11 @@ where
 
 impl<'a, D> HeaderRepr<'a, D> for CFString<'a, D>
 where
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
     const CONSTANT_HEADER_SIZE: usize = SIZE_FIELD + OFFSET_FIELD;
-
-    const BITMAP_LENGTH: u32 = 0;
 
     fn dynamic_header_size(&self) -> usize {
         0
@@ -268,6 +303,16 @@ where
     fn dynamic_header_start(&self) -> usize {
         0
     }
+
+    fn get_bitmap(&self) -> &[u8] {
+        &[]
+    }
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8] {
+        &mut []
+    }
+
+    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn inner_serialize(
         &self,
@@ -296,14 +341,14 @@ where
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CFBytes<'a, D>
 where
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     ptr: RcSge<'a, D>,
 }
 
 impl<'a, D> CFBytes<'a, D>
 where
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     pub fn new(ptr: &'a str) -> Self {
         CFBytes {
@@ -328,13 +373,11 @@ where
 
 impl<'a, D> HeaderRepr<'a, D> for CFBytes<'a, D>
 where
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
     const CONSTANT_HEADER_SIZE: usize = SIZE_FIELD + OFFSET_FIELD;
-
-    const BITMAP_LENGTH: u32 = 0;
 
     fn dynamic_header_size(&self) -> usize {
         0
@@ -347,6 +390,16 @@ where
     fn dynamic_header_start(&self) -> usize {
         0
     }
+
+    fn get_bitmap(&self) -> &[u8] {
+        &[]
+    }
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8] {
+        &mut []
+    }
+
+    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn inner_serialize(
         &self,
@@ -375,7 +428,7 @@ where
 pub enum List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     Owned(OwnedList<'a, T>),
     Ref(RefList<'a, T, D>),
@@ -384,7 +437,7 @@ where
 impl<'a, T, D> Default for List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     fn default() -> Self {
         List::Owned(OwnedList::default())
@@ -394,7 +447,7 @@ where
 impl<'a, T, D> Index<usize> for List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     type Output = T;
     fn index(&self, idx: usize) -> &T {
@@ -408,7 +461,7 @@ where
 impl<'a, T, D> List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     pub fn init(size: usize) -> List<'a, T, D> {
         List::Owned(OwnedList::init(size))
@@ -445,13 +498,11 @@ where
 impl<'a, T, D> HeaderRepr<'a, D> for List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
-
-    const BITMAP_LENGTH: u32 = 0;
 
     fn dynamic_header_size(&self) -> usize {
         0
@@ -464,6 +515,16 @@ where
     fn dynamic_header_start(&self) -> usize {
         0
     }
+
+    fn get_bitmap(&self) -> &[u8] {
+        &[]
+    }
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8] {
+        &mut []
+    }
+
+    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn inner_serialize(
         &self,
@@ -566,13 +627,11 @@ where
 impl<'a, T, D> HeaderRepr<'a, D> for OwnedList<'a, T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
-
-    const BITMAP_LENGTH: u32 = 0;
 
     fn dynamic_header_size(&self) -> usize {
         self.num_set * size_of::<T>()
@@ -585,6 +644,16 @@ where
     fn dynamic_header_start(&self) -> usize {
         0
     }
+
+    fn get_bitmap(&self) -> &[u8] {
+        &[]
+    }
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8] {
+        &mut []
+    }
+
+    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn inner_serialize(
         &self,
@@ -627,7 +696,7 @@ where
 pub struct RefList<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     num_space: usize,
     list_ptr: RcSge<'a, D>,
@@ -637,7 +706,7 @@ where
 impl<'a, T, D> Default for RefList<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     fn default() -> Self {
         RefList {
@@ -651,7 +720,7 @@ where
 impl<'a, T, D> RefList<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     pub fn replace(&mut self, idx: usize, val: T) {
         assert!(idx < self.num_space);
@@ -681,7 +750,7 @@ where
 impl<'a, T, D> Index<usize> for RefList<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     type Output = T;
     fn index(&self, idx: usize) -> &Self::Output {
@@ -692,13 +761,11 @@ where
 impl<'a, T, D> HeaderRepr<'a, D> for RefList<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
-
-    const BITMAP_LENGTH: u32 = 0;
 
     fn dynamic_header_size(&self) -> usize {
         self.num_space * size_of::<T>()
@@ -711,6 +778,16 @@ where
     fn dynamic_header_start(&self) -> usize {
         0
     }
+
+    fn get_bitmap(&self) -> &[u8] {
+        &[]
+    }
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8] {
+        &mut []
+    }
+
+    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn inner_serialize(
         &self,
@@ -745,11 +822,11 @@ where
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Clone)]
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 pub struct VariableList<'a, T, D>
 where
     T: HeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     num_space: usize,
     num_set: usize,
@@ -760,7 +837,7 @@ where
 impl<'a, T, D> VariableList<'a, T, D>
 where
     T: HeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     pub fn init(num: usize) -> VariableList<'a, T, D> {
         VariableList {
@@ -787,10 +864,11 @@ where
         self.num_set
     }
 }
+
 impl<'a, T, D> Index<usize> for VariableList<'a, T, D>
 where
     T: HeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     type Output = T;
     fn index(&self, idx: usize) -> &Self::Output {
@@ -802,11 +880,9 @@ where
 impl<'a, T, D> HeaderRepr<'a, D> for VariableList<'a, T, D>
 where
     T: HeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
-    D: Datapath,
+    D: Datapath + std::fmt::Debug + Eq + PartialEq + Default + Clone,
 {
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
-
-    const BITMAP_LENGTH: u32 = 0;
 
     const NUMBER_OF_FIELDS: usize = 1;
 
@@ -832,6 +908,16 @@ where
             .map(|x| x.num_scatter_gather_entries())
             .sum()
     }
+
+    fn get_bitmap(&self) -> &[u8] {
+        &[]
+    }
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8] {
+        &mut []
+    }
+
+    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn inner_serialize(
         &self,

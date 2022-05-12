@@ -7,6 +7,17 @@ pub mod rc_dynamic_hdr;
 use byteorder::{ByteOrder, LittleEndian};
 use std::slice;
 
+fn align_up(x: usize, align_size: usize) -> usize {
+    // find value aligned up to align_size
+    let divisor = x / align_size;
+    if (divisor * align_size) < x {
+        return (divisor + 1) * align_size;
+    } else {
+        assert!(divisor * align_size == x);
+        return x;
+    }
+}
+
 pub struct ForwardPointer<'a>(&'a [u8; 8]);
 
 impl<'a> ForwardPointer<'a> {

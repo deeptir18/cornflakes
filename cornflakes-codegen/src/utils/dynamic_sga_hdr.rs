@@ -1,4 +1,5 @@
-use super::{ForwardPointer, MutForwardPointer};
+use super::{align_up, ForwardPointer, MutForwardPointer};
+use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
@@ -23,17 +24,50 @@ pub trait HeaderRepr<'a> {
     /// sized fields. Does not include the bitmap.
     const CONSTANT_HEADER_SIZE: usize;
 
-    /// Number of bytes reprenting the bitmap (should be multiple of 4)
-    const BITMAP_LENGTH: u32;
+    fn bitmap_length() -> usize {
+        align_up(Self::NUMBER_OF_FIELDS, 4)
+    }
+
+    fn get_bitmap_field(&self, field: usize) -> bool {
+        self.get_bitmap()[field] == 1
+    }
+
+    fn set_bitmap_field(&mut self, field: usize) {
+        self.get_mut_bitmap()[field] = 1;
+    }
+
+    fn get_bitmap(&self) -> &[u8];
+
+    fn set_bitmap(&mut self, bitmap: &[u8]);
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8];
+
+    fn serialize_bitmap(&self, header: &mut [u8], offset: usize) {
+        LittleEndian::write_u32(
+            &mut header[offset..(offset + BITMAP_LENGTH_FIELD)],
+            Self::bitmap_length() as u32,
+        );
+        let slice = &mut header[(offset + BITMAP_LENGTH_FIELD)
+            ..(offset + BITMAP_LENGTH_FIELD + Self::bitmap_length())];
+        slice.copy_from_slice(&self.get_bitmap());
+    }
+
+    fn deserialize_bitmap(&mut self, header: &'a [u8], offset: usize) {
+        let bitmap_size = LittleEndian::read_u32(&header[offset..(offset + BITMAP_LENGTH_FIELD)]);
+        self.set_bitmap(
+            &header[(offset + BITMAP_LENGTH_FIELD)
+                ..(offset + BITMAP_LENGTH_FIELD + (bitmap_size as usize))],
+        );
+    }
 
     /// Dynamic part of the header (actual bytes pointed to, lists, nested objects).
     fn dynamic_header_size(&self) -> usize;
 
     /// Total header size including the bitmap.
-    fn total_header_size(&self) -> usize {
+    fn total_header_size(&self, with_ref: bool) -> usize {
         BITMAP_LENGTH_FIELD
-            + <Self as HeaderRepr<'a>>::BITMAP_LENGTH as usize
-            + <Self as HeaderRepr<'a>>::CONSTANT_HEADER_SIZE
+            + Self::bitmap_length()
+            + <Self as HeaderRepr<'a>>::CONSTANT_HEADER_SIZE * with_ref as usize
             + self.dynamic_header_size()
     }
 
@@ -49,7 +83,7 @@ pub trait HeaderRepr<'a> {
     /// required capacity.
     fn alloc_context(&self) -> (Vec<u8>, OrderedSga<'a>) {
         (
-            vec![0u8; self.total_header_size()],
+            vec![0u8; self.total_header_size(false)],
             OrderedSga::allocate(self.num_scatter_gather_entries() + 1),
         )
     }
@@ -82,11 +116,15 @@ pub trait HeaderRepr<'a> {
             self.inner_serialize(
                 header,
                 constant_header_offset,
-                dynamic_header_start,
+                self.dynamic_header_start(),
                 scatter_gather_entries,
                 offsets,
             )
         }
+    }
+
+    fn is_list(&self) -> bool {
+        false
     }
 
     /// Nested serialization function.
@@ -144,7 +182,7 @@ pub trait HeaderRepr<'a> {
         D: Datapath,
     {
         let required_entries = self.num_scatter_gather_entries();
-        let header_size = self.total_header_size();
+        let header_size = self.total_header_size(false);
 
         if ordered_sga.len() < (required_entries + 1) || header_buffer.len() < header_size {
             bail!("Cannot serialize into sga with num entries {} ({} required) and header buffer length {} ({} required", ordered_sga.len(), required_entries + 1, header_buffer.len(), header_size);
@@ -234,8 +272,6 @@ impl<'a> HeaderRepr<'a> for CFString<'a> {
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
-    const BITMAP_LENGTH: u32 = 0;
-
     fn dynamic_header_size(&self) -> usize {
         0
     }
@@ -247,6 +283,16 @@ impl<'a> HeaderRepr<'a> for CFString<'a> {
     fn dynamic_header_start(&self) -> usize {
         0
     }
+
+    fn get_bitmap(&self) -> &[u8] {
+        &[]
+    }
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8] {
+        &mut []
+    }
+
+    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn inner_serialize(
         &self,
@@ -307,9 +353,6 @@ impl<'a> HeaderRepr<'a> for CFBytes<'a> {
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
-    // todo: is this right? I think so. this is only for the generated code.
-    const BITMAP_LENGTH: u32 = 0;
-
     fn dynamic_header_size(&self) -> usize {
         0
     }
@@ -321,6 +364,16 @@ impl<'a> HeaderRepr<'a> for CFBytes<'a> {
     fn dynamic_header_start(&self) -> usize {
         0
     }
+
+    fn get_bitmap(&self) -> &[u8] {
+        &[]
+    }
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8] {
+        &mut []
+    }
+
+    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn inner_serialize(
         &self,
@@ -422,8 +475,6 @@ where
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
-    const BITMAP_LENGTH: u32 = 0;
-
     fn dynamic_header_size(&self) -> usize {
         0
     }
@@ -434,6 +485,20 @@ where
 
     fn dynamic_header_start(&self) -> usize {
         0
+    }
+
+    fn get_bitmap(&self) -> &[u8] {
+        &[]
+    }
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8] {
+        &mut []
+    }
+
+    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
+
+    fn is_list(&self) -> bool {
+        true
     }
 
     fn inner_serialize(
@@ -542,8 +607,6 @@ where
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
-    const BITMAP_LENGTH: u32 = 0;
-
     fn dynamic_header_size(&self) -> usize {
         self.num_set * size_of::<T>()
     }
@@ -554,6 +617,20 @@ where
 
     fn dynamic_header_start(&self) -> usize {
         0
+    }
+
+    fn get_bitmap(&self) -> &[u8] {
+        &[]
+    }
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8] {
+        &mut []
+    }
+
+    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
+
+    fn is_list(&self) -> bool {
+        true
     }
 
     fn inner_serialize(
@@ -660,8 +737,6 @@ where
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
-    const BITMAP_LENGTH: u32 = 0;
-
     fn dynamic_header_size(&self) -> usize {
         self.num_space * size_of::<T>()
     }
@@ -672,6 +747,20 @@ where
 
     fn dynamic_header_start(&self) -> usize {
         0
+    }
+
+    fn get_bitmap(&self) -> &[u8] {
+        &[]
+    }
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8] {
+        &mut []
+    }
+
+    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
+
+    fn is_list(&self) -> bool {
+        true
     }
 
     fn inner_serialize(
@@ -763,8 +852,6 @@ where
 {
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
-    const BITMAP_LENGTH: u32 = 0;
-
     const NUMBER_OF_FIELDS: usize = 1;
 
     fn dynamic_header_size(&self) -> usize {
@@ -789,6 +876,16 @@ where
             .map(|x| x.num_scatter_gather_entries())
             .sum()
     }
+
+    fn get_bitmap(&self) -> &[u8] {
+        &[]
+    }
+
+    fn get_mut_bitmap(&mut self) -> &mut [u8] {
+        &mut []
+    }
+
+    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn inner_serialize(
         &self,
@@ -824,6 +921,10 @@ where
         Ok(())
     }
 
+    fn is_list(&self) -> bool {
+        true
+    }
+
     // TODO: should offsets be written RELATIVE to the object that is being deserialized?
     fn inner_deserialize(&mut self, buffer: &'a [u8], constant_offset: usize) -> Result<()> {
         let slice =
@@ -839,10 +940,11 @@ where
 
         for (i, elt) in self.elts.iter_mut().take(size).enumerate() {
             // for objects with no dynamic header size, no need to deserialize with ref
+            // TODO: is there a bug if you have VariableList<VariableList>>?
             elt.inner_deserialize_with_ref(
                 buffer,
                 dynamic_offset + i * T::CONSTANT_HEADER_SIZE,
-                elt.dynamic_header_size() != 0,
+                elt.dynamic_header_size() != 0 && !elt.is_list(),
             )?;
         }
         Ok(())
