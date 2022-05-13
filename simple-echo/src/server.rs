@@ -47,7 +47,6 @@ where
         pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
         datapath: &mut Self::Datapath,
     ) -> Result<()> {
-        tracing::debug!("In process requests ordered sga");
         let outgoing_sgas_result: Result<Vec<(MsgID, ConnID, OrderedSga)>> = pkts.iter().map(|pkt| {
             let sge_results: Result<Vec<Sge>> = self.range_vec.iter().map(|range| {
                 tracing::debug!("Getting contiguous slice out of received pkt [{}, {}]", range.0, range.0 + range.1);
@@ -63,8 +62,14 @@ where
             tracing::debug!(num_copy_entries, sga_len = sga.len(),"Constructing ordered sga");
             Ok((pkt.msg_id(), pkt.conn_id(), OrderedSga::new(sga, num_copy_entries)))
         }).collect();
+        let outgoing_sgas = outgoing_sgas_result?;
+        let mut outgoing_pkts: Vec<(MsgID, ConnID, &OrderedSga)> =
+            Vec::with_capacity(outgoing_sgas.len());
+        for (msg, conn, sga) in outgoing_sgas.iter() {
+            outgoing_pkts.push((*msg, *conn, &sga));
+        }
         datapath
-            .push_ordered_sgas(&outgoing_sgas_result?)
+            .push_ordered_sgas(&outgoing_pkts.as_slice())
             .wrap_err("Failed to push sgas")?;
         Ok(())
     }
@@ -86,8 +91,13 @@ where
             }).collect();
             Ok((pkt.msg_id(), pkt.conn_id(), Sga::with_entries(sge_results?)))
         }).collect();
+        let outgoing_sgas = outgoing_sgas_result?;
+        let mut outgoing_pkts: Vec<(MsgID, ConnID, &Sga)> = Vec::with_capacity(outgoing_sgas.len());
+        for (msg, conn, sga) in outgoing_sgas.iter() {
+            outgoing_pkts.push((*msg, *conn, &sga));
+        }
         datapath
-            .push_sgas(&outgoing_sgas_result?)
+            .push_sgas(&outgoing_pkts.as_slice())
             .wrap_err("Failed to push sgas")?;
         Ok(())
     }
@@ -116,8 +126,14 @@ where
                 ))
             })
             .collect();
+        let mut outgoing_rc_sgas = outgoing_rc_sgas_result?;
+        let mut outgoing_pkts: Vec<(MsgID, ConnID, &mut RcSga<<Self as ServerSM>::Datapath>)> =
+            Vec::with_capacity(outgoing_rc_sgas.len());
+        for (msg, conn, ref mut rcsga) in outgoing_rc_sgas.iter_mut() {
+            outgoing_pkts.push((*msg, *conn, rcsga));
+        }
         datapath
-            .push_rc_sgas(&mut outgoing_rc_sgas_result?)
+            .push_rc_sgas(&mut outgoing_pkts.as_mut_slice())
             .wrap_err("Failed to push rc sgas")?;
         Ok(())
     }
@@ -155,7 +171,7 @@ where
         .map(|(msg, conn, bytes)| (*msg, *conn, bytes.as_ref()))
         .collect();*/
         datapath
-            .push_buffers_with_copy(outgoing_pkts)
+            .push_buffers_with_copy(&outgoing_pkts.as_slice())
             .wrap_err("Failed to push buffers with copy to the datapath")?;
         Ok(())
     }

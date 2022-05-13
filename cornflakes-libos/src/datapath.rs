@@ -262,7 +262,7 @@ pub trait Datapath {
     /// Send multiple buffers to the specified address.
     /// Args:
     /// @pkts: Vector of (msg id, buffer, connection id) to send.
-    fn push_buffers_with_copy(&mut self, pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()>;
+    fn push_buffers_with_copy(&mut self, pkts: &[(MsgID, ConnID, &[u8])]) -> Result<()>;
 
     /// Echo the specified packet back to the  source.
     /// Args:
@@ -286,7 +286,7 @@ pub trait Datapath {
     /// @rc_sgas: Vector of (msg id, connection id, reference counted scatter-gather arrays) to send.
     /// Must be mutable in order to correctly increment the reference counts on the underlying
     /// buffers.
-    fn push_rc_sgas(&mut self, rc_sgas: &mut Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
+    fn push_rc_sgas(&mut self, rc_sgas: &mut [(MsgID, ConnID, &mut RcSga<Self>)]) -> Result<()>
     where
         Self: Sized;
 
@@ -294,12 +294,12 @@ pub trait Datapath {
     /// OrderedSgas must be ordered such that the last "num_zero_copy_entries()" are
     /// zero-copy-able and pass the to-copy or not heuristics.
     /// First sga.len() - num_zero_copy_entries() will be copied together.
-    fn push_ordered_sgas(&mut self, ordered_sgas: &Vec<(MsgID, ConnID, OrderedSga)>) -> Result<()>;
+    fn push_ordered_sgas(&mut self, ordered_sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()>;
 
     /// Send scatter-gather arrays of addresses.
     /// Args:
     /// @sgas: Vector of (msg id, connection id, raw address scatter-gather arrays) to send.
-    fn push_sgas(&mut self, sgas: &Vec<(MsgID, ConnID, Sga)>) -> Result<()>;
+    fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, &Sga)]) -> Result<()>;
 
     /// Listen for new received packets and pop out with durations.
     fn pop_with_durations(&mut self) -> Result<Vec<(ReceivedPkt<Self>, Duration)>>
@@ -372,4 +372,19 @@ pub trait Datapath {
 
     /// Set inline mode (may not be available in all datapaths)
     fn set_inline_mode(&mut self, mode: InlineMode);
+
+    /// Packet processing batch size.
+    fn batch_size() -> usize {
+        32
+    }
+
+    /// Maximum possible scatter gather elements.
+    fn max_scatter_gather_entries() -> usize {
+        64
+    }
+
+    /// Maximum possible packet size
+    fn max_packet_size() -> usize {
+        9216
+    }
 }

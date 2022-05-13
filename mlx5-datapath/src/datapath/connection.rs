@@ -751,7 +751,7 @@ impl Mlx5Connection {
 
     /// Post ordered sgas. This function is only called when there is space for these sgas in the
     /// ring buffer.
-    fn post_ordered_sgas(&mut self, sgas: &[(MsgID, ConnID, OrderedSga)]) -> Result<()> {
+    fn post_ordered_sgas(&mut self, sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
         // fill in the hdr segment
         let mut first_ctrl_seg = ptr::null_mut();
         for (sgas_idx, (msg_id, conn_id, ordered_sga)) in sgas.iter().enumerate() {
@@ -881,7 +881,7 @@ impl Mlx5Connection {
     }
 
     /// Recursively tries to push all sgas until all are sent.
-    fn push_ordered_sgas_recursive(&mut self, sgas: &[(MsgID, ConnID, OrderedSga)]) -> Result<()> {
+    fn push_ordered_sgas_recursive(&mut self, sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
         let curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
@@ -1663,7 +1663,7 @@ impl Datapath for Mlx5Connection {
         }
     }
 
-    fn push_buffers_with_copy(&mut self, pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()> {
+    fn push_buffers_with_copy(&mut self, pkts: &[(MsgID, ConnID, &[u8])]) -> Result<()> {
         tracing::debug!("Pushing batch of pkts of length {}", pkts.len());
         let mut pkt_idx = 0;
         let mut first_ctrl_seg: Option<*mut mlx5_wqe_ctrl_seg> = None;
@@ -1915,7 +1915,7 @@ impl Datapath for Mlx5Connection {
         Ok(())
     }
 
-    fn push_rc_sgas(&mut self, rc_sgas: &mut Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
+    fn push_rc_sgas(&mut self, rc_sgas: &mut [(MsgID, ConnID, &mut RcSga<Self>)]) -> Result<()>
     where
         Self: Sized,
     {
@@ -1924,8 +1924,8 @@ impl Datapath for Mlx5Connection {
         let mut sga_idx = 0;
         while sga_idx < rc_sgas.len() {
             tracing::debug!(sga_idx = sga_idx, "In rc sga process loop");
-            let (msg_id, conn_id, ref mut sga) = &mut rc_sgas[sga_idx];
-            self.insert_into_outgoing_map(*msg_id, *conn_id);
+            let (msg_id, conn_id, ref mut sga) = rc_sgas[sga_idx];
+            self.insert_into_outgoing_map(msg_id, conn_id);
             let (inline_len, num_segs) = self.calculate_shape_rc(&sga)?;
             tracing::debug!(
                 inline_len = inline_len,
@@ -1954,8 +1954,8 @@ impl Datapath for Mlx5Connection {
             } else {
                 let ctrl_seg = self.post_rc_sga(
                     sga,
-                    *conn_id,
-                    *msg_id,
+                    conn_id,
+                    msg_id,
                     num_octowords,
                     num_wqes_required,
                     inline_len,
@@ -1972,11 +1972,11 @@ impl Datapath for Mlx5Connection {
         Ok(())
     }
 
-    fn push_ordered_sgas(&mut self, sgas: &Vec<(MsgID, ConnID, OrderedSga)>) -> Result<()> {
-        self.push_ordered_sgas_recursive(sgas.as_slice())
+    fn push_ordered_sgas(&mut self, sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
+        self.push_ordered_sgas_recursive(sgas)
     }
 
-    fn push_sgas(&mut self, sgas: &Vec<(MsgID, ConnID, Sga)>) -> Result<()> {
+    fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, &Sga)]) -> Result<()> {
         let mut first_ctrl_seg: Option<*mut mlx5_wqe_ctrl_seg> = None;
         let mut sga_idx = 0;
         tracing::debug!(len = sgas.len(), "Pushing sgas");
@@ -2192,5 +2192,13 @@ impl Datapath for Mlx5Connection {
 
     fn set_inline_mode(&mut self, inline_mode: InlineMode) {
         self.inline_mode = inline_mode;
+    }
+
+    fn batch_size() -> usize {
+        RECEIVE_BURST_SIZE
+    }
+
+    fn max_scatter_gather_entries() -> usize {
+        33
     }
 }

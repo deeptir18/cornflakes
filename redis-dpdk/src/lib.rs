@@ -153,26 +153,18 @@ pub extern "C" fn push_sga(
     allocated_sga_ptr: *mut ::std::os::raw::c_void,
 ) -> ::std::os::raw::c_int {
     // convert static sga into dynamic sga
-    let mut allocated_sga_box =
-        unsafe { Box::from_raw(allocated_sga_ptr as *mut Vec<(MsgID, ConnID, Sga)>) };
-    let sga_vec_ptr = allocated_sga_box.as_mut();
-    let mut first_entry = match sga_vec_ptr.get_mut(0) {
-        Some(x) => x,
-        None => {
-            tracing::warn!("Allocated sga ptr does not have 0th entry");
-            return libc::EINVAL;
-        }
-    };
-    first_entry.0 = msg_id;
-    first_entry.1 = conn_id;
-    first_entry.2.from_static_array(addrs, sizes, num_entries);
+    let mut allocated_sga_box = unsafe { Box::from_raw(allocated_sga_ptr as *mut Sga) };
+    let sga = allocated_sga_box.as_mut();
+    sga.from_static_array(addrs, sizes, num_entries);
+
+    let sgas = vec![(msg_id, conn_id, allocated_sga_box.as_ref())];
 
     // convert connection into DPDK connection
     let mut connection_box = unsafe { Box::from_raw(conn as *mut DpdkConnection) };
     let connection_ptr = connection_box.as_mut();
 
     // push sgas
-    match connection_ptr.push_sgas(&sga_vec_ptr) {
+    match connection_ptr.push_sgas(sgas.as_slice()) {
         Ok(_) => {}
         Err(e) => {
             tracing::warn!("Failed to push sgas: {:?}", e);
@@ -195,9 +187,10 @@ pub extern "C" fn push_buf(
     // convert connection into DPDK connection
     let mut connection_box = unsafe { Box::from_raw(conn as *mut DpdkConnection) };
     let connection_ptr = connection_box.as_mut();
+    let buffers = vec![(msg_id, conn_id, buf.to_slice())];
 
     connection_ptr
-        .push_buffers_with_copy(vec![(msg_id, conn_id, buf.to_slice())])
+        .push_buffers_with_copy(&buffers.as_slice())
         .unwrap();
     Box::into_raw(connection_box);
     return 0;

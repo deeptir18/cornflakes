@@ -723,6 +723,12 @@ impl<'a, D> RcSga<'a, D>
 where
     D: datapath::Datapath,
 {
+    pub fn new() -> Self {
+        RcSga {
+            entries: Vec::default(),
+            length: 0,
+        }
+    }
     pub fn with_capacity(num_entries: usize) -> Self {
         RcSga {
             entries: Vec::with_capacity(num_entries),

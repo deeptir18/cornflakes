@@ -1342,7 +1342,7 @@ impl Datapath for DpdkConnection {
         }
     }
 
-    fn push_buffers_with_copy(&mut self, pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()> {
+    fn push_buffers_with_copy(&mut self, pkts: &[(MsgID, ConnID, &[u8])]) -> Result<()> {
         for (i, (msg_id, conn_id, buf)) in pkts.iter().enumerate() {
             self.insert_into_outgoing_map(*msg_id, *conn_id);
             // allocate buffer to copy data into
@@ -1439,7 +1439,7 @@ impl Datapath for DpdkConnection {
         Ok(())
     }
 
-    fn push_rc_sgas(&mut self, rc_sgas: &mut Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
+    fn push_rc_sgas(&mut self, rc_sgas: &mut [(MsgID, ConnID, &mut RcSga<Self>)]) -> Result<()>
     where
         Self: Sized,
     {
@@ -1454,14 +1454,11 @@ impl Datapath for DpdkConnection {
         Ok(())
     }
 
-    fn push_ordered_sgas(
-        &mut self,
-        _ordered_sgas: &Vec<(MsgID, ConnID, OrderedSga)>,
-    ) -> Result<()> {
+    fn push_ordered_sgas(&mut self, _ordered_sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
         unimplemented!();
     }
 
-    fn push_sgas(&mut self, sgas: &Vec<(MsgID, ConnID, Sga)>) -> Result<()> {
+    fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, &Sga)]) -> Result<()> {
         for (pkt_idx, (msg, conn, sga)) in sgas.iter().enumerate() {
             self.insert_into_outgoing_map(*msg, *conn);
             self.post_sga(pkt_idx, *msg, *conn, sga)
@@ -1689,4 +1686,8 @@ impl Datapath for DpdkConnection {
         self.max_segments
     }
     fn set_inline_mode(&mut self, _inline_mode: InlineMode) {}
+
+    fn max_packet_size() -> usize {
+        1500
+    }
 }

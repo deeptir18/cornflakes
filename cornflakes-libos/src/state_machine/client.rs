@@ -116,7 +116,7 @@ pub trait ClientSM {
             if recved >= num_pkts {
                 break;
             }
-            datapath.push_buffers_with_copy(vec![(id, conn_id, msg)])?;
+            datapath.push_buffers_with_copy(&vec![(id, conn_id, msg)])?;
             self.increment_uniq_sent();
             let recved_pkts = loop {
                 let pkts = datapath.pop_with_durations()?;
@@ -129,7 +129,7 @@ pub trait ClientSM {
                 {
                     self.increment_num_retried();
                     self.increment_num_timed_out();
-                    datapath.push_buffers_with_copy(vec![(
+                    datapath.push_buffers_with_copy(&vec![(
                         *id,
                         *conn,
                         self.msg_timeout_cb(*id)?,
@@ -178,7 +178,7 @@ pub trait ClientSM {
 
             // Send the next message
             tracing::debug!(time = ?time_start.elapsed(), "About to send next packet");
-            datapath.push_buffers_with_copy(vec![(id, conn_id, msg)])?;
+            datapath.push_buffers_with_copy(&vec![(id, conn_id, msg)])?;
             self.increment_uniq_sent();
             idx += 1;
             let last_sent = datapath.current_cycles();
@@ -204,7 +204,7 @@ pub trait ClientSM {
                     {
                         self.increment_num_retried();
                         self.increment_num_timed_out();
-                        datapath.push_buffers_with_copy(vec![(
+                        datapath.push_buffers_with_copy(&vec![(
                             *id,
                             *conn,
                             self.msg_timeout_cb(*id)?,

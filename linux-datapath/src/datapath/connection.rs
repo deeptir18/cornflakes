@@ -208,7 +208,7 @@ impl Datapath for LinuxConnection {
         unimplemented!();
     }
 
-    fn push_buffers_with_copy(&mut self, _pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()> {
+    fn push_buffers_with_copy(&mut self, _pkts: &[(MsgID, ConnID, &[u8])]) -> Result<()> {
         unimplemented!();
     }
 
@@ -229,21 +229,18 @@ impl Datapath for LinuxConnection {
         unimplemented!();
     }
 
-    fn push_rc_sgas(&mut self, _rc_sgas: &mut Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
+    fn push_rc_sgas(&mut self, _rc_sgas: &mut [(MsgID, ConnID, &mut RcSga<Self>)]) -> Result<()>
     where
         Self: Sized,
     {
         unimplemented!();
     }
 
-    fn push_ordered_sgas(
-        &mut self,
-        _ordered_sgas: &Vec<(MsgID, ConnID, OrderedSga)>,
-    ) -> Result<()> {
+    fn push_ordered_sgas(&mut self, _ordered_sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
         unimplemented!();
     }
 
-    fn push_sgas(&mut self, _sgas: &Vec<(MsgID, ConnID, Sga)>) -> Result<()> {
+    fn push_sgas(&mut self, _sgas: &[(MsgID, ConnID, &Sga)]) -> Result<()> {
         unimplemented!();
     }
 
@@ -318,4 +315,8 @@ impl Datapath for LinuxConnection {
     }
 
     fn set_inline_mode(&mut self, _mode: InlineMode) {}
+
+    fn max_packet_size() -> usize {
+        1500
+    }
 }
