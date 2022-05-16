@@ -374,6 +374,15 @@ impl<'a> Sga<'a> {
         self.length
     }
 
+    pub fn flatten(&self) -> Vec<u8> {
+        self.entries
+            .iter()
+            .take(self.length)
+            .map(|bytes| bytes.addr().to_vec())
+            .flatten()
+            .collect()
+    }
+
     pub fn data_len(&self) -> usize {
         self.entries.iter().take(self.length).map(|e| e.len()).sum()
     }
@@ -414,6 +423,17 @@ impl<'a> Sga<'a> {
     pub fn replace(&mut self, idx: usize, entry: Sge<'a>) {
         self.entries[idx] = entry;
     }
+
+    pub fn clear(&mut self) {
+        for entry in self.entries.iter_mut().take(self.length) {
+            *entry = Sge::new(&[]);
+        }
+        self.length = 0;
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
@@ -422,6 +442,8 @@ pub struct OrderedSga<'a> {
     sga: Sga<'a>,
     /// Number of sg entries that will be sent as "copy".
     num_copy_entries: usize,
+    /// Bytes: meant for header
+    hdr: Vec<u8>,
 }
 
 impl<'a> OrderedSga<'a> {
@@ -429,14 +451,39 @@ impl<'a> OrderedSga<'a> {
         OrderedSga {
             sga: sga,
             num_copy_entries: num_copy_entries,
+            hdr: Vec::default(),
         }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.sga.capacity()
+    }
+
+    pub fn clear(&mut self) {
+        self.sga.clear();
+        self.num_copy_entries = 0;
+    }
+
+    pub fn flatten(&self) -> Vec<u8> {
+        let mut buf = self.hdr.clone();
+        buf.append(&mut self.sga.flatten());
+        buf
     }
 
     pub fn allocate(size: usize) -> OrderedSga<'a> {
         OrderedSga {
             sga: Sga::allocate(size),
             num_copy_entries: 0,
+            hdr: Vec::default(),
         }
+    }
+
+    pub fn set_hdr(&mut self, vec: Vec<u8>) {
+        self.hdr = vec;
+    }
+
+    pub fn get_hdr(&self) -> &[u8] {
+        self.hdr.as_slice()
     }
 
     pub fn set_num_copy_entries(&mut self, num: usize) {
@@ -476,11 +523,13 @@ impl<'a> OrderedSga<'a> {
     }
 
     pub fn copy_length(&self) -> usize {
-        self.sga
+        let size: usize = self
+            .sga
             .iter()
             .take(self.num_copy_entries)
             .map(|seg| seg.len())
-            .sum()
+            .sum();
+        size + self.hdr.len()
     }
 
     fn is_zero_copy_seg<D>(&self, i: usize, d: &D) -> bool
@@ -509,15 +558,15 @@ impl<'a> OrderedSga<'a> {
     where
         D: datapath::Datapath,
     {
-        if self.sga().len() != offsets.len() + 1 {
+        if self.sga().len() != offsets.len() {
             bail!("passed in offsets array should be one less than sga length");
         }
         // reorder scatter-gather entries
-        let mut forward_index = 1;
+        let mut forward_index = 0;
         let mut end_index = self.sga.len() - 1;
         let mut switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
         let mut switch_backward = self.is_zero_copy_seg(end_index, datapath);
-        let mut num_copy_segs = 1; // copy object header segment
+        let mut num_copy_segs = 0; // copy object header segment
 
         // everytime forward index is advanced, we record a copy segment
         while !(forward_index >= end_index) {
@@ -559,7 +608,7 @@ impl<'a> OrderedSga<'a> {
     where
         D: datapath::Datapath,
     {
-        if self.sga().len() != offsets.len() + 1 {
+        if self.sga().len() != offsets.len() {
             bail!("passed in offsets array should be one less than sga length");
         }
         let current_zero_copy_segs = self.num_zero_copy_entries();

@@ -63,13 +63,8 @@ where
             Ok((pkt.msg_id(), pkt.conn_id(), OrderedSga::new(sga, num_copy_entries)))
         }).collect();
         let outgoing_sgas = outgoing_sgas_result?;
-        let mut outgoing_pkts: Vec<(MsgID, ConnID, &OrderedSga)> =
-            Vec::with_capacity(outgoing_sgas.len());
-        for (msg, conn, sga) in outgoing_sgas.iter() {
-            outgoing_pkts.push((*msg, *conn, &sga));
-        }
         datapath
-            .push_ordered_sgas(&outgoing_pkts.as_slice())
+            .push_ordered_sgas(outgoing_sgas.as_slice())
             .wrap_err("Failed to push sgas")?;
         Ok(())
     }
@@ -92,12 +87,8 @@ where
             Ok((pkt.msg_id(), pkt.conn_id(), Sga::with_entries(sge_results?)))
         }).collect();
         let outgoing_sgas = outgoing_sgas_result?;
-        let mut outgoing_pkts: Vec<(MsgID, ConnID, &Sga)> = Vec::with_capacity(outgoing_sgas.len());
-        for (msg, conn, sga) in outgoing_sgas.iter() {
-            outgoing_pkts.push((*msg, *conn, &sga));
-        }
         datapath
-            .push_sgas(&outgoing_pkts.as_slice())
+            .push_sgas(&outgoing_sgas.as_slice())
             .wrap_err("Failed to push sgas")?;
         Ok(())
     }
@@ -127,13 +118,8 @@ where
             })
             .collect();
         let mut outgoing_rc_sgas = outgoing_rc_sgas_result?;
-        let mut outgoing_pkts: Vec<(MsgID, ConnID, &mut RcSga<<Self as ServerSM>::Datapath>)> =
-            Vec::with_capacity(outgoing_rc_sgas.len());
-        for (msg, conn, ref mut rcsga) in outgoing_rc_sgas.iter_mut() {
-            outgoing_pkts.push((*msg, *conn, rcsga));
-        }
         datapath
-            .push_rc_sgas(&mut outgoing_pkts.as_mut_slice())
+            .push_rc_sgas(&mut outgoing_rc_sgas.as_mut_slice())
             .wrap_err("Failed to push rc sgas")?;
         Ok(())
     }
@@ -166,10 +152,6 @@ where
         for (msg, conn, bytes) in outgoing_bufs.iter() {
             outgoing_pkts.push((*msg, *conn, bytes.as_ref()));
         }
-        /*let outgoing_pkts: Vec<(MsgID, ConnID, &[u8])> = outgoing_bufs
-        .iter()
-        .map(|(msg, conn, bytes)| (*msg, *conn, bytes.as_ref()))
-        .collect();*/
         datapath
             .push_buffers_with_copy(&outgoing_pkts.as_slice())
             .wrap_err("Failed to push buffers with copy to the datapath")?;

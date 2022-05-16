@@ -16,7 +16,7 @@ pub const OFFSET_FIELD: usize = 4;
 /// u32 at beginning representing bitmap size in bytes
 pub const BITMAP_LENGTH_FIELD: usize = 4;
 
-pub trait HeaderRepr<'a, D>
+pub trait RcSgaHeaderRepr<'a, D>
 where
     D: Datapath,
 {
@@ -39,6 +39,16 @@ where
 
     fn set_bitmap_field(&mut self, field: usize) {
         self.get_mut_bitmap()[field] = 1;
+    }
+
+    fn clear_bitmap(&mut self) {
+        for field in self
+            .get_mut_bitmap()
+            .iter_mut()
+            .take(Self::NUMBER_OF_FIELDS)
+        {
+            *field = 0;
+        }
     }
 
     fn get_bitmap(&self) -> &[u8];
@@ -73,7 +83,7 @@ where
     fn total_header_size(&self, with_ref: bool) -> usize {
         BITMAP_LENGTH_FIELD
             + Self::bitmap_length()
-            + <Self as HeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE * with_ref as usize
+            + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE * with_ref as usize
             + self.dynamic_header_size()
     }
 
@@ -284,7 +294,7 @@ where
     }
 }
 
-impl<'a, D> HeaderRepr<'a, D> for CFString<'a, D>
+impl<'a, D> RcSgaHeaderRepr<'a, D> for CFString<'a, D>
 where
     D: Datapath,
 {
@@ -371,7 +381,7 @@ where
     }
 }
 
-impl<'a, D> HeaderRepr<'a, D> for CFBytes<'a, D>
+impl<'a, D> RcSgaHeaderRepr<'a, D> for CFBytes<'a, D>
 where
     D: Datapath,
 {
@@ -495,7 +505,7 @@ where
     }
 }
 
-impl<'a, T, D> HeaderRepr<'a, D> for List<'a, T, D>
+impl<'a, T, D> RcSgaHeaderRepr<'a, D> for List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
     D: Datapath,
@@ -624,7 +634,7 @@ where
     }
 }
 
-impl<'a, T, D> HeaderRepr<'a, D> for OwnedList<'a, T>
+impl<'a, T, D> RcSgaHeaderRepr<'a, D> for OwnedList<'a, T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
     D: Datapath,
@@ -664,7 +674,7 @@ where
         _offsets: &mut [usize],
     ) -> Result<()> {
         let header_slice = &mut header[constant_header_offset
-            ..(constant_header_offset + <Self as HeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
+            ..(constant_header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
             .try_into()?;
         let mut forward_pointer = MutForwardPointer(header_slice);
         forward_pointer.write_size(self.num_set as _);
@@ -676,8 +686,8 @@ where
     }
 
     fn inner_deserialize(&mut self, buffer: &RcSge<'a, D>, header_offset: usize) -> Result<()> {
-        let header_slice = &buffer.as_ref()
-            [header_offset..(header_offset + <Self as HeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
+        let header_slice = &buffer.as_ref()[header_offset
+            ..(header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
             .try_into()?;
         let forward_pointer = ForwardPointer(header_slice);
         let list_size = forward_pointer.get_size() as usize;
@@ -758,7 +768,7 @@ where
     }
 }
 
-impl<'a, T, D> HeaderRepr<'a, D> for RefList<'a, T, D>
+impl<'a, T, D> RcSgaHeaderRepr<'a, D> for RefList<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
     D: Datapath,
@@ -798,7 +808,7 @@ where
         _offsets: &mut [usize],
     ) -> Result<()> {
         let header_slice = &mut header[constant_header_offset
-            ..(constant_header_offset + <Self as HeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
+            ..(constant_header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
             .try_into()?;
         let mut forward_pointer = MutForwardPointer(header_slice);
         forward_pointer.write_size(self.num_space as _);
@@ -810,8 +820,8 @@ where
     }
 
     fn inner_deserialize(&mut self, buffer: &RcSge<'a, D>, header_offset: usize) -> Result<()> {
-        let header_slice = &buffer.as_ref()
-            [header_offset..(header_offset + <Self as HeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
+        let header_slice = &buffer.as_ref()[header_offset
+            ..(header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
             .try_into()?;
         let forward_pointer = ForwardPointer(header_slice);
         let list_size = forward_pointer.get_size() as usize;
@@ -825,7 +835,7 @@ where
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub struct VariableList<'a, T, D>
 where
-    T: HeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
+    T: RcSgaHeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
     D: Datapath,
 {
     num_space: usize,
@@ -836,7 +846,7 @@ where
 
 impl<'a, T, D> VariableList<'a, T, D>
 where
-    T: HeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
+    T: RcSgaHeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
     D: Datapath,
 {
     pub fn init(num: usize) -> VariableList<'a, T, D> {
@@ -866,7 +876,7 @@ where
 }
 impl<'a, T, D> Index<usize> for VariableList<'a, T, D>
 where
-    T: HeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
+    T: RcSgaHeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
     D: Datapath,
 {
     type Output = T;
@@ -876,9 +886,9 @@ where
     }
 }
 
-impl<'a, T, D> HeaderRepr<'a, D> for VariableList<'a, T, D>
+impl<'a, T, D> RcSgaHeaderRepr<'a, D> for VariableList<'a, T, D>
 where
-    T: HeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
+    T: RcSgaHeaderRepr<'a, D> + Debug + Default + PartialEq + Eq + Clone,
     D: Datapath,
 {
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;

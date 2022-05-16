@@ -26,7 +26,7 @@ fn add_dependencies(repr: &ProtoReprInfo, compiler: &mut SerializationCompiler) 
     compiler.add_dependency("cornflakes_libos::Sge")?;
     compiler.add_dependency("color_eyre::eyre::Result")?;
     compiler.add_dependency("cornflakes_codegen::utils::dynamic_sga_hdr::*")?;
-    compiler.add_dependency("cornflakes_codegen::utils::dynamic_sga_hdr::{HeaderRepr}")?;
+    compiler.add_dependency("cornflakes_codegen::utils::dynamic_sga_hdr::{SgaHeaderRepr}")?;
 
     // if any message has integers, we need slice
     if repr.has_int_field() {
@@ -329,7 +329,7 @@ fn add_header_repr(
     let type_annotations = msg_info.get_type_params(false, &fd)?;
     let where_clause = msg_info.get_where_clause(false, &fd)?;
     let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
-    let trait_name = TraitName::new("HeaderRepr", type_annotations.clone());
+    let trait_name = TraitName::new("SgaHeaderRepr", type_annotations.clone());
     let impl_context = ImplContext::new(struct_name, Some(trait_name), where_clause);
     compiler.add_context(Context::Impl(impl_context))?;
 
@@ -461,6 +461,8 @@ fn add_header_repr(
     compiler.pop_context()?;
     compiler.add_newline()?;
 
+    add_equality_func(fd, compiler, msg_info)?;
+
     add_serialization_func(fd, compiler, msg_info)?;
     compiler.add_newline()?;
 
@@ -471,12 +473,105 @@ fn add_header_repr(
     Ok(())
 }
 
+fn add_equality_func(
+    _fd: &ProtoReprInfo,
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+) -> Result<()> {
+    let func_context = FunctionContext::new(
+        "check_deep_equality",
+        false,
+        vec![
+            FunctionArg::SelfArg,
+            FunctionArg::new_arg("other", ArgInfo::ref_arg("Self", None)),
+        ],
+        "bool",
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    for field_idx in 0..msg_info.num_fields() {
+        let field_info = msg_info.get_field_from_id(field_idx as i32)?;
+        let loop_context = LoopContext::new(vec![
+            LoopBranch::ifbranch(&format!(
+                "self.get_bitmap_field({}) != other.get_bitmap_field({})",
+                field_info.get_bitmap_idx_str(true),
+                field_info.get_bitmap_idx_str(true)
+            )),
+            LoopBranch::elseif(&format!(
+                "self.get_bitmap_field({}) && other.get_bitmap_field({})",
+                field_info.get_bitmap_idx_str(true),
+                field_info.get_bitmap_idx_str(true)
+            )),
+        ]);
+        compiler.add_context(Context::Loop(loop_context))?;
+        compiler.add_return_val("false", true)?;
+        compiler.pop_context()?;
+
+        let check_equality_loop = {
+            if field_info.is_list() {
+                match &field_info.0.typ {
+                    FieldType::Int32
+                    | FieldType::Int64
+                    | FieldType::Uint32
+                    | FieldType::Uint64
+                    | FieldType::Float
+                    | FieldType::String
+                    | FieldType::Bytes
+                    | FieldType::MessageOrEnum(_) => {
+                        LoopContext::new(vec![LoopBranch::ifbranch(&format!(
+                            "!self.get_{}().check_deep_equality(&other.get_{}())",
+                            field_info.get_name(),
+                            field_info.get_name()
+                        ))])
+                    }
+                    _ => {
+                        bail!("Field type not supported: {:?}", &field_info.0.typ);
+                    }
+                }
+            } else {
+                match &field_info.0.typ {
+                    FieldType::Int32
+                    | FieldType::Int64
+                    | FieldType::Uint32
+                    | FieldType::Uint64
+                    | FieldType::Float => LoopContext::new(vec![LoopBranch::ifbranch(&format!(
+                        "!self.get_{}().check_deep_equality(other.get_{}())",
+                        field_info.get_name(),
+                        field_info.get_name()
+                    ))]),
+                    FieldType::String | FieldType::Bytes | FieldType::MessageOrEnum(_) => {
+                        LoopContext::new(vec![LoopBranch::ifbranch(&format!(
+                            "!self.get_{}().check_deep_equality(&other.get_{}())",
+                            field_info.get_name(),
+                            field_info.get_name()
+                        ))])
+                    }
+                    _ => {
+                        bail!("Field type not supported: {:?}", &field_info.0.typ);
+                    }
+                }
+            }
+        };
+
+        compiler.add_context(Context::Loop(check_equality_loop))?;
+        compiler.add_return_val("false", true)?;
+        compiler.pop_context()?;
+        compiler.pop_context()?; // outer loop
+        compiler.add_newline()?;
+    }
+
+    compiler.add_return_val("true", true)?;
+
+    compiler.pop_context()?;
+
+    Ok(())
+}
+
 fn add_serialization_func(
     fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let func_context = FunctionContext::new(
+    let func_context = FunctionContext::new_with_lifetime(
         "inner_serialize",
         false,
         vec![
@@ -486,11 +581,13 @@ fn add_serialization_func(
             FunctionArg::new_arg("dynamic_header_start", ArgInfo::owned("usize")),
             FunctionArg::new_arg(
                 "scatter_gather_entries",
-                ArgInfo::ref_mut_arg(&format!("[Sge<{}>]", fd.get_lifetime()), None),
+                ArgInfo::ref_mut_arg("[Sge<'sge>]", None),
             ),
             FunctionArg::new_arg("offsets", ArgInfo::ref_mut_arg("[usize]", None)),
         ],
         "Result<()>",
+        "'sge",
+        &format!("{}: 'sge", fd.get_lifetime()),
     );
 
     compiler.add_context(Context::Function(func_context))?;
@@ -553,7 +650,7 @@ fn add_deserialization_func(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let func_context = FunctionContext::new(
+    let func_context = FunctionContext::new_with_lifetime(
         "inner_deserialize",
         false,
         vec![
@@ -565,6 +662,8 @@ fn add_deserialization_func(
             FunctionArg::new_arg("header_offset", ArgInfo::owned("usize")),
         ],
         "Result<()>",
+        "'buf",
+        &format!("'buf: {}", fd.get_lifetime()),
     );
     compiler.add_context(Context::Function(func_context))?;
 

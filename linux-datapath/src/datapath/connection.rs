@@ -229,18 +229,18 @@ impl Datapath for LinuxConnection {
         unimplemented!();
     }
 
-    fn push_rc_sgas(&mut self, _rc_sgas: &mut [(MsgID, ConnID, &mut RcSga<Self>)]) -> Result<()>
+    fn push_rc_sgas(&mut self, _rc_sgas: &mut [(MsgID, ConnID, RcSga<Self>)]) -> Result<()>
     where
         Self: Sized,
     {
         unimplemented!();
     }
 
-    fn push_ordered_sgas(&mut self, _ordered_sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
+    fn push_ordered_sgas(&mut self, _ordered_sgas: &[(MsgID, ConnID, OrderedSga)]) -> Result<()> {
         unimplemented!();
     }
 
-    fn push_sgas(&mut self, _sgas: &[(MsgID, ConnID, &Sga)]) -> Result<()> {
+    fn push_sgas(&mut self, _sgas: &[(MsgID, ConnID, Sga)]) -> Result<()> {
         unimplemented!();
     }
 

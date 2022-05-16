@@ -26,7 +26,7 @@ fn add_dependencies(repr: &ProtoReprInfo, compiler: &mut SerializationCompiler) 
     compiler.add_dependency("cornflakes_libos::{RcSge, datapath::Datapath}")?;
     compiler.add_dependency("color_eyre::eyre::Result")?;
     compiler.add_dependency("cornflakes_codegen::utils::dynamic_rcsga_hdr::*")?;
-    compiler.add_dependency("cornflakes_codegen::utils::dynamic_rcsga_hdr::{HeaderRepr}")?;
+    compiler.add_dependency("cornflakes_codegen::utils::dynamic_rcsga_hdr::{RcSgaHeaderRepr}")?;
 
     // if any message has integers, we need slice
     if repr.has_int_field() {
@@ -329,7 +329,7 @@ fn add_header_repr(
     let type_annotations = msg_info.get_type_params(true, &fd)?;
     let where_clause = msg_info.get_where_clause_with_more_traits(true, &fd)?;
     let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
-    let trait_name = TraitName::new("HeaderRepr", type_annotations.clone());
+    let trait_name = TraitName::new("RcSgaHeaderRepr", type_annotations.clone());
     let impl_context = ImplContext::new(struct_name, Some(trait_name), where_clause);
     compiler.add_context(Context::Impl(impl_context))?;
 

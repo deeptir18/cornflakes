@@ -1439,7 +1439,7 @@ impl Datapath for DpdkConnection {
         Ok(())
     }
 
-    fn push_rc_sgas(&mut self, rc_sgas: &mut [(MsgID, ConnID, &mut RcSga<Self>)]) -> Result<()>
+    fn push_rc_sgas(&mut self, rc_sgas: &mut [(MsgID, ConnID, RcSga<Self>)]) -> Result<()>
     where
         Self: Sized,
     {
@@ -1454,11 +1454,11 @@ impl Datapath for DpdkConnection {
         Ok(())
     }
 
-    fn push_ordered_sgas(&mut self, _ordered_sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
+    fn push_ordered_sgas(&mut self, _ordered_sgas: &[(MsgID, ConnID, OrderedSga)]) -> Result<()> {
         unimplemented!();
     }
 
-    fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, &Sga)]) -> Result<()> {
+    fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, Sga)]) -> Result<()> {
         for (pkt_idx, (msg, conn, sga)) in sgas.iter().enumerate() {
             self.insert_into_outgoing_map(*msg, *conn);
             self.post_sga(pkt_idx, *msg, *conn, sga)
@@ -1686,8 +1686,4 @@ impl Datapath for DpdkConnection {
         self.max_segments
     }
     fn set_inline_mode(&mut self, _inline_mode: InlineMode) {}
-
-    fn max_packet_size() -> usize {
-        1500
-    }
 }

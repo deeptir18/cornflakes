@@ -180,6 +180,18 @@ pub enum TreeDepth {
     Five,
 }
 
+impl TreeDepth {
+    pub fn to_u32(&self) -> u32 {
+        match self {
+            TreeDepth::One => 1,
+            TreeDepth::Two => 2,
+            TreeDepth::Three => 3,
+            TreeDepth::Four => 4,
+            TreeDepth::Five => 5,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum SimpleMessageType {
     /// Message with a single field

@@ -105,6 +105,7 @@ where
     fn process_received_msg(
         &mut self,
         sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
+        _datapath: &<Self as ClientSM>::Datapath,
     ) -> Result<()> {
         // if in debug mode, check whether the bytes are what they should be
         tracing::debug!(id = sga.msg_id(), "Received sga");

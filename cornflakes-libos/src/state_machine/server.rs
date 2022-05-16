@@ -53,8 +53,25 @@ pub trait ServerSM {
 
     /// Initializes any internal state with any datapath specific configuration,
     /// e.g., registering external memory.
-    fn init(&mut self, connection: &mut Self::Datapath) -> Result<()>;
+    /// By default, adds tx mempools
+    fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
+        let mut buf_size = 256;
+        let max_size = 8192;
+        let min_elts = 8192;
+        loop {
+            // add a tx pool with buf size
+            tracing::info!("Adding memory pool of size {}", buf_size);
+            connection.add_memory_pool(buf_size, min_elts)?;
+            buf_size *= 2;
+            if buf_size > max_size {
+                break;
+            }
+        }
+        Ok(())
+    }
 
     /// Cleanup any state.
-    fn cleanup(&mut self, connection: &mut Self::Datapath) -> Result<()>;
+    fn cleanup(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
+        Ok(())
+    }
 }

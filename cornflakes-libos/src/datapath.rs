@@ -9,7 +9,7 @@ use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
 pub enum InlineMode {
     Nothing,
     PacketHeader,
-    FirstEntry,
+    ObjectHeader,
 }
 
 impl Default for InlineMode {
@@ -27,8 +27,8 @@ impl FromStr for InlineMode {
             "packetheader" | "PacketHeader" | "PACKETHEADER" | "packet_header" => {
                 Ok(InlineMode::PacketHeader)
             }
-            "firstentry" | "first_entry" | "FIRSTENTRY" | "FirstEntry" => {
-                Ok(InlineMode::FirstEntry)
+            "objectheader" | "object_header" | "OBJECTHEADER" | "ObjectHeader" => {
+                Ok(InlineMode::ObjectHeader)
             }
             x => {
                 bail!("Unknown inline mode: {:?}", x);
@@ -286,7 +286,7 @@ pub trait Datapath {
     /// @rc_sgas: Vector of (msg id, connection id, reference counted scatter-gather arrays) to send.
     /// Must be mutable in order to correctly increment the reference counts on the underlying
     /// buffers.
-    fn push_rc_sgas(&mut self, rc_sgas: &mut [(MsgID, ConnID, &mut RcSga<Self>)]) -> Result<()>
+    fn push_rc_sgas(&mut self, rc_sgas: &mut [(MsgID, ConnID, RcSga<Self>)]) -> Result<()>
     where
         Self: Sized;
 
@@ -294,12 +294,12 @@ pub trait Datapath {
     /// OrderedSgas must be ordered such that the last "num_zero_copy_entries()" are
     /// zero-copy-able and pass the to-copy or not heuristics.
     /// First sga.len() - num_zero_copy_entries() will be copied together.
-    fn push_ordered_sgas(&mut self, ordered_sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()>;
+    fn push_ordered_sgas(&mut self, ordered_sgas: &[(MsgID, ConnID, OrderedSga)]) -> Result<()>;
 
     /// Send scatter-gather arrays of addresses.
     /// Args:
     /// @sgas: Vector of (msg id, connection id, raw address scatter-gather arrays) to send.
-    fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, &Sga)]) -> Result<()>;
+    fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, Sga)]) -> Result<()>;
 
     /// Listen for new received packets and pop out with durations.
     fn pop_with_durations(&mut self) -> Result<Vec<(ReceivedPkt<Self>, Duration)>>
