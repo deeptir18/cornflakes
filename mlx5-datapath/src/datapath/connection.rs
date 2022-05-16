@@ -660,7 +660,7 @@ impl Mlx5Connection {
         msg_id: MsgID,
         inline_len: usize,
         data_len: usize,
-        first_entry: &[u8],
+        hdr: &[u8],
     ) -> Result<(bool, usize)> {
         match self.inline_mode {
             InlineMode::Nothing => Ok((false, 0)),
@@ -668,17 +668,16 @@ impl Mlx5Connection {
                 self.inline_hdr(conn_id, msg_id, inline_len, data_len)?;
                 Ok((true, 0))
             }
-            InlineMode::FirstEntry => {
+            InlineMode::ObjectHeader => {
                 self.inline_hdr(conn_id, msg_id, inline_len, data_len)?;
-                if (cornflakes_libos::utils::TOTAL_HEADER_SIZE + first_entry.len())
-                    <= self.max_inline_size
+                if (cornflakes_libos::utils::TOTAL_HEADER_SIZE + hdr.len()) <= self.max_inline_size
                 {
                     unsafe {
                         custom_mlx5_copy_inline_data(
                             self.thread_context.get_context_ptr(),
                             cornflakes_libos::utils::TOTAL_HEADER_SIZE as _,
-                            first_entry.as_ptr() as _,
-                            first_entry.len() as _,
+                            hdr.as_ptr() as _,
+                            hdr.len() as _,
                             inline_len as _,
                         );
                         return Ok((true, 1));
@@ -751,7 +750,7 @@ impl Mlx5Connection {
 
     /// Post ordered sgas. This function is only called when there is space for these sgas in the
     /// ring buffer.
-    fn post_ordered_sgas(&mut self, sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
+    fn post_ordered_sgas(&mut self, sgas: &[(MsgID, ConnID, OrderedSga)]) -> Result<()> {
         // fill in the hdr segment
         let mut first_ctrl_seg = ptr::null_mut();
         for (sgas_idx, (msg_id, conn_id, ordered_sga)) in sgas.iter().enumerate() {
@@ -790,12 +789,15 @@ impl Mlx5Connection {
                 *msg_id,
                 inline_len,
                 data_len,
-                ordered_sga.sga().get(0).addr(),
+                ordered_sga.get_hdr(),
             )?;
+
+            // TODO: temporary hack for different code surrounding inlining first entry
+            let inlined_obj_hdr = entry_idx == 1;
 
             let first_zero_copy_seg = ordered_sga.num_copy_entries();
             let allocation_size = ordered_sga.copy_length()
-                - ((entry_idx == 1) as usize * ordered_sga.sga().get(0).len())
+                - (inlined_obj_hdr as usize * ordered_sga.get_hdr().len())
                 + (!header_written as usize * cornflakes_libos::utils::TOTAL_HEADER_SIZE);
             let mut dpseg = unsafe {
                 custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), inline_len as _)
@@ -814,15 +816,13 @@ impl Mlx5Connection {
                     self.copy_hdr(&mut data_buffer, *conn_id, *msg_id, data_len)?;
                     offset += cornflakes_libos::utils::TOTAL_HEADER_SIZE;
                 }
-                for (i, seg) in ordered_sga
-                    .sga()
-                    .iter()
-                    .take(first_zero_copy_seg)
-                    .enumerate()
-                {
-                    if i == 0 && entry_idx == 1 {
-                        continue;
-                    }
+                if !inlined_obj_hdr {
+                    let data_slice =
+                        data_buffer.mutable_slice(offset, offset + ordered_sga.get_hdr().len())?;
+                    data_slice.copy_from_slice(ordered_sga.get_hdr());
+                    offset += ordered_sga.get_hdr().len();
+                }
+                for seg in ordered_sga.sga().iter().take(first_zero_copy_seg) {
                     tracing::debug!("Writing into slice [{}, {}]", offset, offset + seg.len());
                     let dst = data_buffer.mutable_slice(offset, offset + seg.len())?;
                     unsafe {
@@ -881,7 +881,7 @@ impl Mlx5Connection {
     }
 
     /// Recursively tries to push all sgas until all are sent.
-    fn push_ordered_sgas_recursive(&mut self, sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
+    fn push_ordered_sgas_recursive(&mut self, sgas: &[(MsgID, ConnID, OrderedSga)]) -> Result<()> {
         let curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
@@ -1082,26 +1082,27 @@ impl Mlx5Connection {
         match self.inline_mode {
             InlineMode::Nothing => (0, ordered_sga.num_zero_copy_entries() + 1),
             InlineMode::PacketHeader => (
-                cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE,
+                cornflakes_libos::utils::TOTAL_HEADER_SIZE,
                 ordered_sga.num_zero_copy_entries()
-                    + ((ordered_sga.num_zero_copy_entries() < ordered_sga.len()) as usize),
+                    + (ordered_sga.num_zero_copy_entries() < ordered_sga.len()
+                        || ordered_sga.get_hdr().len() > 0) as usize,
             ),
-            InlineMode::FirstEntry => {
-                match (ordered_sga.sga().get(0).len()
-                    + cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE)
+            InlineMode::ObjectHeader => {
+                match (ordered_sga.get_hdr().len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE)
                     <= self.max_inline_size
                 {
                     true => (
-                        cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE
-                            + ordered_sga.sga().get(0).len(),
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE + ordered_sga.get_hdr().len(),
                         ordered_sga.num_zero_copy_entries()
-                            + ((ordered_sga.num_zero_copy_entries() < (ordered_sga.len() - 1))
+                            + ((ordered_sga.num_zero_copy_entries() < (ordered_sga.len()))
                                 as usize),
                     ),
                     false => (
-                        cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE,
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE,
                         ordered_sga.num_zero_copy_entries()
-                            + (ordered_sga.num_zero_copy_entries() < ordered_sga.len()) as usize,
+                            + (ordered_sga.num_zero_copy_entries() < ordered_sga.len()
+                                || ordered_sga.get_hdr().len() > 0)
+                                as usize,
                     ),
                 }
             }
@@ -1285,7 +1286,7 @@ impl Mlx5Connection {
         let (inline_size, num_segs) = match self.inline_mode {
             InlineMode::Nothing => (0, 1),
             InlineMode::PacketHeader => (cornflakes_libos::utils::TOTAL_HEADER_SIZE, 0),
-            InlineMode::FirstEntry => {
+            InlineMode::ObjectHeader => {
                 let inline_size = first_entry_size + cornflakes_libos::utils::TOTAL_HEADER_SIZE;
                 match inline_size <= self.max_inline_size {
                     true => {
@@ -1674,7 +1675,7 @@ impl Datapath for Mlx5Connection {
             let (buf_size, inline_len) = match self.inline_mode {
                 InlineMode::Nothing => (buf.len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE, 0),
                 InlineMode::PacketHeader => (buf.len(), cornflakes_libos::utils::TOTAL_HEADER_SIZE),
-                InlineMode::FirstEntry => {
+                InlineMode::ObjectHeader => {
                     match (buf.len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE)
                         > self.max_inline_size
                     {
@@ -1732,12 +1733,12 @@ impl Datapath for Mlx5Connection {
                     InlineMode::Nothing => {
                         allocation_size = cornflakes_libos::utils::TOTAL_HEADER_SIZE + buf.len();
                     }
-                    InlineMode::PacketHeader | InlineMode::FirstEntry => {
+                    InlineMode::PacketHeader | InlineMode::ObjectHeader => {
                         // inline packet header
                         self.inline_hdr(conn_id, msg_id, inline_len, buf.len())?;
                         written_header = true;
 
-                        if self.inline_mode == InlineMode::FirstEntry
+                        if self.inline_mode == InlineMode::ObjectHeader
                             && (cornflakes_libos::utils::TOTAL_HEADER_SIZE + buf.len()
                                 <= self.max_inline_size)
                         {
@@ -1915,7 +1916,7 @@ impl Datapath for Mlx5Connection {
         Ok(())
     }
 
-    fn push_rc_sgas(&mut self, rc_sgas: &mut [(MsgID, ConnID, &mut RcSga<Self>)]) -> Result<()>
+    fn push_rc_sgas(&mut self, rc_sgas: &mut [(MsgID, ConnID, RcSga<Self>)]) -> Result<()>
     where
         Self: Sized,
     {
@@ -1924,8 +1925,8 @@ impl Datapath for Mlx5Connection {
         let mut sga_idx = 0;
         while sga_idx < rc_sgas.len() {
             tracing::debug!(sga_idx = sga_idx, "In rc sga process loop");
-            let (msg_id, conn_id, ref mut sga) = rc_sgas[sga_idx];
-            self.insert_into_outgoing_map(msg_id, conn_id);
+            let (msg_id, conn_id, ref mut sga) = &mut rc_sgas[sga_idx];
+            self.insert_into_outgoing_map(*msg_id, *conn_id);
             let (inline_len, num_segs) = self.calculate_shape_rc(&sga)?;
             tracing::debug!(
                 inline_len = inline_len,
@@ -1954,8 +1955,8 @@ impl Datapath for Mlx5Connection {
             } else {
                 let ctrl_seg = self.post_rc_sga(
                     sga,
-                    conn_id,
-                    msg_id,
+                    *conn_id,
+                    *msg_id,
                     num_octowords,
                     num_wqes_required,
                     inline_len,
@@ -1972,11 +1973,11 @@ impl Datapath for Mlx5Connection {
         Ok(())
     }
 
-    fn push_ordered_sgas(&mut self, sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
+    fn push_ordered_sgas(&mut self, sgas: &[(MsgID, ConnID, OrderedSga)]) -> Result<()> {
         self.push_ordered_sgas_recursive(sgas)
     }
 
-    fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, &Sga)]) -> Result<()> {
+    fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, Sga)]) -> Result<()> {
         let mut first_ctrl_seg: Option<*mut mlx5_wqe_ctrl_seg> = None;
         let mut sga_idx = 0;
         tracing::debug!(len = sgas.len(), "Pushing sgas");

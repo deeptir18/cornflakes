@@ -221,6 +221,7 @@ fn add_serialization_func(
         ],
         "Vec<(CornPtr<'registered, 'normal>, *mut u8)>",
         "'normal",
+        "",
     );
     compiler.add_context(Context::Function(func_context))?;
     compiler.add_def_with_let(

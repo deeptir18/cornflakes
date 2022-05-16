@@ -110,7 +110,7 @@ pub fn compile(input_file: &str, output_folder: &str, options: CompileOptions) -
         repr.set_ref_counted();
     }
     if options.header_type == HeaderType::Sga || options.header_type == HeaderType::RcSga {
-        repr.set_lifetime_name("a");
+        repr.set_lifetime_name("obj");
     }
     match options.language {
         Language::C => {

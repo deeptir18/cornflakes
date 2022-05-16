@@ -14,6 +14,7 @@ cornflakes-libos = { path = "../cornflakes-libos" }
 dpdk-datapath = { path = "../dpdk-datapath" }
 cornflakes-utils = { path = "../cornflakes-utils" }
 cornflakes-codegen = { path = "../cornflakes-codegen" }
+mlx5-datapath = { path = "../mlx5-datapath" }
 ctrlc = "3.1.7"
 memmap = "0.7.0"
 rand = "0.8.0"
@@ -40,4 +41,5 @@ cornflakes-utils = { path = "../cornflakes-utils" }
 [features]
 default = ["mlx5"]
 mlx5 = ["dpdk-datapath/mlx5"]
+profiler = ["cornflakes-libos/profiler"]
 

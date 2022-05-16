@@ -8,7 +8,7 @@ use cornflakes_libos::{
 };
 use std::{
     convert::TryInto, default::Default, fmt::Debug, marker::PhantomData, mem::size_of, ops::Index,
-    slice, str,
+    slice, slice::Iter, str,
 };
 
 pub const SIZE_FIELD: usize = 4;
@@ -16,7 +16,7 @@ pub const OFFSET_FIELD: usize = 4;
 /// u32 at beginning representing bitmap size in bytes
 pub const BITMAP_LENGTH_FIELD: usize = 4;
 
-pub trait HeaderRepr<'a> {
+pub trait SgaHeaderRepr<'obj> {
     /// Maximum number of fields is max u32 * 8
     const NUMBER_OF_FIELDS: usize;
 
@@ -29,11 +29,22 @@ pub trait HeaderRepr<'a> {
     }
 
     fn get_bitmap_field(&self, field: usize) -> bool {
+        tracing::debug!("Bitmap: {:?}", self.get_bitmap());
         self.get_bitmap()[field] == 1
     }
 
     fn set_bitmap_field(&mut self, field: usize) {
         self.get_mut_bitmap()[field] = 1;
+    }
+
+    fn clear_bitmap(&mut self) {
+        for field in self
+            .get_mut_bitmap()
+            .iter_mut()
+            .take(Self::NUMBER_OF_FIELDS)
+        {
+            *field = 0;
+        }
     }
 
     fn get_bitmap(&self) -> &[u8];
@@ -52,13 +63,15 @@ pub trait HeaderRepr<'a> {
         slice.copy_from_slice(&self.get_bitmap());
     }
 
-    fn deserialize_bitmap(&mut self, header: &'a [u8], offset: usize) {
+    fn deserialize_bitmap(&mut self, header: &[u8], offset: usize) {
         let bitmap_size = LittleEndian::read_u32(&header[offset..(offset + BITMAP_LENGTH_FIELD)]);
         self.set_bitmap(
             &header[(offset + BITMAP_LENGTH_FIELD)
                 ..(offset + BITMAP_LENGTH_FIELD + (bitmap_size as usize))],
         );
     }
+
+    fn check_deep_equality(&self, other: &Self) -> bool;
 
     /// Dynamic part of the header (actual bytes pointed to, lists, nested objects).
     fn dynamic_header_size(&self) -> usize;
@@ -67,7 +80,7 @@ pub trait HeaderRepr<'a> {
     fn total_header_size(&self, with_ref: bool) -> usize {
         BITMAP_LENGTH_FIELD
             + Self::bitmap_length()
-            + <Self as HeaderRepr<'a>>::CONSTANT_HEADER_SIZE * with_ref as usize
+            + <Self as SgaHeaderRepr>::CONSTANT_HEADER_SIZE * with_ref as usize
             + self.dynamic_header_size()
     }
 
@@ -81,22 +94,26 @@ pub trait HeaderRepr<'a> {
 
     /// Allocates context required for serialization: header vector and scatter-gather array with
     /// required capacity.
-    fn alloc_context(&self) -> (Vec<u8>, OrderedSga<'a>) {
-        (
-            vec![0u8; self.total_header_size(false)],
-            OrderedSga::allocate(self.num_scatter_gather_entries() + 1),
-        )
+    fn alloc_sga(&self) -> OrderedSga {
+        OrderedSga::allocate(self.num_scatter_gather_entries())
     }
 
-    fn inner_serialize_with_ref(
+    fn alloc_hdr(&self) -> Vec<u8> {
+        vec![0u8; self.total_header_size(false)]
+    }
+
+    fn inner_serialize_with_ref<'sge>(
         &self,
         header: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
-        scatter_gather_entries: &mut [Sge<'a>],
+        scatter_gather_entries: &mut [Sge<'sge>],
         offsets: &mut [usize],
         with_ref: bool,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        'obj: 'sge,
+    {
         if with_ref {
             // read forward pointer
             let slice = &mut header
@@ -140,21 +157,26 @@ pub trait HeaderRepr<'a> {
     /// Assumes header has enough space for bytes and scatter_gather_entries has enough space for
     /// @offsets and @scatter_gather_entries should be the same size.
     /// nested entries.
-    fn inner_serialize(
+    fn inner_serialize<'sge>(
         &self,
         header: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
-        scatter_gather_entries: &mut [Sge<'a>],
+        scatter_gather_entries: &mut [Sge<'sge>],
         offsets: &mut [usize],
-    ) -> Result<()>;
+    ) -> Result<()>
+    where
+        'obj: 'sge;
 
-    fn inner_deserialize_with_ref(
+    fn inner_deserialize_with_ref<'buf>(
         &mut self,
-        buffer: &'a [u8],
+        buffer: &'buf [u8],
         header_offset: usize,
         with_ref: bool,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        'buf: 'obj,
+    {
         if with_ref {
             let slice =
                 &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
@@ -169,23 +191,39 @@ pub trait HeaderRepr<'a> {
     /// Params:
     /// @buffer - Buffer to deserialize.
     /// @header_offset - Offset into constant part of header for nested deserialization.
-    fn inner_deserialize(&mut self, buffer: &'a [u8], header_offset: usize) -> Result<()>;
+    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], header_offset: usize) -> Result<()>
+    where
+        'buf: 'obj;
+
+    fn serialize_to_owned<D>(&self, datapath: &D) -> Result<Vec<u8>>
+    where
+        D: Datapath,
+    {
+        let mut sga = self.alloc_sga();
+        self.serialize_into_sga(&mut sga, datapath)?;
+        Ok(sga.flatten())
+    }
 
     /// Serialize with context of existing ordered sga and existing header buffer.
-    fn serialize_into_sga<D>(
+    fn serialize_into_sga<'sge, D>(
         &self,
-        header_buffer: &'a mut [u8],
-        ordered_sga: &'a mut OrderedSga<'a>,
+        ordered_sga: &mut OrderedSga<'sge>,
         datapath: &D,
     ) -> Result<()>
     where
         D: Datapath,
+        'obj: 'sge,
     {
         let required_entries = self.num_scatter_gather_entries();
-        let header_size = self.total_header_size(false);
+        let mut owned_hdr = self.alloc_hdr();
+        let header_buffer = owned_hdr.as_mut_slice();
 
-        if ordered_sga.len() < (required_entries + 1) || header_buffer.len() < header_size {
-            bail!("Cannot serialize into sga with num entries {} ({} required) and header buffer length {} ({} required", ordered_sga.len(), required_entries + 1, header_buffer.len(), header_size);
+        if ordered_sga.capacity() < required_entries {
+            bail!(
+                "Cannot serialize into sga with num entries {} ({} required)",
+                ordered_sga.len(),
+                required_entries,
+            );
         }
 
         ordered_sga.set_length(required_entries);
@@ -196,7 +234,7 @@ pub trait HeaderRepr<'a> {
             header_buffer,
             0,
             self.dynamic_header_start(),
-            ordered_sga.mut_entries_slice(1, required_entries),
+            ordered_sga.mut_entries_slice(0, required_entries),
             offsets.as_mut_slice(),
             false,
         )?;
@@ -210,7 +248,7 @@ pub trait HeaderRepr<'a> {
 
         // iterate over header, writing in forward pointers based on new ordering
         for (sge, offset) in ordered_sga
-            .entries_slice(1, required_entries)
+            .entries_slice(0, required_entries)
             .iter()
             .zip(offsets.into_iter())
         {
@@ -221,32 +259,39 @@ pub trait HeaderRepr<'a> {
             cur_dynamic_offset += sge.len();
         }
 
-        // replace head entry with object header buffer
-        ordered_sga.replace(1, Sge::new(&header_buffer[0..header_size]));
+        ordered_sga.set_hdr(owned_hdr);
+
         Ok(())
     }
 
     /// Deserialize contiguous buffer into this object.
-    fn deserialize(&mut self, buffer: &'a [u8]) -> Result<()> {
+    fn deserialize<'buf>(&mut self, buffer: &'buf [u8]) -> Result<()>
+    where
+        'buf: 'obj,
+    {
         self.inner_deserialize(buffer, 0)?;
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub struct CFString<'a> {
-    pub ptr: &'a [u8],
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CFString<'obj> {
+    pub ptr: &'obj [u8],
 }
 
-impl<'a> CFString<'a> {
-    pub fn new(ptr: &'a str) -> Self {
+impl<'obj> CFString<'obj> {
+    pub fn new(ptr: &'obj str) -> Self {
         CFString {
             ptr: ptr.as_bytes(),
         }
     }
 
-    pub fn new_from_bytes(ptr: &'a [u8]) -> Self {
+    pub fn new_from_bytes(ptr: &'obj [u8]) -> Self {
         CFString { ptr: ptr }
+    }
+
+    pub fn bytes(&self) -> &'obj [u8] {
+        self.ptr
     }
 
     pub fn len(&self) -> usize {
@@ -259,15 +304,13 @@ impl<'a> CFString<'a> {
     }
 }
 
-impl<'a> Default for CFString<'a> {
+impl<'obj> Default for CFString<'obj> {
     fn default() -> Self {
-        CFString {
-            ptr: Default::default(),
-        }
+        CFString { ptr: &[] }
     }
 }
 
-impl<'a> HeaderRepr<'a> for CFString<'a> {
+impl<'obj> SgaHeaderRepr<'obj> for CFString<'obj> {
     const NUMBER_OF_FIELDS: usize = 1;
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
@@ -294,20 +337,30 @@ impl<'a> HeaderRepr<'a> for CFString<'a> {
 
     fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
-    fn inner_serialize(
+    fn check_deep_equality(&self, other: &CFString) -> bool {
+        self.len() == other.len() && self.bytes() == other.bytes()
+    }
+
+    fn inner_serialize<'sge>(
         &self,
         _header: &mut [u8],
         constant_header_offset: usize,
         _dynamic_header_start: usize,
-        scatter_gather_entries: &mut [Sge<'a>],
+        scatter_gather_entries: &mut [Sge<'sge>],
         offsets: &mut [usize],
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        'obj: 'sge,
+    {
         scatter_gather_entries[0] = Sge::new(self.ptr);
         offsets[0] = constant_header_offset;
         Ok(())
     }
 
-    fn inner_deserialize(&mut self, buffer: &'a [u8], header_offset: usize) -> Result<()> {
+    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], header_offset: usize) -> Result<()>
+    where
+        'buf: 'obj,
+    {
         let header_slice =
             &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
         let forward_pointer = ForwardPointer(header_slice);
@@ -320,27 +373,25 @@ impl<'a> HeaderRepr<'a> for CFString<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub struct CFBytes<'a> {
-    pub ptr: &'a [u8],
+pub struct CFBytes<'obj> {
+    ptr: &'obj [u8],
 }
 
-impl<'a> CFBytes<'a> {
-    pub fn new(ptr: &'a str) -> Self {
-        CFBytes {
-            ptr: ptr.as_bytes(),
-        }
-    }
-
-    pub fn new_from_bytes(ptr: &'a [u8]) -> Self {
+impl<'obj> CFBytes<'obj> {
+    pub fn new(ptr: &'obj [u8]) -> Self {
         CFBytes { ptr: ptr }
     }
 
     pub fn len(&self) -> usize {
         self.ptr.len()
     }
+
+    pub fn get_ptr(&self) -> &'obj [u8] {
+        self.ptr
+    }
 }
 
-impl<'a> Default for CFBytes<'a> {
+impl<'obj> Default for CFBytes<'obj> {
     fn default() -> Self {
         CFBytes {
             ptr: Default::default(),
@@ -348,7 +399,7 @@ impl<'a> Default for CFBytes<'a> {
     }
 }
 
-impl<'a> HeaderRepr<'a> for CFBytes<'a> {
+impl<'obj> SgaHeaderRepr<'obj> for CFBytes<'obj> {
     const NUMBER_OF_FIELDS: usize = 1;
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
@@ -375,20 +426,30 @@ impl<'a> HeaderRepr<'a> for CFBytes<'a> {
 
     fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
-    fn inner_serialize(
+    fn check_deep_equality(&self, other: &CFBytes) -> bool {
+        self.len() == other.len() && self.get_ptr() == other.get_ptr()
+    }
+
+    fn inner_serialize<'sge>(
         &self,
         _header: &mut [u8],
         constant_header_offset: usize,
         _dynamic_header_start: usize,
-        scatter_gather_entries: &mut [Sge<'a>],
+        scatter_gather_entries: &mut [Sge<'sge>],
         offsets: &mut [usize],
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        'obj: 'sge,
+    {
         scatter_gather_entries[0] = Sge::new(self.ptr);
         offsets[0] = constant_header_offset;
         Ok(())
     }
 
-    fn inner_deserialize(&mut self, buffer: &'a [u8], header_offset: usize) -> Result<()> {
+    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], header_offset: usize) -> Result<()>
+    where
+        'buf: 'obj,
+    {
         let header_slice =
             &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
         let forward_pointer = ForwardPointer(header_slice);
@@ -405,7 +466,7 @@ pub enum List<'a, T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
-    Owned(OwnedList<'a, T>),
+    Owned(OwnedList<T>),
     Ref(RefList<'a, T>),
 }
 
@@ -431,15 +492,15 @@ where
     }
 }
 
-impl<'a, T> List<'a, T>
+impl<'obj, T> List<'obj, T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
-    pub fn init(size: usize) -> List<'a, T> {
+    pub fn init(size: usize) -> List<'obj, T> {
         List::Owned(OwnedList::init(size))
     }
 
-    pub fn init_ref() -> List<'a, T> {
+    pub fn init_ref() -> List<'obj, T> {
         List::Ref(RefList::default())
     }
 
@@ -467,7 +528,7 @@ where
     }
 }
 
-impl<'a, T> HeaderRepr<'a> for List<'a, T>
+impl<'obj, T> SgaHeaderRepr<'obj> for List<'obj, T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
@@ -501,14 +562,30 @@ where
         true
     }
 
-    fn inner_serialize(
+    fn check_deep_equality(&self, other: &List<T>) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+
+        for i in 0..self.len() {
+            if self[i] != other[i] {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn inner_serialize<'sge>(
         &self,
         header: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
-        scatter_gather_entries: &mut [Sge<'a>],
+        scatter_gather_entries: &mut [Sge<'sge>],
         offsets: &mut [usize],
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        'obj: 'sge,
+    {
         match self {
             List::Owned(l) => l.inner_serialize(
                 header,
@@ -527,7 +604,10 @@ where
         }
     }
 
-    fn inner_deserialize(&mut self, buffer: &'a [u8], header_offset: usize) -> Result<()> {
+    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], header_offset: usize) -> Result<()>
+    where
+        'buf: 'obj,
+    {
         match self {
             List::Owned(l) => l.inner_deserialize(buffer, header_offset),
             List::Ref(l) => l.inner_deserialize(buffer, header_offset),
@@ -536,21 +616,21 @@ where
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct OwnedList<'a, T>
+pub struct OwnedList<T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
     num_space: usize,
     num_set: usize,
     list_ptr: BytesMut,
-    _marker: PhantomData<&'a [T]>,
+    _marker: PhantomData<T>,
 }
 
-impl<'a, T> OwnedList<'a, T>
+impl<T> OwnedList<T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
-    pub fn init(size: usize) -> OwnedList<'a, T> {
+    pub fn init(size: usize) -> OwnedList<T> {
         let mut buf_mut = BytesMut::with_capacity(size * size_of::<T>());
         buf_mut.put(vec![0u8; size * size_of::<T>()].as_slice());
         OwnedList {
@@ -589,7 +669,7 @@ where
     }
 }
 
-impl<'a, T> Index<usize> for OwnedList<'a, T>
+impl<T> Index<usize> for OwnedList<T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
@@ -599,7 +679,7 @@ where
     }
 }
 
-impl<'a, T> HeaderRepr<'a> for OwnedList<'a, T>
+impl<'obj, T> SgaHeaderRepr<'obj> for OwnedList<T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
@@ -633,14 +713,30 @@ where
         true
     }
 
-    fn inner_serialize(
+    fn check_deep_equality(&self, other: &OwnedList<T>) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+
+        for i in 0..self.len() {
+            if self[i] != other[i] {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn inner_serialize<'sge>(
         &self,
         header: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
-        _scatter_gather_entries: &mut [Sge<'a>],
+        _scatter_gather_entries: &mut [Sge<'sge>],
         _offsets: &mut [usize],
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        'obj: 'sge,
+    {
         let header_slice = &mut header
             [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)]
             .try_into()?;
@@ -653,7 +749,10 @@ where
         Ok(())
     }
 
-    fn inner_deserialize(&mut self, buffer: &'a [u8], header_offset: usize) -> Result<()> {
+    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], header_offset: usize) -> Result<()>
+    where
+        'buf: 'obj,
+    {
         let header_slice =
             &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
         let forward_pointer = ForwardPointer(header_slice);
@@ -670,16 +769,16 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RefList<'a, T>
+pub struct RefList<'obj, T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
     num_space: usize,
-    list_ptr: &'a [u8],
-    _marker: PhantomData<&'a [T]>,
+    list_ptr: &'obj [u8],
+    _marker: PhantomData<&'obj [T]>,
 }
 
-impl<'a, T> Default for RefList<'a, T>
+impl<'obj, T> Default for RefList<'obj, T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
@@ -692,7 +791,7 @@ where
     }
 }
 
-impl<'a, T> RefList<'a, T>
+impl<'obj, T> RefList<'obj, T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
@@ -729,7 +828,7 @@ where
     }
 }
 
-impl<'a, T> HeaderRepr<'a> for RefList<'a, T>
+impl<'obj, T> SgaHeaderRepr<'obj> for RefList<'obj, T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
@@ -763,14 +862,30 @@ where
         true
     }
 
-    fn inner_serialize(
+    fn check_deep_equality(&self, other: &RefList<T>) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+
+        for i in 0..self.len() {
+            if self[i] != other[i] {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn inner_serialize<'sge>(
         &self,
         header: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
-        _scatter_gather_entries: &mut [Sge<'a>],
+        _scatter_gather_entries: &mut [Sge<'sge>],
         _offsets: &mut [usize],
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        'obj: 'sge,
+    {
         let header_slice = &mut header
             [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)]
             .try_into()?;
@@ -783,7 +898,10 @@ where
         Ok(())
     }
 
-    fn inner_deserialize(&mut self, buffer: &'a [u8], header_offset: usize) -> Result<()> {
+    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], header_offset: usize) -> Result<()>
+    where
+        'buf: 'obj,
+    {
         let header_slice =
             &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
         let forward_pointer = ForwardPointer(header_slice);
@@ -796,27 +914,31 @@ where
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
-pub struct VariableList<'a, T>
+pub struct VariableList<'obj, T>
 where
-    T: HeaderRepr<'a> + Debug + Default + PartialEq + Eq + Clone,
+    T: SgaHeaderRepr<'obj> + Debug + Default + PartialEq + Eq + Clone,
 {
     num_space: usize,
     num_set: usize,
     elts: Vec<T>,
-    _marker: PhantomData<&'a [u8]>,
+    _phantom_data: PhantomData<&'obj [u8]>,
 }
 
-impl<'a, T> VariableList<'a, T>
+impl<'obj, T> VariableList<'obj, T>
 where
-    T: HeaderRepr<'a> + Debug + Default + PartialEq + Eq + Clone,
+    T: SgaHeaderRepr<'obj> + Debug + Default + PartialEq + Eq + Clone,
 {
-    pub fn init(num: usize) -> VariableList<'a, T> {
+    pub fn init(num: usize) -> VariableList<'obj, T> {
         VariableList {
             num_space: num,
             num_set: 0,
             elts: Vec::with_capacity(num),
-            _marker: PhantomData,
+            _phantom_data: PhantomData,
         }
+    }
+
+    pub fn iter(&self) -> std::iter::Take<Iter<T>> {
+        self.elts.iter().take(self.num_set)
     }
 
     pub fn append(&mut self, val: T) {
@@ -835,9 +957,9 @@ where
         self.num_set
     }
 }
-impl<'a, T> Index<usize> for VariableList<'a, T>
+impl<'obj, T> Index<usize> for VariableList<'obj, T>
 where
-    T: HeaderRepr<'a> + Debug + Default + PartialEq + Eq + Clone,
+    T: SgaHeaderRepr<'obj> + Debug + Default + PartialEq + Eq + Clone,
 {
     type Output = T;
     fn index(&self, idx: usize) -> &Self::Output {
@@ -846,9 +968,9 @@ where
     }
 }
 
-impl<'a, T> HeaderRepr<'a> for VariableList<'a, T>
+impl<'obj, T> SgaHeaderRepr<'obj> for VariableList<'obj, T>
 where
-    T: HeaderRepr<'a> + Debug + Default + PartialEq + Eq + Clone,
+    T: SgaHeaderRepr<'obj> + Debug + Default + PartialEq + Eq + Clone,
 {
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
@@ -887,14 +1009,35 @@ where
 
     fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
-    fn inner_serialize(
+    fn is_list(&self) -> bool {
+        true
+    }
+
+    fn check_deep_equality(&self, other: &Self) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+
+        for i in 0..self.len() {
+            if !(self[i].check_deep_equality(&other[i])) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn inner_serialize<'sge>(
         &self,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
-        scatter_gather_entries: &mut [Sge<'a>],
+        scatter_gather_entries: &mut [Sge<'sge>],
         offsets: &mut [usize],
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        'obj: 'sge,
+    {
         let header_slice = &mut header_buffer
             [constant_header_offset..(constant_header_offset) + Self::CONSTANT_HEADER_SIZE]
             .try_into()?;
@@ -921,12 +1064,10 @@ where
         Ok(())
     }
 
-    fn is_list(&self) -> bool {
-        true
-    }
-
-    // TODO: should offsets be written RELATIVE to the object that is being deserialized?
-    fn inner_deserialize(&mut self, buffer: &'a [u8], constant_offset: usize) -> Result<()> {
+    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], constant_offset: usize) -> Result<()>
+    where
+        'buf: 'obj,
+    {
         let slice =
             &buffer[constant_offset..(constant_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
         let forward_pointer = ForwardPointer(slice);

@@ -132,6 +132,7 @@ pub struct FunctionContext {
     ret_type: Option<String>,
     started: bool,
     func_lifetime: Option<String>,
+    where_clause: Option<String>,
 }
 
 impl FunctionContext {
@@ -147,6 +148,7 @@ impl FunctionContext {
             started: false,
             ret_type: ret_type,
             func_lifetime: None,
+            where_clause: None,
         }
     }
 
@@ -156,6 +158,7 @@ impl FunctionContext {
         args: Vec<FunctionArg>,
         ret: &str,
         func_lifetime: &str,
+        where_clause: &str,
     ) -> Self {
         let ret_type: Option<String> = match ret {
             "" => None,
@@ -171,6 +174,7 @@ impl FunctionContext {
             started: false,
             ret_type: ret_type,
             func_lifetime: lifetime,
+            where_clause: Some(where_clause.to_string()),
         }
     }
 }
@@ -188,6 +192,11 @@ impl ContextPop for FunctionContext {
                 None => "".to_string(),
             };
 
+            let where_str = match &self.where_clause {
+                Some(x) => format!("where {}", x),
+                None => "".to_string(),
+            };
+
             let args: Vec<String> = self.args.iter().map(|arg| arg.get_string()).collect();
             let args_string = args.join(", ");
             let ret_value = match &self.ret_type {
@@ -196,8 +205,8 @@ impl ContextPop for FunctionContext {
             };
             Ok((
                 format!(
-                    "{}fn {}{}({}) {} {{",
-                    is_pub_str, self.name, lifetime_str, args_string, ret_value
+                    "{}fn {}{}({}) {} {} {{",
+                    is_pub_str, self.name, lifetime_str, args_string, ret_value, where_str,
                 ),
                 false,
             ))
