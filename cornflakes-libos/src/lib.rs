@@ -14,7 +14,7 @@ pub mod state_machine;
 pub mod timing;
 pub mod utils;
 
-use color_eyre::eyre::{ensure, Result, WrapErr};
+use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_utils::AppMode;
 use datapath::MetadataOps;
 use loadgen::request_schedule::PacketSchedule;
@@ -39,6 +39,8 @@ pub static mut USING_REF_COUNTING: bool = true;
 
 pub type MsgID = u32;
 pub type ConnID = usize;
+
+pub static MAX_SCATTER_GATHER_ENTRIES: usize = 32;
 
 pub fn turn_off_ref_counting() {
     unsafe {
@@ -293,14 +295,28 @@ impl<'registered, 'normal> Cornflake<'registered, 'normal> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Default)]
+/// cbindgen:field-names=[addr, len]
+#[derive(Debug, PartialEq, Eq, Clone)]
+#[repr(C)]
+pub struct CSge(pub *mut ::std::os::raw::c_void, pub usize);
+
+impl CSge {
+    pub fn to_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.0 as _, self.1) }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Default, Clone)]
 pub struct Sge<'a> {
     addr: &'a [u8],
 }
 
-#[derive(Debug, PartialEq, Eq, Default)]
+#[derive(Debug, PartialEq, Eq, Default, Clone)]
 pub struct Sga<'a> {
+    /// entries underlying the scatter-gather array.
     entries: Vec<Sge<'a>>,
+    /// Actual length. Underlying sg array may have more capacity than current length.
+    length: usize,
 }
 
 impl<'a> Sge<'a> {
@@ -321,31 +337,49 @@ impl<'a> Sga<'a> {
     pub fn with_capacity(size: usize) -> Self {
         Sga {
             entries: Vec::with_capacity(size),
+            length: 0,
         }
+    }
+
+    pub fn allocate(size: usize) -> Self {
+        let entries = vec![Sge::default(); size];
+        Sga {
+            entries: entries,
+            length: 0,
+        }
+    }
+
+    pub fn from_static_array(
+        &mut self,
+        addrs: &[*mut ::std::os::raw::c_void; 32],
+        sizes: &[usize; 32],
+        num_entries: usize,
+    ) {
+        for (i, entry) in self.entries.iter_mut().take(num_entries).enumerate() {
+            let slice = unsafe { std::slice::from_raw_parts(addrs[i] as *mut u8, sizes[i]) };
+            let sge = Sge::new(slice);
+            *entry = sge;
+        }
+        self.length = num_entries;
     }
 
     pub fn with_entries(entries: Vec<Sge<'a>>) -> Self {
-        Sga { entries: entries }
-    }
-
-    pub fn add_entry(&mut self, entry: Sge<'a>) {
-        self.entries.push(entry);
+        Sga {
+            length: entries.len(),
+            entries: entries,
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.length
     }
 
     pub fn data_len(&self) -> usize {
-        let mut sum = 0;
-        for entry in self.entries.iter() {
-            sum += entry.len();
-        }
-        sum
+        self.entries.iter().take(self.length).map(|e| e.len()).sum()
     }
 
-    pub fn replace(&mut self, idx: usize, entry: Sge<'a>) {
-        self.entries[idx] = entry;
+    pub fn set_length(&mut self, length: usize) {
+        self.length = length;
     }
 
     pub fn get(&self, idx: usize) -> &Sge<'a> {
@@ -353,7 +387,240 @@ impl<'a> Sga<'a> {
     }
 
     pub fn iter(&self) -> Iter<Sge<'a>> {
-        self.entries.iter()
+        self.entries[0..self.length].iter()
+    }
+    pub fn entries_slice(&self, start: usize, length: usize) -> &[Sge<'a>] {
+        &self.entries.as_slice()[start..(start + length)]
+    }
+
+    pub fn mut_entries_slice(&mut self, start: usize, length: usize) -> &mut [Sge<'a>] {
+        &mut self.entries.as_mut_slice()[start..(start + length)]
+    }
+
+    pub fn swap(&mut self, a: usize, b: usize) {
+        self.entries.swap(a, b);
+    }
+
+    pub fn add_entry(&mut self, entry: Sge<'a>) {
+        if self.length < self.entries.len() {
+            self.replace(self.length, entry);
+            self.length += 1;
+        } else {
+            self.entries.push(entry);
+            self.length += 1;
+        }
+    }
+
+    pub fn replace(&mut self, idx: usize, entry: Sge<'a>) {
+        self.entries[idx] = entry;
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
+pub struct OrderedSga<'a> {
+    /// Underlying scatter-gather array, where entries have been ordered according to heuristics or will be ordered.
+    sga: Sga<'a>,
+    /// Number of sg entries that will be sent as "copy".
+    num_copy_entries: usize,
+}
+
+impl<'a> OrderedSga<'a> {
+    pub fn new(sga: Sga<'a>, num_copy_entries: usize) -> OrderedSga<'a> {
+        OrderedSga {
+            sga: sga,
+            num_copy_entries: num_copy_entries,
+        }
+    }
+
+    pub fn allocate(size: usize) -> OrderedSga<'a> {
+        OrderedSga {
+            sga: Sga::allocate(size),
+            num_copy_entries: 0,
+        }
+    }
+
+    pub fn set_num_copy_entries(&mut self, num: usize) {
+        self.num_copy_entries = num;
+    }
+
+    pub fn num_copy_entries(&self) -> usize {
+        self.num_copy_entries
+    }
+
+    pub fn num_zero_copy_entries(&self) -> usize {
+        self.sga.len() - self.num_copy_entries
+    }
+
+    pub fn sga(&self) -> &Sga {
+        &self.sga
+    }
+
+    pub fn entries_slice(&self, start: usize, length: usize) -> &[Sge<'a>] {
+        self.sga.entries_slice(start, length)
+    }
+
+    pub fn mut_entries_slice(&mut self, start: usize, length: usize) -> &mut [Sge<'a>] {
+        self.sga.mut_entries_slice(start, length)
+    }
+
+    pub fn set_length(&mut self, length: usize) {
+        self.sga.set_length(length);
+    }
+
+    pub fn replace(&mut self, idx: usize, entry: Sge<'a>) {
+        self.sga.replace(idx, entry);
+    }
+
+    pub fn len(&self) -> usize {
+        self.sga.len()
+    }
+
+    pub fn copy_length(&self) -> usize {
+        self.sga
+            .iter()
+            .take(self.num_copy_entries)
+            .map(|seg| seg.len())
+            .sum()
+    }
+
+    fn is_zero_copy_seg<D>(&self, i: usize, d: &D) -> bool
+    where
+        D: datapath::Datapath,
+    {
+        let seg = self.sga.get(i).addr();
+        seg.len() >= d.get_copying_threshold() && d.is_registered(seg)
+    }
+
+    /// Reorders the scatter-gather array according to size heuristics, from the first entry
+    /// forward,
+    /// setting the number of copy entries to be the number of entries found under the
+    /// threshold or not registered.
+    /// Parameters:
+    /// @datapath: Datapath handle providing function to check current size threshold, and whether
+    /// buffers are registered.
+    /// @offsets: Corresponding offsets vector (where indices correspond to current entries in the
+    /// scatter-gather list). When indices are swapped in sga, corresponding indices must be
+    /// swapped in offsets (assumes self.length == offsets.len() + 1)
+    pub fn reorder_by_size_and_registration<D>(
+        &mut self,
+        datapath: &D,
+        offsets: &mut Vec<usize>,
+    ) -> Result<()>
+    where
+        D: datapath::Datapath,
+    {
+        if self.sga().len() != offsets.len() + 1 {
+            bail!("passed in offsets array should be one less than sga length");
+        }
+        // reorder scatter-gather entries
+        let mut forward_index = 1;
+        let mut end_index = self.sga.len() - 1;
+        let mut switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
+        let mut switch_backward = self.is_zero_copy_seg(end_index, datapath);
+        let mut num_copy_segs = 1; // copy object header segment
+
+        // everytime forward index is advanced, we record a copy segment
+        while !(forward_index >= end_index) {
+            match (switch_forward, switch_backward) {
+                (true, true) => {
+                    num_copy_segs += 1;
+                    self.sga.swap(forward_index, end_index);
+                    offsets.swap(forward_index - 1, end_index - 1);
+                    forward_index += 1;
+                    end_index -= 1;
+                    switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
+                    switch_backward = self.is_zero_copy_seg(end_index, datapath);
+                }
+                (true, false) => {
+                    end_index -= 1;
+                    switch_backward = self.is_zero_copy_seg(end_index, datapath);
+                }
+                (false, true) => {
+                    num_copy_segs += 1;
+                    forward_index += 1;
+                    switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
+                }
+                (false, false) => {
+                    num_copy_segs += 1;
+                    forward_index += 1;
+                    end_index -= 1;
+                    switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
+                    switch_backward = self.is_zero_copy_seg(end_index, datapath);
+                }
+            }
+        }
+        self.num_copy_entries = num_copy_segs;
+        Ok(())
+    }
+
+    /// Reorder by max segments.
+    /// Max segments includes the 1 segment for all entries that will be copied together
+    pub fn reorder_by_max_segs<D>(&mut self, datapath: &D, offsets: &mut Vec<usize>) -> Result<()>
+    where
+        D: datapath::Datapath,
+    {
+        if self.sga().len() != offsets.len() + 1 {
+            bail!("passed in offsets array should be one less than sga length");
+        }
+        let current_zero_copy_segs = self.num_zero_copy_entries();
+        let zero_copy_limit = datapath.get_max_segments() - 1;
+
+        // already under maximum segments
+        if current_zero_copy_segs <= zero_copy_limit {
+            return Ok(());
+        }
+
+        let sga_len = self.sga.len();
+        let segs_to_order = self
+            .sga
+            .mut_entries_slice(self.num_copy_entries, current_zero_copy_segs);
+
+        let extra_to_copy = current_zero_copy_segs - zero_copy_limit;
+
+        if extra_to_copy < zero_copy_limit {
+            // move smallest entries to the front
+            for i in self.num_copy_entries..(self.num_copy_entries + extra_to_copy) {
+                let mut min_index = i;
+                let mut min_length = segs_to_order[i].len();
+
+                for (entry_idx, entry) in segs_to_order[i + 1..].iter().enumerate() {
+                    if entry.len() < min_length {
+                        min_length = entry.len();
+                        min_index = entry_idx;
+                    }
+                }
+
+                if min_index != i {
+                    segs_to_order.swap(i, min_index);
+                    offsets.swap(i - 1, min_index - 1);
+                }
+            }
+        } else {
+            // move max (zero_copy limit) segs to back
+            for i in ((sga_len - zero_copy_limit)..sga_len).rev() {
+                let mut max_index = i;
+                let mut max_length = segs_to_order[i].len();
+
+                for (entry_idx, entry) in segs_to_order[(sga_len - zero_copy_limit)..(i - 1)]
+                    .iter()
+                    .rev()
+                    .enumerate()
+                {
+                    if entry.len() > max_length {
+                        max_length = entry.len();
+                        max_index = entry_idx;
+                    }
+                }
+
+                if max_index != i {
+                    segs_to_order.swap(i, max_index);
+                    offsets.swap(i - 1, max_index - 1);
+                }
+            }
+        }
+
+        self.num_copy_entries += extra_to_copy;
+        Ok(())
     }
 }
 
@@ -364,6 +631,18 @@ where
 {
     RawRef(&'a [u8]),
     RefCounted(D::DatapathMetadata),
+}
+
+impl<'a, D> Clone for RcSge<'a, D>
+where
+    D: datapath::Datapath,
+{
+    fn clone(&self) -> RcSge<'a, D> {
+        match self {
+            RcSge::RawRef(buf) => RcSge::RawRef(buf),
+            RcSge::RefCounted(metadata) => RcSge::RefCounted(metadata.clone()),
+        }
+    }
 }
 
 impl<'a, D> Default for RcSge<'a, D>
@@ -406,6 +685,17 @@ where
             RcSge::RefCounted(ref mut m) => Some(m),
         }
     }
+
+    pub fn clone_with_bounds(&self, off: usize, size: usize) -> Result<RcSge<'a, D>> {
+        match self {
+            RcSge::RawRef(buf) => Ok(RcSge::RawRef(&buf[off..(off + size)])),
+            RcSge::RefCounted(metadata) => {
+                let mut new_metadata = metadata.clone();
+                new_metadata.set_data_len_and_offset(metadata.offset() + off, size)?;
+                Ok(RcSge::RefCounted(new_metadata))
+            }
+        }
+    }
 }
 
 impl<'a, D> AsRef<[u8]> for RcSge<'a, D>
@@ -426,36 +716,62 @@ where
     D: datapath::Datapath,
 {
     entries: Vec<RcSge<'a, D>>,
+    length: usize,
 }
 
 impl<'a, D> RcSga<'a, D>
 where
     D: datapath::Datapath,
 {
+    pub fn new() -> Self {
+        RcSga {
+            entries: Vec::default(),
+            length: 0,
+        }
+    }
     pub fn with_capacity(num_entries: usize) -> Self {
         RcSga {
             entries: Vec::with_capacity(num_entries),
+            length: 0,
         }
+    }
+
+    pub fn allocate(num_entries: usize) -> Self {
+        let mut sga = RcSga::with_capacity(num_entries);
+        for _i in 0..num_entries {
+            sga.add_entry(RcSge::default());
+        }
+        sga.set_length(0);
+        sga
     }
 
     pub fn with_entries(entries: Vec<RcSge<'a, D>>) -> Self {
-        RcSga { entries: entries }
+        RcSga {
+            length: entries.len(),
+            entries: entries,
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.length
+    }
+
+    pub fn set_length(&mut self, len: usize) {
+        self.length = len;
     }
 
     pub fn data_len(&self) -> usize {
-        let mut ret = 0;
-        for entry in self.entries.iter() {
-            ret += entry.len();
-        }
-        ret
+        self.entries.iter().take(self.length).map(|e| e.len()).sum()
     }
 
     pub fn add_entry(&mut self, entry: RcSge<'a, D>) {
-        self.entries.push(entry);
+        if self.length < self.entries.len() {
+            self.entries[self.length] = entry;
+            self.length += 1;
+        } else {
+            self.entries.push(entry);
+            self.length += 1;
+        }
     }
 
     pub fn replace(&mut self, idx: usize, entry: RcSge<'a, D>) {
@@ -472,6 +788,152 @@ where
 
     pub fn iter(&self) -> Iter<RcSge<'a, D>> {
         self.entries.iter()
+    }
+
+    pub fn mut_entries_slice(&mut self, start: usize, length: usize) -> &mut [RcSge<'a, D>] {
+        &mut self.entries.as_mut_slice()[start..(start + length)]
+    }
+
+    pub fn entries_slice(&self, start: usize, length: usize) -> &[RcSge<'a, D>] {
+        &self.entries.as_slice()[start..(start + length)]
+    }
+
+    pub fn is_zero_copy_seg(&self, i: usize, d: &D) -> bool {
+        match &self.entries[i] {
+            RcSge::RawRef(_buf) => false,
+            RcSge::RefCounted(metadata) => metadata.data_len() >= d.get_copying_threshold(),
+        }
+    }
+
+    /// Reorders from first entry forward, by size and registration
+    pub fn reorder_by_size_and_registration(
+        &mut self,
+        datapath: &D,
+        offsets: &mut Vec<usize>,
+    ) -> Result<()> {
+        if self.len() != offsets.len() + 1 {
+            bail!("passed in offsets array should be one less than sga length");
+        }
+
+        let mut forward_index = 1;
+        let mut end_index = self.len() - 1;
+        let mut switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
+        let mut switch_backward = self.is_zero_copy_seg(end_index, datapath);
+
+        // everytime forward index is advanced, we record a copy segment
+        while !(forward_index >= end_index) {
+            match (switch_forward, switch_backward) {
+                (true, true) => {
+                    self.entries.swap(forward_index, end_index);
+                    offsets.swap(forward_index - 1, end_index - 1);
+                    forward_index += 1;
+                    end_index -= 1;
+                    switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
+                    switch_backward = self.is_zero_copy_seg(end_index, datapath);
+                }
+                (true, false) => {
+                    end_index -= 1;
+                    switch_backward = self.is_zero_copy_seg(end_index, datapath);
+                }
+                (false, true) => {
+                    forward_index += 1;
+                    switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
+                }
+                (false, false) => {
+                    forward_index += 1;
+                    end_index -= 1;
+                    switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
+                    switch_backward = self.is_zero_copy_seg(end_index, datapath);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn cur_zero_copy_segs(&self, datapath: &D) -> usize {
+        let threshold = datapath.get_copying_threshold();
+        self.entries
+            .iter()
+            .map(|seg| match seg {
+                RcSge::RawRef(_) => 0,
+                RcSge::RefCounted(m) => (m.data_len() >= threshold) as usize,
+            })
+            .sum()
+    }
+
+    fn first_zero_copy_seg(&self, datapath: &D) -> usize {
+        let threshold = datapath.get_copying_threshold();
+        self.entries
+            .iter()
+            .take_while(|seg| match seg {
+                RcSge::RawRef(_) => true,
+                RcSge::RefCounted(m) => m.data_len() < threshold,
+            })
+            .count()
+    }
+
+    pub fn reorder_by_max_segs(&mut self, datapath: &D, offsets: &mut Vec<usize>) -> Result<()> {
+        if self.len() != offsets.len() + 1 {
+            bail!("passed in offsets array should be one less than sga length");
+        }
+
+        let current_zero_copy_segs = self.cur_zero_copy_segs(datapath);
+        let zero_copy_limit = datapath.get_max_segments() - 1;
+
+        // already under maximum segments
+        if current_zero_copy_segs <= zero_copy_limit {
+            return Ok(());
+        }
+
+        let sga_len = self.len();
+        let num_copy_entries = self.first_zero_copy_seg(datapath);
+        let segs_to_order = self.mut_entries_slice(num_copy_entries, current_zero_copy_segs);
+
+        let extra_to_copy = current_zero_copy_segs - zero_copy_limit;
+
+        if extra_to_copy < zero_copy_limit {
+            // move smallest entries to the front
+            for i in num_copy_entries..(num_copy_entries + extra_to_copy) {
+                let mut min_index = i;
+                let mut min_length = segs_to_order[i].len();
+
+                for (entry_idx, entry) in segs_to_order[i + 1..].iter().enumerate() {
+                    if entry.len() < min_length {
+                        min_length = entry.len();
+                        min_index = entry_idx;
+                    }
+                }
+
+                if min_index != i {
+                    segs_to_order.swap(i, min_index);
+                    offsets.swap(i - 1, min_index - 1);
+                }
+            }
+        } else {
+            // move max (zero_copy limit) segs to back
+            for i in ((sga_len - zero_copy_limit)..sga_len).rev() {
+                let mut max_index = i;
+                let mut max_length = segs_to_order[i].len();
+
+                for (entry_idx, entry) in segs_to_order[(sga_len - zero_copy_limit)..(i - 1)]
+                    .iter()
+                    .rev()
+                    .enumerate()
+                {
+                    if entry.len() > max_length {
+                        max_length = entry.len();
+                        max_index = entry_idx;
+                    }
+                }
+
+                if max_index != i {
+                    segs_to_order.swap(i, max_index);
+                    offsets.swap(i - 1, max_index - 1);
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

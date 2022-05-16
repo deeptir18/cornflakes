@@ -1,7 +1,6 @@
 mod header_utils;
 pub mod rust_codegen;
 pub mod utils;
-
 use color_eyre::eyre::{bail, Result, WrapErr};
 use header_utils::ProtoReprInfo;
 use protobuf_parser::{FileDescriptor, Syntax};
@@ -15,6 +14,8 @@ pub enum HeaderType {
     ConstantDeserialization,
     LinearDeserialization,
     LinearDeserializationRefCnt,
+    Sga,
+    RcSga,
 }
 
 impl std::str::FromStr for HeaderType {
@@ -24,6 +25,8 @@ impl std::str::FromStr for HeaderType {
             "fixed" => HeaderType::ConstantDeserialization,
             "dynamic" => HeaderType::LinearDeserialization,
             "dynamic-rc" => HeaderType::LinearDeserializationRefCnt,
+            "sga" => HeaderType::Sga,
+            "rcsga" => HeaderType::RcSga,
             x => bail!("{} header type unknown.", x),
         })
     }
@@ -101,8 +104,13 @@ fn generate_proto_representation(input_file: &str) -> Result<ProtoReprInfo> {
 /// Write out generated Rust serialization code from schema to given output file.
 pub fn compile(input_file: &str, output_folder: &str, options: CompileOptions) -> Result<()> {
     let mut repr = generate_proto_representation(input_file)?;
-    if options.header_type == HeaderType::LinearDeserializationRefCnt {
+    if options.header_type == HeaderType::LinearDeserializationRefCnt
+        || options.header_type == HeaderType::RcSga
+    {
         repr.set_ref_counted();
+    }
+    if options.header_type == HeaderType::Sga || options.header_type == HeaderType::RcSga {
+        repr.set_lifetime_name("a");
     }
     match options.language {
         Language::C => {

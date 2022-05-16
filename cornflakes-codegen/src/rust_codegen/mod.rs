@@ -6,6 +6,8 @@ use which::which;
 mod constant_codegen;
 mod linear_codegen;
 mod linear_codegen_rc;
+mod rcsga;
+mod sga;
 
 pub fn compile(repr: &ProtoReprInfo, output_folder: &str, options: CompileOptions) -> Result<()> {
     let mut compiler = SerializationCompiler::new();
@@ -22,6 +24,13 @@ pub fn compile(repr: &ProtoReprInfo, output_folder: &str, options: CompileOption
         HeaderType::LinearDeserializationRefCnt => {
             linear_codegen_rc::compile(repr, &mut compiler)
                 .wrap_err("Linear codegen refcnt failed to generate code.")?;
+        }
+        HeaderType::Sga => {
+            sga::compile(repr, &mut compiler).wrap_err("Sga codegen failed to generate code.")?;
+        }
+        HeaderType::RcSga => {
+            rcsga::compile(&repr, &mut compiler)
+                .wrap_err("RcSga codegen failed to generate code.")?;
         }
     }
     compiler.flush(&repr.get_output_file(output_folder).as_path())?;

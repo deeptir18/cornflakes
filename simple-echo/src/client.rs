@@ -117,6 +117,7 @@ where
     }
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
+        tracing::info!(size = self.bytes_to_transmit.len(), "Bytes to transmit");
         connection.add_memory_pool(self.bytes_to_transmit.len() * 2, 8192)?;
         Ok(())
     }

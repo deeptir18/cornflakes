@@ -35,6 +35,10 @@ impl ProtoReprInfo {
         }
     }
 
+    pub fn set_lifetime_name(&mut self, name: &str) {
+        self.lifetime_name = name.to_string();
+    }
+
     pub fn set_ref_counted(&mut self) {
         self.ref_counted_mode = true;
     }
@@ -224,6 +228,10 @@ impl ProtoReprInfo {
 pub struct MessageInfo(pub Message);
 
 impl MessageInfo {
+    pub fn num_fields(&self) -> usize {
+        self.0.fields.len()
+    }
+
     pub fn get_bitmap_size(&self) -> usize {
         let factor = ((self.0.fields.len() as f64) / (ALIGN_SIZE as f64)).ceil() as usize;
         factor * ALIGN_SIZE
@@ -252,6 +260,24 @@ impl MessageInfo {
         }
 
         Ok(ret)
+    }
+
+    pub fn get_where_clause_with_more_traits(
+        &self,
+        is_ref_counted: bool,
+        fd: &ProtoReprInfo,
+    ) -> Result<WhereClause> {
+        if self.requires_datapath_type_param(is_ref_counted, &fd.get_message_map())? {
+            return Ok(WhereClause::new(vec![WherePair::new(
+                &fd.get_datapath_trait_key(),
+                &format!(
+                    "{} + std::fmt::Debug + Eq + PartialEq + Default + Clone",
+                    &fd.get_datapath_trait()
+                ),
+            )]));
+        } else {
+            return Ok(WhereClause::default());
+        }
     }
 
     pub fn get_where_clause(
@@ -372,10 +398,6 @@ impl MessageInfo {
         return Ok(true);
     }
 
-    pub fn num_fields(&self) -> usize {
-        self.0.fields.len()
-    }
-
     pub fn refers_to_bytes(&self, msg_map: &HashMap<String, Message>) -> Result<bool> {
         for field in self.0.fields.iter() {
             let field_info = FieldInfo(field.clone());
@@ -424,6 +446,16 @@ impl MessageInfo {
         self.num_fields() - ((field_idx + 1) as usize)
     }
 
+    pub fn num_string_or_bytes_fields_left(&self, field_idx: i32) -> Result<usize> {
+        let mut sum = 0;
+        for idx in (field_idx + 1)..self.num_fields() as i32 {
+            let field_info = self.get_field_from_id(idx)?;
+            if field_info.is_bytes_or_string() {
+                sum += 1;
+            }
+        }
+        Ok(sum)
+    }
     pub fn string_or_bytes_fields_left(&self, field_idx: i32) -> Result<bool> {
         for idx in (field_idx + 1)..self.num_fields() as i32 {
             let field_info = self.get_field_from_id(idx)?;
@@ -560,7 +592,12 @@ impl FieldInfo {
         &self,
         with_self: bool,
         ref_counted_mode: bool,
+        with_pointer_size: bool,
     ) -> Result<String> {
+        let with_pointer_size_str = match with_pointer_size {
+            true => "true",
+            false => "",
+        };
         if !self.is_list() {
             match &self.0.typ {
                 FieldType::Int32
@@ -571,18 +608,26 @@ impl FieldInfo {
                 FieldType::Bytes
                 | FieldType::String
                 | FieldType::RefCountedBytes
-                | FieldType::RefCountedString => {
-                    Ok(format!("self.{}.total_header_size()", self.get_name()))
-                }
-                FieldType::MessageOrEnum(_) => {
-                    Ok(format!("self.{}.total_header_size()", self.get_name()))
-                }
+                | FieldType::RefCountedString => Ok(format!(
+                    "self.{}.total_header_size({})",
+                    self.get_name(),
+                    with_pointer_size_str,
+                )),
+                FieldType::MessageOrEnum(_) => Ok(format!(
+                    "self.{}.total_header_size({})",
+                    self.get_name(),
+                    with_pointer_size_str,
+                )),
                 _ => {
                     bail!("FieldType {:?} not supported by compiler", self.0.typ);
                 }
             }
         } else {
-            Ok(format!("self.{}.total_header_size()", self.get_name()))
+            Ok(format!(
+                "self.{}.total_header_size({})",
+                self.get_name(),
+                with_pointer_size_str,
+            ))
         }
     }
 

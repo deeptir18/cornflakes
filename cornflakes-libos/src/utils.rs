@@ -1,5 +1,5 @@
 use super::MsgID;
-use byteorder::{ByteOrder, NetworkEndian};
+use byteorder::{ByteOrder, LittleEndian, NetworkEndian};
 use color_eyre::eyre::{bail, Result};
 use eui48::MacAddress;
 use std::convert::{TryFrom, TryInto};
@@ -147,7 +147,7 @@ pub fn write_eth_hdr(header_info: &HeaderInfo, buf: &mut [u8]) -> Result<()> {
 #[inline]
 pub fn write_pkt_id(id: MsgID, buf: &mut [u8]) -> Result<()> {
     let buf: &mut [u8; 4] = buf.try_into()?;
-    NetworkEndian::write_u32(&mut buf[0..4], id);
+    LittleEndian::write_u32(&mut buf[0..4], id);
     Ok(())
 }
 
@@ -221,6 +221,6 @@ pub fn check_udp_hdr(hdr_buf: &[u8], my_udp_port: u16) -> Result<(u16, u16, usiz
 }
 
 #[inline]
-pub fn parse_msg_id(hdr_buf: &mut [u8]) -> MsgID {
-    NetworkEndian::read_u32(&hdr_buf[0..4])
+pub fn parse_msg_id(hdr_buf: &[u8]) -> MsgID {
+    LittleEndian::read_u32(&hdr_buf[0..4])
 }

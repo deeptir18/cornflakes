@@ -5,14 +5,13 @@ use super::{
 };
 use cornflakes_libos::{
     allocator::{MemoryPoolAllocator, MempoolID},
-    datapath::{Datapath, InlineMode, MetadataOps, ReceivedPkt},
+    datapath::{Datapath, ExposeMempoolID, InlineMode, MetadataOps, ReceivedPkt},
     mem::{PGSIZE_2MB, PGSIZE_4KB},
     serialize::Serializable,
     utils::AddressInfo,
-    ConnID, MsgID, RcSga, RcSge, Sga, USING_REF_COUNTING,
+    ConnID, MsgID, OrderedSga, RcSga, RcSge, Sga, USING_REF_COUNTING,
 };
 
-use byteorder::{ByteOrder, NetworkEndian};
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
@@ -50,6 +49,8 @@ pub struct Mlx5Buffer {
     mempool: *mut registered_mempool,
     /// Data len,
     data_len: usize,
+    /// Mempool ID: which mempool was this allocated from?
+    mempool_id: MempoolID,
 }
 
 impl Mlx5Buffer {
@@ -57,11 +58,13 @@ impl Mlx5Buffer {
         data: *mut ::std::os::raw::c_void,
         mempool: *mut registered_mempool,
         data_len: usize,
+        mempool_id: MempoolID,
     ) -> Self {
         Mlx5Buffer {
             data: data,
             mempool: mempool,
             data_len: data_len,
+            mempool_id: mempool_id,
         }
     }
 
@@ -95,6 +98,16 @@ impl Mlx5Buffer {
             self.data_len = end;
         }
         Ok(buf)
+    }
+}
+
+impl ExposeMempoolID for Mlx5Buffer {
+    fn set_mempool_id(&mut self, id: MempoolID) {
+        self.mempool_id = id;
+    }
+
+    fn get_mempool_id(&self) -> MempoolID {
+        self.mempool_id
     }
 }
 
@@ -413,6 +426,7 @@ impl Mlx5DatapathSpecificParams {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct Mlx5Connection {
     /// Per thread context.
     thread_context: Mlx5PerThreadContext,
@@ -432,6 +446,8 @@ pub struct Mlx5Connection {
     allocator: MemoryPoolAllocator<DataMempool>,
     /// Threshold for copying a segment or leaving as a separate scatter-gather entry.
     copying_threshold: usize,
+    /// Threshold for max number of segments when sending.
+    max_segments: usize,
     /// Inline mode,
     inline_mode: InlineMode,
     /// Maximum data that can be inlined
@@ -517,10 +533,15 @@ impl Mlx5Connection {
                 cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE,
                 cornflakes_libos::utils::HEADER_ID_SIZE
             );
-            NetworkEndian::read_u32(&slice[0..4])
+            cornflakes_libos::utils::parse_msg_id(&slice)
         };
 
-        tracing::debug!("Received packet with length of {}", data_len);
+        tracing::debug!(
+            msg_id = msg_id,
+            conn_id = conn_id,
+            data_len = data_len,
+            "Received "
+        );
         let datapath_metadata = MbufMetadata::new(
             recv_mbuf,
             cornflakes_libos::utils::TOTAL_HEADER_SIZE,
@@ -630,6 +651,58 @@ impl Mlx5Connection {
         Ok(())
     }
 
+    /// Depending on configured inline mode and first entry length,
+    /// inlines the packet header and first entry,
+    /// Returns whether header was inlined and whether first entry was inlined.   
+    fn inline_hdr_if_necessary(
+        &mut self,
+        conn_id: ConnID,
+        msg_id: MsgID,
+        inline_len: usize,
+        data_len: usize,
+        first_entry: &[u8],
+    ) -> Result<(bool, usize)> {
+        match self.inline_mode {
+            InlineMode::Nothing => Ok((false, 0)),
+            InlineMode::PacketHeader => {
+                self.inline_hdr(conn_id, msg_id, inline_len, data_len)?;
+                Ok((true, 0))
+            }
+            InlineMode::FirstEntry => {
+                self.inline_hdr(conn_id, msg_id, inline_len, data_len)?;
+                if (cornflakes_libos::utils::TOTAL_HEADER_SIZE + first_entry.len())
+                    <= self.max_inline_size
+                {
+                    unsafe {
+                        custom_mlx5_copy_inline_data(
+                            self.thread_context.get_context_ptr(),
+                            cornflakes_libos::utils::TOTAL_HEADER_SIZE as _,
+                            first_entry.as_ptr() as _,
+                            first_entry.len() as _,
+                            inline_len as _,
+                        );
+                        return Ok((true, 1));
+                    }
+                }
+                return Ok((true, 0));
+            }
+        }
+    }
+
+    fn poll_for_completions(&self) -> Result<()> {
+        // check for completions: ONLY WHEN IN FLIGHT > THRESH
+        if unsafe {
+            custom_mlx5_process_completions(
+                self.thread_context.get_context_ptr(),
+                COMPLETION_BUDGET as _,
+            )
+        } != 0
+        {
+            bail!("Unsafe processing completions");
+        }
+        return Ok(());
+    }
+
     /// Rings doorbells for current transmissions
     /// Then checks for completions.
     fn post_curr_transmissions(
@@ -649,18 +722,202 @@ impl Mlx5Connection {
             None => {}
         }
 
-        // check for completions: ONLY WHEN IN FLIGHT > THRESH
-        if unsafe {
-            custom_mlx5_process_completions(
-                self.thread_context.get_context_ptr(),
-                COMPLETION_BUDGET as _,
+        return Ok(ret);
+    }
+
+    fn post_mbuf_metadata(
+        &self,
+        metadata_mbuf: &MbufMetadata,
+        curr_dpseg: *mut mlx5_wqe_data_seg,
+        curr_completion: *mut custom_mlx5_transmission_info,
+    ) -> (*mut mlx5_wqe_data_seg, *mut custom_mlx5_transmission_info) {
+        unsafe {
+            (
+                custom_mlx5_add_dpseg(
+                    self.thread_context.get_context_ptr(),
+                    curr_dpseg,
+                    metadata_mbuf.mbuf(),
+                    metadata_mbuf.offset() as _,
+                    metadata_mbuf.data_len() as _,
+                ),
+                custom_mlx5_add_completion_info(
+                    self.thread_context.get_context_ptr(),
+                    curr_completion,
+                    metadata_mbuf.mbuf(),
+                ),
             )
-        } != 0
-        {
-            bail!("Unsafe processing completions");
+        }
+    }
+
+    /// Post ordered sgas. This function is only called when there is space for these sgas in the
+    /// ring buffer.
+    fn post_ordered_sgas(&mut self, sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
+        // fill in the hdr segment
+        let mut first_ctrl_seg = ptr::null_mut();
+        for (sgas_idx, (msg_id, conn_id, ordered_sga)) in sgas.iter().enumerate() {
+            let (inline_len, num_segs) = self.ordered_sga_shape(ordered_sga);
+            let num_octowords =
+                unsafe { custom_mlx5_num_octowords(inline_len as _, num_segs as _) };
+            let num_wqes_required = unsafe { custom_mlx5_num_wqes_required(num_octowords) };
+            tracing::debug!(
+                inline_len,
+                num_segs,
+                num_octowords,
+                num_wqes_required,
+                "Header info"
+            );
+            let ctrl_seg = unsafe {
+                custom_mlx5_fill_in_hdr_segment(
+                    self.thread_context.get_context_ptr(),
+                    num_octowords as _,
+                    num_wqes_required as _,
+                    inline_len as _,
+                    num_segs as _,
+                    MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
+                )
+            };
+            if ctrl_seg.is_null() {
+                bail!("Error posting header segment for sga");
+            }
+
+            if sgas_idx == 0 {
+                first_ctrl_seg = ctrl_seg;
+            }
+
+            let data_len = ordered_sga.sga().data_len();
+            let (header_written, entry_idx) = self.inline_hdr_if_necessary(
+                *conn_id,
+                *msg_id,
+                inline_len,
+                data_len,
+                ordered_sga.sga().get(0).addr(),
+            )?;
+
+            let first_zero_copy_seg = ordered_sga.num_copy_entries();
+            let allocation_size = ordered_sga.copy_length()
+                - ((entry_idx == 1) as usize * ordered_sga.sga().get(0).len())
+                + (!header_written as usize * cornflakes_libos::utils::TOTAL_HEADER_SIZE);
+            let mut dpseg = unsafe {
+                custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), inline_len as _)
+            };
+            let mut completion =
+                unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
+            if allocation_size > 0 {
+                let mut data_buffer = match self.allocator.allocate_buffer(allocation_size)? {
+                    Some(buf) => buf,
+                    None => {
+                        bail!("No tx mempools to allocate outgoing packet");
+                    }
+                };
+                let mut offset = 0;
+                if !header_written {
+                    self.copy_hdr(&mut data_buffer, *conn_id, *msg_id, data_len)?;
+                    offset += cornflakes_libos::utils::TOTAL_HEADER_SIZE;
+                }
+                for (i, seg) in ordered_sga
+                    .sga()
+                    .iter()
+                    .take(first_zero_copy_seg)
+                    .enumerate()
+                {
+                    if i == 0 && entry_idx == 1 {
+                        continue;
+                    }
+                    tracing::debug!("Writing into slice [{}, {}]", offset, offset + seg.len());
+                    let dst = data_buffer.mutable_slice(offset, offset + seg.len())?;
+                    unsafe {
+                        mlx5_rte_memcpy(dst.as_mut_ptr() as _, seg.addr().as_ptr() as _, seg.len());
+                    }
+                    offset += seg.len();
+                }
+
+                let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
+                    Some(m) => m,
+                    None => {
+                        bail!(
+                            "Could not allocate corresponding metadata for allocated data buffer"
+                        );
+                    }
+                };
+
+                metadata_mbuf.increment_refcnt();
+
+                let (curr_dpseg, curr_completion) =
+                    self.post_mbuf_metadata(&metadata_mbuf, dpseg, completion);
+                dpseg = curr_dpseg;
+                completion = curr_completion;
+            }
+
+            // rest are zero-copy segments
+            for seg in ordered_sga.sga().iter().skip(first_zero_copy_seg) {
+                let curr_seg = seg.addr();
+                let mut mbuf_metadata = match self.allocator.recover_buffer(curr_seg)? {
+                    Some(x) => x,
+                    None => {
+                        bail!("Failed to recover mbuf metadata for seg{:?}", curr_seg);
+                    }
+                };
+                mbuf_metadata.increment_refcnt();
+                let (curr_dpseg, curr_completion) =
+                    self.post_mbuf_metadata(&mbuf_metadata, dpseg, completion);
+
+                dpseg = curr_dpseg;
+                completion = curr_completion;
+            }
+
+            unsafe {
+                custom_mlx5_finish_single_transmission(
+                    self.thread_context.get_context_ptr(),
+                    num_wqes_required,
+                );
+            }
         }
 
-        return Ok(ret);
+        if !first_ctrl_seg.is_null() {
+            tracing::debug!("Posting transmissions with ctrl seg {:?}", first_ctrl_seg);
+            let _ = self.post_curr_transmissions(Some(first_ctrl_seg));
+        }
+        Ok(())
+    }
+
+    /// Recursively tries to push all sgas until all are sent.
+    fn push_ordered_sgas_recursive(&mut self, sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
+        let curr_available_wqes: usize =
+            unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                as usize;
+        let mut stopping_index = sgas.len();
+        let mut total_wqes_so_far = 0;
+        for (i, (_, _, sga)) in sgas.iter().enumerate() {
+            let num_required = self.wqes_required_ordered_sga(sga);
+            if (total_wqes_so_far + num_required) > curr_available_wqes {
+                stopping_index = std::cmp::max(i - 1, 0);
+                break;
+            }
+            total_wqes_so_far += num_required
+        }
+        tracing::debug!(
+            curr_available_wqes,
+            total_wqes_so_far,
+            stopping_index,
+            sgas_len = sgas.len(),
+            "After looping on ordered sga slice",
+        );
+        if stopping_index == 0 {
+            // poll for completions, call this function again
+            self.poll_for_completions()?;
+            return self.push_ordered_sgas_recursive(sgas);
+        } else if stopping_index < sgas.len() {
+            // post sgas until i - 1, call this function again
+            self.post_ordered_sgas(&sgas[0..stopping_index])?;
+            self.poll_for_completions()?;
+            return self.push_ordered_sgas_recursive(&sgas[stopping_index..sgas.len()]);
+        } else {
+            // post all sgas, poll for completions
+            tracing::debug!("Posting all sgas");
+            self.post_ordered_sgas(sgas)?;
+            self.poll_for_completions()?;
+            return Ok(());
+        }
     }
 
     /// Assuming that there are enough descriptors to transmit this sga, post the rc sga.
@@ -689,36 +946,14 @@ impl Mlx5Connection {
             bail!("Error posting header segment for sga.");
         }
 
-        let mut entry_idx = 0;
-        let mut header_written = false;
         let data_len = rc_sga.data_len();
-        match self.inline_mode {
-            InlineMode::Nothing => {}
-            InlineMode::PacketHeader => {
-                self.inline_hdr(conn_id, msg_id, inline_len, data_len)?;
-                header_written = true;
-            }
-            InlineMode::FirstEntry => {
-                self.inline_hdr(conn_id, msg_id, inline_len, data_len)?;
-                header_written = true;
-                if (cornflakes_libos::utils::TOTAL_HEADER_SIZE + rc_sga.get(0).len())
-                    <= self.max_inline_size
-                {
-                    // inline whatever is in the first scatter-gather entry
-                    let first_entry = rc_sga.get(0).addr();
-                    unsafe {
-                        custom_mlx5_copy_inline_data(
-                            self.thread_context.get_context_ptr(),
-                            cornflakes_libos::utils::TOTAL_HEADER_SIZE as _,
-                            first_entry.as_ptr() as _,
-                            first_entry.len() as _,
-                            inline_len as _,
-                        );
-                    }
-                    entry_idx += 1;
-                }
-            }
-        }
+        let (mut header_written, mut entry_idx) = self.inline_hdr_if_necessary(
+            conn_id,
+            msg_id,
+            inline_len,
+            data_len,
+            rc_sga.get(0).addr(),
+        )?;
 
         // get first data segment and corresponding completion segment on ring buffers
         let mut curr_data_seg: *mut mlx5_wqe_data_seg = unsafe {
@@ -753,46 +988,20 @@ impl Mlx5Connection {
                         }
                     };
                     metadata_mbuf.increment_refcnt();
-
-                    // post this data buffer to the ring buffer
-                    unsafe {
-                        curr_data_seg = custom_mlx5_add_dpseg(
-                            self.thread_context.get_context_ptr(),
-                            curr_data_seg,
-                            metadata_mbuf.mbuf(),
-                            metadata_mbuf.offset() as _,
-                            metadata_mbuf.data_len() as _,
-                        );
-
-                        curr_completion = custom_mlx5_add_completion_info(
-                            self.thread_context.get_context_ptr(),
-                            curr_completion,
-                            metadata_mbuf.mbuf(),
-                        );
-                    }
+                    let (curr_dpseg, completion) =
+                        self.post_mbuf_metadata(&metadata_mbuf, curr_data_seg, curr_completion);
+                    curr_data_seg = curr_dpseg;
+                    curr_completion = completion;
 
                     header_written = true;
                 }
+
                 let mbuf_metadata = rc_sga.get_mut(entry_idx).inner_datapath_pkt_mut().unwrap();
                 mbuf_metadata.increment_refcnt();
-
-                curr_data_seg = unsafe {
-                    custom_mlx5_add_dpseg(
-                        self.thread_context.get_context_ptr(),
-                        curr_data_seg,
-                        mbuf_metadata.mbuf(),
-                        mbuf_metadata.offset() as _,
-                        mbuf_metadata.data_len() as _,
-                    )
-                };
-
-                curr_completion = unsafe {
-                    custom_mlx5_add_completion_info(
-                        self.thread_context.get_context_ptr(),
-                        curr_completion,
-                        mbuf_metadata.mbuf(),
-                    )
-                };
+                let (curr_dpseg, completion) =
+                    self.post_mbuf_metadata(&mbuf_metadata, curr_data_seg, curr_completion);
+                curr_data_seg = curr_dpseg;
+                curr_completion = completion;
                 entry_idx += 1;
             } else {
                 // iterate forward, figure out size of further zero-copy segments
@@ -801,7 +1010,7 @@ impl Mlx5Connection {
                     true => cornflakes_libos::utils::TOTAL_HEADER_SIZE,
                     false => 0,
                 };
-                while !self.zero_copy_rc_seg(rc_sga.get(curr_idx)) && curr_idx < rc_sga.len() {
+                while curr_idx < rc_sga.len() && !self.zero_copy_rc_seg(rc_sga.get(curr_idx)) {
                     mbuf_length += rc_sga.get(curr_idx).len();
                     curr_idx += 1;
                 }
@@ -813,7 +1022,7 @@ impl Mlx5Connection {
                         bail!("No tx mempools to allocate outgoing packet");
                     }
                 };
-                let mut write_offset = match !header_written && curr_idx == 0 {
+                let mut write_offset = match !header_written && entry_idx == 0 {
                     true => {
                         // copy in the header into a buffer
                         self.copy_hdr(&mut data_buffer, conn_id, msg_id, data_len)?
@@ -849,24 +1058,10 @@ impl Mlx5Connection {
                 };
                 // increment refcount as MbufMetadata may be dropped before data is sent
                 metadata_mbuf.increment_refcnt();
-
-                // post this data buffer to the ring buffer
-                unsafe {
-                    curr_data_seg = custom_mlx5_add_dpseg(
-                        self.thread_context.get_context_ptr(),
-                        curr_data_seg,
-                        metadata_mbuf.mbuf(),
-                        metadata_mbuf.offset() as _,
-                        metadata_mbuf.data_len() as _,
-                    );
-
-                    curr_completion = custom_mlx5_add_completion_info(
-                        self.thread_context.get_context_ptr(),
-                        curr_completion,
-                        metadata_mbuf.mbuf(),
-                    );
-                }
-
+                let (curr_dpseg, completion) =
+                    self.post_mbuf_metadata(&metadata_mbuf, curr_data_seg, curr_completion);
+                curr_data_seg = curr_dpseg;
+                curr_completion = completion;
                 entry_idx = curr_idx;
             }
         }
@@ -880,6 +1075,45 @@ impl Mlx5Connection {
         }
 
         return Ok(ctrl_seg);
+    }
+
+    /// Returns (inline length, num_segs) for ordered sga.
+    fn ordered_sga_shape(&self, ordered_sga: &OrderedSga) -> (usize, usize) {
+        match self.inline_mode {
+            InlineMode::Nothing => (0, ordered_sga.num_zero_copy_entries() + 1),
+            InlineMode::PacketHeader => (
+                cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE,
+                ordered_sga.num_zero_copy_entries()
+                    + ((ordered_sga.num_zero_copy_entries() < ordered_sga.len()) as usize),
+            ),
+            InlineMode::FirstEntry => {
+                match (ordered_sga.sga().get(0).len()
+                    + cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE)
+                    <= self.max_inline_size
+                {
+                    true => (
+                        cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE
+                            + ordered_sga.sga().get(0).len(),
+                        ordered_sga.num_zero_copy_entries()
+                            + ((ordered_sga.num_zero_copy_entries() < (ordered_sga.len() - 1))
+                                as usize),
+                    ),
+                    false => (
+                        cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE,
+                        ordered_sga.num_zero_copy_entries()
+                            + (ordered_sga.num_zero_copy_entries() < ordered_sga.len()) as usize,
+                    ),
+                }
+            }
+        }
+    }
+
+    fn wqes_required_ordered_sga(&self, ordered_sga: &OrderedSga) -> usize {
+        let (inline_len, num_segs) = self.ordered_sga_shape(ordered_sga);
+        unsafe {
+            custom_mlx5_num_wqes_required(custom_mlx5_num_octowords(inline_len as _, num_segs as _))
+                as _
+        }
     }
 
     /// Assuming that there are enough descriptors to transmit this sga, post the sga.
@@ -908,36 +1142,9 @@ impl Mlx5Connection {
             bail!("Error posting header segment for sga.");
         }
 
-        let mut entry_idx = 0;
-        let mut header_written = false;
         let data_len = sga.data_len();
-        match self.inline_mode {
-            InlineMode::Nothing => {}
-            InlineMode::PacketHeader => {
-                self.inline_hdr(conn_id, msg_id, inline_len, data_len)?;
-                header_written = true;
-            }
-            InlineMode::FirstEntry => {
-                self.inline_hdr(conn_id, msg_id, inline_len, data_len)?;
-                header_written = true;
-                if (cornflakes_libos::utils::TOTAL_HEADER_SIZE + sga.get(0).len())
-                    <= self.max_inline_size
-                {
-                    // inline whatever is in the first scatter-gather entry
-                    let first_entry = sga.get(0).addr();
-                    unsafe {
-                        custom_mlx5_copy_inline_data(
-                            self.thread_context.get_context_ptr(),
-                            cornflakes_libos::utils::TOTAL_HEADER_SIZE as _,
-                            first_entry.as_ptr() as _,
-                            first_entry.len() as _,
-                            inline_len as _,
-                        );
-                    }
-                    entry_idx += 1;
-                }
-            }
-        }
+        let (mut header_written, mut entry_idx) =
+            self.inline_hdr_if_necessary(conn_id, msg_id, inline_len, data_len, sga.get(0).addr())?;
 
         // get first data segment and corresponding completion segment on ring buffers
         let mut curr_data_seg: *mut mlx5_wqe_data_seg = unsafe {
@@ -973,56 +1180,31 @@ impl Mlx5Connection {
                         }
                     };
                     metadata_mbuf.increment_refcnt();
-
-                    // post this data buffer to the ring buffer
-                    unsafe {
-                        curr_data_seg = custom_mlx5_add_dpseg(
-                            self.thread_context.get_context_ptr(),
-                            curr_data_seg,
-                            metadata_mbuf.mbuf(),
-                            metadata_mbuf.offset() as _,
-                            metadata_mbuf.data_len() as _,
-                        );
-
-                        curr_completion = custom_mlx5_add_completion_info(
-                            self.thread_context.get_context_ptr(),
-                            curr_completion,
-                            metadata_mbuf.mbuf(),
-                        );
-                    }
-
+                    let (dpseg, completion) =
+                        self.post_mbuf_metadata(&metadata_mbuf, curr_data_seg, curr_completion);
+                    curr_data_seg = dpseg;
+                    curr_completion = completion;
                     header_written = true;
                 }
 
                 let curr_seg = sga.get(entry_idx).addr();
                 let mut mbuf_metadata = self.allocator.recover_buffer(curr_seg)?.unwrap();
                 mbuf_metadata.increment_refcnt();
-                curr_data_seg = unsafe {
-                    custom_mlx5_add_dpseg(
-                        self.thread_context.get_context_ptr(),
-                        curr_data_seg,
-                        mbuf_metadata.mbuf(),
-                        mbuf_metadata.offset() as _,
-                        mbuf_metadata.data_len() as _,
-                    )
-                };
-
-                curr_completion = unsafe {
-                    custom_mlx5_add_completion_info(
-                        self.thread_context.get_context_ptr(),
-                        curr_completion,
-                        mbuf_metadata.mbuf(),
-                    )
-                };
+                let (dpseg, completion) =
+                    self.post_mbuf_metadata(&mbuf_metadata, curr_data_seg, curr_completion);
+                curr_data_seg = dpseg;
+                curr_completion = completion;
                 entry_idx += 1;
             } else {
                 // iterate forward, figure out size of further zero-copy segments
+                tracing::debug!(entry_idx, "Not zero-copy segment post_sga");
                 let mut curr_idx = entry_idx;
                 let mut mbuf_length = match !header_written && curr_idx == 0 {
                     true => cornflakes_libos::utils::TOTAL_HEADER_SIZE,
                     false => 0,
                 };
-                while !self.zero_copy_seg(sga.get(curr_idx).addr()) && curr_idx < sga.len() {
+                tracing::debug!(mbuf_length, "Finding forward index");
+                while curr_idx < sga.len() && !self.zero_copy_seg(sga.get(curr_idx).addr()) {
                     let curr_seg = sga.get(curr_idx).addr();
                     mbuf_length += curr_seg.len();
                     curr_idx += 1;
@@ -1035,9 +1217,17 @@ impl Mlx5Connection {
                         bail!("No tx mempools to allocate outgoing packet");
                     }
                 };
-                let mut write_offset = match !header_written && curr_idx == 0 {
+                tracing::debug!(
+                    header_written,
+                    entry_idx,
+                    curr_idx,
+                    mbuf_length,
+                    "Allocated buffer to write in data"
+                );
+                let mut write_offset = match !header_written && entry_idx == 0 {
                     true => {
                         // copy in the header into a buffer
+                        tracing::debug!("COPYING HEADER INTO DATA BUFFER");
                         self.copy_hdr(&mut data_buffer, conn_id, msg_id, data_len)?
                     }
                     false => 0,
@@ -1070,24 +1260,10 @@ impl Mlx5Connection {
                     }
                 };
                 metadata_mbuf.increment_refcnt();
-
-                // post this data buffer to the ring buffer
-                unsafe {
-                    curr_data_seg = custom_mlx5_add_dpseg(
-                        self.thread_context.get_context_ptr(),
-                        curr_data_seg,
-                        metadata_mbuf.mbuf(),
-                        metadata_mbuf.offset() as _,
-                        metadata_mbuf.data_len() as _,
-                    );
-
-                    curr_completion = custom_mlx5_add_completion_info(
-                        self.thread_context.get_context_ptr(),
-                        curr_completion,
-                        metadata_mbuf.mbuf(),
-                    );
-                }
-
+                let (dpseg, completion) =
+                    self.post_mbuf_metadata(&metadata_mbuf, curr_data_seg, curr_completion);
+                curr_data_seg = dpseg;
+                curr_completion = completion;
                 entry_idx = curr_idx;
             }
         }
@@ -1103,6 +1279,7 @@ impl Mlx5Connection {
         return Ok(ctrl_seg);
     }
 
+    /// Returns inline size, sga idx to start iterating from, num segs for header
     fn calculate_inline_size(&self, first_entry_size: usize) -> (usize, usize, usize) {
         let mut sga_idx = 0;
         let (inline_size, num_segs) = match self.inline_mode {
@@ -1127,22 +1304,20 @@ impl Mlx5Connection {
     /// Returns:
     /// Result<(inline size, number of data segments)>
     fn calculate_shape_rc(&self, rc_sga: &RcSga<Self>) -> Result<(usize, usize)> {
-        let (inline_size, mut sga_idx, mut num_segs) =
-            self.calculate_inline_size(rc_sga.get(0).len());
-        while sga_idx < rc_sga.len() {
-            if self.zero_copy_rc_seg(rc_sga.get(sga_idx)) {
-                num_segs += 1;
-                sga_idx += 1;
-            } else {
-                let mut cur_idx = sga_idx;
-                while !self.zero_copy_rc_seg(rc_sga.get(cur_idx)) {
-                    cur_idx += 1;
-                }
-                if !(sga_idx == 0 && num_segs == 1) {
-                    // past first entry (which can be copied with object header)
+        let (inline_size, sga_idx, mut num_segs) = self.calculate_inline_size(rc_sga.get(0).len());
+        let mut prev_copy = (num_segs == 1) as _;
+        for rc_sga in rc_sga.iter().skip(sga_idx) {
+            match self.zero_copy_rc_seg(rc_sga) {
+                true => {
                     num_segs += 1;
+                    prev_copy = false;
                 }
-                sga_idx = cur_idx;
+                false => {
+                    if !prev_copy {
+                        num_segs += 1;
+                    }
+                    prev_copy = true;
+                }
             }
         }
         Ok((inline_size, num_segs))
@@ -1153,33 +1328,19 @@ impl Mlx5Connection {
     /// Returns:
     /// Result<(inline size, number of data segments)>
     fn calculate_shape(&self, sga: &Sga) -> Result<(usize, usize)> {
-        let (inline_size, mut sga_idx, mut num_segs) = self.calculate_inline_size(sga.get(0).len());
-
-        while sga_idx < sga.len() {
-            let curr_seg = sga.get(sga_idx);
-            if self.zero_copy_seg(curr_seg.addr()) {
-                // each zero copy seg is counted as a separate segment
-                sga_idx += 1;
-                num_segs += 1;
-                tracing::debug!(
-                    "Adding zero-copy seg for seg {:?}",
-                    curr_seg.addr().as_ptr()
-                );
-            } else {
-                // iterate until the next non-zero copy segment
-                let mut forward_index = sga_idx;
-                while forward_index < sga.len() {
-                    let seg = sga.get(sga_idx);
-                    if !self.zero_copy_seg(seg.addr()) {
-                        forward_index += 1;
-                    } else {
-                        if !(sga_idx == 0 && num_segs == 1) {
-                            // past first entry (which can be copied into header segment)
-                            num_segs += 1;
-                        }
-                        sga_idx = forward_index;
-                        break;
+        let (inline_size, sga_idx, mut num_segs) = self.calculate_inline_size(sga.get(0).len());
+        let mut prev_copy = (num_segs == 1) as _;
+        for seg in sga.iter().skip(sga_idx) {
+            match self.zero_copy_seg(seg.addr()) {
+                true => {
+                    num_segs += 1;
+                    prev_copy = false;
+                }
+                false => {
+                    if !prev_copy {
+                        num_segs += 1;
                     }
+                    prev_copy = true;
                 }
             }
         }
@@ -1436,6 +1597,7 @@ impl Datapath for Mlx5Connection {
             address_to_conn_id: HashMap::default(),
             allocator: allocator,
             copying_threshold: 256,
+            max_segments: 32,
             inline_mode: InlineMode::default(),
             max_inline_size: 256,
             recv_mbufs: [std::ptr::null_mut(); RECEIVE_BURST_SIZE],
@@ -1501,7 +1663,7 @@ impl Datapath for Mlx5Connection {
         }
     }
 
-    fn push_buffers_with_copy(&mut self, pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()> {
+    fn push_buffers_with_copy(&mut self, pkts: &[(MsgID, ConnID, &[u8])]) -> Result<()> {
         tracing::debug!("Pushing batch of pkts of length {}", pkts.len());
         let mut pkt_idx = 0;
         let mut first_ctrl_seg: Option<*mut mlx5_wqe_ctrl_seg> = None;
@@ -1548,6 +1710,7 @@ impl Datapath for Mlx5Connection {
                 ) != 1
             } {
                 first_ctrl_seg = self.post_curr_transmissions(first_ctrl_seg)?;
+                self.poll_for_completions()?;
             } else {
                 let ctrl_seg = unsafe {
                     custom_mlx5_fill_in_hdr_segment(
@@ -1662,6 +1825,7 @@ impl Datapath for Mlx5Connection {
             }
         }
         let _ = self.post_curr_transmissions(first_ctrl_seg)?;
+        self.poll_for_completions()?;
         Ok(())
     }
 
@@ -1689,6 +1853,7 @@ impl Datapath for Mlx5Connection {
                 ) != 1
             } {
                 first_ctrl_seg = self.post_curr_transmissions(first_ctrl_seg)?;
+                self.poll_for_completions()?;
             } else {
                 // ASSUMES THAT THE PACKET HAS A FULL HEADER TO FLIP
                 unsafe {
@@ -1736,6 +1901,7 @@ impl Datapath for Mlx5Connection {
             }
         }
         let _ = self.post_curr_transmissions(first_ctrl_seg)?;
+        self.poll_for_completions()?;
         Ok(())
     }
 
@@ -1749,7 +1915,7 @@ impl Datapath for Mlx5Connection {
         Ok(())
     }
 
-    fn push_rc_sgas(&mut self, rc_sgas: &mut Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
+    fn push_rc_sgas(&mut self, rc_sgas: &mut [(MsgID, ConnID, &mut RcSga<Self>)]) -> Result<()>
     where
         Self: Sized,
     {
@@ -1758,8 +1924,8 @@ impl Datapath for Mlx5Connection {
         let mut sga_idx = 0;
         while sga_idx < rc_sgas.len() {
             tracing::debug!(sga_idx = sga_idx, "In rc sga process loop");
-            let (msg_id, conn_id, ref mut sga) = &mut rc_sgas[sga_idx];
-            self.insert_into_outgoing_map(*msg_id, *conn_id);
+            let (msg_id, conn_id, ref mut sga) = rc_sgas[sga_idx];
+            self.insert_into_outgoing_map(msg_id, conn_id);
             let (inline_len, num_segs) = self.calculate_shape_rc(&sga)?;
             tracing::debug!(
                 inline_len = inline_len,
@@ -1784,11 +1950,12 @@ impl Datapath for Mlx5Connection {
                 ) != 1
             } {
                 first_ctrl_seg = self.post_curr_transmissions(first_ctrl_seg)?;
+                self.poll_for_completions()?;
             } else {
                 let ctrl_seg = self.post_rc_sga(
                     sga,
-                    *conn_id,
-                    *msg_id,
+                    conn_id,
+                    msg_id,
                     num_octowords,
                     num_wqes_required,
                     inline_len,
@@ -1801,10 +1968,15 @@ impl Datapath for Mlx5Connection {
             }
         }
         let _ = self.post_curr_transmissions(first_ctrl_seg)?;
+        self.poll_for_completions()?;
         Ok(())
     }
 
-    fn push_sgas(&mut self, sgas: &Vec<(MsgID, ConnID, Sga)>) -> Result<()> {
+    fn push_ordered_sgas(&mut self, sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
+        self.push_ordered_sgas_recursive(sgas)
+    }
+
+    fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, &Sga)]) -> Result<()> {
         let mut first_ctrl_seg: Option<*mut mlx5_wqe_ctrl_seg> = None;
         let mut sga_idx = 0;
         tracing::debug!(len = sgas.len(), "Pushing sgas");
@@ -1832,6 +2004,7 @@ impl Datapath for Mlx5Connection {
                 ) != 1
             } {
                 first_ctrl_seg = self.post_curr_transmissions(first_ctrl_seg)?;
+                self.poll_for_completions()?;
             } else {
                 let ctrl_seg = self.post_sga(
                     sga,
@@ -1851,6 +2024,7 @@ impl Datapath for Mlx5Connection {
         }
         tracing::debug!("Posting transmissions with ctrl seg {:?}", first_ctrl_seg);
         let _ = self.post_curr_transmissions(first_ctrl_seg)?;
+        self.poll_for_completions()?;
 
         Ok(())
     }
@@ -1927,8 +2101,10 @@ impl Datapath for Mlx5Connection {
                 unsafe {
                     custom_mlx5_free_mbuf(self.recv_mbufs[i]);
                 }
-                self.recv_mbufs[i] = ptr::null_mut();
             }
+        }
+        for i in 0..RECEIVE_BURST_SIZE as _ {
+            self.recv_mbufs[i] = ptr::null_mut();
         }
         Ok(ret)
     }
@@ -2002,7 +2178,27 @@ impl Datapath for Mlx5Connection {
         self.copying_threshold = thresh;
     }
 
+    fn get_copying_threshold(&self) -> usize {
+        self.copying_threshold
+    }
+
+    fn set_max_segments(&mut self, segs: usize) {
+        self.max_segments = segs;
+    }
+
+    fn get_max_segments(&self) -> usize {
+        self.max_segments
+    }
+
     fn set_inline_mode(&mut self, inline_mode: InlineMode) {
         self.inline_mode = inline_mode;
+    }
+
+    fn batch_size() -> usize {
+        RECEIVE_BURST_SIZE
+    }
+
+    fn max_scatter_gather_entries() -> usize {
+        33
     }
 }

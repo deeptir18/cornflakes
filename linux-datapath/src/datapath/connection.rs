@@ -2,10 +2,10 @@ use bytes::{BufMut, Bytes, BytesMut};
 use color_eyre::eyre::{bail, ensure, Result};
 use cornflakes_libos::{
     allocator::MempoolID,
-    datapath::{Datapath, InlineMode, MetadataOps, ReceivedPkt},
+    datapath::{Datapath, ExposeMempoolID, InlineMode, MetadataOps, ReceivedPkt},
     serialize::Serializable,
     utils::{AddressInfo, HEADER_ID_SIZE},
-    ConnID, MsgID, RcSga, Sga,
+    ConnID, MsgID, OrderedSga, RcSga, Sga,
 };
 use byteorder::{ByteOrder, NetworkEndian};
 use color_eyre::eyre::WrapErr;
@@ -26,6 +26,14 @@ const RECEIVE_BURST_SIZE: usize = 32;
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct MutableByteBuffer {
     buf: BytesMut,
+}
+
+impl ExposeMempoolID for MutableByteBuffer {
+    fn set_mempool_id(&mut self, _id: MempoolID) {}
+
+    fn get_mempool_id(&self) -> MempoolID {
+        0
+    }
 }
 
 impl MutableByteBuffer {
@@ -356,7 +364,7 @@ impl Datapath for LinuxConnection {
         }
     }
 
-    fn push_buffers_with_copy(&mut self, pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()> {
+    fn push_buffers_with_copy(&mut self, pkts: &[(MsgID, ConnID, &[u8])]) -> Result<()> {
         tracing::debug!("Pushing batch of pkts of length {}", pkts.len());
         for (msg_id, conn_id, data) in pkts.iter() {
             self.insert_into_outgoing_map(*msg_id, *conn_id);
@@ -392,14 +400,18 @@ impl Datapath for LinuxConnection {
         unimplemented!();
     }
 
-    fn push_rc_sgas(&mut self, _rc_sgas: &mut Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
+    fn push_rc_sgas(&mut self, _rc_sgas: &mut [(MsgID, ConnID, &mut RcSga<Self>)]) -> Result<()>
     where
         Self: Sized,
     {
         unimplemented!();
     }
 
-    fn push_sgas(&mut self, sgas: &Vec<(MsgID, ConnID, Sga)>) -> Result<()> {
+    fn push_ordered_sgas(&mut self, _ordered_sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()> {
+        unimplemented!();
+    }
+
+    fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, &Sga)]) -> Result<()> {
         let bufs = sgas
             .iter()
             .map(|(_, _, sga)| {
@@ -417,7 +429,7 @@ impl Datapath for LinuxConnection {
                 (*msg_id, *conn_id, &bufs[i][..])
             })
             .collect::<Vec<_>>();
-        self.push_buffers_with_copy(pkts)
+        self.push_buffers_with_copy(&pkts)
     }
 
     fn pop_with_durations(&mut self) -> Result<Vec<(ReceivedPkt<Self>, Duration)>>
@@ -522,5 +534,19 @@ impl Datapath for LinuxConnection {
 
     fn set_copying_threshold(&mut self, _threshold: usize) {}
 
+    fn get_copying_threshold(&self) -> usize {
+        std::usize::MAX
+    }
+
+    fn set_max_segments(&mut self, _segs: usize) {}
+
+    fn get_max_segments(&self) -> usize {
+        std::usize::MAX
+    }
+
     fn set_inline_mode(&mut self, _mode: InlineMode) {}
+
+    fn max_packet_size() -> usize {
+        1500
+    }
 }

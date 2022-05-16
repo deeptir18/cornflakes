@@ -1,1 +1,1 @@
-pub mod connection; // implements datapath trait
+pub mod connection;

@@ -1,5 +1,6 @@
 use super::{
-    allocator::MempoolID, serialize::Serializable, utils::AddressInfo, ConnID, MsgID, RcSga, Sga,
+    allocator::MempoolID, serialize::Serializable, utils::AddressInfo, ConnID, MsgID, OrderedSga,
+    RcSga, Sga,
 };
 use color_eyre::eyre::{bail, Result};
 use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
@@ -45,6 +46,7 @@ pub enum PushBufType {
     Sga,
     RcSga,
     SingleBuf,
+    OrderedSga,
 }
 
 impl FromStr for PushBufType {
@@ -55,6 +57,9 @@ impl FromStr for PushBufType {
             "sga" | "SGA" | "Sga" => Ok(PushBufType::Sga),
             "rcsga" | "RcSga" | "RCSGA" => Ok(PushBufType::RcSga),
             "singlebuf" | "single_buf" | "SingleBuf" | "SINGLEBUF" => Ok(PushBufType::SingleBuf),
+            "orderedsga" | "ordered_sga" | "OrderedSga" | "ORDEREDSGA" => {
+                Ok(PushBufType::OrderedSga)
+            }
             x => {
                 bail!("Unknown push buf type: {:?}", x);
             }
@@ -184,9 +189,15 @@ pub trait MetadataOps {
     fn set_data_len_and_offset(&mut self, data_len: usize, offset: usize) -> Result<()>;
 }
 
+pub trait ExposeMempoolID {
+    fn set_mempool_id(&mut self, id: MempoolID);
+
+    fn get_mempool_id(&self) -> MempoolID;
+}
+
 pub trait Datapath {
     /// Mutable buffer type that can be written into.
-    type DatapathBuffer: AsRef<[u8]> + Write + PartialEq + Eq + std::fmt::Debug;
+    type DatapathBuffer: AsRef<[u8]> + Write + PartialEq + Eq + std::fmt::Debug + ExposeMempoolID;
 
     /// Metadata that wraps around a datapath buffer.
     type DatapathMetadata: AsRef<[u8]> + PartialEq + Eq + Clone + std::fmt::Debug + MetadataOps;
@@ -251,7 +262,7 @@ pub trait Datapath {
     /// Send multiple buffers to the specified address.
     /// Args:
     /// @pkts: Vector of (msg id, buffer, connection id) to send.
-    fn push_buffers_with_copy(&mut self, pkts: Vec<(MsgID, ConnID, &[u8])>) -> Result<()>;
+    fn push_buffers_with_copy(&mut self, pkts: &[(MsgID, ConnID, &[u8])]) -> Result<()>;
 
     /// Echo the specified packet back to the  source.
     /// Args:
@@ -275,14 +286,20 @@ pub trait Datapath {
     /// @rc_sgas: Vector of (msg id, connection id, reference counted scatter-gather arrays) to send.
     /// Must be mutable in order to correctly increment the reference counts on the underlying
     /// buffers.
-    fn push_rc_sgas(&mut self, rc_sgas: &mut Vec<(MsgID, ConnID, RcSga<Self>)>) -> Result<()>
+    fn push_rc_sgas(&mut self, rc_sgas: &mut [(MsgID, ConnID, &mut RcSga<Self>)]) -> Result<()>
     where
         Self: Sized;
+
+    /// Send scatter-gather arrays that are ORDERED.
+    /// OrderedSgas must be ordered such that the last "num_zero_copy_entries()" are
+    /// zero-copy-able and pass the to-copy or not heuristics.
+    /// First sga.len() - num_zero_copy_entries() will be copied together.
+    fn push_ordered_sgas(&mut self, ordered_sgas: &[(MsgID, ConnID, &OrderedSga)]) -> Result<()>;
 
     /// Send scatter-gather arrays of addresses.
     /// Args:
     /// @sgas: Vector of (msg id, connection id, raw address scatter-gather arrays) to send.
-    fn push_sgas(&mut self, sgas: &Vec<(MsgID, ConnID, Sga)>) -> Result<()>;
+    fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, &Sga)]) -> Result<()>;
 
     /// Listen for new received packets and pop out with durations.
     fn pop_with_durations(&mut self) -> Result<Vec<(ReceivedPkt<Self>, Duration)>>
@@ -344,6 +361,30 @@ pub trait Datapath {
     /// Set copying threshold for serialization.
     fn set_copying_threshold(&mut self, threshold: usize);
 
+    /// Get current copying threshold for serialization.
+    fn get_copying_threshold(&self) -> usize;
+
+    /// Sets maximum segments sent in a packet.
+    fn set_max_segments(&mut self, max_entries: usize);
+
+    /// Gets current maximum segments
+    fn get_max_segments(&self) -> usize;
+
     /// Set inline mode (may not be available in all datapaths)
     fn set_inline_mode(&mut self, mode: InlineMode);
+
+    /// Packet processing batch size.
+    fn batch_size() -> usize {
+        32
+    }
+
+    /// Maximum possible scatter gather elements.
+    fn max_scatter_gather_entries() -> usize {
+        64
+    }
+
+    /// Maximum possible packet size
+    fn max_packet_size() -> usize {
+        9216
+    }
 }

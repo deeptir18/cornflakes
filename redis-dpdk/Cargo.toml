@@ -1,0 +1,31 @@
+[package]
+name = "redis-dpdk"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "redis_dpdk"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+color-eyre = "0.5"
+tracing = "*"
+tracing-subscriber = "0.2.17"
+structopt = "0.2.16"
+structopt-derive="0.2.16"
+cornflakes-libos = { path = "../cornflakes-libos" }
+cornflakes-utils = { path = "../cornflakes-utils" }
+cornflakes-codegen = { path = "../cornflakes-codegen" }
+dpdk-datapath = { path = "../dpdk-datapath" }
+redis-common = { path = "../redis-common" }
+libc = "0.2.1"
+
+[build-dependencies]
+cornflakes-codegen = { path = "../cornflakes-codegen" }
+
+[features]
+default = ["mlx5"]
+mlx5 = ["dpdk-datapath/mlx5"]
+profiler = ["cornflakes-libos/profiler"]
+

@@ -5,11 +5,15 @@ members = ["cornflakes-codegen",
             "echo-server",
             "cornflakes-utils",
             "data-structure-query",
+            "ds-echo",
             "kv-store",
             "mlx5-datapath",
             "linux-datapath",
             "dpdk-datapath",
             "kv-store-ds",
+            "redis-dpdk",
+            "redis-common",
+            "redis-mlx5",
             "simple-echo"]
             #"data-shuffle"]
 

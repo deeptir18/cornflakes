@@ -12,7 +12,7 @@
 #define RQ_NUM_DESC			1024
 #define SQ_NUM_DESC			128
 
-#define SQ_CLEAN_THRESH			1
+#define SQ_CLEAN_THRESH			32
 #define SQ_CLEAN_MAX			SQ_CLEAN_THRESH
 #define MAX_TX_MEMPOOLS_PER_THREAD 64 /* Maximum number of 'extra mempools' a thread can have. */
 #define POW2MOD(num, size) ((num & (size - 1)))

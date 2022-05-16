@@ -18,6 +18,11 @@
  * */
 size_t custom_mlx5_num_octowords(size_t inline_len, size_t num_segs);
 
+/* 
+ * Returns current number of wqes available.
+ * @per_thread_context - per thread context.
+ * */
+size_t custom_mlx5_num_wqes_available(struct custom_mlx5_per_thread_context *per_thread_context);
 
 /* 
  * Check the number of wqes required for a particular transmission.

@@ -1,0 +1,28 @@
+[package]
+name = "redis-common"
+version = "0.1.0"
+edition = "2021"
+authors = ["deeptir <deeptir@cs.stanford.edu>"]
+
+[dependencies]
+color-eyre = "0.5"
+tracing = "*"
+tracing-subscriber = "0.2.17"
+structopt = "0.2.16"
+structopt-derive="0.2.16"
+cornflakes-libos = { path = "../cornflakes-libos" }
+cornflakes-utils = { path = "../cornflakes-utils" }
+cornflakes-codegen = { path = "../cornflakes-codegen" }
+affinity = "0.1.1"
+dpdk-datapath = { path = "../dpdk-datapath" }
+mlx5-datapath = { path = "../mlx5-datapath" }
+linux-datapath = { path = "../linux-datapath" }
+
+[build-dependencies]
+cornflakes-codegen = { path = "../cornflakes-codegen" }
+
+[features]
+default = ["mlx5"]
+mlx5 = ["dpdk-datapath/mlx5"]
+profiler = ["cornflakes-libos/profiler"]
+

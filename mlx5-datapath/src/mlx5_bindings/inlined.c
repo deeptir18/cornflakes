@@ -91,7 +91,7 @@ void custom_mlx5_fill_in_hdrs_(void *buffer, const void *hdr, uint32_t id, size_
      struct udp_hdr *udp = (struct udp_hdr *)dst_ptr;
      dst_ptr += sizeof(struct udp_hdr);
 
-    *(uint32_t *)dst_ptr = id;
+    *((uint32_t *)dst_ptr) = id;
 
     ip->len = htons(sizeof(struct ip_hdr) + sizeof(struct udp_hdr) + 4 + data_len);
     ip->chksum = 0;
