@@ -175,7 +175,7 @@ where
         _datapath: &<Self as ClientSM>::Datapath,
     ) -> Result<()> {
         // if in debug mode, check whether the bytes are what they should be
-        tracing::debug!(id = sga.msg_id(), "Received sga");
+        tracing::debug!(id = sga.msg_id(), size = sga.data_len(), "Received sga");
         if cfg!(debug_assertions) {
             if !self
                 .cerealizer
@@ -247,6 +247,7 @@ fn init_payloads(sizes: Vec<usize>) -> Vec<Vec<u8>> {
             .map(char::from)
             .take(*size)
             .collect();
+        tracing::debug!(idx, size, "chars: {:?}", chars.as_bytes().to_vec());
         ret.push(chars.as_bytes().to_vec());
     }
     ret

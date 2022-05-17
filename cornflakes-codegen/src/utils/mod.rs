@@ -30,15 +30,16 @@ impl<'a> ForwardPointer<'a> {
     }
 }
 
-pub struct MutForwardPointer<'a>(&'a mut [u8; 8]);
+pub struct MutForwardPointer<'a>(&'a mut [u8]);
 
 impl<'a> MutForwardPointer<'a> {
     pub fn write_size(&mut self, size: u32) {
-        LittleEndian::write_u32(&mut self.0[0..4], size)
+        tracing::debug!("Writing size {} at {:?}", size, self.0.as_ptr());
+        LittleEndian::write_u32(&mut self.0[0..4], size);
     }
 
     pub fn write_offset(&mut self, off: u32) {
-        LittleEndian::write_u32(&mut self.0[4..8], off)
+        LittleEndian::write_u32(&mut self.0[4..8], off);
     }
 }
 pub struct ObjectRef(pub *const u8);

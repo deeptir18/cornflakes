@@ -462,7 +462,7 @@ fn add_header_repr(
             "{} + self.bitmap[{}] as usize * {}",
             dynamic_size,
             &field_info.get_bitmap_idx_str(true),
-            &field_info.get_total_header_size_str(true, false, false)?
+            &field_info.get_total_header_size_str(true, false, false, false)?
         );
     }
     compiler.add_return_val(&dynamic_size, false)?;

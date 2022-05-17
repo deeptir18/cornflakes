@@ -60,12 +60,18 @@ where
             .iter()
             .map(|pkt| match self.message_type {
                 SimpleMessageType::Single => {
+                    tracing::debug!(len = pkt.data_len(), "Incoming packet length");
                     let mut single_deser = echo_messages_sga::SingleBufferCF::new();
                     let mut single_ser = echo_messages_sga::SingleBufferCF::new();
                     single_deser.deserialize(pkt.seg(0).as_ref())?;
                     single_ser.set_message(dynamic_sga_hdr::CFBytes::new(
                         single_deser.get_message().get_ptr(),
                     ));
+                    tracing::debug!(
+                        "Pointer to set message: {:?}, get_message: {:?}",
+                        single_ser.get_message().get_ptr(),
+                        single_deser.get_message().get_ptr(),
+                    );
                     let mut ordered_sga =
                         OrderedSga::allocate(single_ser.num_scatter_gather_entries());
                     single_ser.serialize_into_sga(&mut ordered_sga, datapath)?;

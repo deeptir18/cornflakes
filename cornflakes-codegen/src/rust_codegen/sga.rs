@@ -353,7 +353,7 @@ fn add_header_repr(
         "usize",
     );
     compiler.add_context(Context::Function(header_size_function_context))?;
-    let mut dynamic_size = "".to_string();
+    let mut dynamic_size = "BITMAP_LENGTH_FIELD + Self::bitmap_length()".to_string();
     for field in msg_info.get_fields().iter() {
         let field_info = FieldInfo(field.clone());
         let mut start = dynamic_size.to_string();
@@ -364,7 +364,7 @@ fn add_header_repr(
             "{} self.get_bitmap_field({}) as usize * {}",
             start,
             &field_info.get_bitmap_idx_str(true),
-            &field_info.get_total_header_size_str(true, false, true)?
+            &field_info.get_total_header_size_str(true, false, true, true)?
         );
     }
     compiler.add_return_val(&dynamic_size, false)?;
@@ -823,7 +823,7 @@ fn add_deserialization_for_field(
             }
             FieldType::String | FieldType::Bytes => {
                 compiler.add_func_call(
-                    Some("self".to_string()),
+                    Some(format!("self.{}", field_info.get_name())),
                     "inner_deserialize_with_ref",
                     vec![
                         "buffer".to_string(),
@@ -835,7 +835,7 @@ fn add_deserialization_for_field(
             }
             FieldType::MessageOrEnum(_) => {
                 compiler.add_func_call(
-                    Some("self".to_string()),
+                    Some(format!("self.{}", field_info.get_name())),
                     "inner_deserialize_with_ref",
                     vec![
                         "buffer".to_string(),

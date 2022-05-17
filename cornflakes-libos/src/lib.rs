@@ -599,6 +599,10 @@ impl<'a> OrderedSga<'a> {
             }
         }
         self.num_copy_entries = num_copy_segs;
+        tracing::debug!(
+            num_copy_segs = self.num_copy_entries,
+            "DOne with reordering"
+        );
         Ok(())
     }
 

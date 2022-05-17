@@ -213,6 +213,7 @@ pub fn check_udp_hdr(hdr_buf: &[u8], my_udp_port: u16) -> Result<(u16, u16, usiz
         );
     }
 
+    tracing::debug!("data length recorded in packet udp header: {}", data_len);
     Ok((
         src_port,
         dst_port,
