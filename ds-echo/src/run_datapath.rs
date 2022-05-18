@@ -214,15 +214,9 @@ pub struct DsEchoOpt {
         default_value = "256"
     )]
     pub copying_threshold: usize,
-    #[structopt(
-        short = "size",
-        long = "size",
-        help = "Total message size",
-        default_value = "1024"
-    )]
+    #[structopt(long = "size", help = "Total message size", default_value = "1024")]
     pub size: usize,
     #[structopt(
-        short = "ser",
         long = "serialization",
         help = "Serialization library to use",
         default_value = "cornflakes-dynamic"

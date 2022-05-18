@@ -593,11 +593,29 @@ impl FieldInfo {
         with_self: bool,
         ref_counted_mode: bool,
         with_pointer_size: bool,
+        include_bitmap: bool,
     ) -> Result<String> {
         let with_pointer_size_str = match with_pointer_size {
             true => "true",
             false => "",
         };
+
+        let with_bitmap_size_str = match include_bitmap {
+            false => "",
+            true => {
+                if !self.is_list() && !ref_counted_mode && {
+                    match self.0.typ {
+                        FieldType::MessageOrEnum(_) => true,
+                        _ => false,
+                    }
+                } {
+                    ", true"
+                } else {
+                    ", false"
+                }
+            }
+        };
+
         if !self.is_list() {
             match &self.0.typ {
                 FieldType::Int32
@@ -609,14 +627,16 @@ impl FieldInfo {
                 | FieldType::String
                 | FieldType::RefCountedBytes
                 | FieldType::RefCountedString => Ok(format!(
-                    "self.{}.total_header_size({})",
+                    "self.{}.total_header_size({} {})",
                     self.get_name(),
                     with_pointer_size_str,
+                    with_bitmap_size_str,
                 )),
                 FieldType::MessageOrEnum(_) => Ok(format!(
-                    "self.{}.total_header_size({})",
+                    "self.{}.total_header_size({} {})",
                     self.get_name(),
                     with_pointer_size_str,
+                    with_bitmap_size_str,
                 )),
                 _ => {
                     bail!("FieldType {:?} not supported by compiler", self.0.typ);
@@ -624,9 +644,10 @@ impl FieldInfo {
             }
         } else {
             Ok(format!(
-                "self.{}.total_header_size({})",
+                "self.{}.total_header_size({} {})",
                 self.get_name(),
                 with_pointer_size_str,
+                with_bitmap_size_str,
             ))
         }
     }

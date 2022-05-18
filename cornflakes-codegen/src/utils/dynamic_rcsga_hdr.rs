@@ -116,8 +116,7 @@ where
         if with_ref {
             // read forward pointer
             let slice = &mut header
-                [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)]
-                .try_into()?;
+                [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)];
             let mut forward_pointer = MutForwardPointer(slice);
             forward_pointer.write_offset(dynamic_header_start as _);
             // TODO: write size?
@@ -227,8 +226,7 @@ where
             .iter()
             .zip(offsets.into_iter())
         {
-            let slice = &mut header_buffer[offset..(offset + 8)].try_into()?;
-            let mut obj_ref = MutForwardPointer(slice);
+            let mut obj_ref = MutForwardPointer(&mut header_buffer[offset..(offset + 8)]);
             obj_ref.write_size(rcsge.len() as u32);
             obj_ref.write_offset(cur_dynamic_offset as u32);
             cur_dynamic_offset += rcsge.len();
@@ -674,8 +672,7 @@ where
         _offsets: &mut [usize],
     ) -> Result<()> {
         let header_slice = &mut header[constant_header_offset
-            ..(constant_header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
+            ..(constant_header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)];
         let mut forward_pointer = MutForwardPointer(header_slice);
         forward_pointer.write_size(self.num_set as _);
         forward_pointer.write_offset(dynamic_header_start as _);
@@ -808,8 +805,7 @@ where
         _offsets: &mut [usize],
     ) -> Result<()> {
         let header_slice = &mut header[constant_header_offset
-            ..(constant_header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
+            ..(constant_header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)];
         let mut forward_pointer = MutForwardPointer(header_slice);
         forward_pointer.write_size(self.num_space as _);
         forward_pointer.write_offset(dynamic_header_start as _);
@@ -937,8 +933,7 @@ where
         offsets: &mut [usize],
     ) -> Result<()> {
         let header_slice = &mut header_buffer
-            [constant_header_offset..(constant_header_offset) + Self::CONSTANT_HEADER_SIZE]
-            .try_into()?;
+            [constant_header_offset..(constant_header_offset) + Self::CONSTANT_HEADER_SIZE];
         let mut forward_pointer = MutForwardPointer(header_slice);
         forward_pointer.write_size(self.num_set as u32);
         forward_pointer.write_offset(dynamic_header_start as u32);

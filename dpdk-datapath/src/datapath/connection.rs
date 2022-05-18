@@ -611,6 +611,8 @@ impl DpdkConnection {
             }
         };
 
+        tracing::debug!("Data len in udp hdr: {:?}", data_len);
+
         // check if this address info is within a current conn_id
         let src_addr = cornflakes_libos::utils::AddressInfo::new(src_port, src_ip, src_eth);
         let conn_id = self
@@ -1377,7 +1379,7 @@ impl Datapath for DpdkConnection {
             };
             // update metadata on packet required to send out
             metadata_mbuf.update_metadata(
-                (buf.len() + cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE) as _,
+                (buf.len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE) as _,
                 ptr::null_mut(),
                 None,
                 false,
@@ -1492,7 +1494,7 @@ impl Datapath for DpdkConnection {
                 tracing::debug!(
                     "Received pkt with msg ID {}, conn ID {}",
                     received_pkt.msg_id(),
-                    received_pkt.conn_id()
+                    received_pkt.conn_id(),
                 );
                 match self
                     .outgoing_window

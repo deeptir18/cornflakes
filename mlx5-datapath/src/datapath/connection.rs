@@ -730,6 +730,13 @@ impl Mlx5Connection {
         curr_dpseg: *mut mlx5_wqe_data_seg,
         curr_completion: *mut custom_mlx5_transmission_info,
     ) -> (*mut mlx5_wqe_data_seg, *mut custom_mlx5_transmission_info) {
+        tracing::debug!(
+            len = metadata_mbuf.data_len(),
+            off = metadata_mbuf.offset(),
+            addr =? metadata_mbuf.mbuf(),
+            buf =? metadata_mbuf.as_ref(),
+            "posting dpseg"
+        );
         unsafe {
             (
                 custom_mlx5_add_dpseg(
@@ -783,7 +790,7 @@ impl Mlx5Connection {
                 first_ctrl_seg = ctrl_seg;
             }
 
-            let data_len = ordered_sga.sga().data_len();
+            let data_len = ordered_sga.sga().data_len() + ordered_sga.get_hdr().len();
             let (header_written, entry_idx) = self.inline_hdr_if_necessary(
                 *conn_id,
                 *msg_id,
@@ -858,6 +865,11 @@ impl Mlx5Connection {
                     }
                 };
                 mbuf_metadata.increment_refcnt();
+                tracing::debug!(
+                    "Posting dpseg at {:?} with metadata {:?}",
+                    curr_seg.as_ptr(),
+                    mbuf_metadata
+                );
                 let (curr_dpseg, curr_completion) =
                     self.post_mbuf_metadata(&mbuf_metadata, dpseg, completion);
 

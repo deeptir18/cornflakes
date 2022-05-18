@@ -77,10 +77,9 @@ pub trait SgaHeaderRepr<'obj> {
     fn dynamic_header_size(&self) -> usize;
 
     /// Total header size including the bitmap.
-    fn total_header_size(&self, with_ref: bool) -> usize {
-        BITMAP_LENGTH_FIELD
-            + Self::bitmap_length()
-            + <Self as SgaHeaderRepr>::CONSTANT_HEADER_SIZE * with_ref as usize
+    fn total_header_size(&self, with_ref: bool, _with_bitmap: bool) -> usize {
+        //(BITMAP_LENGTH_FIELD + Self::bitmap_length()) * (with_bitmap as usize)
+        <Self as SgaHeaderRepr>::CONSTANT_HEADER_SIZE * (with_ref as usize)
             + self.dynamic_header_size()
     }
 
@@ -99,7 +98,7 @@ pub trait SgaHeaderRepr<'obj> {
     }
 
     fn alloc_hdr(&self) -> Vec<u8> {
-        vec![0u8; self.total_header_size(false)]
+        vec![0u8; self.total_header_size(false, true)]
     }
 
     fn inner_serialize_with_ref<'sge>(
@@ -117,8 +116,7 @@ pub trait SgaHeaderRepr<'obj> {
         if with_ref {
             // read forward pointer
             let slice = &mut header
-                [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)]
-                .try_into()?;
+                [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)];
             let mut forward_pointer = MutForwardPointer(slice);
             forward_pointer.write_offset(dynamic_header_start as _);
             // TODO: write size?
@@ -183,6 +181,10 @@ pub trait SgaHeaderRepr<'obj> {
             let forward_pointer = ForwardPointer(slice);
             self.inner_deserialize(buffer, forward_pointer.get_offset() as usize)
         } else {
+            tracing::debug!(
+                header_offset = header_offset,
+                "inner deserialize with ref false"
+            );
             self.inner_deserialize(buffer, header_offset)
         }
     }
@@ -201,6 +203,11 @@ pub trait SgaHeaderRepr<'obj> {
     {
         let mut sga = self.alloc_sga();
         self.serialize_into_sga(&mut sga, datapath)?;
+        tracing::debug!(
+            "Resulting header: {:?}, length: {}",
+            sga.get_hdr(),
+            sga.get_hdr().len()
+        );
         Ok(sga.flatten())
     }
 
@@ -216,6 +223,7 @@ pub trait SgaHeaderRepr<'obj> {
     {
         let required_entries = self.num_scatter_gather_entries();
         let mut owned_hdr = self.alloc_hdr();
+        tracing::debug!("Header size: {}", owned_hdr.len());
         let header_buffer = owned_hdr.as_mut_slice();
 
         if ordered_sga.capacity() < required_entries {
@@ -244,18 +252,30 @@ pub trait SgaHeaderRepr<'obj> {
         // reorder entries if current (zero-copy segments + 1) exceeds max zero-copy segments
         ordered_sga.reorder_by_max_segs(datapath, &mut offsets)?;
 
-        let mut cur_dynamic_offset = self.dynamic_header_size();
+        let mut cur_dynamic_offset = self.total_header_size(false, false);
 
+        tracing::debug!(starting_offsets = cur_dynamic_offset, "starting offsets");
         // iterate over header, writing in forward pointers based on new ordering
+        tracing::debug!(header_addr =? header_buffer.as_ptr());
         for (sge, offset) in ordered_sga
             .entries_slice(0, required_entries)
             .iter()
             .zip(offsets.into_iter())
         {
-            let slice = &mut header_buffer[offset..(offset + 8)].try_into()?;
+            tracing::debug!(addr =? &header_buffer[offset..(offset + 8)].as_ptr(), "Addr without cast");
+            let slice = &mut header_buffer[offset..(offset + 8)];
             let mut obj_ref = MutForwardPointer(slice);
             obj_ref.write_size(sge.len() as u32);
             obj_ref.write_offset(cur_dynamic_offset as u32);
+            tracing::debug!(
+                size = sge.len(),
+                off = cur_dynamic_offset,
+                slice =? slice,
+                slice_addr =? slice.as_ptr(),
+                writing_offset = offset,
+                "Writing size and offset"
+            );
+
             cur_dynamic_offset += sge.len();
         }
 
@@ -269,6 +289,7 @@ pub trait SgaHeaderRepr<'obj> {
     where
         'buf: 'obj,
     {
+        tracing::debug!("buf addr: {:?}", buffer.as_ptr());
         self.inner_deserialize(buffer, 0)?;
         Ok(())
     }
@@ -338,7 +359,7 @@ impl<'obj> SgaHeaderRepr<'obj> for CFString<'obj> {
     fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn check_deep_equality(&self, other: &CFString) -> bool {
-        self.len() == other.len() && self.bytes() == other.bytes()
+        self.len() == other.len() && self.bytes().to_vec() == other.bytes().to_vec()
     }
 
     fn inner_serialize<'sge>(
@@ -366,6 +387,7 @@ impl<'obj> SgaHeaderRepr<'obj> for CFString<'obj> {
         let forward_pointer = ForwardPointer(header_slice);
         let offset = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
+        tracing::debug!(offset = offset, size = size, "Deserializing into cf bytes");
         let ptr = &buffer[offset..(offset + size)];
         self.ptr = ptr;
         Ok(())
@@ -405,6 +427,7 @@ impl<'obj> SgaHeaderRepr<'obj> for CFBytes<'obj> {
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
     fn dynamic_header_size(&self) -> usize {
+        tracing::debug!("Dynamic hdr size for cf bytes: 0");
         0
     }
 
@@ -427,7 +450,19 @@ impl<'obj> SgaHeaderRepr<'obj> for CFBytes<'obj> {
     fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn check_deep_equality(&self, other: &CFBytes) -> bool {
-        self.len() == other.len() && self.get_ptr() == other.get_ptr()
+        if self.len() != other.len() {
+            tracing::debug!(ours = self.len(), theirs = other.len(), "Lengths not equal");
+        }
+
+        if self.get_ptr().to_vec() != other.get_ptr().to_vec() {
+            tracing::debug!("ours: {:?} {:?}", self.get_ptr().as_ptr(), self.get_ptr());
+            tracing::debug!(
+                "theirs: {:?} {:?}",
+                other.get_ptr().as_ptr(),
+                other.get_ptr()
+            );
+        }
+        self.len() == other.len() && self.get_ptr().to_vec() == other.get_ptr().to_vec()
     }
 
     fn inner_serialize<'sge>(
@@ -455,6 +490,7 @@ impl<'obj> SgaHeaderRepr<'obj> for CFBytes<'obj> {
         let forward_pointer = ForwardPointer(header_slice);
         let offset = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
+        tracing::debug!(offset, size, "Deserializing cfbytes");
         let ptr = &buffer[offset..(offset + size)];
         self.ptr = ptr;
         Ok(())
@@ -537,7 +573,10 @@ where
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
     fn dynamic_header_size(&self) -> usize {
-        0
+        match self {
+            List::Owned(owned_list) => owned_list.dynamic_header_size(),
+            List::Ref(ref_list) => ref_list.dynamic_header_size(),
+        }
     }
 
     fn num_scatter_gather_entries(&self) -> usize {
@@ -564,6 +603,11 @@ where
 
     fn check_deep_equality(&self, other: &List<T>) -> bool {
         if self.len() != other.len() {
+            tracing::debug!(
+                "List length not equal, ours: {}, theirs: {}",
+                self.len(),
+                other.len()
+            );
             return false;
         }
 
@@ -738,8 +782,7 @@ where
         'obj: 'sge,
     {
         let header_slice = &mut header
-            [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
+            [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)];
         let mut forward_pointer = MutForwardPointer(header_slice);
         forward_pointer.write_size(self.num_set as _);
         forward_pointer.write_offset(dynamic_header_start as _);
@@ -887,8 +930,7 @@ where
         'obj: 'sge,
     {
         let header_slice = &mut header
-            [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
+            [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)];
         let mut forward_pointer = MutForwardPointer(header_slice);
         forward_pointer.write_size(self.num_space as _);
         forward_pointer.write_offset(dynamic_header_start as _);
@@ -963,6 +1005,7 @@ where
 {
     type Output = T;
     fn index(&self, idx: usize) -> &Self::Output {
+        tracing::debug!(idx = idx, self.num_space = self.num_space, "CALLING INDEX");
         assert!(idx < self.num_space);
         &self.elts[idx]
     }
@@ -1019,6 +1062,7 @@ where
         }
 
         for i in 0..self.len() {
+            tracing::debug!(i = i, "Checking equality for list elt");
             if !(self[i].check_deep_equality(&other[i])) {
                 return false;
             }
@@ -1039,8 +1083,7 @@ where
         'obj: 'sge,
     {
         let header_slice = &mut header_buffer
-            [constant_header_offset..(constant_header_offset) + Self::CONSTANT_HEADER_SIZE]
-            .try_into()?;
+            [constant_header_offset..(constant_header_offset) + Self::CONSTANT_HEADER_SIZE];
         let mut forward_pointer = MutForwardPointer(header_slice);
         forward_pointer.write_size(self.num_set as u32);
         forward_pointer.write_offset(dynamic_header_start as u32);
@@ -1078,6 +1121,14 @@ where
         if self.elts.len() < size {
             self.elts.resize(size, T::default());
         }
+        self.num_space = size;
+        tracing::debug!(
+            size = size,
+            offset = dynamic_offset,
+            num_space = self.num_space,
+            num_set = self.num_set,
+            "Deserializing list at offset and size"
+        );
 
         for (i, elt) in self.elts.iter_mut().take(size).enumerate() {
             // for objects with no dynamic header size, no need to deserialize with ref
