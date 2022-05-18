@@ -20,7 +20,8 @@ use std::{
 
 const FILLER_MAC: &str = "ff:ff:ff:ff:ff:ff";
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
-const RECEIVE_BUFFER_SIZE: usize = 1028;
+// TOOD(ygina): careful with fixed max buffer size...
+const RECEIVE_BUFFER_SIZE: usize = 2048;
 const RECEIVE_BURST_SIZE: usize = 32;
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -407,8 +408,26 @@ impl Datapath for LinuxConnection {
         unimplemented!();
     }
 
-    fn push_ordered_sgas(&mut self, _ordered_sgas: &[(MsgID, ConnID, OrderedSga)]) -> Result<()> {
-        unimplemented!();
+    fn push_ordered_sgas(&mut self, ordered_sgas: &[(MsgID, ConnID, OrderedSga)]) -> Result<()> {
+        let bufs = ordered_sgas
+            .iter()
+            .map(|(_, _, ordered_sga)| {
+                let mut buf = vec![];
+                buf.extend_from_slice(ordered_sga.get_hdr());
+                for sge in ordered_sga.sga().iter() {
+                    buf.extend_from_slice(sge.addr());
+                }
+                buf
+            })
+            .collect::<Vec<_>>();
+        let pkts = ordered_sgas
+            .iter()
+            .enumerate()
+            .map(|(i, (msg_id, conn_id, _))| {
+                (*msg_id, *conn_id, &bufs[i][..])
+            })
+            .collect::<Vec<_>>();
+        self.push_buffers_with_copy(&pkts)
     }
 
     fn push_sgas(&mut self, sgas: &[(MsgID, ConnID, Sga)]) -> Result<()> {

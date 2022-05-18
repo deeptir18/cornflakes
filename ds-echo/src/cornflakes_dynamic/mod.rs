@@ -153,7 +153,8 @@ where
         sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
         datapath: &mut Self::Datapath,
     ) -> Result<()> {
-        unimplemented!();
+        // TODO(ygina): is it ok to wrap this?
+        self.process_requests_ordered_sga(sga, datapath)
     }
 
     fn process_requests_rc_sga(
