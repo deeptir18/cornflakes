@@ -80,7 +80,7 @@ pub extern "C" fn LinuxConnection_add_memory_pool(
 pub extern "C" fn LinuxConnection_pop(
     conn: *mut ::std::os::raw::c_void,
     n: *mut ::std::os::raw::c_int,
-) -> *mut ::std::os::raw::c_void {
+) -> *mut *mut ReceivedPkt {
     unimplemented!()
 }
 

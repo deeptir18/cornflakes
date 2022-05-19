@@ -8,9 +8,10 @@ struct Opt {
     char *config_file;
     char *server_ip;
     int copying_threshold;
+    int inline_mode;
     int message_type;
     int push_buf_type;
-}
+};
 
 void main() {
     struct Opt opt;
@@ -25,7 +26,7 @@ void main() {
     void *datapath_params = LinuxConnection_parse_config_file(opt.config_file, opt.server_ip);
     void *addresses = LinuxConnection_compute_affinity(datapath_params, 1, NULL, true);
     void *per_thread_contexts = LinuxConnection_global_init(1, datapath_params, addresses);
-    void *conn = LinuxConnection_per_thread_init(datapath_params, &per_thread_contexts[0], true);
+    void *conn = LinuxConnection_per_thread_init(datapath_params, per_thread_contexts, true);
 
     LinuxConnection_set_copying_threshold(conn, opt.copying_threshold);
     LinuxConnection_set_inline_mode(conn, opt.inline_mode);
@@ -38,7 +39,7 @@ void main() {
         printf("Adding memory pool of size %d\n", buf_size);
         LinuxConnection_add_memory_pool(conn, buf_size, min_elts);
         buf_size *= 2;
-        if buf_size > max_size {
+        if (buf_size > max_size) {
             break;
         }
     }
@@ -49,34 +50,36 @@ void main() {
     void *ordered_sgas[BUFFER_SIZE];
     while(1) {
         int i, n;
-        struct ReceivedPkt *pkts = LinuxConnection_pop(conn, &n);
-        if (n > BUFFER_SIZE)
-            panic("Buffer size is too small");
+        struct ReceivedPkt **pkts = LinuxConnection_pop(conn, &n);
+        if (n > BUFFER_SIZE) {
+            printf("ERROR: Buffer size is too small");
+            exit(-1);
+        }
         // assume sga push_buf_type
         // assume single message_type
         // ds-echo/src/cornflakes_dynamic/mod.rs:process_requests_sga()
         for (i = 0; i < n; i++) {
-            struct ReceivedPkt *pkt = &pkts[i];
-            printf("Incoming packet length: %d\n", pkt->data_len);
-            struct SingleBufferCF single_deser = SingleBufferCF_new();
-            struct SingleBufferCF single_ser = SingleBufferCF_new();
+            struct ReceivedPkt *pkt = pkts[i];
+            printf("Incoming packet length: %ld\n", pkt->data_len);
+            struct SingleBufferCF *single_deser = SingleBufferCF_new();
+            struct SingleBufferCF *single_ser = SingleBufferCF_new();
             // cornflakes-codegen/src/utils/dynamic_sga_hdr.rs:deserialize()
             // ignore indexing pkt.seg(0)
-            SingleBufferCF_deserialize(&single_deser, pkt->data);
+            SingleBufferCF_deserialize(single_deser, pkt->data);
             // generated echo_dynamic_sga.rs
             SingleBufferCF_set_message(
-                &single_ser,
+                single_ser,
                 // should CFBytes be a zero-overhead wrapper around the ptr?
-                SingleBufferCF_get_message(&single_deser),
+                SingleBufferCF_get_message(single_deser)
             );
             // cornflake-libos/src/lib.rs:allocate()
-            void *ordered_sga = OrderedSga_allocate(SingleBufferCF_num_scatter_gather_entries(&single_ser));
+            void *ordered_sga = OrderedSga_allocate(SingleBufferCF_num_scatter_gather_entries(single_ser));
             // cornflakes-codegen/src/utils/dynamic_sga_hdr.rs:serialize_into_sga()
-            SingleBufferCF_serialize_into_sga(&single_ser, ordered_sga, conn);
+            SingleBufferCF_serialize_into_sga(single_ser, ordered_sga, conn);
             msg_ids[i] = pkt->msg_id;
             conn_ids[i] = pkt->conn_id;
             ordered_sgas[i] = ordered_sga;
         }
-        LinuxConnection_push_ordered_sgas(conn, n, &msg_ids, &conn_ids, &ordered_sgas);
+        LinuxConnection_push_ordered_sgas(conn, n, msg_ids, conn_ids, ordered_sgas);
     }
 }
