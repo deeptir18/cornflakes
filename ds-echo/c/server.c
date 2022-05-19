@@ -25,7 +25,7 @@ void main() {
     void *datapath_params = LinuxConnection_parse_config_file(opt.config_file, opt.server_ip);
     void *addresses = LinuxConnection_compute_affinity(datapath_params, 1, NULL, true);
     void *per_thread_contexts = LinuxConnection_global_init(1, datapath_params, addresses);
-    void *conn = LinuxConnection_per_thread_init(datapath_params, &per_thread_contexts[0]);
+    void *conn = LinuxConnection_per_thread_init(datapath_params, &per_thread_contexts[0], true);
 
     LinuxConnection_set_copying_threshold(conn, opt.copying_threshold);
     LinuxConnection_set_inline_mode(conn, opt.inline_mode);
@@ -36,7 +36,7 @@ void main() {
     int min_elts = 8192;
     while(1) {
         printf("Adding memory pool of size %d\n", buf_size);
-        LinuxConnection_add_memory_pool(buf_size, min_elts);
+        LinuxConnection_add_memory_pool(conn, buf_size, min_elts);
         buf_size *= 2;
         if buf_size > max_size {
             break;
@@ -46,7 +46,7 @@ void main() {
     // cornflakes-libos/src/state-machine/server.rs:run_state_machine()
     int32_t msg_ids[BUFFER_SIZE];
     size_t conn_ids[BUFFER_SIZE];
-    struct OrderedSga *ordered_sgas[BUFFER_SIZE];
+    void *ordered_sgas[BUFFER_SIZE];
     while(1) {
         int i, n;
         struct ReceivedPkt *pkts = LinuxConnection_pop(conn, &n);
@@ -70,14 +70,13 @@ void main() {
                 SingleBufferCF_get_message(&single_deser),
             );
             // cornflake-libos/src/lib.rs:allocate()
-            struct OrderedSga *ordered_sga =
-                OrderedSga_allocate(SingleBufferCF_num_scatter_gather_entries(&single_ser));
+            void *ordered_sga = OrderedSga_allocate(SingleBufferCF_num_scatter_gather_entries(&single_ser));
             // cornflakes-codegen/src/utils/dynamic_sga_hdr.rs:serialize_into_sga()
-            SingleBufferCF_serialize_into_sga(&single_ser, &ordered_sga, conn);
+            SingleBufferCF_serialize_into_sga(&single_ser, ordered_sga, conn);
             msg_ids[i] = pkt->msg_id;
             conn_ids[i] = pkt->conn_id;
             ordered_sgas[i] = ordered_sga;
         }
-        LinuxConnection_push_ordered_sgas(n, &msg_ids, &conn_ids, &ordered_sgas);
+        LinuxConnection_push_ordered_sgas(conn, n, &msg_ids, &conn_ids, &ordered_sgas);
     }
 }

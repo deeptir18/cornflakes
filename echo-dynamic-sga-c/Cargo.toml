@@ -1,0 +1,11 @@
+[package]
+name = "echo-dynamic-sga-c"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "echo_dynamic_sga_c"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]

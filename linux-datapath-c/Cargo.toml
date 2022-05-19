@@ -1,0 +1,11 @@
+[package]
+name = "linux-datapath-c"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "linux_datapath_c"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
