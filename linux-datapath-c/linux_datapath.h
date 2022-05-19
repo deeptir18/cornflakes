@@ -12,16 +12,7 @@ typedef struct ReceivedPkt {
 
 void *OrderedSga_allocate(uintptr_t size);
 
-void *LinuxConnection_parse_config_file(char *config_file, char *server_ip);
-
-void *LinuxConnection_compute_affinity(void *datapath_params,
-                                       uintptr_t num_queues,
-                                       void *remote_ip,
-                                       bool is_server);
-
-void *LinuxConnection_global_init(uintptr_t num_queues, void *datapath_params, void *addresses);
-
-void *LinuxConnection_per_thread_init(void *datapath_params, void *context, bool is_server);
+void *LinuxConnection_new(const char *config_file, const char *server_ip);
 
 void LinuxConnection_set_copying_threshold(void *conn, uintptr_t copying_threshold);
 

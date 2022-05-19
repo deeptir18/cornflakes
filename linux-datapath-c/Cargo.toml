@@ -9,6 +9,11 @@ path = "src/lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+tracing = "*"
+tracing-subscriber = "0.2.17"
+cornflakes-libos = { path = "../cornflakes-libos" }
+cornflakes-utils = { path = "../cornflakes-utils" }
+linux-datapath = { path = "../linux-datapath" }
 
 [build-dependencies]
 cbindgen = "0.23.0"

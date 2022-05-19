@@ -23,10 +23,7 @@ void main() {
     opt.push_buf_type = 0;  // sga
 
     // ds-echo/src/run_datapath.rs:run_server()
-    void *datapath_params = LinuxConnection_parse_config_file(opt.config_file, opt.server_ip);
-    void *addresses = LinuxConnection_compute_affinity(datapath_params, 1, NULL, true);
-    void *per_thread_contexts = LinuxConnection_global_init(1, datapath_params, addresses);
-    void *conn = LinuxConnection_per_thread_init(datapath_params, per_thread_contexts, true);
+    void *conn = LinuxConnection_new(opt.config_file, opt.server_ip);
 
     LinuxConnection_set_copying_threshold(conn, opt.copying_threshold);
     LinuxConnection_set_inline_mode(conn, opt.inline_mode);

@@ -1,3 +1,14 @@
+use cornflakes_libos::datapath::{Datapath, InlineMode};
+use cornflakes_utils::AppMode;
+use linux_datapath::datapath::connection::LinuxConnection;
+use std::{ffi::CStr, net::Ipv4Addr, str::FromStr};
+
+fn convert_c_char(ptr: *const ::std::os::raw::c_char) -> String {
+    let cstr: &CStr = unsafe { CStr::from_ptr(ptr) };
+    let str_slice: &str = cstr.to_str().unwrap();
+    str_slice.to_string()
+}
+
 // TODO(ygina): move into shared library?
 #[repr(C)]
 pub struct ReceivedPkt {
@@ -16,39 +27,52 @@ pub extern "C" fn OrderedSga_allocate(
 }
 
 #[no_mangle]
-pub extern "C" fn LinuxConnection_parse_config_file(
-    config_file: *mut ::std::os::raw::c_char,
-    server_ip: *mut ::std::os::raw::c_char,
+pub extern "C" fn LinuxConnection_new(
+    config_file: *const ::std::os::raw::c_char,
+    server_ip: *const ::std::os::raw::c_char,
 ) -> *mut ::std::os::raw::c_void {
-    unimplemented!()
-}
+    let mut datapath_params = match LinuxConnection::parse_config_file(
+        convert_c_char(config_file).as_str(),
+        &Ipv4Addr::from_str(convert_c_char(server_ip).as_str()).unwrap(),
+    ) {
+        Ok(x) => x,
+        Err(e) => {
+            tracing::warn!("Failed to init parse config file for Linux: {:?}", e);
+            return std::ptr::null_mut() as _;
+        }
+    };
 
-#[no_mangle]
-pub extern "C" fn LinuxConnection_compute_affinity(
-    datapath_params: *mut ::std::os::raw::c_void,
-    num_queues: usize,
-    remote_ip: *mut ::std::os::raw::c_void,
-    is_server: bool,
-) -> *mut ::std::os::raw::c_void {
-    unimplemented!()
-}
+    let addresses =
+        match LinuxConnection::compute_affinity(&datapath_params, 1, None, AppMode::Server) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!("Failed to compute addresses for Linux: {:?}", e);
+                return std::ptr::null_mut() as _;
+            }
+        };
+    let per_thread_contexts = match LinuxConnection::global_init(1, &mut datapath_params, addresses)
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Failed to get per thread contexts for Linux: {:?}", e);
+            return std::ptr::null_mut() as _;
+        }
+    };
 
-#[no_mangle]
-pub extern "C" fn LinuxConnection_global_init(
-    num_queues: usize,
-    datapath_params: *mut ::std::os::raw::c_void,
-    addresses: *mut ::std::os::raw::c_void,
-) -> *mut ::std::os::raw::c_void {
-    unimplemented!()
-}
+    let connection = match LinuxConnection::per_thread_init(
+        datapath_params,
+        per_thread_contexts.into_iter().nth(0).unwrap(),
+        AppMode::Server,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Failed to init Linux connection: {:?}", e);
+            return std::ptr::null_mut() as _;
+        }
+    };
 
-#[no_mangle]
-pub extern "C" fn LinuxConnection_per_thread_init(
-    datapath_params: *mut ::std::os::raw::c_void,
-    context: *mut ::std::os::raw::c_void,
-    is_server: bool,
-) -> *mut ::std::os::raw::c_void {
-    unimplemented!()
+    let boxed_connection = Box::new(connection);
+    Box::into_raw(boxed_connection) as _
 }
 
 #[no_mangle]
