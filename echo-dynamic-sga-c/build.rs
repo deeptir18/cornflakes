@@ -1,9 +1,12 @@
+extern crate cbindgen;
+
 use cornflakes_codegen::{compile, CompileOptions, HeaderType, Language};
 use std::{
     env,
     fs::canonicalize,
-    path::Path,
+    path::{Path, PathBuf},
 };
+use cbindgen::Config;
 
 fn main() {
     // rerun-if-changed
@@ -29,4 +32,19 @@ fn main() {
             panic!("Cornflakes dynamic sga failed: {:?}", e);
         }
     }
+
+    // generate C header file
+    let output_file = PathBuf::from(&cargo_manifest_dir)
+        .join("echo_dynamic_sga.h")
+        .display()
+        .to_string();
+
+    let config = Config {
+        language: cbindgen::Language::C,
+        ..Default::default()
+    };
+
+    cbindgen::generate_with_config(&cargo_manifest_dir, config)
+        .unwrap()
+        .write_to_file(&output_file);
 }
