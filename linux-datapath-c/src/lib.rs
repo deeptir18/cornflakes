@@ -133,6 +133,7 @@ pub extern "C" fn LinuxConnection_pop(
         }))
     }).collect::<Vec<*mut ReceivedPkt>>();
     unsafe { *n = pkts.len(); }
+    Box::into_raw(conn_box);
     Box::into_raw(Box::new(pkts.as_mut_ptr())) as _
 }
 
