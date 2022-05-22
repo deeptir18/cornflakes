@@ -12,9 +12,9 @@ fn convert_c_char(ptr: *const ::std::os::raw::c_char) -> String {
 // TODO(ygina): move into shared library?
 #[repr(C)]
 pub struct ReceivedPkt {
-    data: *mut ::std::os::raw::c_char,
+    data: *const ::std::os::raw::c_uchar,
     data_len: usize,
-    msg_id: i32,
+    msg_id: u32,
     conn_id: usize,
 }
 
@@ -119,9 +119,21 @@ pub extern "C" fn LinuxConnection_add_memory_pool(
 #[no_mangle]
 pub extern "C" fn LinuxConnection_pop(
     conn: *mut ::std::os::raw::c_void,
-    n: *mut ::std::os::raw::c_int,
+    n: *mut usize,
 ) -> *mut *mut ReceivedPkt {
-    unimplemented!()
+    let mut conn_box = unsafe { Box::from_raw(conn as *mut LinuxConnection) };
+    let mut pkts = conn_box.pop().unwrap().into_iter().map(|pkt| {
+        // TODO(ygina): assume one segment
+        let seg = pkt.seg(0);
+        Box::into_raw(Box::new(ReceivedPkt {
+            data_len: seg.as_ref().len(),
+            data: seg.as_ref().as_ptr(),
+            msg_id: pkt.msg_id(),
+            conn_id: pkt.conn_id(),
+        }))
+    }).collect::<Vec<*mut ReceivedPkt>>();
+    unsafe { *n = pkts.len(); }
+    Box::into_raw(Box::new(pkts.as_mut_ptr())) as _
 }
 
 #[no_mangle]

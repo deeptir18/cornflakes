@@ -15,7 +15,7 @@ struct Opt {
 
 void main() {
     struct Opt opt;
-    opt.config_file = "example_config.yaml";
+    opt.config_file = "../../example_config.yaml";
     opt.server_ip = "127.0.0.1";
     opt.copying_threshold = 256;
     opt.inline_mode = 0;    // nothing
@@ -24,6 +24,10 @@ void main() {
 
     // ds-echo/src/run_datapath.rs:run_server()
     void *conn = LinuxConnection_new(opt.config_file, opt.server_ip);
+    if (conn == NULL) {
+        printf("Failed to establish Linux connection\n");
+        exit(-1);
+    }
 
     LinuxConnection_set_copying_threshold(conn, opt.copying_threshold);
     LinuxConnection_set_inline_mode(conn, opt.inline_mode);
@@ -46,8 +50,9 @@ void main() {
     size_t conn_ids[BUFFER_SIZE];
     void *ordered_sgas[BUFFER_SIZE];
     while(1) {
-        int i, n;
+        size_t i, n;
         struct ReceivedPkt **pkts = LinuxConnection_pop(conn, &n);
+        if (n == 0) continue;
         if (n > BUFFER_SIZE) {
             printf("ERROR: Buffer size is too small");
             exit(-1);

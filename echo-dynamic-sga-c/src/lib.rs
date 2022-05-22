@@ -49,7 +49,7 @@ pub extern "C" fn SingleBufferCF_num_scatter_gather_entries(
 #[no_mangle]
 pub extern "C" fn SingleBufferCF_deserialize(
     single_buffer_cf: *mut SingleBufferCF,
-    buffer: *mut ::std::os::raw::c_char,
+    buffer: *const ::std::os::raw::c_uchar,
 ) {
     unimplemented!()
 }
