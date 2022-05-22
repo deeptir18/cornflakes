@@ -80,7 +80,9 @@ pub extern "C" fn LinuxConnection_set_copying_threshold(
     conn: *mut ::std::os::raw::c_void,
     copying_threshold: usize,
 ) {
-    unimplemented!()
+    let mut conn_box = unsafe { Box::from_raw(conn as *mut LinuxConnection) };
+    conn_box.set_copying_threshold(copying_threshold);
+    Box::into_raw(conn_box);
 }
 
 #[no_mangle]
@@ -88,7 +90,19 @@ pub extern "C" fn LinuxConnection_set_inline_mode(
     conn: *mut ::std::os::raw::c_void,
     inline_mode: usize,
 ) {
-    unimplemented!()
+    // TODO(ygina): use C enum?
+    let mut conn_box = unsafe { Box::from_raw(conn as *mut LinuxConnection) };
+    let inline_mode = match inline_mode {
+        0 => InlineMode::Nothing,
+        1 => InlineMode::PacketHeader,
+        2 => InlineMode::ObjectHeader,
+        _ => {
+            tracing::warn!("Invalid inline mode: {}", inline_mode);
+            return;
+        }
+    };
+    conn_box.set_inline_mode(inline_mode);
+    Box::into_raw(conn_box);
 }
 
 #[no_mangle]
@@ -97,7 +111,9 @@ pub extern "C" fn LinuxConnection_add_memory_pool(
     buf_size: usize,
     min_elts: usize,
 ) {
-    unimplemented!()
+    let mut conn_box = unsafe { Box::from_raw(conn as *mut LinuxConnection) };
+    conn_box.add_memory_pool(buf_size, min_elts).unwrap();
+    Box::into_raw(conn_box);
 }
 
 #[no_mangle]
