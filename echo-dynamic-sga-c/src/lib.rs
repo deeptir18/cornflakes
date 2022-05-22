@@ -1,4 +1,6 @@
-mod echo_messages_sga {
+use cornflakes_codegen::utils::dynamic_sga_hdr::SgaHeaderRepr;
+
+mod rust {
     include!(concat!(env!("OUT_DIR"), "/echo_dynamic_sga.rs"));
 }
 
@@ -14,7 +16,8 @@ pub struct SingleBufferCF {
 
 #[no_mangle]
 pub extern "C" fn SingleBufferCF_new() -> *mut SingleBufferCF {
-    unimplemented!()
+    let single_buffer_cf = rust::SingleBufferCF::new();
+    Box::into_raw(Box::new(single_buffer_cf)) as _
 }
 
 #[no_mangle]
@@ -50,8 +53,17 @@ pub extern "C" fn SingleBufferCF_num_scatter_gather_entries(
 pub extern "C" fn SingleBufferCF_deserialize(
     single_buffer_cf: *mut SingleBufferCF,
     buffer: *const ::std::os::raw::c_uchar,
-) {
-    unimplemented!()
+    buffer_len: usize,
+) -> u32 {
+    let mut single_buffer_cf =
+        unsafe { Box::from_raw(single_buffer_cf as *mut rust::SingleBufferCF) };
+    let buffer = unsafe { std::slice::from_raw_parts(buffer, buffer_len) };
+    let return_code = match single_buffer_cf.deserialize(buffer) {
+        Ok(()) => 0,
+        Err(e) => 1,
+    };
+    Box::into_raw(single_buffer_cf);
+    return_code
 }
 
 #[no_mangle]

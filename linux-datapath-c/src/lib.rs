@@ -11,6 +11,7 @@ fn convert_c_char(ptr: *const ::std::os::raw::c_char) -> String {
 
 // TODO(ygina): move into shared library?
 #[repr(C)]
+#[derive(Debug)]
 pub struct ReceivedPkt {
     data: *const ::std::os::raw::c_uchar,
     data_len: usize,
@@ -120,21 +121,29 @@ pub extern "C" fn LinuxConnection_add_memory_pool(
 pub extern "C" fn LinuxConnection_pop(
     conn: *mut ::std::os::raw::c_void,
     n: *mut usize,
-) -> *mut *mut ReceivedPkt {
+) -> *mut ReceivedPkt {
     let mut conn_box = unsafe { Box::from_raw(conn as *mut LinuxConnection) };
-    let mut pkts = conn_box.pop().unwrap().into_iter().map(|pkt| {
-        // TODO(ygina): assume one segment
-        let seg = pkt.seg(0);
-        Box::into_raw(Box::new(ReceivedPkt {
-            data_len: seg.as_ref().len(),
-            data: seg.as_ref().as_ptr(),
-            msg_id: pkt.msg_id(),
-            conn_id: pkt.conn_id(),
-        }))
-    }).collect::<Vec<*mut ReceivedPkt>>();
-    unsafe { *n = pkts.len(); }
+    let mut pkts = conn_box.pop().unwrap().into_iter()
+        .map(|pkt| {
+            // TODO(ygina): assume one segment
+            let seg = pkt.seg(0);
+            let new_pkt = ReceivedPkt {
+                data_len: seg.as_ref().len(),
+                data: seg.as_ref().as_ptr(),
+                msg_id: pkt.msg_id(),
+                conn_id: pkt.conn_id(),
+            };
+            // TODO(ygina): prevents deallocation of data buffer but leaks other
+            // fields in the received packet -- implement take() function?
+            std::mem::forget(pkt);
+            new_pkt
+        })
+        .collect::<Vec<ReceivedPkt>>();
     Box::into_raw(conn_box);
-    Box::into_raw(Box::new(pkts.as_mut_ptr())) as _
+    unsafe { *n = pkts.len(); }
+    let ptr = pkts.as_mut_ptr();
+    Box::into_raw(Box::new(pkts));  // should we return a ptr to the ptr?
+    ptr
 }
 
 #[no_mangle]

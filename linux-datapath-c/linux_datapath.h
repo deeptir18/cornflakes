@@ -20,7 +20,7 @@ void LinuxConnection_set_inline_mode(void *conn, uintptr_t inline_mode);
 
 void LinuxConnection_add_memory_pool(void *conn, uintptr_t buf_size, uintptr_t min_elts);
 
-struct ReceivedPkt **LinuxConnection_pop(void *conn, uintptr_t *n);
+struct ReceivedPkt *LinuxConnection_pop(void *conn, uintptr_t *n);
 
 void LinuxConnection_push_ordered_sgas(void *conn,
                                        int n,

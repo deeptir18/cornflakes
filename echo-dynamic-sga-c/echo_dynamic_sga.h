@@ -17,8 +17,9 @@ void SingleBufferCF_set_message(struct SingleBufferCF *single_buffer_cf, char *m
 
 uintptr_t SingleBufferCF_num_scatter_gather_entries(struct SingleBufferCF *single_buffer_cf);
 
-void SingleBufferCF_deserialize(struct SingleBufferCF *single_buffer_cf,
-                                const unsigned char *buffer);
+uint32_t SingleBufferCF_deserialize(struct SingleBufferCF *single_buffer_cf,
+                                    const unsigned char *buffer,
+                                    uintptr_t buffer_len);
 
 void SingleBufferCF_serialize_into_sga(struct SingleBufferCF *single_buffer_cf,
                                        void *ordered_sga,

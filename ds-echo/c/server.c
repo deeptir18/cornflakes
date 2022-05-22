@@ -51,7 +51,7 @@ void main() {
     void *ordered_sgas[BUFFER_SIZE];
     while(1) {
         size_t i, n;
-        struct ReceivedPkt **pkts = LinuxConnection_pop(conn, &n);
+        struct ReceivedPkt *pkts = LinuxConnection_pop(conn, &n);
         if (n == 0) continue;
         if (n > BUFFER_SIZE) {
             printf("ERROR: Buffer size is too small");
@@ -61,13 +61,17 @@ void main() {
         // assume single message_type
         // ds-echo/src/cornflakes_dynamic/mod.rs:process_requests_sga()
         for (i = 0; i < n; i++) {
-            struct ReceivedPkt *pkt = pkts[i];
-            printf("Incoming packet length: %ld\n", pkt->data_len);
+            struct ReceivedPkt pkt = pkts[i];
+            printf("Incoming packet length: %ld\n", pkt.data_len);
             struct SingleBufferCF *single_deser = SingleBufferCF_new();
             struct SingleBufferCF *single_ser = SingleBufferCF_new();
             // cornflakes-codegen/src/utils/dynamic_sga_hdr.rs:deserialize()
             // ignore indexing pkt.seg(0)
-            SingleBufferCF_deserialize(single_deser, pkt->data);
+            if (SingleBufferCF_deserialize(single_deser, pkt.data,
+                pkt.data_len) != 0) {
+                printf("ERROR: error deserializing SingleBufferCF\n");
+                exit(-1);
+            }
             // generated echo_dynamic_sga.rs
             SingleBufferCF_set_message(
                 single_ser,
@@ -78,8 +82,8 @@ void main() {
             void *ordered_sga = OrderedSga_allocate(SingleBufferCF_num_scatter_gather_entries(single_ser));
             // cornflakes-codegen/src/utils/dynamic_sga_hdr.rs:serialize_into_sga()
             SingleBufferCF_serialize_into_sga(single_ser, ordered_sga, conn);
-            msg_ids[i] = pkt->msg_id;
-            conn_ids[i] = pkt->conn_id;
+            msg_ids[i] = pkt.msg_id;
+            conn_ids[i] = pkt.conn_id;
             ordered_sgas[i] = ordered_sga;
         }
         LinuxConnection_push_ordered_sgas(conn, n, msg_ids, conn_ids, ordered_sgas);
