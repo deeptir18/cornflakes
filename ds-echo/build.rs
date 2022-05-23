@@ -126,4 +126,15 @@ fn main() {
             panic!("Cornflakes dynamic rcsga codegen failed: {:?}", e);
         }
     }
+
+    match compile(
+        input_cf_file_sga.as_path().to_str().unwrap(),
+        &out_dir,
+        CompileOptions::new(HeaderType::Sga, Language::C),
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("Cornflakes dynamic sga failed: {:?}", e);
+        }
+    }
 }
