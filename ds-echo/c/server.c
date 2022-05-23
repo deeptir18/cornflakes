@@ -50,7 +50,10 @@ void main() {
     size_t conn_ids[BUFFER_SIZE];
     void *ordered_sgas[BUFFER_SIZE];
     while(1) {
-        size_t i, n, message_len;
+        size_t i, n, message_len, num_entries;
+        void *single_deser;
+        void *single_ser;
+        void *ordered_sga;
         const uint8_t *message;
         struct ReceivedPkt *pkts = LinuxConnection_pop(conn, &n);
         if (n == 0) continue;
@@ -64,8 +67,8 @@ void main() {
         for (i = 0; i < n; i++) {
             struct ReceivedPkt pkt = pkts[i];
             // printf("Incoming packet length: %ld\n", pkt.data_len);
-            struct SingleBufferCF *single_deser = SingleBufferCF_new();
-            struct SingleBufferCF *single_ser = SingleBufferCF_new();
+            SingleBufferCF_new(&single_deser);
+            SingleBufferCF_new(&single_ser);
             // cornflakes-codegen/src/utils/dynamic_sga_hdr.rs:deserialize()
             // ignore indexing pkt.seg(0)
             if (SingleBufferCF_deserialize(single_deser, pkt.data,
@@ -75,10 +78,11 @@ void main() {
             }
             // generated echo_dynamic_sga.rs
             // should CFBytes be a zero-overhead wrapper around the ptr?
-            message = SingleBufferCF_get_message(single_deser, &message_len);
+            SingleBufferCF_get_message(single_deser, &message, &message_len);
             SingleBufferCF_set_message(single_ser, message, message_len);
             // cornflake-libos/src/lib.rs:allocate()
-            void *ordered_sga = OrderedSga_allocate(SingleBufferCF_num_scatter_gather_entries(single_ser));
+            SingleBufferCF_num_scatter_gather_entries(single_ser, &num_entries);
+            OrderedSga_allocate(num_entries, &ordered_sga);
             // cornflakes-codegen/src/utils/dynamic_sga_hdr.rs:serialize_into_sga()
             if (SingleBufferCF_serialize_into_sga(single_ser, ordered_sga,
                 conn) != 0) {

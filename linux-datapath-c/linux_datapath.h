@@ -10,7 +10,7 @@ typedef struct ReceivedPkt {
   uintptr_t conn_id;
 } ReceivedPkt;
 
-void *OrderedSga_allocate(uintptr_t size);
+void OrderedSga_allocate(uintptr_t size, void **return_ptr);
 
 void *LinuxConnection_new(const char *config_file, const char *server_ip);
 

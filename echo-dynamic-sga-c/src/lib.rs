@@ -8,23 +8,27 @@ include!(concat!(env!("OUT_DIR"), "/echo_dynamic_sga.rs"));
 // Generated functions in echo_dynamic_sga.rs
 
 #[no_mangle]
-pub extern "C" fn SingleBufferCF_new() -> *mut ::std::os::raw::c_void {
+pub extern "C" fn SingleBufferCF_new(
+    return_ptr: *mut *mut ::std::os::raw::c_void,
+) {
     let single_buffer_cf = SingleBufferCF::new();
-    Box::into_raw(Box::new(single_buffer_cf)) as _
+    let value = Box::into_raw(Box::new(single_buffer_cf));
+    unsafe { *return_ptr = value as _ };
 }
 
 #[no_mangle]
 pub extern "C" fn SingleBufferCF_get_message(
     single_buffer_cf: *mut ::std::os::raw::c_void,
-    message_len: *mut usize,
-) -> *const ::std::os::raw::c_uchar {
+    return_ptr: *mut *const ::std::os::raw::c_uchar,
+    return_len_ptr: *mut usize,
+) {
     let single_buffer_cf = unsafe { Box::from_raw(single_buffer_cf as *mut SingleBufferCF) };
     // get_ptr() required for CFBytes wrapper
     let value = single_buffer_cf.get_message().get_ptr().as_ptr();
     let value_len = single_buffer_cf.get_message().len();
-    unsafe { *message_len = value_len };
+    unsafe { *return_ptr = value };
+    unsafe { *return_len_ptr = value_len };
     Box::into_raw(single_buffer_cf);
-    value
 }
 
 #[no_mangle]
@@ -46,11 +50,12 @@ pub extern "C" fn SingleBufferCF_set_message(
 #[no_mangle]
 pub extern "C" fn SingleBufferCF_num_scatter_gather_entries(
     single_buffer_cf: *mut ::std::os::raw::c_void,
-) -> usize {
+    return_ptr: *mut usize,
+) {
     let single_buffer_cf = unsafe { Box::from_raw(single_buffer_cf as *mut SingleBufferCF) };
     let value = single_buffer_cf.num_scatter_gather_entries();
+    unsafe { *return_ptr = value };
     Box::into_raw(single_buffer_cf);
-    value
 }
 
 ///////////////////////////////////////////////////////////////////////////////

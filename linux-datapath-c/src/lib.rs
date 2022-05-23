@@ -9,6 +9,9 @@ fn convert_c_char(ptr: *const ::std::os::raw::c_char) -> String {
     str_slice.to_string()
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// cornflakes-libos/src/lib.rs
+
 // TODO(ygina): move into shared library?
 #[repr(C)]
 #[derive(Debug)]
@@ -23,10 +26,15 @@ pub struct ReceivedPkt {
 #[no_mangle]
 pub extern "C" fn OrderedSga_allocate(
     size: usize,
-) -> *mut ::std::os::raw::c_void {
+    return_ptr: *mut *mut ::std::os::raw::c_void,
+) {
     let ordered_sga = OrderedSga::allocate(size);
-    Box::into_raw(Box::new(ordered_sga)) as _
+    let value = Box::into_raw(Box::new(ordered_sga));
+    unsafe { *return_ptr = value as _ };
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// linux-datapath/src/datapath/connection.rs
 
 #[no_mangle]
 pub extern "C" fn LinuxConnection_new(
