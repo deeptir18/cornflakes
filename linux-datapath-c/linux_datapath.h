@@ -23,7 +23,7 @@ void LinuxConnection_add_memory_pool(void *conn, uintptr_t buf_size, uintptr_t m
 struct ReceivedPkt *LinuxConnection_pop(void *conn, uintptr_t *n);
 
 void LinuxConnection_push_ordered_sgas(void *conn,
-                                       int n,
-                                       int32_t *msg_ids,
+                                       uintptr_t n,
+                                       uint32_t *msg_ids,
                                        uintptr_t *conn_ids,
                                        void *ordered_sgas);

@@ -3,24 +3,18 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-typedef struct SingleBufferCF {
-  uintptr_t bitmap_len;
-  char *bitmap;
-  char *message;
-} SingleBufferCF;
+void *SingleBufferCF_new(void);
 
-struct SingleBufferCF *SingleBufferCF_new(void);
+const unsigned char *SingleBufferCF_get_message(void *single_buffer_cf, uintptr_t *message_len);
 
-char *SingleBufferCF_get_message(struct SingleBufferCF *single_buffer_cf);
+void SingleBufferCF_set_message(void *single_buffer_cf,
+                                const unsigned char *message,
+                                uintptr_t message_len);
 
-void SingleBufferCF_set_message(struct SingleBufferCF *single_buffer_cf, char *message);
+uintptr_t SingleBufferCF_num_scatter_gather_entries(void *single_buffer_cf);
 
-uintptr_t SingleBufferCF_num_scatter_gather_entries(struct SingleBufferCF *single_buffer_cf);
-
-uint32_t SingleBufferCF_deserialize(struct SingleBufferCF *single_buffer_cf,
+uint32_t SingleBufferCF_deserialize(void *single_buffer_cf,
                                     const unsigned char *buffer,
                                     uintptr_t buffer_len);
 
-void SingleBufferCF_serialize_into_sga(struct SingleBufferCF *single_buffer_cf,
-                                       void *ordered_sga,
-                                       void *conn);
+uint32_t SingleBufferCF_serialize_into_sga(void *single_buffer_cf, void *ordered_sga, void *conn);

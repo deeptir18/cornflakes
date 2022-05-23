@@ -1,4 +1,4 @@
-use cornflakes_libos::datapath::{Datapath, InlineMode};
+use cornflakes_libos::{datapath::{Datapath, InlineMode}, OrderedSga};
 use cornflakes_utils::AppMode;
 use linux_datapath::datapath::connection::LinuxConnection;
 use std::{ffi::CStr, net::Ipv4Addr, str::FromStr};
@@ -24,7 +24,8 @@ pub struct ReceivedPkt {
 pub extern "C" fn OrderedSga_allocate(
     size: usize,
 ) -> *mut ::std::os::raw::c_void {
-    unimplemented!()
+    let ordered_sga = OrderedSga::allocate(size);
+    Box::into_raw(Box::new(ordered_sga)) as _
 }
 
 #[no_mangle]
@@ -149,10 +150,24 @@ pub extern "C" fn LinuxConnection_pop(
 #[no_mangle]
 pub extern "C" fn LinuxConnection_push_ordered_sgas(
     conn: *mut ::std::os::raw::c_void,
-    n: ::std::os::raw::c_int,
-    msg_ids: *mut i32,
+    n: usize,
+    msg_ids: *mut u32,
     conn_ids: *mut usize,
     ordered_sgas: *mut ::std::os::raw::c_void,
 ) {
-    unimplemented!()
+    let mut conn_box = unsafe { Box::from_raw(conn as *mut LinuxConnection) };
+    let msg_ids: &[u32] = unsafe { std::slice::from_raw_parts(msg_ids, n) };
+    let conn_ids: &[usize] = unsafe { std::slice::from_raw_parts(conn_ids, n) };
+    let ordered_sgas: &[*mut OrderedSga] = unsafe {
+        std::slice::from_raw_parts(ordered_sgas as *const *mut OrderedSga, n)
+    };
+    let data = (0..n)
+        .map(|i| (
+            msg_ids[i],
+            conn_ids[i],
+            unsafe { *Box::from_raw(ordered_sgas[i]) },
+        ))
+        .collect::<Vec<_>>();
+    conn_box.push_ordered_sgas(&data[..]).unwrap();
+    Box::into_raw(conn_box);
 }

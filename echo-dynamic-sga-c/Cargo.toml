@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 color-eyre = "0.5"
 cornflakes-libos = { path = "../cornflakes-libos" }
 cornflakes-codegen = { path = "../cornflakes-codegen" }
+linux-datapath = { path = "../linux-datapath" }
 
 [build-dependencies]
 cbindgen = "0.23.0"
