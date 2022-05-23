@@ -47,7 +47,7 @@ pub trait DatapathMemoryPool {
     /// Allocate datapath buffer
     /// Given context to refer back to memory pool.
     fn alloc_data_buf(
-        &mut self,
+        &self,
         context: MempoolID,
     ) -> Result<Option<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>>;
 }
@@ -152,7 +152,7 @@ where
     /// No guarantees on whether the resulting datapath buffer is registered or not.
     /// TODO: is there a more optimal way to keep track of this data structure
     pub fn allocate_buffer(
-        &mut self,
+        &self,
         buf_size: usize,
     ) -> Result<Option<<<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>> {
         let mempool_sizes: Vec<&usize> = self
@@ -167,7 +167,7 @@ where
 
         for size in mempool_sizes {
             for mempool_id in self.mempool_ids.get(size).unwrap() {
-                let mempool = self.mempools.get_mut(mempool_id).unwrap();
+                let mempool = self.mempools.get(mempool_id).unwrap();
                 match mempool.alloc_data_buf(*mempool_id)? {
                     Some(x) => {
                         tracing::debug!("Successfully allocated from mempool size {}", size);

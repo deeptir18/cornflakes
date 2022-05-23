@@ -1,4 +1,5 @@
-use super::{align_up, ForwardPointer, MutForwardPointer};
+use super::{ForwardPointer, MutForwardPointer};
+use bitmaps::Bitmap;
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
 use color_eyre::eyre::{bail, Result};
@@ -11,10 +12,32 @@ use std::{
     slice, slice::Iter, str,
 };
 
+#[cfg(feature = "profiler")]
+use perftools;
+
 pub const SIZE_FIELD: usize = 4;
 pub const OFFSET_FIELD: usize = 4;
 /// u32 at beginning representing bitmap size in bytes
 pub const BITMAP_LENGTH_FIELD: usize = 4;
+
+#[inline]
+pub fn read_size_and_offset(offset: usize, buffer: &[u8]) -> Result<(usize, usize)> {
+    let pointer = &buffer[offset..(offset + 8)];
+    let forward_pointer = ForwardPointer(pointer);
+    Ok((
+        forward_pointer.get_size() as usize,
+        forward_pointer.get_offset() as usize,
+    ))
+}
+
+#[inline]
+pub fn write_size_and_offset(write_offset: usize, size: usize, offset: usize, buffer: &mut [u8]) {
+    let pointer = &mut buffer[write_offset..(write_offset + 8)];
+    let mut forward_pointer = MutForwardPointer(pointer);
+    tracing::debug!(write_offset, size, offset, "Writing in size and offset");
+    forward_pointer.write_size(size as u32);
+    forward_pointer.write_offset(offset as u32);
+}
 
 pub trait SgaHeaderRepr<'obj> {
     /// Maximum number of fields is max u32 * 8
@@ -24,51 +47,82 @@ pub trait SgaHeaderRepr<'obj> {
     /// sized fields. Does not include the bitmap.
     const CONSTANT_HEADER_SIZE: usize;
 
+    /// Number of bitmap entries needed to represent this type.
+    const NUM_U32_BITMAPS: usize;
+
+    fn get_bitmap_itermut(&mut self) -> std::slice::IterMut<Bitmap<32>> {
+        [].iter_mut()
+    }
+
+    fn get_bitmap_iter(&self) -> std::slice::Iter<Bitmap<32>> {
+        [].iter()
+    }
+
+    fn get_mut_bitmap_entry(&mut self, _offset: usize) -> &mut Bitmap<32> {
+        unimplemented!();
+    }
+
+    fn get_bitmap_entry(&self, _offset: usize) -> &Bitmap<32> {
+        unimplemented!();
+    }
+
+    fn set_bitmap(&mut self, _bitmap: impl Iterator<Item = Bitmap<32>>) {}
+
+    #[inline]
     fn bitmap_length() -> usize {
-        align_up(Self::NUMBER_OF_FIELDS, 4)
+        Self::NUM_U32_BITMAPS * 4
     }
 
-    fn get_bitmap_field(&self, field: usize) -> bool {
-        tracing::debug!("Bitmap: {:?}", self.get_bitmap());
-        self.get_bitmap()[field] == 1
+    #[inline]
+    fn get_bitmap_field(&self, field: usize, bitmap_offset: usize) -> bool {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Get bitmap field");
+        self.get_bitmap_entry(bitmap_offset).get(field)
     }
 
-    fn set_bitmap_field(&mut self, field: usize) {
-        self.get_mut_bitmap()[field] = 1;
+    #[inline]
+    fn set_bitmap_field(&mut self, field: usize, bitmap_offset: usize) {
+        self.get_mut_bitmap_entry(bitmap_offset).set(field, true);
     }
 
+    #[inline]
     fn clear_bitmap(&mut self) {
-        for field in self
-            .get_mut_bitmap()
-            .iter_mut()
-            .take(Self::NUMBER_OF_FIELDS)
-        {
-            *field = 0;
+        for bitmap in self.get_bitmap_itermut() {
+            *bitmap &= Bitmap::<32>::new();
         }
     }
 
-    fn get_bitmap(&self) -> &[u8];
-
-    fn set_bitmap(&mut self, bitmap: &[u8]);
-
-    fn get_mut_bitmap(&mut self) -> &mut [u8];
-
     fn serialize_bitmap(&self, header: &mut [u8], offset: usize) {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("serialize bitmap");
         LittleEndian::write_u32(
             &mut header[offset..(offset + BITMAP_LENGTH_FIELD)],
-            Self::bitmap_length() as u32,
+            Self::NUM_U32_BITMAPS as u32,
         );
-        let slice = &mut header[(offset + BITMAP_LENGTH_FIELD)
-            ..(offset + BITMAP_LENGTH_FIELD + Self::bitmap_length())];
-        slice.copy_from_slice(&self.get_bitmap());
+
+        for (i, bitmap) in self.get_bitmap_iter().enumerate() {
+            let slice = &mut header[(offset + BITMAP_LENGTH_FIELD + i * 4)
+                ..(offset + BITMAP_LENGTH_FIELD + (i + 1) * 4)];
+            slice.copy_from_slice(bitmap.as_bytes());
+        }
     }
 
-    fn deserialize_bitmap(&mut self, header: &[u8], offset: usize) {
+    /// Copies bitmap into object's bitmap, returning the space from offset that the bitmap
+    /// in the serialized header format takes.
+    fn deserialize_bitmap(&mut self, header: &[u8], offset: usize) -> usize {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("deserialize bitmap");
         let bitmap_size = LittleEndian::read_u32(&header[offset..(offset + BITMAP_LENGTH_FIELD)]);
         self.set_bitmap(
-            &header[(offset + BITMAP_LENGTH_FIELD)
-                ..(offset + BITMAP_LENGTH_FIELD + (bitmap_size as usize))],
+            (0..std::cmp::min(bitmap_size, Self::NUM_U32_BITMAPS as u32) as usize).map(|i| {
+                let num = LittleEndian::read_u32(
+                    &header[(offset + BITMAP_LENGTH_FIELD + i * 4)
+                        ..(offset + BITMAP_LENGTH_FIELD + (i + 1) * 4)],
+                );
+                Bitmap::<32>::from_value(num)
+            }),
         );
+        bitmap_size as usize
     }
 
     fn check_deep_equality(&self, other: &Self) -> bool;
@@ -101,43 +155,6 @@ pub trait SgaHeaderRepr<'obj> {
         vec![0u8; self.total_header_size(false, true)]
     }
 
-    fn inner_serialize_with_ref<'sge>(
-        &self,
-        header: &mut [u8],
-        constant_header_offset: usize,
-        dynamic_header_start: usize,
-        scatter_gather_entries: &mut [Sge<'sge>],
-        offsets: &mut [usize],
-        with_ref: bool,
-    ) -> Result<()>
-    where
-        'obj: 'sge,
-    {
-        if with_ref {
-            // read forward pointer
-            let slice = &mut header
-                [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)];
-            let mut forward_pointer = MutForwardPointer(slice);
-            forward_pointer.write_offset(dynamic_header_start as _);
-            // TODO: write size?
-            self.inner_serialize(
-                header,
-                dynamic_header_start,
-                dynamic_header_start + self.dynamic_header_start(),
-                scatter_gather_entries,
-                offsets,
-            )
-        } else {
-            self.inner_serialize(
-                header,
-                constant_header_offset,
-                self.dynamic_header_start(),
-                scatter_gather_entries,
-                offsets,
-            )
-        }
-    }
-
     fn is_list(&self) -> bool {
         false
     }
@@ -166,29 +183,6 @@ pub trait SgaHeaderRepr<'obj> {
     where
         'obj: 'sge;
 
-    fn inner_deserialize_with_ref<'buf>(
-        &mut self,
-        buffer: &'buf [u8],
-        header_offset: usize,
-        with_ref: bool,
-    ) -> Result<()>
-    where
-        'buf: 'obj,
-    {
-        if with_ref {
-            let slice =
-                &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
-            let forward_pointer = ForwardPointer(slice);
-            self.inner_deserialize(buffer, forward_pointer.get_offset() as usize)
-        } else {
-            tracing::debug!(
-                header_offset = header_offset,
-                "inner deserialize with ref false"
-            );
-            self.inner_deserialize(buffer, header_offset)
-        }
-    }
-
     /// Nested deserialization function.
     /// Params:
     /// @buffer - Buffer to deserialize.
@@ -197,6 +191,7 @@ pub trait SgaHeaderRepr<'obj> {
     where
         'buf: 'obj;
 
+    #[inline]
     fn serialize_to_owned<D>(&self, datapath: &D) -> Result<Vec<u8>>
     where
         D: Datapath,
@@ -212,6 +207,7 @@ pub trait SgaHeaderRepr<'obj> {
     }
 
     /// Serialize with context of existing ordered sga and existing header buffer.
+    #[inline]
     fn serialize_into_sga<'sge, D>(
         &self,
         ordered_sga: &mut OrderedSga<'sge>,
@@ -222,7 +218,11 @@ pub trait SgaHeaderRepr<'obj> {
         'obj: 'sge,
     {
         let required_entries = self.num_scatter_gather_entries();
-        let mut owned_hdr = self.alloc_hdr();
+        let mut owned_hdr = {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("alloc hdr");
+            self.alloc_hdr()
+        };
         tracing::debug!("Header size: {}", owned_hdr.len());
         let header_buffer = owned_hdr.as_mut_slice();
 
@@ -238,47 +238,55 @@ pub trait SgaHeaderRepr<'obj> {
         let mut offsets: Vec<usize> = vec![0; required_entries];
 
         // recursive serialize each item
-        self.inner_serialize_with_ref(
-            header_buffer,
-            0,
-            self.dynamic_header_start(),
-            ordered_sga.mut_entries_slice(0, required_entries),
-            offsets.as_mut_slice(),
-            false,
-        )?;
-
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("recursive serialization");
+            self.inner_serialize(
+                header_buffer,
+                0,
+                self.dynamic_header_start(),
+                ordered_sga.mut_entries_slice(0, required_entries),
+                offsets.as_mut_slice(),
+            )?;
+        }
         // reorder entries according to size threshold and whether entries are registered.
-        ordered_sga.reorder_by_size_and_registration(datapath, &mut offsets)?;
-        // reorder entries if current (zero-copy segments + 1) exceeds max zero-copy segments
-        ordered_sga.reorder_by_max_segs(datapath, &mut offsets)?;
-
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("reorder sga");
+            ordered_sga.reorder_by_size_and_registration(datapath, &mut offsets)?;
+            // reorder entries if current (zero-copy segments + 1) exceeds max zero-copy segments
+            ordered_sga.reorder_by_max_segs(datapath, &mut offsets)?;
+        }
         let mut cur_dynamic_offset = self.total_header_size(false, false);
 
         tracing::debug!(starting_offsets = cur_dynamic_offset, "starting offsets");
         // iterate over header, writing in forward pointers based on new ordering
         tracing::debug!(header_addr =? header_buffer.as_ptr());
-        for (sge, offset) in ordered_sga
-            .entries_slice(0, required_entries)
-            .iter()
-            .zip(offsets.into_iter())
         {
-            tracing::debug!(addr =? &header_buffer[offset..(offset + 8)].as_ptr(), "Addr without cast");
-            let slice = &mut header_buffer[offset..(offset + 8)];
-            let mut obj_ref = MutForwardPointer(slice);
-            obj_ref.write_size(sge.len() as u32);
-            obj_ref.write_offset(cur_dynamic_offset as u32);
-            tracing::debug!(
-                size = sge.len(),
-                off = cur_dynamic_offset,
-                slice =? slice,
-                slice_addr =? slice.as_ptr(),
-                writing_offset = offset,
-                "Writing size and offset"
-            );
+            #[cfg(feature = "profiler")]
+            perftools::timer!("fill in sga offsets");
+            for (sge, offset) in ordered_sga
+                .entries_slice(0, required_entries)
+                .iter()
+                .zip(offsets.into_iter())
+            {
+                tracing::debug!(addr =? &header_buffer[offset..(offset + 8)].as_ptr(), "Addr without cast");
+                #[cfg(feature = "profiler")]
+                perftools::timer!("individual write in forward offset");
+                let slice = &mut header_buffer[offset..(offset + 8)];
+                let mut obj_ref = MutForwardPointer(slice);
+                tracing::debug!(
+                    "At offset {}, writing in size {} and offset {}",
+                    offset,
+                    sge.len(),
+                    cur_dynamic_offset
+                );
+                obj_ref.write_size(sge.len() as u32);
+                obj_ref.write_offset(cur_dynamic_offset as u32);
 
-            cur_dynamic_offset += sge.len();
+                cur_dynamic_offset += sge.len();
+            }
         }
-
         ordered_sga.set_hdr(owned_hdr);
 
         Ok(())
@@ -336,6 +344,16 @@ impl<'obj> SgaHeaderRepr<'obj> for CFString<'obj> {
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
+    const NUM_U32_BITMAPS: usize = 0;
+
+    fn get_mut_bitmap_entry(&mut self, _offset: usize) -> &mut Bitmap<32> {
+        unreachable!();
+    }
+
+    fn get_bitmap_entry(&self, _offset: usize) -> &Bitmap<32> {
+        unreachable!();
+    }
+
     fn dynamic_header_size(&self) -> usize {
         0
     }
@@ -347,16 +365,6 @@ impl<'obj> SgaHeaderRepr<'obj> for CFString<'obj> {
     fn dynamic_header_start(&self) -> usize {
         0
     }
-
-    fn get_bitmap(&self) -> &[u8] {
-        &[]
-    }
-
-    fn get_mut_bitmap(&mut self) -> &mut [u8] {
-        &mut []
-    }
-
-    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn check_deep_equality(&self, other: &CFString) -> bool {
         self.len() == other.len() && self.bytes().to_vec() == other.bytes().to_vec()
@@ -382,8 +390,7 @@ impl<'obj> SgaHeaderRepr<'obj> for CFString<'obj> {
     where
         'buf: 'obj,
     {
-        let header_slice =
-            &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
+        let header_slice = &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)];
         let forward_pointer = ForwardPointer(header_slice);
         let offset = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
@@ -426,6 +433,16 @@ impl<'obj> SgaHeaderRepr<'obj> for CFBytes<'obj> {
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
+    const NUM_U32_BITMAPS: usize = 0;
+
+    fn get_mut_bitmap_entry(&mut self, _offset: usize) -> &mut Bitmap<32> {
+        unreachable!();
+    }
+
+    fn get_bitmap_entry(&self, _offset: usize) -> &Bitmap<32> {
+        unreachable!();
+    }
+
     fn dynamic_header_size(&self) -> usize {
         tracing::debug!("Dynamic hdr size for cf bytes: 0");
         0
@@ -438,16 +455,6 @@ impl<'obj> SgaHeaderRepr<'obj> for CFBytes<'obj> {
     fn dynamic_header_start(&self) -> usize {
         0
     }
-
-    fn get_bitmap(&self) -> &[u8] {
-        &[]
-    }
-
-    fn get_mut_bitmap(&mut self) -> &mut [u8] {
-        &mut []
-    }
-
-    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn check_deep_equality(&self, other: &CFBytes) -> bool {
         if self.len() != other.len() {
@@ -476,6 +483,8 @@ impl<'obj> SgaHeaderRepr<'obj> for CFBytes<'obj> {
     where
         'obj: 'sge,
     {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("inner serialize cf bytes");
         scatter_gather_entries[0] = Sge::new(self.ptr);
         offsets[0] = constant_header_offset;
         Ok(())
@@ -485,12 +494,14 @@ impl<'obj> SgaHeaderRepr<'obj> for CFBytes<'obj> {
     where
         'buf: 'obj,
     {
-        let header_slice =
-            &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
+        #[cfg(feature = "profiler")]
+        perftools::timer!("inner deserialize cf bytes");
+        tracing::debug!("buffer addr: {:?}", buffer.as_ptr());
+        let header_slice = &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)];
         let forward_pointer = ForwardPointer(header_slice);
         let offset = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
-        tracing::debug!(offset, size, "Deserializing cfbytes");
+        tracing::debug!(header_offset, offset, size, header_slice_addr =? header_slice.as_ptr(), "Deserializing cfbytes");
         let ptr = &buffer[offset..(offset + size)];
         self.ptr = ptr;
         Ok(())
@@ -572,6 +583,22 @@ where
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
+    const NUM_U32_BITMAPS: usize = 0;
+
+    fn get_mut_bitmap_entry(&mut self, offset: usize) -> &mut Bitmap<32> {
+        match self {
+            List::Owned(owned_list) => owned_list.get_mut_bitmap_entry(offset),
+            List::Ref(ref_list) => ref_list.get_mut_bitmap_entry(offset),
+        }
+    }
+
+    fn get_bitmap_entry(&self, offset: usize) -> &Bitmap<32> {
+        match self {
+            List::Owned(owned_list) => owned_list.get_bitmap_entry(offset),
+            List::Ref(ref_list) => ref_list.get_bitmap_entry(offset),
+        }
+    }
+
     fn dynamic_header_size(&self) -> usize {
         match self {
             List::Owned(owned_list) => owned_list.dynamic_header_size(),
@@ -586,16 +613,6 @@ where
     fn dynamic_header_start(&self) -> usize {
         0
     }
-
-    fn get_bitmap(&self) -> &[u8] {
-        &[]
-    }
-
-    fn get_mut_bitmap(&mut self) -> &mut [u8] {
-        &mut []
-    }
-
-    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn is_list(&self) -> bool {
         true
@@ -686,13 +703,11 @@ where
     }
 
     pub fn append(&mut self, val: T) {
-        assert!(self.num_set < self.num_space);
         self.write_val(self.num_set, val);
         self.num_set += 1;
     }
 
     pub fn replace(&mut self, idx: usize, val: T) {
-        assert!(idx < self.num_space);
         self.write_val(idx, val);
     }
 
@@ -731,6 +746,16 @@ where
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
+    const NUM_U32_BITMAPS: usize = 0;
+
+    fn get_mut_bitmap_entry(&mut self, _offset: usize) -> &mut Bitmap<32> {
+        unreachable!();
+    }
+
+    fn get_bitmap_entry(&self, _offset: usize) -> &Bitmap<32> {
+        unreachable!();
+    }
+
     fn dynamic_header_size(&self) -> usize {
         self.num_set * size_of::<T>()
     }
@@ -742,16 +767,6 @@ where
     fn dynamic_header_start(&self) -> usize {
         0
     }
-
-    fn get_bitmap(&self) -> &[u8] {
-        &[]
-    }
-
-    fn get_mut_bitmap(&mut self) -> &mut [u8] {
-        &mut []
-    }
-
-    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn is_list(&self) -> bool {
         true
@@ -796,8 +811,7 @@ where
     where
         'buf: 'obj,
     {
-        let header_slice =
-            &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
+        let header_slice = &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)];
         let forward_pointer = ForwardPointer(header_slice);
         let list_size = forward_pointer.get_size() as usize;
         let offset = forward_pointer.get_offset() as usize;
@@ -839,7 +853,6 @@ where
     T: Default + Debug + Clone + PartialEq + Eq,
 {
     pub fn replace(&mut self, idx: usize, val: T) {
-        assert!(idx < self.num_space);
         self.write_val(idx, val);
     }
 
@@ -879,30 +892,30 @@ where
 
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
-    fn dynamic_header_size(&self) -> usize {
-        self.num_space * size_of::<T>()
+    const NUM_U32_BITMAPS: usize = 0;
+
+    fn get_mut_bitmap_entry(&mut self, _offset: usize) -> &mut Bitmap<32> {
+        unreachable!();
+    }
+
+    fn get_bitmap_entry(&self, _offset: usize) -> &Bitmap<32> {
+        unreachable!();
+    }
+
+    fn is_list(&self) -> bool {
+        true
     }
 
     fn num_scatter_gather_entries(&self) -> usize {
         0
     }
 
+    fn dynamic_header_size(&self) -> usize {
+        self.num_space * size_of::<T>()
+    }
+
     fn dynamic_header_start(&self) -> usize {
-        0
-    }
-
-    fn get_bitmap(&self) -> &[u8] {
-        &[]
-    }
-
-    fn get_mut_bitmap(&mut self) -> &mut [u8] {
-        &mut []
-    }
-
-    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
-
-    fn is_list(&self) -> bool {
-        true
+        Self::CONSTANT_HEADER_SIZE
     }
 
     fn check_deep_equality(&self, other: &RefList<T>) -> bool {
@@ -944,8 +957,7 @@ where
     where
         'buf: 'obj,
     {
-        let header_slice =
-            &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
+        let header_slice = &buffer[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)];
         let forward_pointer = ForwardPointer(header_slice);
         let list_size = forward_pointer.get_size() as usize;
         let offset = forward_pointer.get_offset() as usize;
@@ -984,14 +996,12 @@ where
     }
 
     pub fn append(&mut self, val: T) {
-        assert!(self.num_set < self.num_space);
         tracing::debug!("Appending to the list");
         self.elts.push(val);
         self.num_set += 1;
     }
 
     pub fn replace(&mut self, idx: usize, val: T) {
-        assert!(idx < self.num_space);
         self.elts[idx] = val;
     }
 
@@ -1006,7 +1016,6 @@ where
     type Output = T;
     fn index(&self, idx: usize) -> &Self::Output {
         tracing::debug!(idx = idx, self.num_space = self.num_space, "CALLING INDEX");
-        assert!(idx < self.num_space);
         &self.elts[idx]
     }
 }
@@ -1018,6 +1027,16 @@ where
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
     const NUMBER_OF_FIELDS: usize = 1;
+
+    const NUM_U32_BITMAPS: usize = 0;
+
+    fn get_mut_bitmap_entry(&mut self, _offset: usize) -> &mut Bitmap<32> {
+        unreachable!();
+    }
+
+    fn get_bitmap_entry(&self, _offset: usize) -> &Bitmap<32> {
+        unreachable!();
+    }
 
     fn dynamic_header_size(&self) -> usize {
         self.elts
@@ -1041,16 +1060,6 @@ where
             .map(|x| x.num_scatter_gather_entries())
             .sum()
     }
-
-    fn get_bitmap(&self) -> &[u8] {
-        &[]
-    }
-
-    fn get_mut_bitmap(&mut self) -> &mut [u8] {
-        &mut []
-    }
-
-    fn set_bitmap(&mut self, _bitmap: &[u8]) {}
 
     fn is_list(&self) -> bool {
         true
@@ -1093,14 +1102,30 @@ where
         tracing::debug!(num_elts = self.elts.len(), "Info about list items");
         for (i, elt) in self.elts.iter().take(self.num_set).enumerate() {
             let required_sges = elt.num_scatter_gather_entries();
-            elt.inner_serialize_with_ref(
-                header_buffer,
-                dynamic_header_start + T::CONSTANT_HEADER_SIZE * i,
-                cur_dynamic_off,
-                &mut scatter_gather_entries[sge_idx..(sge_idx + required_sges)],
-                &mut offsets[sge_idx..(sge_idx + required_sges)],
-                elt.dynamic_header_size() != 0,
-            )?;
+            if elt.dynamic_header_size() != 0 {
+                let constant_off = dynamic_header_start + T::CONSTANT_HEADER_SIZE * i;
+                let slice =
+                    &mut header_buffer[constant_off..(constant_off + T::CONSTANT_HEADER_SIZE)];
+                let mut forward_offset = MutForwardPointer(slice);
+                // TODO: might be unnecessary
+                forward_offset.write_size(elt.dynamic_header_size() as u32);
+                forward_offset.write_offset(cur_dynamic_off as u32);
+                elt.inner_serialize(
+                    header_buffer,
+                    cur_dynamic_off,
+                    cur_dynamic_off + elt.dynamic_header_start(),
+                    &mut scatter_gather_entries[sge_idx..(sge_idx + required_sges)],
+                    &mut offsets[sge_idx..(sge_idx + required_sges)],
+                )?;
+            } else {
+                elt.inner_serialize(
+                    header_buffer,
+                    dynamic_header_start + T::CONSTANT_HEADER_SIZE * i,
+                    cur_dynamic_off,
+                    &mut scatter_gather_entries[sge_idx..(sge_idx + required_sges)],
+                    &mut offsets[sge_idx..(sge_idx + required_sges)],
+                )?;
+            }
             sge_idx += required_sges;
             cur_dynamic_off += elt.dynamic_header_size();
         }
@@ -1111,8 +1136,7 @@ where
     where
         'buf: 'obj,
     {
-        let slice =
-            &buffer[constant_offset..(constant_offset + Self::CONSTANT_HEADER_SIZE)].try_into()?;
+        let slice = &buffer[constant_offset..(constant_offset + Self::CONSTANT_HEADER_SIZE)];
         let forward_pointer = ForwardPointer(slice);
         let size = forward_pointer.get_size() as usize;
         let dynamic_offset = forward_pointer.get_offset() as usize;
@@ -1131,13 +1155,13 @@ where
         );
 
         for (i, elt) in self.elts.iter_mut().take(size).enumerate() {
-            // for objects with no dynamic header size, no need to deserialize with ref
-            // TODO: is there a bug if you have VariableList<VariableList>>?
-            elt.inner_deserialize_with_ref(
-                buffer,
-                dynamic_offset + i * T::CONSTANT_HEADER_SIZE,
-                elt.dynamic_header_size() != 0 && !elt.is_list(),
-            )?;
+            if elt.dynamic_header_size() == 0 {
+                elt.inner_deserialize(buffer, dynamic_offset + i * T::CONSTANT_HEADER_SIZE)?;
+            } else {
+                let (_size, dynamic_off) =
+                    read_size_and_offset(dynamic_offset + i * T::CONSTANT_HEADER_SIZE, buffer)?;
+                elt.inner_deserialize(buffer, dynamic_off)?;
+            }
         }
         Ok(())
     }

@@ -296,6 +296,14 @@ pub trait Datapath {
     /// First sga.len() - num_zero_copy_entries() will be copied together.
     fn push_ordered_sgas(&mut self, ordered_sgas: &[(MsgID, ConnID, OrderedSga)]) -> Result<()>;
 
+    /// Push an iterator over ordered SGAS.
+    fn push_ordered_sgas_iterator<'sge>(
+        &self,
+        _ordered_sgas: impl Iterator<Item = Result<(MsgID, ConnID, OrderedSga<'sge>)>>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Send scatter-gather arrays of addresses.
     /// Args:
     /// @sgas: Vector of (msg id, connection id, raw address scatter-gather arrays) to send.

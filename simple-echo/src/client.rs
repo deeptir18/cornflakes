@@ -111,6 +111,14 @@ where
         tracing::debug!(id = sga.msg_id(), "Received sga");
         if cfg!(debug_assertions) {
             let bytes = sga.flatten();
+            if bytes != self.bytes_to_transmit {
+                tracing::debug!(
+                    "ours: {:?}, length {}",
+                    self.bytes_to_transmit,
+                    self.bytes_to_transmit.len()
+                );
+                tracing::debug!("theirs: {:?}, length {}", bytes, bytes.len());
+            }
             assert!(bytes == self.bytes_to_transmit);
             tracing::debug!(id = sga.msg_id(), "Sga passed debug test");
         }

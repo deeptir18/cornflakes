@@ -164,22 +164,40 @@ inline struct custom_mlx5_transmission_info *custom_mlx5_completion_start(struct
     return custom_mlx5_incr_transmission_info(v, current_completion_info);
 }
 
+/*
+ * Check if copying into ring buffer causes a crossover back to the beginning.
+ * */
+int check_inline_copy_crossover(struct custom_mlx5_per_thread_context *per_thread_context, char *inline_offset_ptr, size_t copy_len);
+
 /* 
- * copy_inline_data - Copies inline data into the segment currently being
- * constructed.
- * Arguments:
- * @per_thread_context: Mlx5 per thread context
- * @inline_offset - offset into inline data (inlined data already copied)
- * @src - Source buffer to copy from
- * @copy_len - Amount of data to copy.
- * @inline_size - Amount of total inlined size
+ * copy_inline_data_from_offset - copies inline data into the segment currently being
+ * constructed from inline offset ptr.
+ * arguments:
+ * @per_thread_context: mlx5 per thread context
+ * @inline_offset_ptr - offset into inline data (inlined data already copied)
+ * @src - source buffer to copy from
+ * @copy_len - amount of data to copy.
  *
- * Returns:
- * Amount of data copied. Truncates to minimum of (inline_size -
+ * returns:
+ * amount of data copied. truncates to minimum of (inline_size -
+ * inline_offset, copy_len)
+ * */
+size_t custom_mlx5_copy_inline_data_from_offset_wraparound(struct custom_mlx5_per_thread_context *per_thread_context, char *inline_offset_ptr, const char *src, size_t copy_len);
+
+ /* copy_inline_data - copies inline data into the segment currently being
+ * constructed from inline offset.
+ * arguments:
+ * @per_thread_context: mlx5 per thread context
+ * @inline_offset - amount of already inlined data
+ * @src - source buffer to copy from
+ * @copy_len - amount of data to copy.
+ * @inline_size - Total inline size
+ *
+ * returns:
+ * amount of data copied. truncates to minimum of (inline_size -
  * inline_offset, copy_len)
  * */
 size_t custom_mlx5_copy_inline_data(struct custom_mlx5_per_thread_context *per_thread_context, size_t inline_offset, const char *src, size_t copy_len, size_t inline_size);
-
 /* 
  * Inline and write in ethernet header.
  * Arguments:
@@ -187,7 +205,7 @@ size_t custom_mlx5_copy_inline_data(struct custom_mlx5_per_thread_context *per_t
  * @eth - ethernet header to inline
  * @total_inline_size - total amount of data being inlined in this transmission
  * */
-void custom_mlx5_inline_eth_hdr(struct custom_mlx5_per_thread_context *per_thread_context, struct eth_hdr *eth, size_t total_inline_size);
+void custom_mlx5_inline_eth_hdr(struct custom_mlx5_per_thread_context *per_thread_context, const struct eth_hdr *eth, size_t total_inline_size);
 
 /* 
  * Inline and write in ipv4 header.
@@ -201,7 +219,7 @@ void custom_mlx5_inline_eth_hdr(struct custom_mlx5_per_thread_context *per_threa
  * Note this function is NOT threadsafe. It temporarily modifies the data inside
  * ip_hdr in order to calculate the checksum.
  * */
-void custom_mlx5_inline_ipv4_hdr(struct custom_mlx5_per_thread_context *per_thread_context, struct ip_hdr *ipv4, size_t payload_size, size_t total_inline_size);
+void custom_mlx5_inline_ipv4_hdr(struct custom_mlx5_per_thread_context *per_thread_context, const struct ip_hdr *ipv4, size_t payload_size, size_t total_inline_size);
 
 /* 
  * Inline and write udp header.
@@ -214,7 +232,7 @@ void custom_mlx5_inline_ipv4_hdr(struct custom_mlx5_per_thread_context *per_thre
  * Note this function is NOT threadsafe. It temporarily modifies the data inside
  * udp_hdr in order to calculate the checksum.
  * */
-void custom_mlx5_inline_udp_hdr(struct custom_mlx5_per_thread_context *per_thread_context, struct udp_hdr *udp, size_t payload_size, size_t total_inline_size);
+void custom_mlx5_inline_udp_hdr(struct custom_mlx5_per_thread_context *per_thread_context, const struct udp_hdr *udp, size_t payload_size, size_t total_inline_size);
 
 /* Inlines packet header after ethernet, ip and udp headers.
  * Arguments:

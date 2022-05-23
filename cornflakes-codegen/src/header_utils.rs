@@ -9,6 +9,17 @@ static LIFETIME_NAME: &str = "registered";
 static DATAPATH_TRAIT_KEY: &str = "D";
 static DATAPATH_TRAIT: &str = "Datapath";
 
+fn align_up(x: usize, align_size: usize) -> usize {
+    // find value aligned up to align_size
+    let divisor = x / align_size;
+    if (divisor * align_size) < x {
+        return (divisor + 1) * align_size;
+    } else {
+        assert!(divisor * align_size == x);
+        return x;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProtoReprInfo {
     repr: FileDescriptor,
@@ -232,6 +243,14 @@ impl MessageInfo {
         self.0.fields.len()
     }
 
+    pub fn get_num_u32_bitmaps(&self) -> usize {
+        let num_fields = self.0.fields.len();
+        // align up to 32 * 8 (e.g., number of fields that can fit in a 4-byte bitmap)
+        let aligned_fields = align_up(num_fields, 32 * 8);
+        let num_u32_bitmaps = aligned_fields / (32 * 8);
+        num_u32_bitmaps
+    }
+
     pub fn get_bitmap_size(&self) -> usize {
         let factor = ((self.0.fields.len() as f64) / (ALIGN_SIZE as f64)).ceil() as usize;
         factor * ALIGN_SIZE
@@ -328,6 +347,65 @@ impl MessageInfo {
             }
         }
         bail!("Field info for idx {} not found", id);
+    }
+
+    pub fn get_constants_with_u32_bitmaps(
+        &self,
+        field: &FieldInfo,
+        include_constant_offset: bool,
+        ref_counted_mode: bool,
+    ) -> Result<Vec<(String, String, String)>> {
+        let mut ret: Vec<(String, String, String)> = Vec::default();
+        let field_idx = field.get_idx();
+        ret.push((
+            field.get_bitmap_idx_str(false),
+            "usize".to_string(),
+            format!("{}", field_idx % (32 * 8)),
+        ));
+        ret.push((
+            field.get_u32_bitmap_offset_str(false),
+            "usize".to_string(),
+            format!("{}", field_idx / (32 * 8)),
+        ));
+        if !field.is_list() {
+            match field.0.typ {
+                FieldType::Int32 | FieldType::Uint32 => {
+                    let field_size = 4;
+                    ret.push((
+                        field.get_header_size_str(false, ref_counted_mode)?,
+                        "usize".to_string(),
+                        format!("{}", field_size),
+                    ));
+                }
+                FieldType::Int64 | FieldType::Uint64 | FieldType::Float => {
+                    let field_size = 8;
+                    ret.push((
+                        field.get_header_size_str(false, ref_counted_mode)?,
+                        "usize".to_string(),
+                        format!("{}", field_size),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if include_constant_offset {
+            let mut offset_string = "Self::BITMAP_SIZE".to_string();
+            for i in 0..field_idx {
+                let preceeding_field = self.get_field_from_id(i)?;
+                offset_string = format!(
+                    "{} + {}",
+                    offset_string,
+                    preceeding_field.get_header_size_str(true, ref_counted_mode)?
+                );
+            }
+            ret.push((
+                field.get_header_offset_str(false),
+                "usize".to_string(),
+                offset_string,
+            ));
+        }
+
+        Ok(ret)
     }
 
     pub fn get_constants(
@@ -530,6 +608,16 @@ impl FieldInfo {
             }
         };
         Ok(base_type)
+    }
+
+    pub fn get_u32_bitmap_offset_str(&self, with_self: bool) -> String {
+        let self_str = match with_self {
+            true => "Self::",
+            false => "",
+        };
+        let mut ret = format!("{}_BITMAP_OFFSET", self.0.name).to_uppercase();
+        ret = format!("{}{}", self_str, ret);
+        ret
     }
 
     pub fn get_bitmap_idx_str(&self, with_self: bool) -> String {

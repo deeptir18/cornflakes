@@ -167,9 +167,8 @@ where
         with_ref: bool,
     ) -> Result<()> {
         if with_ref {
-            let slice = &buffer.as_ref()
-                [header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)]
-                .try_into()?;
+            let slice =
+                &buffer.as_ref()[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)];
             let forward_pointer = ForwardPointer(slice);
             self.inner_deserialize(buffer, forward_pointer.get_offset() as usize)
         } else {
@@ -336,8 +335,7 @@ where
     }
 
     fn inner_deserialize(&mut self, buffer: &RcSge<'a, D>, header_offset: usize) -> Result<()> {
-        let slice = &buffer.as_ref()[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
+        let slice = &buffer.as_ref()[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)];
         let forward_pointer = ForwardPointer(slice);
         let off = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
@@ -423,8 +421,7 @@ where
     }
 
     fn inner_deserialize(&mut self, buffer: &RcSge<'a, D>, header_offset: usize) -> Result<()> {
-        let slice = &buffer.as_ref()[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
+        let slice = &buffer.as_ref()[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)];
         let forward_pointer = ForwardPointer(slice);
         let off = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
@@ -684,8 +681,7 @@ where
 
     fn inner_deserialize(&mut self, buffer: &RcSge<'a, D>, header_offset: usize) -> Result<()> {
         let header_slice = &buffer.as_ref()[header_offset
-            ..(header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
+            ..(header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)];
         let forward_pointer = ForwardPointer(header_slice);
         let list_size = forward_pointer.get_size() as usize;
         let offset = forward_pointer.get_offset() as usize;
@@ -817,8 +813,7 @@ where
 
     fn inner_deserialize(&mut self, buffer: &RcSge<'a, D>, header_offset: usize) -> Result<()> {
         let header_slice = &buffer.as_ref()[header_offset
-            ..(header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
+            ..(header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)];
         let forward_pointer = ForwardPointer(header_slice);
         let list_size = forward_pointer.get_size() as usize;
         let offset = forward_pointer.get_offset() as usize;
@@ -959,9 +954,8 @@ where
 
     // TODO: should offsets be written RELATIVE to the object that is being deserialized?
     fn inner_deserialize(&mut self, buffer: &RcSge<'a, D>, constant_offset: usize) -> Result<()> {
-        let slice = &buffer.as_ref()
-            [constant_offset..(constant_offset + Self::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
+        let slice =
+            &buffer.as_ref()[constant_offset..(constant_offset + Self::CONSTANT_HEADER_SIZE)];
         let forward_pointer = ForwardPointer(slice);
         let size = forward_pointer.get_size() as usize;
         let dynamic_offset = forward_pointer.get_offset() as usize;

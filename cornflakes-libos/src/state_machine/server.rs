@@ -1,5 +1,10 @@
+#[cfg(feature = "profiler")]
+use perftools;
+#[cfg(feature = "profiler")]
+const PROFILER_DEPTH: usize = 10;
 use super::super::datapath::{Datapath, PushBufType, ReceivedPkt};
 use color_eyre::eyre::Result;
+use std::time::Instant;
 pub trait ServerSM {
     type Datapath: Datapath;
 
@@ -30,8 +35,37 @@ pub trait ServerSM {
     ) -> Result<()>;
 
     fn run_state_machine(&mut self, datapath: &mut Self::Datapath) -> Result<()> {
+        // run profiler from here
+        #[cfg(feature = "profiler")]
+        perftools::profiler::reset();
+        let mut _last_log: Instant = Instant::now();
+        let mut _requests_processed = 0;
         loop {
-            let pkts = datapath.pop()?;
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Run state machine loop");
+
+            #[cfg(feature = "profiler")]
+            {
+                if _last_log.elapsed() > std::time::Duration::from_secs(5) {
+                    let d = Instant::now() - _last_log;
+                    tracing::info!(
+                        "Server processed {} # of reqs since last dump at rate of {:.2} reqs/s",
+                        _requests_processed,
+                        _requests_processed as f64 / d.as_secs_f64()
+                    );
+                    perftools::profiler::write(&mut std::io::stdout(), Some(PROFILER_DEPTH))
+                        .unwrap();
+                    perftools::profiler::reset();
+                    _requests_processed = 0;
+                    _last_log = Instant::now();
+                }
+            }
+
+            let pkts = {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("Datapath pop");
+                datapath.pop()?
+            };
             if pkts.len() > 0 {
                 match self.push_buf_type() {
                     PushBufType::SingleBuf => {
@@ -44,6 +78,8 @@ pub trait ServerSM {
                         self.process_requests_rc_sga(pkts, datapath)?;
                     }
                     PushBufType::OrderedSga => {
+                        #[cfg(feature = "profiler")]
+                        perftools::timer!("App process requests ordered sga");
                         self.process_requests_ordered_sga(pkts, datapath)?;
                     }
                 }

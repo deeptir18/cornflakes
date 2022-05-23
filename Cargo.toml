@@ -17,14 +17,14 @@ members = ["cornflakes-codegen",
             "simple-echo"]
             #"data-shuffle"]
 
-#[profile.release]
-#lto = "fat"
-#codegen-units = 1
-#panic = "abort"
-#opt-level = 3
-#debug = false
-#debug-assertions = false
-#overflow-checks = false
-#incremental = false
-#rpath = false
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+incremental = false
+rpath = false
 

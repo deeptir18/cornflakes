@@ -502,6 +502,10 @@ impl<'a> OrderedSga<'a> {
         &self.sga
     }
 
+    pub fn add_entry(&mut self, entry: Sge<'a>) {
+        self.sga.add_entry(entry);
+    }
+
     pub fn entries_slice(&self, start: usize, length: usize) -> &[Sge<'a>] {
         self.sga.entries_slice(start, length)
     }
@@ -536,6 +540,8 @@ impl<'a> OrderedSga<'a> {
     where
         D: datapath::Datapath,
     {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Is zero copy seg");
         let seg = self.sga.get(i).addr();
         seg.len() >= d.get_copying_threshold() && d.is_registered(seg)
     }
@@ -567,9 +573,11 @@ impl<'a> OrderedSga<'a> {
         let mut switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
         let mut switch_backward = self.is_zero_copy_seg(end_index, datapath);
         let mut num_copy_segs = 0; // copy object header segment
+        let mut ct = 0;
 
         // everytime forward index is advanced, we record a copy segment
         while !(forward_index >= end_index) {
+            ct += 1;
             match (switch_forward, switch_backward) {
                 (true, true) => {
                     num_copy_segs += 1;
@@ -601,6 +609,7 @@ impl<'a> OrderedSga<'a> {
         self.num_copy_entries = num_copy_segs;
         tracing::debug!(
             num_copy_segs = self.num_copy_entries,
+            loop_ct = ct,
             "DOne with reordering"
         );
         Ok(())

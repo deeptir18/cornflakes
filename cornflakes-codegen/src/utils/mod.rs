@@ -18,7 +18,7 @@ fn align_up(x: usize, align_size: usize) -> usize {
     }
 }
 
-pub struct ForwardPointer<'a>(&'a [u8; 8]);
+pub struct ForwardPointer<'a>(&'a [u8]);
 
 impl<'a> ForwardPointer<'a> {
     pub fn get_size(&self) -> u32 {

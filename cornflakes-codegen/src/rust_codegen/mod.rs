@@ -757,6 +757,11 @@ impl SerializationCompiler {
         Ok(())
     }
 
+    pub fn add_block(&mut self, block: &str) -> Result<()> {
+        self.add_line(block)?;
+        Ok(())
+    }
+
     pub fn add_statement(&mut self, left: &str, right: &str) -> Result<()> {
         let line = format!("{} = {};", left, right);
         self.add_line(&line)?;

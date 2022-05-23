@@ -89,6 +89,7 @@ where
             .iter()
             .map(|(t, bytes)| C::get_serialized_bytes(*t, bytes, datapath))
             .collect();
+        tracing::debug!("Serialized bytes: {:?}", serialized_bytes);
         Ok(EchoClient {
             cerealizer: C::new(),
             last_sent_id: 0,
@@ -183,6 +184,8 @@ where
             {
                 tracing::warn!(id = sga.msg_id(), "Payloads not equal");
                 bail!("Payloads not equal");
+            } else {
+                tracing::info!(id = sga.msg_id(), "Passed test");
             }
         }
         Ok(())
