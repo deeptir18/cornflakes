@@ -130,6 +130,7 @@ pub struct FunctionContext {
     pub is_pub: bool,
     pub args: Vec<FunctionArg>,
     ret_type: Option<String>,
+    is_extern_c: bool,
     started: bool,
     func_lifetime: Option<String>,
     where_clause: Option<String>,
@@ -145,11 +146,18 @@ impl FunctionContext {
             name: name.to_string(),
             is_pub: is_pub,
             args: args,
+            is_extern_c: false,
             started: false,
             ret_type: ret_type,
             func_lifetime: None,
             where_clause: None,
         }
+    }
+
+    pub fn new_extern_c(name: &str, is_pub: bool, args: Vec<FunctionArg>, ret: &str) -> Self {
+        let mut func_context = Self::new(name, is_pub, args, ret);
+        func_context.is_extern_c = true;
+        func_context
     }
 
     pub fn new_with_lifetime(
@@ -171,6 +179,7 @@ impl FunctionContext {
             name: name.to_string(),
             is_pub: is_pub,
             args: args,
+            is_extern_c: false,
             started: false,
             ret_type: ret_type,
             func_lifetime: lifetime,
@@ -183,8 +192,16 @@ impl ContextPop for FunctionContext {
     fn pop(&mut self) -> Result<(String, bool)> {
         if !self.started {
             self.started = true;
+            let mut string = String::new();
             let is_pub_str = match self.is_pub {
                 true => "pub ".to_string(),
+                false => "".to_string(),
+            };
+            let extern_c_str = match self.is_extern_c {
+                true => {
+                    string.push_str("#[no_mangle]\n");
+                    "extern \"C\" ".to_string()
+                },
                 false => "".to_string(),
             };
             let lifetime_str = match &self.func_lifetime {
@@ -203,13 +220,11 @@ impl ContextPop for FunctionContext {
                 Some(r) => format!(" -> {}", r),
                 None => "".to_string(),
             };
-            Ok((
-                format!(
-                    "{}fn {}{}({}) {} {} {{",
-                    is_pub_str, self.name, lifetime_str, args_string, ret_value, where_str,
-                ),
-                false,
-            ))
+            string.push_str(&format!(
+                "{}{}fn {}{}({}) {} {} {{",
+                is_pub_str, extern_c_str, self.name, lifetime_str, args_string, ret_value, where_str,
+            ));
+            Ok((string, false))
         } else {
             Ok(("}".to_string(), true))
         }
