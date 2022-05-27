@@ -638,6 +638,18 @@ impl SerializationCompiler {
         }
     }
 
+    pub fn add_extern_crate(&mut self, crate_name: &str) -> Result<()> {
+        self.current_string.push_str(&format!("extern crate {};", crate_name));
+        self.add_newline()?;
+        Ok(())
+    }
+
+    pub fn add_mod_declaration(&mut self, mod_name: &str) -> Result<()> {
+        self.current_string.push_str(&format!("mod {};", mod_name));
+        self.add_newline()?;
+        Ok(())
+    }
+
     pub fn add_dependency(&mut self, dependency: &str) -> Result<()> {
         self.current_string
             .push_str(&format!("use {};", dependency));

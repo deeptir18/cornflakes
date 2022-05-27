@@ -84,6 +84,15 @@ impl ProtoReprInfo {
         return false;
     }
 
+    pub fn get_c_package_name(&self, folder: &str) -> PathBuf {
+        let mut pathbuf = PathBuf::new();
+        if folder != "" {
+            pathbuf.push(folder);
+        }
+        pathbuf.push(&format!("{}-c", str::replace(&self.repr.package, "_", "-")));
+        pathbuf
+    }
+
     pub fn get_output_file(&self, folder: &str) -> PathBuf {
         let mut pathbuf = PathBuf::new();
         if folder != "" {

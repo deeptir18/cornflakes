@@ -5,5 +5,6 @@ use super::{
 use color_eyre::eyre::Result;
 
 pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
-    unimplemented!()
+    // unimplemented!()
+    Ok(())
 }
