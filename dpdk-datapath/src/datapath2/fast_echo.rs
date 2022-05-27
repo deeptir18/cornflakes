@@ -1,7 +1,7 @@
 use super::super::{dpdk_bindings::*, dpdk_call, mbuf_slice2};
 use super::wrapper;
 use affinity::*;
-use bytes::{ByteOrder, LittleEndian};
+use byteorder::{ByteOrder, LittleEndian};
 use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::mem;
 use cornflakes_libos::timing::{record, timefunc, HistogramWrapper, RTTHistogram};

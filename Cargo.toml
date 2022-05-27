@@ -6,6 +6,7 @@ members = ["cornflakes-codegen",
             "cornflakes-utils",
             "data-structure-query",
             "ds-echo",
+            "cf-kv",
             "kv-store",
             "mlx5-datapath",
             "linux-datapath",
@@ -25,6 +26,6 @@ opt-level = 3
 debug = false
 debug-assertions = false
 overflow-checks = false
-incremental = false
+#incremental = false
 rpath = false
 

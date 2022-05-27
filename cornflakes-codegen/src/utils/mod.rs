@@ -1,6 +1,5 @@
 pub mod dynamic_hdr;
 pub mod dynamic_rcsga_hdr;
-pub mod dynamic_sga_hdr;
 pub mod fixed_hdr;
 pub mod rc_dynamic_hdr;
 
@@ -18,28 +17,32 @@ fn align_up(x: usize, align_size: usize) -> usize {
     }
 }
 
-pub struct ForwardPointer<'a>(&'a [u8]);
+pub struct ForwardPointer<'a>(&'a [u8], usize);
 
 impl<'a> ForwardPointer<'a> {
+    #[inline]
     pub fn get_size(&self) -> u32 {
-        LittleEndian::read_u32(&self.0[0..4])
+        LittleEndian::read_u32(&self.0[self.1..(self.1 + 34)])
     }
 
+    #[inline]
     pub fn get_offset(&self) -> u32 {
-        LittleEndian::read_u32(&self.0[4..8])
+        LittleEndian::read_u32(&self.0[(self.1 + 4)..(self.1 + 8)])
     }
 }
 
-pub struct MutForwardPointer<'a>(&'a mut [u8]);
+pub struct MutForwardPointer<'a>(&'a mut [u8], usize);
 
 impl<'a> MutForwardPointer<'a> {
+    #[inline]
     pub fn write_size(&mut self, size: u32) {
         tracing::debug!("Writing size {} at {:?}", size, self.0.as_ptr());
-        LittleEndian::write_u32(&mut self.0[0..4], size);
+        LittleEndian::write_u32(&mut self.0[self.1..(self.1 + 4)], size);
     }
 
+    #[inline]
     pub fn write_offset(&mut self, off: u32) {
-        LittleEndian::write_u32(&mut self.0[4..8], off);
+        LittleEndian::write_u32(&mut self.0[(self.1 + 4)..(self.1 + 8)], off);
     }
 }
 pub struct ObjectRef(pub *const u8);

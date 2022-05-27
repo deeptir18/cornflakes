@@ -26,8 +26,8 @@ fn add_dependencies(repr: &ProtoReprInfo, compiler: &mut SerializationCompiler) 
     compiler.add_dependency("cornflakes_libos::Sge")?;
     compiler.add_dependency("bitmaps::Bitmap")?;
     compiler.add_dependency("color_eyre::eyre::Result")?;
-    compiler.add_dependency("cornflakes_codegen::utils::dynamic_sga_hdr::*")?;
-    compiler.add_dependency("cornflakes_codegen::utils::dynamic_sga_hdr::{SgaHeaderRepr}")?;
+    compiler.add_dependency("cornflakes_libos::dynamic_sga_hdr::*")?;
+    compiler.add_dependency("cornflakes_libos::dynamic_sga_hdr::{SgaHeaderRepr}")?;
 
     // if any message has integers, we need slice
     if repr.has_int_field() {
@@ -213,7 +213,7 @@ fn add_has(compiler: &mut SerializationCompiler, field: &FieldInfo) -> Result<()
     let bitmap_field_str = field.get_bitmap_idx_str(true);
     compiler.add_return_val(
         &format!(
-            "self.get_bitmap_field({}, {})",
+            "self.bitmap[{}].get({})",
             bitmap_offset_str, bitmap_field_str
         ),
         false,
@@ -288,15 +288,10 @@ fn add_set(
         "",
     );
     compiler.add_context(Context::Function(func_context))?;
-    compiler.add_func_call(
-        Some("self".to_string()),
-        "set_bitmap_field",
-        vec![
-            format!("{}", bitmap_idx_str),
-            format!("{}", bitmap_offset_str),
-        ],
-        false,
-    )?;
+    compiler.add_line(&format!(
+        "self.bitmap[{}].set({}, true);",
+        bitmap_offset_str, bitmap_idx_str
+    ))?;
     compiler.add_statement(&format!("self.{}", &field_name), "field")?;
     compiler.pop_context()?;
     Ok(())
@@ -533,7 +528,7 @@ fn add_header_repr(
 
     compiler.add_context(Context::Function(set_bitmap_context))?;
     compiler.add_block(
-        "for (mut bitmap_entry, bits) in self.bitmap.iter_mut().zip(bitmap) {
+        "for (bitmap_entry, bits) in self.bitmap.iter_mut().zip(bitmap) {
             *bitmap_entry = bits;
         }",
     )?;

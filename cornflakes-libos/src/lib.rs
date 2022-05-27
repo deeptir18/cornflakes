@@ -7,9 +7,9 @@
 //!  3. A DPDK based datapath.
 pub mod allocator;
 pub mod datapath;
+pub mod dynamic_sga_hdr;
 pub mod loadgen;
 pub mod mem;
-pub mod serialize;
 pub mod state_machine;
 pub mod timing;
 pub mod utils;
@@ -324,6 +324,7 @@ impl<'a> Sge<'a> {
         Sge { addr: addr }
     }
 
+    #[inline]
     pub fn addr(&self) -> &'a [u8] {
         self.addr
     }
@@ -391,6 +392,7 @@ impl<'a> Sga<'a> {
         self.length = length;
     }
 
+    #[inline]
     pub fn get(&self, idx: usize) -> &Sge<'a> {
         &self.entries[idx]
     }
@@ -536,12 +538,11 @@ impl<'a> OrderedSga<'a> {
         size + self.hdr.len()
     }
 
+    #[inline]
     fn is_zero_copy_seg<D>(&self, i: usize, d: &D) -> bool
     where
         D: datapath::Datapath,
     {
-        #[cfg(feature = "profiler")]
-        perftools::timer!("Is zero copy seg");
         let seg = self.sga.get(i).addr();
         seg.len() >= d.get_copying_threshold() && d.is_registered(seg)
     }
@@ -568,41 +569,65 @@ impl<'a> OrderedSga<'a> {
             bail!("passed in offsets array should be one less than sga length");
         }
         // reorder scatter-gather entries
+
+        if self.sga.len() == 1 {
+            return Ok(());
+        }
+
         let mut forward_index = 0;
         let mut end_index = self.sga.len() - 1;
-        let mut switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
-        let mut switch_backward = self.is_zero_copy_seg(end_index, datapath);
+        let mut switch_forward = self.is_zero_copy_seg(forward_index, datapath);
+        let mut switch_backward = !self.is_zero_copy_seg(end_index, datapath);
         let mut num_copy_segs = 0; // copy object header segment
         let mut ct = 0;
 
         // everytime forward index is advanced, we record a copy segment
         while !(forward_index >= end_index) {
+            tracing::debug!(
+                forward_index,
+                end_index,
+                switch_forward,
+                switch_backward,
+                "Looping over reordering segments"
+            );
             ct += 1;
             match (switch_forward, switch_backward) {
                 (true, true) => {
                     num_copy_segs += 1;
                     self.sga.swap(forward_index, end_index);
-                    offsets.swap(forward_index - 1, end_index - 1);
+                    offsets.swap(forward_index, end_index);
                     forward_index += 1;
                     end_index -= 1;
-                    switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
-                    switch_backward = self.is_zero_copy_seg(end_index, datapath);
+                    if forward_index >= end_index {
+                        break;
+                    }
+                    switch_forward = self.is_zero_copy_seg(forward_index, datapath);
+                    switch_backward = !self.is_zero_copy_seg(end_index, datapath);
                 }
                 (true, false) => {
                     end_index -= 1;
-                    switch_backward = self.is_zero_copy_seg(end_index, datapath);
+                    if forward_index >= end_index {
+                        break;
+                    }
+                    switch_backward = !self.is_zero_copy_seg(end_index, datapath);
                 }
                 (false, true) => {
                     num_copy_segs += 1;
                     forward_index += 1;
-                    switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
+                    if forward_index >= end_index {
+                        break;
+                    }
+                    switch_forward = self.is_zero_copy_seg(forward_index, datapath);
                 }
                 (false, false) => {
                     num_copy_segs += 1;
                     forward_index += 1;
                     end_index -= 1;
-                    switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
-                    switch_backward = self.is_zero_copy_seg(end_index, datapath);
+                    if forward_index >= end_index {
+                        break;
+                    }
+                    switch_forward = self.is_zero_copy_seg(forward_index, datapath);
+                    switch_backward = !self.is_zero_copy_seg(end_index, datapath);
                 }
             }
         }
@@ -654,7 +679,7 @@ impl<'a> OrderedSga<'a> {
 
                 if min_index != i {
                     segs_to_order.swap(i, min_index);
-                    offsets.swap(i - 1, min_index - 1);
+                    offsets.swap(i, min_index);
                 }
             }
         } else {
@@ -676,7 +701,303 @@ impl<'a> OrderedSga<'a> {
 
                 if max_index != i {
                     segs_to_order.swap(i, max_index);
-                    offsets.swap(i - 1, max_index - 1);
+                    offsets.swap(i, max_index);
+                }
+            }
+        }
+
+        self.num_copy_entries += extra_to_copy;
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct ArenaOrderedSga<'a> {
+    entries: bumpalo::collections::Vec<'a, Sge<'a>>,
+    length: usize,
+    num_copy_entries: usize,
+    hdr: bumpalo::collections::Vec<'a, u8>,
+}
+
+impl<'a> ArenaOrderedSga<'a> {
+    pub fn capacity(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn arena_size(batch_size: usize, max_packet_size: usize, max_entries: usize) -> usize {
+        batch_size
+            * 10
+            * (max_packet_size * std::mem::size_of::<u8>()
+                + std::mem::size_of::<usize>() * 2
+                + max_entries * std::mem::size_of::<Sge>()
+                + std::mem::size_of::<usize>() * 2)
+    }
+
+    pub fn clear(&mut self) {
+        self.length = 0;
+        self.num_copy_entries = 0;
+    }
+
+    pub fn flatten(&self) -> Vec<u8> {
+        let mut buf = self.hdr.as_slice().to_vec();
+        let mut others: Vec<u8> = self
+            .entries
+            .iter()
+            .take(self.length)
+            .map(|bytes| bytes.addr().to_vec())
+            .flatten()
+            .collect();
+        buf.append(&mut others);
+        buf
+    }
+
+    pub fn allocate(num_entries: usize, arena: &'a bumpalo::Bump) -> ArenaOrderedSga<'a> {
+        ArenaOrderedSga {
+            entries: bumpalo::collections::Vec::from_iter_in(
+                std::iter::repeat(Sge::default()).take(num_entries),
+                arena,
+            ),
+            length: 0,
+            num_copy_entries: 0,
+            hdr: bumpalo::collections::Vec::new_in(&arena),
+        }
+    }
+
+    pub fn data_len(&self) -> usize {
+        self.hdr.len()
+            + self
+                .entries
+                .iter()
+                .take(self.length)
+                .map(|seg| seg.len())
+                .sum::<usize>()
+    }
+
+    pub fn iter(&self) -> Iter<Sge<'a>> {
+        self.entries.iter()
+    }
+
+    pub fn set_hdr(&mut self, vec: bumpalo::collections::Vec<'a, u8>) {
+        self.hdr = vec;
+    }
+
+    pub fn get_hdr(&self) -> &[u8] {
+        self.hdr.as_slice()
+    }
+
+    pub fn set_num_copy_entries(&mut self, num: usize) {
+        self.num_copy_entries = num;
+    }
+
+    pub fn num_copy_entries(&self) -> usize {
+        self.num_copy_entries
+    }
+
+    pub fn num_zero_copy_entries(&self) -> usize {
+        self.length - self.num_copy_entries
+    }
+
+    pub fn add_entry(&mut self, entry: Sge<'a>) {
+        if self.length < self.capacity() {
+            self.entries[self.length] = entry;
+        } else {
+            self.entries.push(entry);
+        }
+    }
+
+    pub fn entries_slice(&self, start: usize, length: usize) -> &[Sge<'a>] {
+        &self.entries.as_slice()[start..(start + length)]
+    }
+
+    pub fn mut_entries_slice(&mut self, start: usize, length: usize) -> &mut [Sge<'a>] {
+        &mut self.entries.as_mut_slice()[start..(start + length)]
+    }
+
+    pub fn set_length(&mut self, length: usize) {
+        self.length = length;
+    }
+
+    pub fn replace(&mut self, idx: usize, entry: Sge<'a>) {
+        self.entries[idx] = entry;
+    }
+
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
+    pub fn copy_length(&self) -> usize {
+        let size: usize = self
+            .entries
+            .iter()
+            .take(self.num_copy_entries)
+            .map(|seg| seg.len())
+            .sum();
+        size + self.hdr.len()
+    }
+
+    #[inline]
+    fn is_zero_copy_seg<D>(&self, i: usize, d: &D) -> bool
+    where
+        D: datapath::Datapath,
+    {
+        let seg = self.entries[i].addr();
+        seg.len() >= d.get_copying_threshold() && d.is_registered(seg)
+    }
+
+    /// Reorders the scatter-gather array according to size heuristics, from the first entry
+    /// forward,
+    /// setting the number of copy entries to be the number of entries found under the
+    /// threshold or not registered.
+    /// Parameters:
+    /// @datapath: Datapath handle providing function to check current size threshold, and whether
+    /// buffers are registered.
+    /// @offsets: Corresponding offsets vector (where indices correspond to current entries in the
+    /// scatter-gather list). When indices are swapped in sga, corresponding indices must be
+    /// swapped in offsets (assumes self.length == offsets.len() + 1)
+    pub fn reorder_by_size_and_registration<D>(
+        &mut self,
+        datapath: &D,
+        offsets: &mut Vec<usize>,
+    ) -> Result<()>
+    where
+        D: datapath::Datapath,
+    {
+        if self.length != offsets.len() {
+            bail!("passed in offsets array should be one less than sga length");
+        }
+        // reorder scatter-gather entries
+
+        if self.length == 1 {
+            return Ok(());
+        }
+
+        let mut forward_index = 0;
+        let mut end_index = self.length - 1;
+        let mut switch_forward = self.is_zero_copy_seg(forward_index, datapath);
+        let mut switch_backward = !self.is_zero_copy_seg(end_index, datapath);
+        let mut num_copy_segs = 0; // copy object header segment
+        let mut ct = 0;
+
+        // everytime forward index is advanced, we record a copy segment
+        while !(forward_index >= end_index) {
+            tracing::debug!(
+                forward_index,
+                end_index,
+                switch_forward,
+                switch_backward,
+                "Looping over reordering segments"
+            );
+            ct += 1;
+            match (switch_forward, switch_backward) {
+                (true, true) => {
+                    num_copy_segs += 1;
+                    self.entries.swap(forward_index, end_index);
+                    offsets.swap(forward_index, end_index);
+                    forward_index += 1;
+                    end_index -= 1;
+                    if forward_index >= end_index {
+                        break;
+                    }
+                    switch_forward = self.is_zero_copy_seg(forward_index, datapath);
+                    switch_backward = !self.is_zero_copy_seg(end_index, datapath);
+                }
+                (true, false) => {
+                    end_index -= 1;
+                    if forward_index >= end_index {
+                        break;
+                    }
+                    switch_backward = !self.is_zero_copy_seg(end_index, datapath);
+                }
+                (false, true) => {
+                    num_copy_segs += 1;
+                    forward_index += 1;
+                    if forward_index >= end_index {
+                        break;
+                    }
+                    switch_forward = self.is_zero_copy_seg(forward_index, datapath);
+                }
+                (false, false) => {
+                    num_copy_segs += 1;
+                    forward_index += 1;
+                    end_index -= 1;
+                    if forward_index >= end_index {
+                        break;
+                    }
+                    switch_forward = self.is_zero_copy_seg(forward_index, datapath);
+                    switch_backward = !self.is_zero_copy_seg(end_index, datapath);
+                }
+            }
+        }
+        self.num_copy_entries = num_copy_segs;
+        tracing::debug!(
+            num_copy_segs = self.num_copy_entries,
+            loop_ct = ct,
+            "DOne with reordering"
+        );
+        Ok(())
+    }
+
+    /// Reorder by max segments.
+    /// Max segments includes the 1 segment for all entries that will be copied together
+    pub fn reorder_by_max_segs<D>(&mut self, datapath: &D, offsets: &mut Vec<usize>) -> Result<()>
+    where
+        D: datapath::Datapath,
+    {
+        if self.length != offsets.len() {
+            bail!("passed in offsets array should be one less than sga length");
+        }
+        let current_zero_copy_segs = self.num_zero_copy_entries();
+        let zero_copy_limit = datapath.get_max_segments() - 1;
+        let num_copy_entries = self.num_copy_entries;
+
+        // already under maximum segments
+        if current_zero_copy_segs <= zero_copy_limit {
+            return Ok(());
+        }
+
+        let sga_len = self.length;
+        let segs_to_order = self.mut_entries_slice(self.num_copy_entries, current_zero_copy_segs);
+
+        let extra_to_copy = current_zero_copy_segs - zero_copy_limit;
+
+        if extra_to_copy < zero_copy_limit {
+            // move smallest entries to the front
+            for i in num_copy_entries..(num_copy_entries + extra_to_copy) {
+                let mut min_index = i;
+                let mut min_length = segs_to_order[i].len();
+
+                for (entry_idx, entry) in segs_to_order[i + 1..].iter().enumerate() {
+                    if entry.len() < min_length {
+                        min_length = entry.len();
+                        min_index = entry_idx;
+                    }
+                }
+
+                if min_index != i {
+                    segs_to_order.swap(i, min_index);
+                    offsets.swap(i, min_index);
+                }
+            }
+        } else {
+            // move max (zero_copy limit) segs to back
+            for i in ((sga_len - zero_copy_limit)..sga_len).rev() {
+                let mut max_index = i;
+                let mut max_length = segs_to_order[i].len();
+
+                for (entry_idx, entry) in segs_to_order[(sga_len - zero_copy_limit)..(i - 1)]
+                    .iter()
+                    .rev()
+                    .enumerate()
+                {
+                    if entry.len() > max_length {
+                        max_length = entry.len();
+                        max_index = entry_idx;
+                    }
+                }
+
+                if max_index != i {
+                    segs_to_order.swap(i, max_index);
+                    offsets.swap(i, max_index);
                 }
             }
         }
@@ -887,7 +1208,7 @@ where
             match (switch_forward, switch_backward) {
                 (true, true) => {
                     self.entries.swap(forward_index, end_index);
-                    offsets.swap(forward_index - 1, end_index - 1);
+                    offsets.swap(forward_index, end_index);
                     forward_index += 1;
                     end_index -= 1;
                     switch_forward = !self.is_zero_copy_seg(forward_index, datapath);
@@ -968,7 +1289,7 @@ where
 
                 if min_index != i {
                     segs_to_order.swap(i, min_index);
-                    offsets.swap(i - 1, min_index - 1);
+                    offsets.swap(i, min_index);
                 }
             }
         } else {
@@ -990,7 +1311,7 @@ where
 
                 if max_index != i {
                     segs_to_order.swap(i, max_index);
-                    offsets.swap(i - 1, max_index - 1);
+                    offsets.swap(i, max_index);
                 }
             }
         }

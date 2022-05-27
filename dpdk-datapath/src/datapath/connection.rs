@@ -4,7 +4,6 @@ use super::{
 use cornflakes_libos::{
     allocator::{align_up, MemoryPoolAllocator, MempoolID},
     datapath::{Datapath, ExposeMempoolID, InlineMode, MetadataOps, ReceivedPkt},
-    serialize::Serializable,
     utils::AddressInfo,
     ConnID, MsgID, OrderedSga, RcSga, RcSge, Sga, Sge, USING_REF_COUNTING,
 };
@@ -21,9 +20,6 @@ use std::{
     ptr,
     time::{Duration, Instant},
 };
-
-#[cfg(feature = "profiler")]
-use perftools;
 
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 
@@ -1428,16 +1424,6 @@ impl Datapath for DpdkConnection {
         }
         self.send_current_mbufs(pkts.len() as u16)
             .wrap_err("Failed to send packets from echo")?;
-        Ok(())
-    }
-
-    fn serialize_and_send(
-        &mut self,
-        _objects: &Vec<(MsgID, ConnID, impl Serializable<Self>)>,
-    ) -> Result<()>
-    where
-        Self: Sized,
-    {
         Ok(())
     }
 

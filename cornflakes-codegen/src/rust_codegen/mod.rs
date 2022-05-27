@@ -183,6 +183,7 @@ impl ContextPop for FunctionContext {
     fn pop(&mut self) -> Result<(String, bool)> {
         if !self.started {
             self.started = true;
+            let inline_str = "#[inline]";
             let is_pub_str = match self.is_pub {
                 true => "pub ".to_string(),
                 false => "".to_string(),
@@ -205,8 +206,14 @@ impl ContextPop for FunctionContext {
             };
             Ok((
                 format!(
-                    "{}fn {}{}({}) {} {} {{",
-                    is_pub_str, self.name, lifetime_str, args_string, ret_value, where_str,
+                    "{}\n{}fn {}{}({}) {} {} {{",
+                    inline_str,
+                    is_pub_str,
+                    self.name,
+                    lifetime_str,
+                    args_string,
+                    ret_value,
+                    where_str,
                 ),
                 false,
             ))
