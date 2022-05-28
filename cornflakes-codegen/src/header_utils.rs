@@ -122,6 +122,23 @@ impl ProtoReprInfo {
         Ok(default_val)
     }
 
+    pub fn get_c_type(&self, field: FieldInfo) -> Result<String> {
+        let base_type = match &field.0.typ {
+            FieldType::Int32 => "i32".to_string(),
+            FieldType::Int64 => "i64".to_string(),
+            FieldType::Uint32 => "u32".to_string(),
+            FieldType::Uint64 => "u64".to_string(),
+            FieldType::Float => "f64".to_string(),
+            FieldType::Bytes | FieldType::RefCountedBytes => {
+                "*const ::std::os::raw::c_uchar".to_string()
+            }
+            _ => {
+                bail!("FieldType {:?} not supported by compiler", field.0.typ);
+            }
+        };
+        Ok(base_type)
+    }
+
     pub fn get_rust_type(&self, field: FieldInfo) -> Result<String> {
         let type_params = match self.ref_counted_mode {
             true => {

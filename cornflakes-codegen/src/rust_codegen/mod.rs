@@ -98,6 +98,55 @@ impl ArgInfo {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CArgInfo {
+    is_ret: bool,
+    name: String,
+    ty: String,
+}
+
+impl CArgInfo {
+    pub fn len_arg(name: &str) -> CArgInfo {
+        CArgInfo {
+            is_ret: false,
+            name: format!("{}_len", name),
+            ty: String::from("usize"),
+        }
+    }
+
+    pub fn arg(name: &str, ty: &str) -> CArgInfo {
+        CArgInfo {
+            is_ret: false,
+            name: String::from(name),
+            ty: String::from(ty),
+        }
+    }
+
+    pub fn ret_len_arg() -> CArgInfo {
+        CArgInfo {
+            is_ret: true,
+            name: "return_len_ptr".to_string(),
+            ty: String::from("usize"),
+        }
+    }
+
+    pub fn ret_arg(ty: &str) -> CArgInfo {
+        CArgInfo {
+            is_ret: true,
+            name: "return_ptr".to_string(),
+            ty: String::from(ty),
+        }
+    }
+
+    pub fn get_string(&self) -> String {
+        if self.is_ret {
+            format!("{}: *mut {}", self.name, self.ty)
+        } else {
+            format!("{}: {}", self.name, self.ty)
+        }
+    }
+}
+
 pub trait ContextPop {
     /// Pops the next thing from this context and writes it as a line.
     /// Returns whether the context should be added back to the context list.
@@ -109,6 +158,8 @@ pub enum FunctionArg {
     SelfArg,
     MutSelfArg,
     Arg(String, ArgInfo),
+    CSelfArg,
+    CArg(CArgInfo),
 }
 
 impl FunctionArg {
@@ -117,8 +168,11 @@ impl FunctionArg {
             FunctionArg::SelfArg => "&self".to_string(),
             FunctionArg::MutSelfArg => "&mut self".to_string(),
             FunctionArg::Arg(name, info) => format!("{}: {}", name, info.get_type_string()),
+            FunctionArg::CSelfArg => "self_: *mut ::std::os::raw::c_void".to_string(),
+            FunctionArg::CArg(info) => info.get_string(),
         }
     }
+
     pub fn new_arg(name: &str, info: ArgInfo) -> Self {
         FunctionArg::Arg(name.to_string(), info)
     }

@@ -2,7 +2,7 @@ use super::{
     super::header_utils::{FieldInfo, MessageInfo, ProtoReprInfo},
     super::rust_codegen::{
         ArgInfo, Context, FunctionArg, FunctionContext, ImplContext, LoopBranch,
-        LoopContext, SerializationCompiler, StructDefContext,
+        LoopContext, SerializationCompiler, StructDefContext, CArgInfo,
         StructName, TraitName,
     },
 };
@@ -35,6 +35,13 @@ fn add_dependencies(repr: &ProtoReprInfo, compiler: &mut SerializationCompiler) 
     //     compiler.add_dependency("std::{slice}")?;
     // }
     Ok(())
+}
+
+fn is_array(field: &FieldInfo) -> bool {
+    match &field.0.typ {
+        FieldType::Bytes | FieldType::RefCountedBytes => true,
+        _ => false,
+    }
 }
 
 fn add_default_impl(
@@ -80,7 +87,9 @@ fn add_impl(
     compiler.add_newline()?;
     let new_func_context = FunctionContext::new_extern_c(
         &format!("{}_new", msg_info.get_name()),
-        true, vec![], "Self",
+        true,
+        vec![FunctionArg::CArg(CArgInfo::ret_arg("*mut ::std::os::raw::c_void"))],
+        "",
     );
     compiler.add_context(Context::Function(new_func_context))?;
     // let struct_def_context = StructDefContext::new(&msg_info.get_name());
@@ -146,8 +155,11 @@ fn add_has(
     let func_context = FunctionContext::new_extern_c(
         &format!("{}_has_{}", msg_info.get_name(), field.get_name()),
         true,
-        vec![FunctionArg::SelfArg],
-        "bool",
+        vec![
+            FunctionArg::CSelfArg,
+            FunctionArg::CArg(CArgInfo::ret_arg("bool")),
+        ],
+        "",
     );
     compiler.add_context(Context::Function(func_context))?;
     // let bitmap_field_str = field.get_bitmap_idx_str(true);
@@ -166,16 +178,18 @@ fn add_get(
     msg_info: &MessageInfo,
     field: &FieldInfo,
 ) -> Result<()> {
-    let field_type = fd.get_rust_type(field.clone())?;
-    let return_type = match field.is_list() || field.is_nested_msg() {
-        true => format!("&{}", field_type),
-        false => field_type.to_string(),
-    };
+    let field_type = fd.get_c_type(field.clone())?;
+    let mut args = vec![
+        FunctionArg::CSelfArg,
+        FunctionArg::CArg(CArgInfo::ret_arg(&field_type)),
+    ];
+    if is_array(field) {
+        args.push(FunctionArg::CArg(CArgInfo::ret_len_arg()));
+    }
+
     let func_context = FunctionContext::new_extern_c(
         &format!("{}_get_{}", msg_info.get_name(), field.get_name()),
-        true,
-        vec![FunctionArg::SelfArg],
-        &return_type,
+        true, args, "",
     );
     compiler.add_context(Context::Function(func_context))?;
     // let return_val = match field.is_list() || field.is_nested_msg() {
@@ -217,16 +231,17 @@ fn add_set(
     field: &FieldInfo,
 ) -> Result<()> {
     let field_name = field.get_name();
-    let bitmap_idx_str = field.get_bitmap_idx_str(true);
-    let rust_type = fd.get_rust_type(field.clone())?;
+    let field_type = fd.get_c_type(field.clone())?;
+    let mut args = vec![
+        FunctionArg::CSelfArg,
+        FunctionArg::CArg(CArgInfo::arg(&field_name, &field_type)),
+    ];
+    if is_array(field) {
+        args.push(FunctionArg::CArg(CArgInfo::len_arg(&field_name)));
+    }
     let func_context = FunctionContext::new_extern_c(
         &format!("{}_set_{}", msg_info.get_name(), field_name),
-        true,
-        vec![
-            FunctionArg::MutSelfArg,
-            FunctionArg::new_arg("field", ArgInfo::owned(&rust_type)),
-        ],
-        "",
+        true, args, "",
     );
     compiler.add_context(Context::Function(func_context))?;
     // compiler.add_func_call(
