@@ -54,7 +54,7 @@ fn add_default_impl(
         &format!("{}_default", msg_info.get_name()),
         true,
         vec![FunctionArg::CArg(CArgInfo::ret_arg("*mut ::std::os::raw::c_void"))],
-        "",
+        false,
     );
     compiler.add_context(Context::Function(func_context))?;
     compiler.add_line("unimplemented!()")?;
@@ -72,7 +72,7 @@ fn add_impl(
         &format!("{}_new", msg_info.get_name()),
         true,
         vec![FunctionArg::CArg(CArgInfo::ret_arg("*mut ::std::os::raw::c_void"))],
-        "",
+        false,
     );
     compiler.add_context(Context::Function(new_func_context))?;
     // let struct_def_context = StructDefContext::new(&msg_info.get_name());
@@ -142,7 +142,7 @@ fn add_has(
             FunctionArg::CSelfArg,
             FunctionArg::CArg(CArgInfo::ret_arg("bool")),
         ],
-        "",
+        false,
     );
     compiler.add_context(Context::Function(func_context))?;
     // let bitmap_field_str = field.get_bitmap_idx_str(true);
@@ -172,7 +172,7 @@ fn add_get(
 
     let func_context = FunctionContext::new_extern_c(
         &format!("{}_get_{}", msg_info.get_name(), field.get_name()),
-        true, args, "",
+        true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
     // let return_val = match field.is_list() || field.is_nested_msg() {
@@ -199,7 +199,8 @@ fn add_get_mut(
         &format!("{}_get_mut_{}", msg_info.get_name(), &field_name),
         true,
         vec![FunctionArg::MutSelfArg],
-        &format!("&mut {}", rust_type),
+        // &format!("&mut {}", rust_type)
+        false,
     );
     compiler.add_context(Context::Function(func_context))?;
     compiler.add_return_val(&format!("&mut self.{}", &field_name), false)?;
@@ -224,7 +225,7 @@ fn add_set(
     }
     let func_context = FunctionContext::new_extern_c(
         &format!("{}_set_{}", msg_info.get_name(), field_name),
-        true, args, "",
+        true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
     // compiler.add_func_call(
@@ -251,7 +252,7 @@ fn add_list_init(
             FunctionArg::MutSelfArg,
             FunctionArg::new_arg("num", ArgInfo::owned("usize")),
         ],
-        "",
+        false,
     );
     compiler.add_context(Context::Function(func_context))?;
     match &field.0.typ {
@@ -307,7 +308,7 @@ fn add_header_repr(
             FunctionArg::CSelfArg,
             FunctionArg::CArg(CArgInfo::ret_arg("usize")),
         ],
-        "",
+        false,
     );
     compiler.add_context(Context::Function(header_size_function_context))?;
     compiler.add_line("unimplemented!()")?;
@@ -322,7 +323,7 @@ fn add_header_repr(
             FunctionArg::CSelfArg,
             FunctionArg::CArg(CArgInfo::ret_arg("usize")),
         ],
-        "",
+        false,
     );
     compiler.add_context(Context::Function(header_offset_function_context))?;
     compiler.add_line("unimplemented!()")?;
@@ -337,7 +338,7 @@ fn add_header_repr(
             FunctionArg::CSelfArg,
             FunctionArg::CArg(CArgInfo::ret_arg("usize")),
         ],
-        "",
+        false,
     );
     compiler.add_context(Context::Function(num_sge_function_context))?;
     compiler.add_line("unimplemented!()")?;
@@ -361,7 +362,7 @@ fn add_shared_header_repr(
             FunctionArg::CArg(CArgInfo::arg("buffer", "*const ::std::os::raw::c_uchar")),
             FunctionArg::CArg(CArgInfo::len_arg("buffer")),
         ],
-        "u32",
+        true,
     );
     compiler.add_context(Context::Function(deserialize_function_context))?;
     compiler.add_line("unimplemented!()")?;
@@ -377,7 +378,7 @@ fn add_shared_header_repr(
             FunctionArg::CArg(CArgInfo::arg("ordered_sga", "*const ::std::os::raw::c_void")),
             FunctionArg::CArg(CArgInfo::arg("datapath", "*const ::std::os::raw::c_void")),
         ],
-        "u32",
+        true,
     );
     compiler.add_context(Context::Function(serialize_into_sga_function_context))?;
     compiler.add_line("unimplemented!()")?;

@@ -208,7 +208,13 @@ impl FunctionContext {
         }
     }
 
-    pub fn new_extern_c(name: &str, is_pub: bool, args: Vec<FunctionArg>, ret: &str) -> Self {
+    pub fn new_extern_c(
+        name: &str,
+        is_pub: bool,
+        args: Vec<FunctionArg>,
+        err_code: bool,
+    ) -> Self {
+        let ret = if err_code { "u32" } else { "" };
         let mut func_context = Self::new(name, is_pub, args, ret);
         func_context.is_extern_c = true;
         func_context
