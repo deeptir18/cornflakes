@@ -1,9 +1,8 @@
 use super::{
     super::header_utils::{FieldInfo, MessageInfo, ProtoReprInfo},
     super::rust_codegen::{
-        ArgInfo, Context, FunctionArg, FunctionContext, ImplContext, LoopBranch,
-        LoopContext, SerializationCompiler, StructDefContext, CArgInfo,
-        StructName, TraitName,
+        ArgInfo, Context, FunctionArg, FunctionContext, SerializationCompiler,
+        CArgInfo,
     },
 };
 use color_eyre::eyre::{bail, Result};
@@ -14,11 +13,13 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
     for message in fd.get_repr().messages.iter() {
         compiler.add_newline()?;
         let msg_info = MessageInfo(message.clone());
-        // add_default_impl(fd, compiler, &msg_info)?;
-        // compiler.add_newline()?;
+        add_default_impl(fd, compiler, &msg_info)?;
+        compiler.add_newline()?;
         add_impl(fd, compiler, &msg_info)?;
-        // compiler.add_newline()?;
-        // add_header_repr(fd, compiler, &msg_info)?;
+        compiler.add_newline()?;
+        add_header_repr(fd, compiler, &msg_info)?;
+        compiler.add_newline()?;
+        add_shared_header_repr(fd, compiler, &msg_info)?;
         break;
     }
     Ok(())
@@ -49,33 +50,15 @@ fn add_default_impl(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let type_annotations = msg_info.get_type_params(false, &fd)?;
-    let where_clause = msg_info.get_where_clause(false, &fd)?;
-    let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
-    let trait_name = TraitName::new("Default", vec![]);
-    let impl_context = ImplContext::new(struct_name, Some(trait_name), where_clause);
-    compiler.add_context(Context::Impl(impl_context))?;
-    let func_context = FunctionContext::new("default", false, Vec::default(), "Self");
+    let func_context = FunctionContext::new_extern_c(
+        &format!("{}_default", msg_info.get_name()),
+        true,
+        vec![FunctionArg::CArg(CArgInfo::ret_arg("*mut ::std::os::raw::c_void"))],
+        "",
+    );
     compiler.add_context(Context::Function(func_context))?;
-    let struct_def_context = StructDefContext::new(&msg_info.get_name());
-    compiler.add_context(Context::StructDef(struct_def_context))?;
-    compiler.add_struct_def_field("bitmap", &format!("vec![0u8; Self::bitmap_length()]"))?;
-    for field in msg_info.get_fields().iter() {
-        let field_info = FieldInfo(field.clone());
-        if field_info.is_list() {
-            if field_info.is_int_list() {
-                compiler.add_struct_def_field(&field_info.get_name(), "List::default()")?;
-            } else {
-                compiler.add_struct_def_field(&field_info.get_name(), "VariableList::default()")?;
-            }
-        } else {
-            compiler
-                .add_struct_def_field(&field_info.get_name(), &fd.get_default_type(field_info)?)?;
-        }
-    }
-    compiler.pop_context()?; // end of struct definition
+    compiler.add_line("unimplemented!()")?;
     compiler.pop_context()?; // end of function
-    compiler.pop_context()?;
     Ok(())
 }
 
@@ -316,535 +299,90 @@ fn add_header_repr(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let type_annotations = msg_info.get_type_params(false, &fd)?;
-    let where_clause = msg_info.get_where_clause(false, &fd)?;
-    let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
-    let trait_name = TraitName::new("SgaHeaderRepr", type_annotations.clone());
-    let impl_context = ImplContext::new(struct_name, Some(trait_name), where_clause);
-    compiler.add_context(Context::Impl(impl_context))?;
-
-    // add number of fields constant
-    compiler.add_const_def(
-        "NUMBER_OF_FIELDS",
-        "usize",
-        &format!("{}", msg_info.num_fields()),
-    )?;
-    compiler.add_newline()?;
-
-    // add constant header size
-    compiler.add_const_def("CONSTANT_HEADER_SIZE", "usize", "SIZE_FIELD + OFFSET_FIELD")?;
-    compiler.add_newline()?;
-
     // add dynamic header size function
-    let header_size_function_context = FunctionContext::new(
-        "dynamic_header_size",
-        false,
-        vec![FunctionArg::SelfArg],
-        "usize",
+    let header_size_function_context = FunctionContext::new_extern_c(
+        &format!("{}_dynamic_header_size", msg_info.get_name()),
+        true,
+        vec![
+            FunctionArg::CSelfArg,
+            FunctionArg::CArg(CArgInfo::ret_arg("usize")),
+        ],
+        "",
     );
     compiler.add_context(Context::Function(header_size_function_context))?;
-    let mut dynamic_size = "BITMAP_LENGTH_FIELD + Self::bitmap_length()".to_string();
-    for field in msg_info.get_fields().iter() {
-        let field_info = FieldInfo(field.clone());
-        let mut start = dynamic_size.to_string();
-        if start.len() != 0 {
-            start = format!("{} + ", start);
-        }
-        dynamic_size = format!(
-            "{} self.get_bitmap_field({}) as usize * {}",
-            start,
-            &field_info.get_bitmap_idx_str(true),
-            &field_info.get_total_header_size_str(true, false, true, true)?
-        );
-    }
-    compiler.add_return_val(&dynamic_size, false)?;
+    compiler.add_line("unimplemented!()")?;
     compiler.pop_context()?;
     compiler.add_newline()?;
 
     // add dynamic header offset function
-    let header_offset_function_context = FunctionContext::new(
-        "dynamic_header_start",
-        false,
-        vec![FunctionArg::SelfArg],
-        "usize",
+    let header_offset_function_context = FunctionContext::new_extern_c(
+        &format!("{}_dynamic_header_start", msg_info.get_name()),
+        true,
+        vec![
+            FunctionArg::CSelfArg,
+            FunctionArg::CArg(CArgInfo::ret_arg("usize")),
+        ],
+        "",
     );
     compiler.add_context(Context::Function(header_offset_function_context))?;
-    let mut dynamic_offset = "BITMAP_LENGTH_FIELD + Self::bitmap_length()".to_string();
-    for field in msg_info.get_fields().iter() {
-        let field_info = FieldInfo(field.clone());
-        let mut start = dynamic_offset.to_string();
-        if start.len() != 0 {
-            start = format!("{} + ", start);
-        }
-        dynamic_offset = format!(
-            "{} self.get_bitmap_field({}) as usize * {}",
-            start,
-            &field_info.get_bitmap_idx_str(true),
-            &field_info.get_header_size_str(true, false)?
-        );
-    }
-    compiler.add_return_val(&dynamic_offset, false)?;
+    compiler.add_line("unimplemented!()")?;
     compiler.pop_context()?;
     compiler.add_newline()?;
 
     // add num scatter_gather_entries function
-    let num_sge_function_context = FunctionContext::new(
-        "num_scatter_gather_entries",
-        false,
-        vec![FunctionArg::SelfArg],
-        "usize",
-    );
-    compiler.add_context(Context::Function(num_sge_function_context))?;
-    let mut num_sge_entries = "".to_string();
-    for field in msg_info.get_fields().iter() {
-        let field_info = FieldInfo(field.clone());
-        let mut start = num_sge_entries.to_string();
-        if start.len() != 0 {
-            start = format!("{} + ", start);
-        }
-        match &field_info.0.typ {
-            FieldType::String | FieldType::Bytes | FieldType::MessageOrEnum(_) => {
-                num_sge_entries = format!(
-                    "{} self.{}.num_scatter_gather_entries()",
-                    start,
-                    &field_info.get_name(),
-                );
-            }
-            _ => {}
-        }
-    }
-    compiler.add_return_val(&num_sge_entries, false)?;
-    compiler.pop_context()?;
-    compiler.add_newline()?;
-
-    // add get and set bitmap fields
-    let get_bitmap_context =
-        FunctionContext::new("get_bitmap", false, vec![FunctionArg::SelfArg], "&[u8]");
-    compiler.add_context(Context::Function(get_bitmap_context))?;
-    compiler.add_return_val("&self.bitmap", false)?;
-    compiler.pop_context()?;
-    compiler.add_newline()?;
-
-    let get_mut_bitmap_context = FunctionContext::new(
-        "get_mut_bitmap",
-        false,
-        vec![FunctionArg::MutSelfArg],
-        "&mut [u8]",
-    );
-    compiler.add_context(Context::Function(get_mut_bitmap_context))?;
-    compiler.add_return_val("&mut self.bitmap", false)?;
-    compiler.pop_context()?;
-    compiler.add_newline()?;
-
-    let set_bitmap_context = FunctionContext::new(
-        "set_bitmap",
-        false,
+    let num_sge_function_context = FunctionContext::new_extern_c(
+        &format!("{}_num_scatter_gather_entries", msg_info.get_name()),
+        true,
         vec![
-            FunctionArg::MutSelfArg,
-            FunctionArg::new_arg("bitmap", ArgInfo::ref_arg("[u8]", None)),
+            FunctionArg::CSelfArg,
+            FunctionArg::CArg(CArgInfo::ret_arg("usize")),
         ],
         "",
     );
-
-    compiler.add_context(Context::Function(set_bitmap_context))?;
-    compiler.add_statement("self.bitmap", "bitmap.to_vec()")?;
-    compiler.pop_context()?;
-    compiler.add_newline()?;
-
-    add_equality_func(fd, compiler, msg_info)?;
-
-    add_serialization_func(fd, compiler, msg_info)?;
-    compiler.add_newline()?;
-
-    add_deserialization_func(fd, compiler, msg_info)?;
-    compiler.add_newline()?;
-
-    compiler.pop_context()?;
-    Ok(())
-}
-
-fn add_equality_func(
-    _fd: &ProtoReprInfo,
-    compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
-) -> Result<()> {
-    let func_context = FunctionContext::new(
-        "check_deep_equality",
-        false,
-        vec![
-            FunctionArg::SelfArg,
-            FunctionArg::new_arg("other", ArgInfo::ref_arg("Self", None)),
-        ],
-        "bool",
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    for field_idx in 0..msg_info.num_fields() {
-        let field_info = msg_info.get_field_from_id(field_idx as i32)?;
-        let loop_context = LoopContext::new(vec![
-            LoopBranch::ifbranch(&format!(
-                "self.get_bitmap_field({}) != other.get_bitmap_field({})",
-                field_info.get_bitmap_idx_str(true),
-                field_info.get_bitmap_idx_str(true)
-            )),
-            LoopBranch::elseif(&format!(
-                "self.get_bitmap_field({}) && other.get_bitmap_field({})",
-                field_info.get_bitmap_idx_str(true),
-                field_info.get_bitmap_idx_str(true)
-            )),
-        ]);
-        compiler.add_context(Context::Loop(loop_context))?;
-        compiler.add_return_val("false", true)?;
-        compiler.pop_context()?;
-
-        let check_equality_loop = {
-            if field_info.is_list() {
-                match &field_info.0.typ {
-                    FieldType::Int32
-                    | FieldType::Int64
-                    | FieldType::Uint32
-                    | FieldType::Uint64
-                    | FieldType::Float
-                    | FieldType::String
-                    | FieldType::Bytes
-                    | FieldType::MessageOrEnum(_) => {
-                        LoopContext::new(vec![LoopBranch::ifbranch(&format!(
-                            "!self.get_{}().check_deep_equality(&other.get_{}())",
-                            field_info.get_name(),
-                            field_info.get_name()
-                        ))])
-                    }
-                    _ => {
-                        bail!("Field type not supported: {:?}", &field_info.0.typ);
-                    }
-                }
-            } else {
-                match &field_info.0.typ {
-                    FieldType::Int32
-                    | FieldType::Int64
-                    | FieldType::Uint32
-                    | FieldType::Uint64
-                    | FieldType::Float => LoopContext::new(vec![LoopBranch::ifbranch(&format!(
-                        "!self.get_{}().check_deep_equality(other.get_{}())",
-                        field_info.get_name(),
-                        field_info.get_name()
-                    ))]),
-                    FieldType::String | FieldType::Bytes | FieldType::MessageOrEnum(_) => {
-                        LoopContext::new(vec![LoopBranch::ifbranch(&format!(
-                            "!self.get_{}().check_deep_equality(&other.get_{}())",
-                            field_info.get_name(),
-                            field_info.get_name()
-                        ))])
-                    }
-                    _ => {
-                        bail!("Field type not supported: {:?}", &field_info.0.typ);
-                    }
-                }
-            }
-        };
-
-        compiler.add_context(Context::Loop(check_equality_loop))?;
-        compiler.add_return_val("false", true)?;
-        compiler.pop_context()?;
-        compiler.pop_context()?; // outer loop
-        compiler.add_newline()?;
-    }
-
-    compiler.add_return_val("true", true)?;
-
+    compiler.add_context(Context::Function(num_sge_function_context))?;
+    compiler.add_line("unimplemented!()")?;
     compiler.pop_context()?;
 
     Ok(())
 }
 
-fn add_serialization_func(
+// See: cornflakes-codegen/src/utils/dynamic_sga_hdr.rs
+fn add_shared_header_repr(
     fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let func_context = FunctionContext::new_with_lifetime(
-        "inner_serialize",
-        false,
+    // add deserialize function
+    let deserialize_function_context = FunctionContext::new_extern_c(
+        &format!("{}_deserialize", msg_info.get_name()),
+        true,
         vec![
-            FunctionArg::SelfArg,
-            FunctionArg::new_arg("header", ArgInfo::ref_mut_arg("[u8]", None)),
-            FunctionArg::new_arg("constant_header_offset", ArgInfo::owned("usize")),
-            FunctionArg::new_arg("dynamic_header_start", ArgInfo::owned("usize")),
-            FunctionArg::new_arg(
-                "scatter_gather_entries",
-                ArgInfo::ref_mut_arg("[Sge<'sge>]", None),
-            ),
-            FunctionArg::new_arg("offsets", ArgInfo::ref_mut_arg("[usize]", None)),
+            FunctionArg::CSelfArg,
+            FunctionArg::CArg(CArgInfo::arg("buffer", "*const ::std::os::raw::c_uchar")),
+            FunctionArg::CArg(CArgInfo::len_arg("buffer")),
         ],
-        "Result<()>",
-        "'sge",
-        &format!("{}: 'sge", fd.get_lifetime()),
+        "u32",
     );
-
-    compiler.add_context(Context::Function(func_context))?;
-
-    // copy bitmap
-    compiler.add_func_call(
-        Some("self".to_string()),
-        "serialize_bitmap",
-        vec!["header".to_string(), "constant_header_offset".to_string()],
-        false,
-    )?;
-
-    let constant_off_mut = msg_info.constant_fields_left(-1) > 1;
-    compiler.add_def_with_let(
-        constant_off_mut,
-        None,
-        "cur_constant_offset",
-        "constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length()",
-    )?;
-
+    compiler.add_context(Context::Function(deserialize_function_context))?;
+    compiler.add_line("unimplemented!()")?;
+    compiler.pop_context()?;
     compiler.add_newline()?;
 
-    let dynamic_fields_off_mut = msg_info.dynamic_fields_left(-1, true, fd.get_message_map())? > 1;
-    compiler.add_def_with_let(
-        dynamic_fields_off_mut,
-        None,
-        "cur_dynamic_offset",
-        "dynamic_header_start",
-    )?;
-
-    let string_or_bytes_fields_left = msg_info.num_string_or_bytes_fields_left(-1)?;
-    let dynamic_fields_left = msg_info.dynamic_fields_left(-1, true, fd.get_message_map())?;
-    let cur_sge_idx_mut = (string_or_bytes_fields_left + dynamic_fields_left) > 1;
-    if msg_info.has_dynamic_fields(true, fd.get_message_map())?
-        || msg_info.string_or_bytes_fields_left(-1)?
-    {
-        compiler.add_def_with_let(cur_sge_idx_mut, None, "cur_sge_idx", "0")?;
-    }
-
-    for field_idx in 0..msg_info.num_fields() {
-        let field_info = msg_info.get_field_from_id(field_idx as i32)?;
-        compiler.add_newline()?;
-        let loop_context = LoopContext::new(vec![LoopBranch::ifbranch(&format!(
-            "self.get_bitmap_field({})",
-            field_info.get_bitmap_idx_str(true),
-        ))]);
-        compiler.add_context(Context::Loop(loop_context))?;
-        add_serialization_for_field(fd, compiler, msg_info, &field_info)?;
-        compiler.pop_context()?;
-        compiler.add_newline()?;
-    }
-
-    compiler.add_return_val("Ok(())", false)?;
-    compiler.pop_context()?; // function context for serialize
-    Ok(())
-}
-
-fn add_deserialization_func(
-    fd: &ProtoReprInfo,
-    compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
-) -> Result<()> {
-    let func_context = FunctionContext::new_with_lifetime(
-        "inner_deserialize",
-        false,
+    // add serialize_into_sga function
+    let serialize_into_sga_function_context = FunctionContext::new_extern_c(
+        &format!("{}_serialize_into_sga", msg_info.get_name()),
+        true,
         vec![
-            FunctionArg::MutSelfArg,
-            FunctionArg::new_arg(
-                "buffer",
-                ArgInfo::ref_arg("[u8]", Some(format!("{}", fd.get_lifetime()))),
-            ),
-            FunctionArg::new_arg("header_offset", ArgInfo::owned("usize")),
+            FunctionArg::CSelfArg,
+            FunctionArg::CArg(CArgInfo::arg("ordered_sga", "*const ::std::os::raw::c_void")),
+            FunctionArg::CArg(CArgInfo::arg("datapath", "*const ::std::os::raw::c_void")),
         ],
-        "Result<()>",
-        "'buf",
-        &format!("'buf: {}", fd.get_lifetime()),
+        "u32",
     );
-    compiler.add_context(Context::Function(func_context))?;
-
-    // copy bitmap
-    compiler.add_func_call(
-        Some("self".to_string()),
-        "deserialize_bitmap",
-        vec!["buffer".to_string(), "header_offset".to_string()],
-        false,
-    )?;
-
-    let constant_off_mut = msg_info.constant_fields_left(-1) > 1;
-    compiler.add_def_with_let(
-        constant_off_mut,
-        None,
-        "cur_constant_offset",
-        "header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length()",
-    )?;
-    for field_idx in 0..msg_info.num_fields() {
-        let field_info = msg_info.get_field_from_id(field_idx as i32)?;
-        compiler.add_newline()?;
-        let loop_context = LoopContext::new(vec![LoopBranch::ifbranch(&format!(
-            "self.get_bitmap_field({})",
-            field_info.get_bitmap_idx_str(true),
-        ))]);
-        compiler.add_context(Context::Loop(loop_context))?;
-        add_deserialization_for_field(fd, compiler, msg_info, &field_info)?;
-        compiler.pop_context()?;
-        compiler.add_newline()?;
-    }
-
-    compiler.add_return_val("Ok(())", false)?;
-    compiler.pop_context()?; // function context for serialize
-    Ok(())
-}
-fn add_serialization_for_field(
-    fd: &ProtoReprInfo,
-    compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
-    field_info: &FieldInfo,
-) -> Result<()> {
-    let mut used_sge_idx = false;
-    if field_info.is_list() {
-        match &field_info.0.typ {
-            FieldType::Int32
-            | FieldType::Int64
-            | FieldType::Uint32
-            | FieldType::Uint64
-            | FieldType::Float
-            | FieldType::String
-            | FieldType::Bytes
-            | FieldType::MessageOrEnum(_) => {
-                compiler.add_func_call(Some(format!("self.{}", field_info.get_name())), "inner_serialize", vec!["header".to_string(), "cur_constant_offset".to_string(), "cur_dynamic_offset".to_string(),
-                    format!("&mut scatter_gather_entries[cur_sge_idx..(cur_sge_idx + self.{}.num_scatter_gather_entries())]", field_info.get_name()),
-                    format!("&mut offsets[cur_sge_idx..(cur_sge_idx + self.{}.num_scatter_gather_entries())]", field_info.get_name())], true)?;
-                used_sge_idx = true;
-            }
-            _ => {
-                bail!("Field type not supported: {:?}", &field_info.0.typ);
-            }
-        }
-    } else {
-        match &field_info.0.typ {
-            FieldType::Int32
-            | FieldType::Int64
-            | FieldType::Uint32
-            | FieldType::Uint64
-            | FieldType::Float => {
-                let rust_type = &field_info.get_base_type_str()?;
-                let field_size = &field_info.get_header_size_str(true, false)?;
-                compiler.add_line(&format!("LittleEndian::write_{}(&header[cur_constant_offset..(cur_constant_offset + {})], {})", rust_type, field_size, &field_info.get_name()))?;
-            }
-            FieldType::String | FieldType::Bytes => {
-                compiler.add_func_call(Some(format!("self.{}", &field_info.get_name())), "inner_serialize_with_ref", vec!["header".to_string(), "cur_constant_offset".to_string(), "cur_dynamic_offset".to_string(), format!("&mut scatter_gather_entries[cur_sge_idx..(cur_sge_idx + self.{}.num_scatter_gather_entries())]", field_info.get_name()),
-                format!("&mut offsets[cur_sge_idx..(cur_sge_idx + self.{}.num_scatter_gather_entries())]", field_info.get_name()), "false".to_string()], true)?;
-                used_sge_idx = true;
-            }
-            FieldType::MessageOrEnum(_) => {
-                compiler.add_func_call(Some(format!("self.{}", &field_info.get_name())), "inner_serialize_with_ref", vec!["header".to_string(), "cur_constant_offset".to_string(), "cur_dynamic_offset".to_string(), format!("&mut scatter_gather_entries[cur_sge_idx..(cur_sge_idx + self.{}.num_scatter_gather_entries())]", field_info.get_name()),
-                format!("&mut offsets[cur_sge_idx..(cur_sge_idx + self.{}.num_scatter_gather_entries())]", field_info.get_name()), "true".to_string()], true)?;
-                used_sge_idx = true;
-            }
-            _ => {
-                bail!("Field type not supported: {:?}", &field_info.0.typ);
-            }
-        }
-    }
+    compiler.add_context(Context::Function(serialize_into_sga_function_context))?;
+    compiler.add_line("unimplemented!()")?;
+    compiler.pop_context()?;
     compiler.add_newline()?;
-    if used_sge_idx
-        && ((msg_info.dynamic_fields_left(field_info.get_idx(), true, fd.get_message_map())? > 0)
-            || (msg_info.string_or_bytes_fields_left(field_info.get_idx())?))
-    {
-        compiler.add_plus_equals(
-            "cur_sge_idx",
-            &format!(
-                "self.{}.num_scatter_gather_entries()",
-                field_info.get_name()
-            ),
-        )?;
-    }
-    if msg_info.constant_fields_left(field_info.get_idx()) > 0 {
-        let field_size = &field_info.get_header_size_str(true, false)?;
-        compiler.add_plus_equals("cur_constant_offset", field_size)?;
-    }
 
-    if msg_info.dynamic_fields_left(field_info.get_idx(), true, fd.get_message_map())? > 0 {
-        if field_info.is_dynamic(true, fd.get_message_map())? {
-            // modify cur_dynamic_ptr and cur_dynamic_offset
-            compiler.add_plus_equals(
-                "cur_dynamic_offset",
-                &format!("self.{}.dynamic_header_size()", &field_info.get_name()),
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-fn add_deserialization_for_field(
-    fd: &ProtoReprInfo,
-    compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
-    field_info: &FieldInfo,
-) -> Result<()> {
-    if field_info.is_list() {
-        match &field_info.0.typ {
-            FieldType::Int32
-            | FieldType::Int64
-            | FieldType::Uint64
-            | FieldType::Uint32
-            | FieldType::Float
-            | FieldType::String
-            | FieldType::Bytes
-            | FieldType::MessageOrEnum(_) => {
-                compiler.add_func_call(
-                    Some(format!("self.{}", field_info.get_name())),
-                    "inner_deserialize",
-                    vec!["buffer".to_string(), "cur_constant_offset".to_string()],
-                    true,
-                )?;
-            }
-            _ => {
-                bail!("Field type {:?} not supported.", field_info.0.typ);
-            }
-        }
-    } else {
-        let rust_type = fd.get_rust_type(field_info.clone())?;
-        match &field_info.0.typ {
-            FieldType::Int32
-            | FieldType::Int64
-            | FieldType::Uint64
-            | FieldType::Uint32
-            | FieldType::Float => {
-                compiler.add_statement(
-                    &format!("self.{}", field_info.get_name()),
-                    &format!("LittleEndian::read_{}(buffer[cur_constant_offset..(cur_constant_offset + {})])", rust_type, field_info.get_header_size_str(true, false)?))?;
-            }
-            FieldType::String | FieldType::Bytes => {
-                compiler.add_func_call(
-                    Some(format!("self.{}", field_info.get_name())),
-                    "inner_deserialize_with_ref",
-                    vec![
-                        "buffer".to_string(),
-                        "cur_constant_offset".to_string(),
-                        "false".to_string(),
-                    ],
-                    true,
-                )?;
-            }
-            FieldType::MessageOrEnum(_) => {
-                compiler.add_func_call(
-                    Some(format!("self.{}", field_info.get_name())),
-                    "inner_deserialize_with_ref",
-                    vec![
-                        "buffer".to_string(),
-                        "cur_constant_offset".to_string(),
-                        "true".to_string(),
-                    ],
-                    true,
-                )?;
-            }
-            _ => {
-                bail!("Field type {:?} not supported.", field_info.0.typ);
-            }
-        }
-    }
-    if msg_info.constant_fields_left(field_info.get_idx()) > 0 {
-        compiler.add_plus_equals(
-            "cur_constant_offset",
-            &field_info.get_header_size_str(true, false)?,
-        )?;
-    }
     Ok(())
 }
