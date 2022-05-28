@@ -780,7 +780,7 @@ impl SerializationCompiler {
         right: &str,
     ) -> Result<()> {
         let mut_str = match is_mut {
-            true => "mut",
+            true => "mut ",
             false => "",
         };
         let type_str = match typ {
@@ -788,7 +788,7 @@ impl SerializationCompiler {
             None => "".to_string(),
         };
         let line = format!(
-            "let {} {}{} = unsafe {{ {} }};",
+            "let {}{}{} = unsafe {{ {} }};",
             mut_str, left, type_str, right
         );
         self.add_line(&line)?;
@@ -838,6 +838,12 @@ impl SerializationCompiler {
         Ok(())
     }
 
+    pub fn add_unsafe_set(&mut self, left: &str, right: &str) -> Result<()> {
+        let line = format!("unsafe {{ *{} = {} }};", left, right);
+        self.add_line(&line)?;
+        Ok(())
+    }
+
     pub fn add_plus_equals(&mut self, left: &str, right: &str) -> Result<()> {
         let line = format!("{} += {};", left, right);
         self.add_line(&line)?;
@@ -868,6 +874,29 @@ impl SerializationCompiler {
         };
 
         let line = format!("{}{}({}){};", caller_str, func, args.join(", "), res);
+        self.add_line(&line)?;
+        Ok(())
+    }
+
+    pub fn add_func_call_with_let(
+        &mut self,
+        left: &str,
+        caller: Option<String>,
+        func: &str,
+        args: Vec<String>,
+        add_res: bool,
+    ) -> Result<()> {
+        let caller_str = match caller {
+            Some(x) => format!("{}.", x),
+            None => "".to_string(),
+        };
+
+        let res = match add_res {
+            true => "?",
+            false => "",
+        };
+
+        let line = format!("let {} = {}{}({}){};", left, caller_str, func, args.join(", "), res);
         self.add_line(&line)?;
         Ok(())
     }
