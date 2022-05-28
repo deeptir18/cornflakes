@@ -1,11 +1,10 @@
 use super::{
     super::header_utils::{FieldInfo, MessageInfo, ProtoReprInfo},
     super::rust_codegen::{
-        ArgInfo, Context, FunctionArg, FunctionContext, SerializationCompiler,
-        CArgInfo,
+        Context, FunctionArg, FunctionContext, SerializationCompiler, CArgInfo,
     },
 };
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::Result;
 use protobuf_parser::FieldType;
 
 pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
@@ -45,20 +44,61 @@ fn is_array(field: &FieldInfo) -> bool {
     }
 }
 
+fn add_extern_c_wrapper_function(
+    compiler: &mut SerializationCompiler,
+    struct_name: &str,
+    func_name: &str,
+    use_self: bool,
+    raw_args: Vec<(&str, &str, bool)>,  // name, type, is_array
+    raw_ret: Option<(&str, bool)>,      //       type, is_array
+    use_error_code: bool,
+) -> Result<()> {
+    let args = {
+        let mut args = vec![];
+        if use_self {
+            args.push(FunctionArg::CSelfArg);
+        }
+        for (arg_name, arg_ty, arg_is_array) in raw_args {
+            args.push(FunctionArg::CArg(CArgInfo::arg(arg_name, arg_ty)));
+            if arg_is_array {
+                args.push(FunctionArg::CArg(CArgInfo::len_arg(arg_name)));
+            }
+        }
+        if let Some((ret_ty, ret_is_array)) = raw_ret {
+            args.push(FunctionArg::CArg(CArgInfo::ret_arg(ret_ty)));
+            if ret_is_array {
+                args.push(FunctionArg::CArg(CArgInfo::ret_len_arg()));
+            }
+        }
+        args
+    };
+
+    let func_context = FunctionContext::new_extern_c(
+        &format!("{}_{}", struct_name, func_name),
+        true, args, use_error_code,
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_line("unimplemented!()")?;
+    compiler.pop_context()?; // end of function
+
+    compiler.add_newline()?;
+    Ok(())
+}
+
 fn add_default_impl(
     fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let func_context = FunctionContext::new_extern_c(
-        &format!("{}_default", msg_info.get_name()),
-        true,
-        vec![FunctionArg::CArg(CArgInfo::ret_arg("*mut ::std::os::raw::c_void"))],
+    add_extern_c_wrapper_function(
+        compiler,
+        &msg_info.get_name(),
+        "default",
         false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    compiler.add_line("unimplemented!()")?;
-    compiler.pop_context()?; // end of function
+        vec![],
+        Some(("*mut ::std::os::raw::c_void", false)),
+        false,
+    )?;
     Ok(())
 }
 
@@ -68,33 +108,15 @@ fn add_impl(
     msg_info: &MessageInfo,
 ) -> Result<()> {
     compiler.add_newline()?;
-    let new_func_context = FunctionContext::new_extern_c(
-        &format!("{}_new", msg_info.get_name()),
-        true,
-        vec![FunctionArg::CArg(CArgInfo::ret_arg("*mut ::std::os::raw::c_void"))],
+    add_extern_c_wrapper_function(
+        compiler,
+        &msg_info.get_name(),
+        "new",
         false,
-    );
-    compiler.add_context(Context::Function(new_func_context))?;
-    // let struct_def_context = StructDefContext::new(&msg_info.get_name());
-    // compiler.add_context(Context::StructDef(struct_def_context))?;
-    // compiler.add_struct_def_field("bitmap", "vec![0u8; Self::bitmap_length()]")?;
-    // for field in msg_info.get_fields().iter() {
-    //     let field_info = FieldInfo(field.clone());
-    //     if field_info.is_list() {
-    //         if field_info.is_int_list() {
-    //             compiler.add_struct_def_field(&field_info.get_name(), "List::default()")?;
-    //         } else {
-    //             compiler.add_struct_def_field(&field_info.get_name(), "VariableList::default()")?;
-    //         }
-    //     } else {
-    //         compiler
-    //             .add_struct_def_field(&field_info.get_name(), &fd.get_default_type(field_info)?)?;
-    //     }
-    // }
-
-    // compiler.pop_context()?; // end of struct definition
-    compiler.add_line("unimplemented!()")?;
-    compiler.pop_context()?; // end of new function
+        vec![],
+        Some(("*mut ::std::os::raw::c_void", false)),
+        false,
+    )?;
 
     for field in msg_info.get_fields().iter() {
         let field_info = FieldInfo(field.clone());
@@ -135,23 +157,15 @@ fn add_has(
     msg_info: &MessageInfo,
     field: &FieldInfo,
 ) -> Result<()> {
-    let func_context = FunctionContext::new_extern_c(
-        &format!("{}_has_{}", msg_info.get_name(), field.get_name()),
+    add_extern_c_wrapper_function(
+        compiler,
+        &msg_info.get_name(),
+        &format!("has_{}", field.get_name()),
         true,
-        vec![
-            FunctionArg::CSelfArg,
-            FunctionArg::CArg(CArgInfo::ret_arg("bool")),
-        ],
+        vec![],
+        Some(("bool", false)),
         false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    // let bitmap_field_str = field.get_bitmap_idx_str(true);
-    // compiler.add_return_val(
-    //     &format!("self.get_bitmap_field({})", bitmap_field_str),
-    //     false,
-    // )?;
-    compiler.add_line("unimplemented!()")?;
-    compiler.pop_context()?;
+    )?;
     Ok(())
 }
 
@@ -162,49 +176,36 @@ fn add_get(
     field: &FieldInfo,
 ) -> Result<()> {
     let field_type = fd.get_c_type(field.clone())?;
-    let mut args = vec![
-        FunctionArg::CSelfArg,
-        FunctionArg::CArg(CArgInfo::ret_arg(&field_type)),
-    ];
-    if is_array(field) {
-        args.push(FunctionArg::CArg(CArgInfo::ret_len_arg()));
-    }
-
-    let func_context = FunctionContext::new_extern_c(
-        &format!("{}_get_{}", msg_info.get_name(), field.get_name()),
-        true, args, false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    // let return_val = match field.is_list() || field.is_nested_msg() {
-    //     true => format!("&self.{}", field.get_name()),
-    //     false => format!("self.{}", field.get_name()),
-    // };
-
-    // compiler.add_return_val(&return_val, false)?;
-    compiler.add_line("unimplemented!()")?;
-
-    compiler.pop_context()?;
+    add_extern_c_wrapper_function(
+        compiler,
+        &msg_info.get_name(),
+        &format!("get_{}", field.get_name()),
+        true,
+        vec![],
+        Some((&field_type, is_array(field))),
+        false,
+    )?;
     Ok(())
 }
 
 fn add_get_mut(
-    fd: &ProtoReprInfo,
-    compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
-    field: &FieldInfo,
+    _fd: &ProtoReprInfo,
+    _compiler: &mut SerializationCompiler,
+    _msg_info: &MessageInfo,
+    _field: &FieldInfo,
 ) -> Result<()> {
-    let field_name = field.get_name();
-    let rust_type = fd.get_rust_type(field.clone())?;
-    let func_context = FunctionContext::new_extern_c(
-        &format!("{}_get_mut_{}", msg_info.get_name(), &field_name),
-        true,
-        vec![FunctionArg::MutSelfArg],
-        // &format!("&mut {}", rust_type)
-        false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    compiler.add_return_val(&format!("&mut self.{}", &field_name), false)?;
-    compiler.pop_context()?;
+    // let field_name = field.get_name();
+    // let rust_type = fd.get_rust_type(field.clone())?;
+    // let func_context = FunctionContext::new_extern_c(
+    //     &format!("{}_get_mut_{}", msg_info.get_name(), &field_name),
+    //     true,
+    //     vec![FunctionArg::MutSelfArg],
+    //     // &format!("&mut {}", rust_type)
+    //     false,
+    // );
+    // compiler.add_context(Context::Function(func_context))?;
+    // compiler.add_return_val(&format!("&mut self.{}", &field_name), false)?;
+    // compiler.pop_context()?;
     unimplemented!()
 }
 
@@ -216,82 +217,70 @@ fn add_set(
 ) -> Result<()> {
     let field_name = field.get_name();
     let field_type = fd.get_c_type(field.clone())?;
-    let mut args = vec![
-        FunctionArg::CSelfArg,
-        FunctionArg::CArg(CArgInfo::arg(&field_name, &field_type)),
-    ];
-    if is_array(field) {
-        args.push(FunctionArg::CArg(CArgInfo::len_arg(&field_name)));
-    }
-    let func_context = FunctionContext::new_extern_c(
-        &format!("{}_set_{}", msg_info.get_name(), field_name),
-        true, args, false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    // compiler.add_func_call(
-    //     Some("self".to_string()),
-    //     "set_bitmap_field",
-    //     vec![format!("{}", bitmap_idx_str)],
-    //     false,
-    // )?;
-    // compiler.add_statement(&format!("self.{}", &field_name), "field")?;
-    compiler.add_line("unimplemented!()")?;
-    compiler.pop_context()?;
+    add_extern_c_wrapper_function(
+        compiler,
+        &msg_info.get_name(),
+        &format!("set_{}", field.get_name()),
+        true,
+        vec![(&field_name, &field_type, is_array(field))],
+        None,
+        false,
+    )?;
     Ok(())
 }
 
 fn add_list_init(
-    compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
-    field: &FieldInfo,
+    _compiler: &mut SerializationCompiler,
+    _msg_info: &MessageInfo,
+    _field: &FieldInfo,
 ) -> Result<()> {
-    let func_context = FunctionContext::new_extern_c(
-        &format!("{}_init_{}", msg_info.get_name(), field.get_name()),
-        true,
-        vec![
-            FunctionArg::MutSelfArg,
-            FunctionArg::new_arg("num", ArgInfo::owned("usize")),
-        ],
-        false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    match &field.0.typ {
-        FieldType::Int32
-        | FieldType::Int64
-        | FieldType::Uint32
-        | FieldType::Uint64
-        | FieldType::Float => {
-            compiler.add_statement(
-                &format!("self.{}", field.get_name()),
-                &format!("List::init(num)"),
-            )?;
-        }
-        FieldType::String
-        | FieldType::Bytes
-        | FieldType::RefCountedString
-        | FieldType::RefCountedBytes => {
-            compiler.add_statement(
-                &format!("self.{}", field.get_name()),
-                &format!("VariableList::init(num)"),
-            )?;
-        }
-        FieldType::MessageOrEnum(_) => {
-            compiler.add_statement(
-                &format!("self.{}", field.get_name()),
-                &format!("VariableList::init(num)"),
-            )?;
-        }
-        x => {
-            bail!("Field type not supported: {:?}", x);
-        }
-    }
-    compiler.add_func_call(
-        Some("self".to_string()),
-        "set_bitmap_field",
-        vec![format!("{}", field.get_bitmap_idx_str(true))],
-        false,
-    )?;
-    compiler.pop_context()?;
+    // let func_context = FunctionContext::new_extern_c(
+    //     &format!("{}_init_{}", msg_info.get_name(), field.get_name()),
+    //     true,
+    //     vec![
+    //         FunctionArg::MutSelfArg,
+    //         FunctionArg::new_arg("num", ArgInfo::owned("usize")),
+    //     ],
+    //     false,
+    // );
+    // compiler.add_context(Context::Function(func_context))?;
+    // match &field.0.typ {
+    //     FieldType::Int32
+    //     | FieldType::Int64
+    //     | FieldType::Uint32
+    //     | FieldType::Uint64
+    //     | FieldType::Float => {
+    //         compiler.add_statement(
+    //             &format!("self.{}", field.get_name()),
+    //             &format!("List::init(num)"),
+    //         )?;
+    //     }
+    //     FieldType::String
+    //     | FieldType::Bytes
+    //     | FieldType::RefCountedString
+    //     | FieldType::RefCountedBytes => {
+    //         compiler.add_statement(
+    //             &format!("self.{}", field.get_name()),
+    //             &format!("VariableList::init(num)"),
+    //         )?;
+    //     }
+    //     FieldType::MessageOrEnum(_) => {
+    //         compiler.add_statement(
+    //             &format!("self.{}", field.get_name()),
+    //             &format!("VariableList::init(num)"),
+    //         )?;
+    //     }
+    //     x => {
+    //         bail!("Field type not supported: {:?}", x);
+    //     }
+    // }
+    // compiler.add_func_call(
+    //     Some("self".to_string()),
+    //     "set_bitmap_field",
+    //     vec![format!("{}", field.get_bitmap_idx_str(true))],
+    //     false,
+    // )?;
+    // compiler.pop_context()?;
     unimplemented!()
 }
 
@@ -301,48 +290,37 @@ fn add_header_repr(
     msg_info: &MessageInfo,
 ) -> Result<()> {
     // add dynamic header size function
-    let header_size_function_context = FunctionContext::new_extern_c(
-        &format!("{}_dynamic_header_size", msg_info.get_name()),
+    add_extern_c_wrapper_function(
+        compiler,
+        &msg_info.get_name(),
+        "dynamic_header_size",
         true,
-        vec![
-            FunctionArg::CSelfArg,
-            FunctionArg::CArg(CArgInfo::ret_arg("usize")),
-        ],
+        vec![],
+        Some(("usize", false)),
         false,
-    );
-    compiler.add_context(Context::Function(header_size_function_context))?;
-    compiler.add_line("unimplemented!()")?;
-    compiler.pop_context()?;
-    compiler.add_newline()?;
+    )?;
 
     // add dynamic header offset function
-    let header_offset_function_context = FunctionContext::new_extern_c(
-        &format!("{}_dynamic_header_start", msg_info.get_name()),
+    add_extern_c_wrapper_function(
+        compiler,
+        &msg_info.get_name(),
+        "dynamic_header_offset",
         true,
-        vec![
-            FunctionArg::CSelfArg,
-            FunctionArg::CArg(CArgInfo::ret_arg("usize")),
-        ],
+        vec![],
+        Some(("usize", false)),
         false,
-    );
-    compiler.add_context(Context::Function(header_offset_function_context))?;
-    compiler.add_line("unimplemented!()")?;
-    compiler.pop_context()?;
-    compiler.add_newline()?;
+    )?;
 
     // add num scatter_gather_entries function
-    let num_sge_function_context = FunctionContext::new_extern_c(
-        &format!("{}_num_scatter_gather_entries", msg_info.get_name()),
+    add_extern_c_wrapper_function(
+        compiler,
+        &msg_info.get_name(),
+        "num_scatter_gather_entries",
         true,
-        vec![
-            FunctionArg::CSelfArg,
-            FunctionArg::CArg(CArgInfo::ret_arg("usize")),
-        ],
+        vec![],
+        Some(("usize", false)),
         false,
-    );
-    compiler.add_context(Context::Function(num_sge_function_context))?;
-    compiler.add_line("unimplemented!()")?;
-    compiler.pop_context()?;
+    )?;
 
     Ok(())
 }
@@ -354,36 +332,29 @@ fn add_shared_header_repr(
     msg_info: &MessageInfo,
 ) -> Result<()> {
     // add deserialize function
-    let deserialize_function_context = FunctionContext::new_extern_c(
-        &format!("{}_deserialize", msg_info.get_name()),
+    add_extern_c_wrapper_function(
+        compiler,
+        &msg_info.get_name(),
+        "deserialize",
         true,
-        vec![
-            FunctionArg::CSelfArg,
-            FunctionArg::CArg(CArgInfo::arg("buffer", "*const ::std::os::raw::c_uchar")),
-            FunctionArg::CArg(CArgInfo::len_arg("buffer")),
-        ],
+        vec![("buffer", "*const ::std::os::raw::c_uchar", true)],
+        None,
         true,
-    );
-    compiler.add_context(Context::Function(deserialize_function_context))?;
-    compiler.add_line("unimplemented!()")?;
-    compiler.pop_context()?;
-    compiler.add_newline()?;
+    )?;
 
     // add serialize_into_sga function
-    let serialize_into_sga_function_context = FunctionContext::new_extern_c(
-        &format!("{}_serialize_into_sga", msg_info.get_name()),
+    add_extern_c_wrapper_function(
+        compiler,
+        &msg_info.get_name(),
+        "serialize_into_sga",
         true,
         vec![
-            FunctionArg::CSelfArg,
-            FunctionArg::CArg(CArgInfo::arg("ordered_sga", "*const ::std::os::raw::c_void")),
-            FunctionArg::CArg(CArgInfo::arg("datapath", "*const ::std::os::raw::c_void")),
+            ("ordered_sga", "*const ::std::os::raw::c_void", false),
+            ("datapath", "*const ::std::os::raw::c_void", false),
         ],
+        None,
         true,
-    );
-    compiler.add_context(Context::Function(serialize_into_sga_function_context))?;
-    compiler.add_line("unimplemented!()")?;
-    compiler.pop_context()?;
-    compiler.add_newline()?;
+    )?;
 
     Ok(())
 }
