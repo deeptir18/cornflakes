@@ -512,6 +512,16 @@ impl<'a> OrderedSga<'a> {
         self.sga.entries_slice(start, length)
     }
 
+    pub fn copy_into_buffer(&self, buf: &mut [u8]) -> Result<usize> {
+        let mut off = 0;
+        for entry in self.sga.entries_slice(0, self.sga.len()).iter() {
+            let buf_to_copy = &mut buf[off..(off + entry.len())];
+            buf_to_copy.copy_from_slice(&entry.addr());
+            off += entry.len();
+        }
+        Ok(off)
+    }
+
     pub fn mut_entries_slice(&mut self, start: usize, length: usize) -> &mut [Sge<'a>] {
         self.sga.mut_entries_slice(start, length)
     }

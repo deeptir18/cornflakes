@@ -269,6 +269,20 @@ impl MessageInfo {
         self.0.fields.clone()
     }
 
+    pub fn get_type_params_with_lifetime(
+        &self,
+        is_ref_counted: bool,
+        fd: &ProtoReprInfo,
+    ) -> Result<Vec<String>> {
+        let mut ret: Vec<String> = Vec::default();
+        ret.push(fd.get_lifetime());
+        if self.requires_datapath_type_param(is_ref_counted, &fd.get_message_map())? {
+            ret.push(fd.get_datapath_trait_key());
+        }
+
+        Ok(ret)
+    }
+
     pub fn get_type_params(&self, is_ref_counted: bool, fd: &ProtoReprInfo) -> Result<Vec<String>> {
         let mut ret: Vec<String> = Vec::default();
         if self.requires_lifetime(&fd.get_message_map())? {
@@ -481,6 +495,36 @@ impl MessageInfo {
             let field_info = FieldInfo(field.clone());
             if field_info.refers_to_bytes(msg_map)? {
                 return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
+
+    pub fn has_only_int_fields(
+        &self,
+        include_nested: bool,
+        msg_map: &HashMap<String, Message>,
+    ) -> Result<bool> {
+        for field in self.0.fields.iter() {
+            let field_info = FieldInfo(field.clone());
+            if field_info.is_int() {
+                return Ok(true);
+            }
+            if include_nested && field_info.is_nested_msg() {
+                match field_info.0.typ {
+                    FieldType::MessageOrEnum(msg_name) => match msg_map.get(&msg_name) {
+                        Some(m) => {
+                            let msg_info = MessageInfo(m.clone());
+                            if msg_info.has_only_int_fields(include_nested, &msg_map)? {
+                                return Ok(true);
+                            }
+                        }
+                        None => {
+                            bail!("Message name not found in map: {}", msg_name);
+                        }
+                    },
+                    _ => unreachable!(),
+                }
             }
         }
         return Ok(false);

@@ -95,7 +95,7 @@ where
         self.server_addr.clone()
     }
 
-    fn get_next_msg(&mut self) -> Result<Option<(MsgID, &[u8])>> {
+    fn get_next_msg(&mut self, _datapath: &D) -> Result<Option<(MsgID, &[u8])>> {
         Ok(Some((
             self.last_sent_id,
             &self.bytes_to_transmit.as_slice(),
@@ -135,7 +135,7 @@ where
         Ok(())
     }
 
-    fn msg_timeout_cb(&mut self, id: MsgID) -> Result<&[u8]> {
+    fn msg_timeout_cb(&mut self, id: MsgID, _datapath: &Self::Datapath) -> Result<&[u8]> {
         tracing::info!(id, last_sent = self.last_sent_id, "Retry callback");
         Ok(&self.bytes_to_transmit.as_slice())
     }

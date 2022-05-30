@@ -214,6 +214,18 @@ pub trait SgaHeaderRepr<'obj> {
         'buf: 'obj;
 
     #[inline]
+    fn serialize_into_buf<D>(&self, datapath: &D, header_buffer: &mut [u8]) -> Result<usize>
+    where
+        D: Datapath,
+    {
+        let mut sga = self.alloc_sga();
+        self.serialize_into_sga_with_hdr(header_buffer, &mut sga, datapath)?;
+        // copy sga into header buffer
+        let header_size = self.total_header_size(false, true);
+        sga.copy_into_buffer(&mut header_buffer[header_size..])
+    }
+
+    #[inline]
     fn serialize_to_owned<D>(&self, datapath: &D) -> Result<Vec<u8>>
     where
         D: Datapath,
@@ -453,7 +465,7 @@ pub trait SgaHeaderRepr<'obj> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub struct CFString<'obj> {
     pub ptr: &'obj [u8],
 }

@@ -32,6 +32,7 @@ fn add_dependencies(repr: &ProtoReprInfo, compiler: &mut SerializationCompiler) 
     // if any message has integers, we need slice
     if repr.has_int_field() {
         compiler.add_dependency("std::{slice}")?;
+        compiler.add_dependency("byteorder::{LittleEndian, ByteOrder}")?;
     }
     Ok(())
 }
@@ -50,7 +51,7 @@ fn add_struct_definition(
     )?;
     compiler.add_newline()?;
 
-    let type_annotations = msg_info.get_type_params(false, &fd)?;
+    let type_annotations = msg_info.get_type_params_with_lifetime(false, &fd)?;
     let where_clause = msg_info.get_where_clause(false, &fd)?;
     let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
     let struct_ctx = StructContext::new(
@@ -70,6 +71,12 @@ fn add_struct_definition(
         let field_info = FieldInfo(field.clone());
         compiler.add_struct_field(&field_info.get_name(), &fd.get_rust_type(field_info)?)?;
     }
+    if msg_info.has_only_int_fields(true, &fd.get_message_map())? {
+        compiler.add_struct_field(
+            "_x",
+            &format!("std::marker::PhantomData<&{} [u8]>", fd.get_lifetime()),
+        )?;
+    }
     compiler.pop_context()?;
     Ok(())
 }
@@ -79,7 +86,7 @@ fn add_default_impl(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let type_annotations = msg_info.get_type_params(false, &fd)?;
+    let type_annotations = msg_info.get_type_params_with_lifetime(false, &fd)?;
     let where_clause = msg_info.get_where_clause(false, &fd)?;
     let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
     let trait_name = TraitName::new("Default", vec![]);
@@ -109,6 +116,9 @@ fn add_default_impl(
                 .add_struct_def_field(&field_info.get_name(), &fd.get_default_type(field_info)?)?;
         }
     }
+    if msg_info.has_only_int_fields(true, &fd.get_message_map())? {
+        compiler.add_struct_def_field("_x", "std::marker::PhantomData::default()")?;
+    }
     compiler.pop_context()?; // end of struct definition
     compiler.pop_context()?; // end of function
     compiler.pop_context()?;
@@ -120,7 +130,7 @@ fn add_impl(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let type_annotations = msg_info.get_type_params(false, &fd)?;
+    let type_annotations = msg_info.get_type_params_with_lifetime(false, &fd)?;
     let where_clause = msg_info.get_where_clause(false, &fd)?;
     let impl_context = ImplContext::new(
         StructName::new(&msg_info.get_name(), type_annotations.clone()),
@@ -163,6 +173,9 @@ fn add_impl(
         }
     }
 
+    if msg_info.has_only_int_fields(true, &fd.get_message_map())? {
+        compiler.add_struct_def_field("_x", "std::marker::PhantomData::default()")?;
+    }
     compiler.pop_context()?; // end of struct definition
     compiler.pop_context()?; // end of new function
 
@@ -356,9 +369,10 @@ fn add_header_repr(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let type_annotations = msg_info.get_type_params(false, &fd)?;
+    let type_annotations = msg_info.get_type_params_with_lifetime(false, &fd)?;
+    let struct_type_annotations = type_annotations.clone();
     let where_clause = msg_info.get_where_clause(false, &fd)?;
-    let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
+    let struct_name = StructName::new(&msg_info.get_name(), struct_type_annotations);
     let trait_name = TraitName::new("SgaHeaderRepr", type_annotations.clone());
     let impl_context = ImplContext::new(struct_name, Some(trait_name), where_clause);
     compiler.add_context(Context::Impl(impl_context))?;
@@ -458,7 +472,9 @@ fn add_header_repr(
                     &field_info.get_name(),
                 );
             }
-            _ => {}
+            _ => {
+                num_sge_entries = format!("{} 0", start);
+            }
         }
     }
     compiler.add_return_val(&num_sge_entries, false)?;
@@ -612,7 +628,7 @@ fn add_equality_func(
                     | FieldType::Uint32
                     | FieldType::Uint64
                     | FieldType::Float => LoopContext::new(vec![LoopBranch::ifbranch(&format!(
-                        "!self.get_{}().check_deep_equality(other.get_{}())",
+                        "!self.get_{}() == other.get_{}()",
                         field_info.get_name(),
                         field_info.get_name()
                     ))]),
@@ -814,7 +830,7 @@ fn add_serialization_for_field(
             | FieldType::Float => {
                 let rust_type = &field_info.get_base_type_str()?;
                 let field_size = &field_info.get_header_size_str(true, false)?;
-                compiler.add_line(&format!("LittleEndian::write_{}(&header[cur_constant_offset..(cur_constant_offset + {})], {})", rust_type, field_size, &field_info.get_name()))?;
+                compiler.add_line(&format!("LittleEndian::write_{}(&mut header[cur_constant_offset..(cur_constant_offset + {})], self.{});", rust_type, field_size, &field_info.get_name()))?;
             }
             FieldType::String | FieldType::Bytes => {
                 compiler.add_func_call(Some(format!("self.{}", &field_info.get_name())), "inner_serialize", vec!["header".to_string(), "cur_constant_offset".to_string(), "cur_dynamic_offset".to_string(), format!("&mut scatter_gather_entries[cur_sge_idx..(cur_sge_idx + self.{}.num_scatter_gather_entries())]", field_info.get_name()),
@@ -910,7 +926,7 @@ fn add_deserialization_for_field(
             | FieldType::Float => {
                 compiler.add_statement(
                     &format!("self.{}", field_info.get_name()), 
-                    &format!("LittleEndian::read_{}(buffer[cur_constant_offset..(cur_constant_offset + {})])", rust_type, field_info.get_header_size_str(true, false)?))?;
+                    &format!("LittleEndian::read_{}(&buffer[cur_constant_offset..(cur_constant_offset + {})])", rust_type, field_info.get_header_size_str(true, false)?))?;
             }
             FieldType::String | FieldType::Bytes => {
                 compiler.add_func_call(
