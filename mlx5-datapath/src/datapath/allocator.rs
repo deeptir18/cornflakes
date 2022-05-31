@@ -81,6 +81,18 @@ impl DataMempool {
         get_data_mempool(self.mempool())
     }
 
+    #[inline]
+    pub unsafe fn recover_metadata_mbuf(&self, ptr: *const u8) -> *mut custom_mlx5_mbuf {
+        let data_pool = get_data_mempool(self.mempool());
+        let metadata_pool = get_metadata_mempool(self.mempool());
+        let mempool_start = access!(data_pool, buf, *const u8) as usize;
+        let item_len = access!(data_pool, item_len, usize);
+        let offset_within_alloc = (ptr as usize - mempool_start) % item_len;
+        let index = ((ptr as usize - offset_within_alloc) - mempool_start) / item_len;
+        let mbuf = custom_mlx5_mbuf_at_index(metadata_pool, index);
+        mbuf
+    }
+
     /*#[inline]
     pub unsafe fn get_metadata_mempool(&self) -> *mut custom_mlx5_mempool {
         get_metadata_mempool(self.mempool)
@@ -167,15 +179,11 @@ impl DatapathMemoryPool for DataMempool {
         buf: &[u8],
     ) -> Result<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata> {
         let ptr = buf.as_ptr();
-        let data_pool = unsafe { get_data_mempool(self.mempool()) };
-        let metadata_pool = unsafe { get_metadata_mempool(self.mempool()) };
-        let mempool_start = unsafe { access!(data_pool, buf, *const u8) as usize };
-        let item_len = unsafe { access!(data_pool, item_len, usize) };
-        let offset_within_alloc = (ptr as usize - mempool_start) % item_len;
-        let index = ((ptr as usize - offset_within_alloc) - mempool_start) / item_len;
-        let mbuf = unsafe { custom_mlx5_mbuf_at_index(metadata_pool, index) };
-        let offset = ptr as usize - unsafe { access!(mbuf, buf_addr, *const u8) as usize };
-        MbufMetadata::new(mbuf, offset, Some(buf.len()))
+        unsafe {
+            let mbuf = self.recover_metadata_mbuf(ptr);
+            let offset = ptr as usize - access!(mbuf, buf_addr, *const u8) as usize;
+            MbufMetadata::new(mbuf, offset, Some(buf.len()))
+        }
     }
 
     fn alloc_data_buf(
@@ -183,15 +191,29 @@ impl DatapathMemoryPool for DataMempool {
         context: MempoolID,
     ) -> Result<Option<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>>
     {
-        let buffer = unsafe { alloc_data_buf(self.mempool()) };
-        if buffer.is_null() {
+        let mut metadata = unsafe { custom_mlx5_allocate_data_and_metadata_mbuf(self.mempool()) };
+
+        if metadata.is_null() {
             return Ok(None);
         }
+        // increment the reference count on the mbuf as we are recovering the metadata
+        unsafe {
+            custom_mlx5_mbuf_refcnt_update_or_free(metadata, 1);
+        }
+        let buffer = unsafe { access!(metadata, buf_addr, *mut ::std::os::raw::c_void) };
         tracing::debug!(
             item_len = unsafe { access!(get_data_mempool(self.mempool()), item_len, usize) },
             buffer =? buffer,
+            metadata =? metadata,
             "Allocating from mempool with item len"
         );
-        Ok(Some(Mlx5Buffer::new(buffer, self.mempool(), 0, context)))
+
+        Ok(Some(Mlx5Buffer::new(
+            buffer,
+            self.mempool(),
+            metadata,
+            0,
+            context,
+        )))
     }
 }

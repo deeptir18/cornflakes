@@ -47,29 +47,53 @@ pub struct Mlx5Buffer {
     data: *mut ::std::os::raw::c_void,
     /// Pointer back to the data and metadata pool pair
     mempool: *mut registered_mempool,
+    /// Underlying metadata
+    metadata: *mut custom_mlx5_mbuf,
     /// Data len,
     data_len: usize,
     /// Mempool ID: which mempool was this allocated from?
     mempool_id: MempoolID,
 }
 
+impl Drop for Mlx5Buffer {
+    fn drop(&mut self) {
+        // Decrements ref count on underlying metadata
+        unsafe {
+            custom_mlx5_mbuf_refcnt_update_or_free(self.metadata, -1);
+        }
+    }
+}
+
 impl Mlx5Buffer {
     pub fn new(
         data: *mut ::std::os::raw::c_void,
         mempool: *mut registered_mempool,
+        metadata: *mut custom_mlx5_mbuf,
         data_len: usize,
         mempool_id: MempoolID,
     ) -> Self {
         Mlx5Buffer {
             data: data,
             mempool: mempool,
+            metadata: metadata,
             data_len: data_len,
             mempool_id: mempool_id,
         }
     }
 
-    pub fn get_inner(self) -> (*mut ::std::os::raw::c_void, *mut registered_mempool, usize) {
-        (self.data, self.mempool, self.data_len)
+    pub fn get_metadata(&self) -> *mut custom_mlx5_mbuf {
+        self.metadata
+    }
+
+    pub fn get_inner(
+        self,
+    ) -> (
+        *mut ::std::os::raw::c_void,
+        *mut registered_mempool,
+        *mut custom_mlx5_mbuf,
+        usize,
+    ) {
+        (self.data, self.mempool, self.metadata, self.data_len)
     }
 
     pub fn get_mempool(&self) -> *mut registered_mempool {
@@ -155,15 +179,14 @@ pub struct MbufMetadata {
 
 impl MbufMetadata {
     pub fn from_buf(mlx5_buffer: Mlx5Buffer) -> Result<Option<Self>> {
-        let (buf, registered_mempool, data_len) = mlx5_buffer.get_inner();
-        let metadata_buf = unsafe { alloc_metadata(registered_mempool, buf) };
-        if metadata_buf.is_null() {
-            // drop the data buffer
-            unsafe {
-                custom_mlx5_mempool_free(buf, get_data_mempool(registered_mempool));
-            }
-            return Ok(None);
+        let metadata_buf = mlx5_buffer.get_metadata();
+        unsafe {
+            custom_mlx5_mbuf_refcnt_update_or_free(metadata_buf, 1);
         }
+
+        let (buf, registered_mempool, _metadata_buf, data_len) = mlx5_buffer.get_inner();
+        // because the mlx5_buffer will be dropped,
+        // replace ref count drop from that
 
         ensure!(!metadata_buf.is_null(), "Allocated metadata buffer is null");
         unsafe {
@@ -727,12 +750,14 @@ impl Mlx5Connection {
         return Ok(ret);
     }
 
+    /// Posts mbuf onto ring buffer, and increments reference count on mbuf
     fn post_mbuf_metadata(
         &self,
-        metadata_mbuf: &MbufMetadata,
+        metadata_mbuf: &mut MbufMetadata,
         curr_dpseg: *mut mlx5_wqe_data_seg,
         curr_completion: *mut custom_mlx5_transmission_info,
     ) -> (*mut mlx5_wqe_data_seg, *mut custom_mlx5_transmission_info) {
+        metadata_mbuf.increment_refcnt();
         tracing::debug!(
             len = metadata_mbuf.data_len(),
             off = metadata_mbuf.offset(),
@@ -849,10 +874,8 @@ impl Mlx5Connection {
                     }
                 };
 
-                metadata_mbuf.increment_refcnt();
-
                 let (curr_dpseg, curr_completion) =
-                    self.post_mbuf_metadata(&metadata_mbuf, dpseg, completion);
+                    self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
                 dpseg = curr_dpseg;
                 completion = curr_completion;
             }
@@ -866,9 +889,8 @@ impl Mlx5Connection {
                         bail!("Failed to recover mbuf metadata for seg{:?}", curr_seg);
                     }
                 };
-                mbuf_metadata.increment_refcnt();
                 let (curr_dpseg, curr_completion) =
-                    self.post_mbuf_metadata(&mbuf_metadata, dpseg, completion);
+                    self.post_mbuf_metadata(&mut mbuf_metadata, dpseg, completion);
 
                 dpseg = curr_dpseg;
                 completion = curr_completion;
@@ -996,19 +1018,18 @@ impl Mlx5Connection {
                         );
                         }
                     };
-                    metadata_mbuf.increment_refcnt();
                     let (curr_dpseg, completion) =
-                        self.post_mbuf_metadata(&metadata_mbuf, curr_data_seg, curr_completion);
+                        self.post_mbuf_metadata(&mut metadata_mbuf, curr_data_seg, curr_completion);
                     curr_data_seg = curr_dpseg;
                     curr_completion = completion;
 
                     header_written = true;
                 }
 
-                let mbuf_metadata = rc_sga.get_mut(entry_idx).inner_datapath_pkt_mut().unwrap();
+                let mut mbuf_metadata = rc_sga.get_mut(entry_idx).inner_datapath_pkt_mut().unwrap();
                 mbuf_metadata.increment_refcnt();
                 let (curr_dpseg, completion) =
-                    self.post_mbuf_metadata(&mbuf_metadata, curr_data_seg, curr_completion);
+                    self.post_mbuf_metadata(&mut mbuf_metadata, curr_data_seg, curr_completion);
                 curr_data_seg = curr_dpseg;
                 curr_completion = completion;
                 entry_idx += 1;
@@ -1065,10 +1086,8 @@ impl Mlx5Connection {
                         );
                     }
                 };
-                // increment refcount as MbufMetadata may be dropped before data is sent
-                metadata_mbuf.increment_refcnt();
                 let (curr_dpseg, completion) =
-                    self.post_mbuf_metadata(&metadata_mbuf, curr_data_seg, curr_completion);
+                    self.post_mbuf_metadata(&mut metadata_mbuf, curr_data_seg, curr_completion);
                 curr_data_seg = curr_dpseg;
                 curr_completion = completion;
                 entry_idx = curr_idx;
@@ -1229,9 +1248,8 @@ impl Mlx5Connection {
                         );
                         }
                     };
-                    metadata_mbuf.increment_refcnt();
                     let (dpseg, completion) =
-                        self.post_mbuf_metadata(&metadata_mbuf, curr_data_seg, curr_completion);
+                        self.post_mbuf_metadata(&mut metadata_mbuf, curr_data_seg, curr_completion);
                     curr_data_seg = dpseg;
                     curr_completion = completion;
                     header_written = true;
@@ -1239,9 +1257,8 @@ impl Mlx5Connection {
 
                 let curr_seg = sga.get(entry_idx).addr();
                 let mut mbuf_metadata = self.allocator.recover_buffer(curr_seg)?.unwrap();
-                mbuf_metadata.increment_refcnt();
                 let (dpseg, completion) =
-                    self.post_mbuf_metadata(&mbuf_metadata, curr_data_seg, curr_completion);
+                    self.post_mbuf_metadata(&mut mbuf_metadata, curr_data_seg, curr_completion);
                 curr_data_seg = dpseg;
                 curr_completion = completion;
                 entry_idx += 1;
@@ -1309,9 +1326,8 @@ impl Mlx5Connection {
                         );
                     }
                 };
-                metadata_mbuf.increment_refcnt();
                 let (dpseg, completion) =
-                    self.post_mbuf_metadata(&metadata_mbuf, curr_data_seg, curr_completion);
+                    self.post_mbuf_metadata(&mut metadata_mbuf, curr_data_seg, curr_completion);
                 curr_data_seg = dpseg;
                 curr_completion = completion;
                 entry_idx = curr_idx;
@@ -1833,7 +1849,7 @@ impl Datapath for Mlx5Connection {
 
                     // now put this inside an mbuf and post it.
                     // attach this data buffer to a metadata buffer
-                    let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
+                    let metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
                         Some(m) => m,
                         None => {
                             bail!(
@@ -1841,7 +1857,6 @@ impl Datapath for Mlx5Connection {
                         );
                         }
                     };
-                    metadata_mbuf.increment_refcnt();
 
                     // post this data buffer to the ring buffer
                     unsafe {
@@ -1998,7 +2013,7 @@ impl Datapath for Mlx5Connection {
 
                     // now put this inside an mbuf and post it.
                     // attach this data buffer to a metadata buffer
-                    let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
+                    let metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
                         Some(m) => m,
                         None => {
                             bail!(
@@ -2006,7 +2021,6 @@ impl Datapath for Mlx5Connection {
                         );
                         }
                     };
-                    metadata_mbuf.increment_refcnt();
 
                     // post this data buffer to the ring buffer
                     unsafe {
@@ -2349,10 +2363,8 @@ impl Datapath for Mlx5Connection {
                 }
             };
 
-            metadata_mbuf.increment_refcnt();
-
             let (curr_dpseg, curr_completion) =
-                self.post_mbuf_metadata(&metadata_mbuf, dpseg, completion);
+                self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
             dpseg = curr_dpseg;
             completion = curr_completion;
         }
@@ -2370,9 +2382,8 @@ impl Datapath for Mlx5Connection {
                     bail!("Failed to recover mbuf metadata for seg{:?}", curr_seg);
                 }
             };
-            mbuf_metadata.increment_refcnt();
             let (curr_dpseg, curr_completion) =
-                self.post_mbuf_metadata(&mbuf_metadata, dpseg, completion);
+                self.post_mbuf_metadata(&mut mbuf_metadata, dpseg, completion);
 
             dpseg = curr_dpseg;
             completion = curr_completion;
@@ -2544,10 +2555,8 @@ impl Datapath for Mlx5Connection {
                     }
                 };
 
-                metadata_mbuf.increment_refcnt();
-
                 let (curr_dpseg, curr_completion) =
-                    self.post_mbuf_metadata(&metadata_mbuf, dpseg, completion);
+                    self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
                 dpseg = curr_dpseg;
                 completion = curr_completion;
             }
@@ -2565,9 +2574,8 @@ impl Datapath for Mlx5Connection {
                         bail!("Failed to recover mbuf metadata for seg{:?}", curr_seg);
                     }
                 };
-                mbuf_metadata.increment_refcnt();
                 let (curr_dpseg, curr_completion) =
-                    self.post_mbuf_metadata(&mbuf_metadata, dpseg, completion);
+                    self.post_mbuf_metadata(&mut mbuf_metadata, dpseg, completion);
 
                 dpseg = curr_dpseg;
                 completion = curr_completion;
@@ -2744,10 +2752,8 @@ impl Datapath for Mlx5Connection {
                     }
                 };
 
-                metadata_mbuf.increment_refcnt();
-
                 let (curr_dpseg, curr_completion) =
-                    self.post_mbuf_metadata(&metadata_mbuf, dpseg, completion);
+                    self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
                 dpseg = curr_dpseg;
                 completion = curr_completion;
             }
@@ -2765,9 +2771,8 @@ impl Datapath for Mlx5Connection {
                         bail!("Failed to recover mbuf metadata for seg{:?}", curr_seg);
                     }
                 };
-                mbuf_metadata.increment_refcnt();
                 let (curr_dpseg, curr_completion) =
-                    self.post_mbuf_metadata(&mbuf_metadata, dpseg, completion);
+                    self.post_mbuf_metadata(&mut mbuf_metadata, dpseg, completion);
 
                 dpseg = curr_dpseg;
                 completion = curr_completion;
