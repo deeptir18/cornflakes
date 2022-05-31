@@ -15,9 +15,11 @@ pub trait ServerSM {
 
     fn process_requests_ordered_sga(
         &mut self,
-        pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
-        datapath: &mut Self::Datapath,
-    ) -> Result<()>;
+        _pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
+    ) -> Result<()> {
+        unimplemented!();
+    }
 
     fn process_requests_object(
         &mut self,
@@ -29,21 +31,27 @@ pub trait ServerSM {
 
     fn process_requests_sga(
         &mut self,
-        sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
-        datapath: &mut Self::Datapath,
-    ) -> Result<()>;
+        _sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
+    ) -> Result<()> {
+        unimplemented!();
+    }
 
     fn process_requests_rc_sga(
         &mut self,
-        sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
-        datapath: &mut Self::Datapath,
-    ) -> Result<()>;
+        _sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
+    ) -> Result<()> {
+        unimplemented!();
+    }
 
     fn process_requests_single_buf(
         &mut self,
-        sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
-        datapath: &mut Self::Datapath,
-    ) -> Result<()>;
+        _sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
+    ) -> Result<()> {
+        unimplemented!();
+    }
 
     fn process_requests_arena_ordered_sga(
         &mut self,

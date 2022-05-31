@@ -23,7 +23,7 @@ message GetResp {
 
 message GetMResp {
     uint32 id = 1;
-    repeated bytes val = 2;
+    repeated bytes vals = 2;
 }
 
 message GetListResp {
@@ -52,5 +52,3 @@ message PutListReq {
 message PutResp {
     uint32 id = 1;
 }
-
-

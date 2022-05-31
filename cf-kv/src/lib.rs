@@ -6,14 +6,31 @@ pub mod ycsb;
 use byteorder::{BigEndian, ByteOrder};
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
-    datapath::{Datapath, MetadataOps, ReceivedPkt},
+    allocator::MempoolID,
+    datapath::{Datapath, ReceivedPkt},
     state_machine::client::ClientSM,
     timing::ManualHistogram,
     utils::AddressInfo,
-    ConnID, MsgID,
+    MsgID,
 };
 use hashbrown::HashMap;
-use std::marker::PhantomData;
+use std::{
+    fs::File,
+    io::{prelude::*, BufReader},
+    marker::PhantomData,
+};
+
+const MIN_MEMPOOL_SIZE: usize = 8192;
+
+fn align_to_power(size: usize) -> Result<usize> {
+    let available_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
+    for mempool_size in available_sizes.iter() {
+        if *mempool_size >= size {
+            return Ok(*mempool_size);
+        }
+    }
+    bail!("Provided size {} too large; larger than 8192", size);
+}
 
 // 8 bytes at front of message for framing
 pub const REQ_TYPE_SIZE: usize = 4;
@@ -96,25 +113,25 @@ impl<D> KVServer<D>
 where
     D: Datapath,
 {
-    fn new() -> Self {
+    pub fn new() -> Self {
         KVServer {
             map: HashMap::default(),
         }
     }
 
-    fn get_map(&self) -> &HashMap<String, D::DatapathBuffer> {
+    pub fn get_map(&self) -> &HashMap<String, D::DatapathBuffer> {
         &self.map
     }
 
-    fn get_mut_map(&mut self) -> &mut HashMap<String, D::DatapathBuffer> {
+    pub fn get_mut_map(&mut self) -> &mut HashMap<String, D::DatapathBuffer> {
         &mut self.map
     }
 
-    fn get(&self, key: &str) -> Option<&D::DatapathBuffer> {
+    pub fn get(&self, key: &str) -> Option<&D::DatapathBuffer> {
         self.map.get(key)
     }
 
-    fn insert(&mut self, key: String, value: D::DatapathBuffer) {
+    pub fn insert(&mut self, key: String, value: D::DatapathBuffer) {
         self.map.insert(key, value);
     }
 }
@@ -136,23 +153,23 @@ where
         }
     }
 
-    fn get_map(&self) -> &HashMap<String, Vec<D::DatapathBuffer>> {
+    pub fn get_map(&self) -> &HashMap<String, Vec<D::DatapathBuffer>> {
         &self.map
     }
 
-    fn get_mut_map(&mut self) -> &mut HashMap<String, Vec<D::DatapathBuffer>> {
+    pub fn get_mut_map(&mut self) -> &mut HashMap<String, Vec<D::DatapathBuffer>> {
         &mut self.map
     }
 
-    fn get(&self, key: &str) -> Option<&Vec<D::DatapathBuffer>> {
+    pub fn get(&self, key: &str) -> Option<&Vec<D::DatapathBuffer>> {
         self.map.get(key)
     }
 
-    fn insert(&mut self, key: String, value: Vec<D::DatapathBuffer>) {
+    pub fn insert(&mut self, key: String, value: Vec<D::DatapathBuffer>) {
         self.map.insert(key, value);
     }
 
-    fn append(&mut self, key: String, value: D::DatapathBuffer) {
+    pub fn append(&mut self, key: String, value: D::DatapathBuffer) {
         match self.map.get_mut(&key) {
             Some(list) => {
                 list.push(value);
@@ -166,7 +183,113 @@ where
     }
 }
 
-pub trait ServerLoadGenerator {}
+fn allocate_datapath_buffer<D>(
+    datapath: &mut D,
+    size: usize,
+    mempool_ids: &mut Vec<MempoolID>,
+) -> Result<D::DatapathBuffer>
+where
+    D: Datapath,
+{
+    match datapath.allocate(size)? {
+        Some(buf) => Ok(buf),
+        None => {
+            let aligned_size = align_to_power(size)?;
+            mempool_ids.append(&mut datapath.add_memory_pool(aligned_size, MIN_MEMPOOL_SIZE)?);
+            match datapath.allocate(size)? {
+                Some(buf) => Ok(buf),
+                None => {
+                    unreachable!();
+                }
+            }
+        }
+    }
+}
+
+pub trait ServerLoadGenerator<D>
+where
+    D: Datapath,
+{
+    type RequestLine: Clone + std::fmt::Debug + PartialEq + Eq;
+
+    fn new_ref_kv_state(
+        &self,
+        file: &str,
+    ) -> Result<(HashMap<String, String>, HashMap<String, Vec<String>>)> {
+        let mut kv_server: HashMap<String, String> = HashMap::default();
+        let mut list_kv_server: HashMap<String, Vec<String>> = HashMap::default();
+        self.load_ref_kv_file(file, &mut kv_server, &mut list_kv_server)?;
+        Ok((kv_server, list_kv_server))
+    }
+
+    fn new_kv_state(
+        &self,
+        file: &str,
+        datapath: &mut D,
+    ) -> Result<(KVServer<D>, ListKVServer<D>, Vec<MempoolID>)> {
+        let mut kv_server = KVServer::new();
+        let mut list_kv_server = ListKVServer::new();
+        let mut mempool_ids: Vec<MempoolID> = Vec::default();
+        self.load_file(
+            file,
+            &mut kv_server,
+            &mut list_kv_server,
+            &mut mempool_ids,
+            datapath,
+        )?;
+        Ok((kv_server, list_kv_server, mempool_ids))
+    }
+
+    fn read_request(&self, line: &str) -> Result<Self::RequestLine>;
+
+    fn load_ref_kv_file(
+        &self,
+        request_file: &str,
+        kv_server: &mut HashMap<String, String>,
+        list_kv_server: &mut HashMap<String, Vec<String>>,
+    ) -> Result<()> {
+        let file = File::open(request_file)?;
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            let request = self.read_request(&line?)?;
+            self.modify_server_state_ref_kv(&request, kv_server, list_kv_server)?;
+        }
+        Ok(())
+    }
+
+    fn load_file(
+        &self,
+        request_file: &str,
+        kv_server: &mut KVServer<D>,
+        list_kv_server: &mut ListKVServer<D>,
+        mempool_ids: &mut Vec<MempoolID>,
+        datapath: &mut D,
+    ) -> Result<()> {
+        let file = File::open(request_file)?;
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            let request = self.read_request(&line?)?;
+            self.modify_server_state(&request, kv_server, list_kv_server, mempool_ids, datapath)?;
+        }
+        Ok(())
+    }
+
+    fn modify_server_state_ref_kv(
+        &self,
+        request: &Self::RequestLine,
+        kv: &mut HashMap<String, String>,
+        list_kv: &mut HashMap<String, Vec<String>>,
+    ) -> Result<()>;
+
+    fn modify_server_state(
+        &self,
+        request: &Self::RequestLine,
+        kv_server: &mut KVServer<D>,
+        list_kv_server: &mut ListKVServer<D>,
+        mempool_ids: &mut Vec<MempoolID>,
+        datapath: &mut D,
+    ) -> Result<()>;
+}
 
 pub trait RequestGenerator {
     type RequestLine: Clone + std::fmt::Debug + PartialEq + Eq;
@@ -180,7 +303,28 @@ pub trait RequestGenerator {
     where
         Self: Sized;
 
-    fn next_line(&mut self, client_id: usize, thread_id: usize) -> Result<Option<String>>;
+    fn next_line(&mut self) -> Result<Option<String>>;
+
+    fn check_get(
+        &self,
+        request: &Self::RequestLine,
+        value: &[u8],
+        kv: &HashMap<String, String>,
+    ) -> Result<()>;
+
+    fn check_getm(
+        &self,
+        request: &Self::RequestLine,
+        values: Vec<&[u8]>,
+        kv: &HashMap<String, String>,
+    ) -> Result<()>;
+
+    fn check_get_list(
+        &self,
+        request: &Self::RequestLine,
+        values: Vec<&[u8]>,
+        list_kv: &HashMap<String, Vec<String>>,
+    ) -> Result<()>;
 
     fn get_request(&self, line: &str) -> Result<Self::RequestLine>;
 
@@ -220,8 +364,19 @@ where
     fn new() -> Self
     where
         Self: Sized;
-    // TODO: should check actually try to check the data in the packet is correct?
-    fn check_recved_msg(&self, buf: &[u8], msg_type: MsgType, datapath: &D) -> Result<()>;
+
+    fn check_recved_msg<L>(
+        &self,
+        buf: &[u8],
+        datapath: &D,
+        load_generator: &L,
+        request: &L::RequestLine,
+        ref_kv: &HashMap<String, String>,
+        ref_list_kv: &HashMap<String, Vec<String>>,
+    ) -> Result<()>
+    where
+        L: RequestGenerator;
+
     fn serialize_get(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize>;
 
     fn serialize_put(&self, buf: &mut [u8], key: &str, value: &str, datapath: &D) -> Result<usize>;
@@ -271,10 +426,11 @@ where
     server_addr: AddressInfo,
     rtts: ManualHistogram,
     buf: Vec<u8>,
-    client_id: usize,
-    thread_id: usize,
     outgoing_requests: HashMap<MsgID, String>,
+    outgoing_msg_types: HashMap<MsgID, R::RequestLine>,
     using_retries: bool,
+    ref_kv: HashMap<String, String>,
+    ref_list_kv: HashMap<String, Vec<String>>,
 }
 
 impl<R, C, D> KVClient<R, C, D>
@@ -292,7 +448,12 @@ where
         max_clients: usize,
         max_threads: usize,
         using_retries: bool,
+        server_trace: Option<(&str, impl ServerLoadGenerator<D>)>,
     ) -> Result<KVClient<R, C, D>> {
+        let (ref_kv, ref_list_kv) = match server_trace {
+            Some((file, load_gen)) => load_gen.new_ref_kv_state(file)?,
+            None => ((HashMap::default(), HashMap::default())),
+        };
         Ok(KVClient {
             request_generator: R::new(
                 request_file,
@@ -310,10 +471,11 @@ where
             rtts: ManualHistogram::new(max_num_requests),
             _datapath: PhantomData,
             buf: vec![0u8; D::max_packet_size()],
-            client_id: client_id,
-            thread_id: thread_id,
             outgoing_requests: HashMap::default(),
+            outgoing_msg_types: HashMap::default(),
             using_retries: using_retries,
+            ref_kv: ref_kv,
+            ref_list_kv: ref_list_kv,
         })
     }
 
@@ -430,19 +592,22 @@ where
         &mut self,
         datapath: &<Self as ClientSM>::Datapath,
     ) -> Result<Option<(MsgID, &[u8])>> {
-        let next_line = match self
-            .request_generator
-            .next_line(self.client_id, self.thread_id)?
-        {
+        let next_line = match self.request_generator.next_line()? {
             Some(l) => l,
             None => {
                 return Ok(None);
             }
         };
         let buf_size = self.write_request(next_line.as_str(), &datapath)?;
+        if cfg!(debug_assertions) {
+            let request = self.request_generator.get_request(&next_line.as_str())?;
+            self.outgoing_msg_types.insert(self.last_sent_id, request);
+        }
+
         if self.using_retries {
             self.outgoing_requests.insert(self.last_sent_id, next_line);
         }
+
         Ok(Some((
             self.last_sent_id,
             &mut self.buf.as_mut_slice()[0..buf_size],
@@ -452,12 +617,25 @@ where
     fn process_received_msg(
         &mut self,
         sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
-        _datapath: &<Self as ClientSM>::Datapath,
+        datapath: &<Self as ClientSM>::Datapath,
     ) -> Result<()> {
         // if in debug mode, check whether the bytes are what they should be
         tracing::debug!(id = sga.msg_id(), size = sga.data_len(), "Received sga");
         if cfg!(debug_assertions) {
-            unimplemented!();
+            let request_line = match self.outgoing_msg_types.remove(&sga.msg_id()) {
+                Some(m) => m,
+                None => {
+                    bail!("Received ID not in in flight map: {}", sga.msg_id());
+                }
+            };
+            self.serializer.check_recved_msg(
+                sga.seg(0).as_ref(),
+                datapath,
+                &self.request_generator,
+                &request_line,
+                &self.ref_kv,
+                &self.ref_list_kv,
+            )?;
         }
         if self.using_retries {
             if let Some(_) = self.outgoing_requests.remove(&sga.msg_id()) {
@@ -465,6 +643,7 @@ where
                 bail!("Received ID not in in flight map: {}", sga.msg_id());
             }
         }
+
         Ok(())
     }
 

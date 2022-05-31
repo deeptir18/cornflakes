@@ -31,7 +31,6 @@ fn add_dependencies(repr: &ProtoReprInfo, compiler: &mut SerializationCompiler) 
 
     // if any message has integers, we need slice
     if repr.has_int_field() {
-        compiler.add_dependency("std::{slice}")?;
         compiler.add_dependency("byteorder::{LittleEndian, ByteOrder}")?;
     }
     Ok(())

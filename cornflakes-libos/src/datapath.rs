@@ -270,6 +270,17 @@ pub trait Datapath {
     /// @pkts: Vector of (msg id, buffer, connection id) to send.
     fn push_buffers_with_copy(&mut self, pkts: &[(MsgID, ConnID, &[u8])]) -> Result<()>;
 
+    /// Send multiple buffers to the specified address.
+    /// Args:
+    /// @pkts: Vector of (msg id, buffer, connection id) to send.
+    fn push_buffers_with_copy_iterator<'a>(
+        &mut self,
+        pkts: impl Iterator<Item = (MsgID, ConnID, &'a [u8])>,
+    ) -> Result<()> {
+        let buffers: Vec<(MsgID, ConnID, &[u8])> = pkts.collect();
+        self.push_buffers_with_copy(buffers.as_slice())
+    }
+
     /// Echo the specified packet back to the  source.
     /// Args:
     /// @pkts: Vector of received packet objects to echo back.
@@ -311,6 +322,14 @@ pub trait Datapath {
         _ordered_sgas: impl Iterator<Item = Result<(MsgID, ConnID, OrderedSga<'sge>)>>,
     ) -> Result<()> {
         Ok(())
+    }
+
+    fn queue_arena_ordered_sga(
+        &mut self,
+        _arena_ordered_sga: (MsgID, ConnID, ArenaOrderedSga),
+        _end_batch: bool,
+    ) -> Result<()> {
+        unimplemented!();
     }
 
     fn push_arena_ordered_sgas_iterator<'sge>(

@@ -489,6 +489,11 @@ impl<'obj> CFString<'obj> {
     }
 
     #[inline]
+    pub fn as_str(&self) -> &'obj str {
+        std::str::from_utf8(self.ptr).unwrap()
+    }
+
+    #[inline]
     pub fn len(&self) -> usize {
         self.ptr.len()
     }

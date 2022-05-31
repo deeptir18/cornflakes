@@ -1,5 +1,10 @@
-use super::{MsgType, RequestGenerator};
+use super::{
+    allocate_datapath_buffer, KVServer, ListKVServer, MsgType, RequestGenerator,
+    ServerLoadGenerator,
+};
 use color_eyre::eyre::{bail, ensure, Result};
+use cornflakes_libos::{allocator::MempoolID, datapath::Datapath};
+use hashbrown::HashMap;
 use std::{
     fs::File,
     io::{prelude::*, BufReader, Lines, Write},
@@ -33,7 +38,7 @@ impl YCSBLine {
         };
         let req = split.next().unwrap();
         let mut keys: Vec<String> = Vec::default();
-        for i in 0..std::cmp::min(num_keys, MAX_BATCHES) {
+        for _i in 0..std::cmp::min(num_keys, MAX_BATCHES) {
             let key = &split.next().unwrap();
             keys.push(key.to_string());
         }
@@ -86,6 +91,152 @@ impl YCSBLine {
 
     pub fn msg_type(&self) -> MsgType {
         self.req_type
+    }
+}
+
+pub struct YCSBServerLoader {
+    value_size: usize,
+    num_values: usize,
+    num_keys: usize,
+}
+
+impl YCSBServerLoader {
+    pub fn new(value_size: usize, num_values: usize, num_keys: usize) -> Self {
+        YCSBServerLoader {
+            value_size: value_size,
+            num_values: num_values,
+            num_keys: num_keys,
+        }
+    }
+}
+
+impl<D> ServerLoadGenerator<D> for YCSBServerLoader
+where
+    D: Datapath,
+{
+    type RequestLine = YCSBLine;
+
+    fn read_request(&self, line: &str) -> Result<Self::RequestLine> {
+        YCSBLine::new(line, self.num_keys, self.num_values, self.value_size)
+    }
+
+    fn modify_server_state_ref_kv(
+        &self,
+        request: &Self::RequestLine,
+        kv: &mut HashMap<String, String>,
+        list_kv: &mut HashMap<String, Vec<String>>,
+    ) -> Result<()> {
+        let msg_type = request.msg_type();
+        match msg_type {
+            MsgType::Put => {
+                let key = request.get_keys()[0].as_str();
+                let value = request.get_values()[0].as_str();
+                kv.insert(key.to_string(), value.to_string());
+            }
+            MsgType::PutM(size) => {
+                let keys = request.get_keys();
+                let values = request.get_values();
+                ensure!(
+                    keys.len() == size as usize && values.len() == size as usize,
+                    format!(
+                        "Keys and values expected to have length {}, instead have length {} and {}",
+                        size,
+                        keys.len(),
+                        values.len()
+                    )
+                );
+                for (key, value) in keys.iter().zip(values.iter()) {
+                    kv.insert(key.to_string(), value.to_string());
+                }
+            }
+            MsgType::PutList(size) => {
+                let key = request.get_keys()[0].as_str();
+                let values = request.get_values();
+                ensure!(
+                    values.len() == size as usize,
+                    format!(
+                        "values expected to have length {}, instead has length {}",
+                        size,
+                        values.len()
+                    )
+                );
+                list_kv.insert(key.to_string(), values.clone());
+            }
+            _ => {
+                bail!(
+                    "YCSBLine  for server loader should only be parsed as Put, PutM, and PutList"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn modify_server_state(
+        &self,
+        request: &Self::RequestLine,
+        kv_server: &mut KVServer<D>,
+        list_kv_server: &mut ListKVServer<D>,
+        mempool_ids: &mut Vec<MempoolID>,
+        datapath: &mut D,
+    ) -> Result<()> {
+        let msg_type = request.msg_type();
+        match msg_type {
+            MsgType::Put => {
+                let key = request.get_keys()[0].as_str();
+                let value = request.get_values()[0].as_str();
+                let mut datapath_buffer =
+                    allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
+                let _ = datapath_buffer.write(value.as_bytes())?;
+                kv_server.insert(key.to_string(), datapath_buffer);
+            }
+            MsgType::PutM(size) => {
+                let keys = request.get_keys();
+                let values = request.get_values();
+                ensure!(
+                    keys.len() == size as usize && values.len() == size as usize,
+                    format!(
+                        "Keys and values expected to have length {}, instead have length {} and {}",
+                        size,
+                        keys.len(),
+                        values.len()
+                    )
+                );
+                for (key, value) in keys.iter().zip(values.iter()) {
+                    let mut datapath_buffer =
+                        allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
+                    let _ = datapath_buffer.write(value.as_str().as_bytes())?;
+                    kv_server.insert(key.to_string(), datapath_buffer);
+                }
+            }
+            MsgType::PutList(size) => {
+                let key = request.get_keys()[0].as_str();
+                let values = request.get_values();
+                ensure!(
+                    values.len() == size as usize,
+                    format!(
+                        "values expected to have length {}, instead has length {}",
+                        size,
+                        values.len()
+                    )
+                );
+                let datapath_buffers: Result<Vec<D::DatapathBuffer>> = values
+                    .iter()
+                    .map(|value| {
+                        let mut datapath_buffer =
+                            allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
+                        let _ = datapath_buffer.write(value.as_str().as_bytes())?;
+                        Ok(datapath_buffer)
+                    })
+                    .collect();
+                list_kv_server.insert(key.to_string(), datapath_buffers?);
+            }
+            _ => {
+                bail!(
+                    "YCSBLine  for server loader should only be parsed as Put, PutM, and PutList"
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -164,7 +315,7 @@ impl RequestGenerator for YCSBClient {
         })
     }
 
-    fn next_line(&mut self, client_id: usize, thread_id: usize) -> Result<Option<String>> {
+    fn next_line(&mut self) -> Result<Option<String>> {
         loop {
             // find the next request with our client and thread id
             if self.cur_client_id == self.client_id && self.cur_thread_id == self.thread_id {
@@ -205,6 +356,133 @@ impl RequestGenerator for YCSBClient {
         Ok(req.msg_type())
     }
 
+    fn check_get(
+        &self,
+        request: &Self::RequestLine,
+        value: &[u8],
+        kv: &HashMap<String, String>,
+    ) -> Result<()> {
+        let key = request.get_keys()[0].as_str();
+        match kv.get(key) {
+            Some(val) => {
+                ensure!(
+                    val.as_str().as_bytes() == value,
+                    format!(
+                        "Check get failed. Expected: {:?}, Recved: {:?}",
+                        val.as_str().as_bytes(),
+                        value
+                    )
+                );
+            }
+            None => {
+                ensure!(
+                    value.len() == self.value_size,
+                    format!(
+                        "Expected value of length {}, received {}",
+                        self.value_size,
+                        value.len()
+                    )
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn check_getm(
+        &self,
+        request: &Self::RequestLine,
+        values: Vec<&[u8]>,
+        kv: &HashMap<String, String>,
+    ) -> Result<()> {
+        ensure!(
+            values.len() == self.num_values,
+            format!(
+                "received values of length {}, expected {}",
+                values.len(),
+                self.num_values
+            )
+        );
+        for (key, received_value) in request.get_keys().iter().zip(values.iter()) {
+            match kv.get(key) {
+                Some(expected_value) => {
+                    ensure!(
+                        &expected_value.as_str().as_bytes() == received_value,
+                        format!(
+                            "Check get failed. Expected: {:?}, Recved: {:?}",
+                            expected_value.as_str().as_bytes(),
+                            received_value,
+                        )
+                    );
+                }
+                None => {
+                    ensure!(
+                        received_value.len() == self.value_size,
+                        format!(
+                            "Expected value of length {}, received {}",
+                            self.value_size,
+                            received_value.len()
+                        )
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_get_list(
+        &self,
+        request: &Self::RequestLine,
+        values: Vec<&[u8]>,
+        list_kv: &HashMap<String, Vec<String>>,
+    ) -> Result<()> {
+        let key = request.get_keys()[0].as_str();
+        match list_kv.get(key) {
+            Some(val_list) => {
+                ensure!(
+                    values.len() == val_list.len(),
+                    format!(
+                        "expected values of length {}, received {}",
+                        val_list.len(),
+                        values.len(),
+                    )
+                );
+
+                for (expected_value, received_value) in val_list.iter().zip(values.iter()) {
+                    ensure!(
+                        &expected_value.as_str().as_bytes() == received_value,
+                        format!(
+                            "Check get failed. Expected: {:?}, Recved: {:?}",
+                            expected_value.as_str().as_bytes(),
+                            received_value,
+                        )
+                    );
+                }
+            }
+            None => {
+                ensure!(
+                    values.len() == self.num_values,
+                    format!(
+                        "Expected value list of length {}, received {}",
+                        self.num_values,
+                        values.len()
+                    )
+                );
+                for (i, received_value) in values.iter().enumerate() {
+                    ensure!(
+                        received_value.len() == self.value_size,
+                        format!(
+                            "List item {}, Expected value of length {}, received {}",
+                            i,
+                            self.value_size,
+                            received_value.len()
+                        )
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn emit_get_data<'a>(&self, req: &'a Self::RequestLine) -> Result<&'a str> {
         Ok(req.get_keys()[0].as_str())
     }
@@ -213,26 +491,30 @@ impl RequestGenerator for YCSBClient {
         Ok((req.get_keys()[0].as_str(), req.get_values()[0].as_str()))
     }
 
-    fn emit_getm_data<'a>(&self, req: &'a Self::RequestLine, size: u16) -> Result<&'a Vec<String>> {
+    fn emit_getm_data<'a>(
+        &self,
+        req: &'a Self::RequestLine,
+        _size: u16,
+    ) -> Result<&'a Vec<String>> {
         Ok(&req.get_keys())
     }
 
     fn emit_putm_data<'a>(
         &self,
         req: &'a Self::RequestLine,
-        size: u16,
+        _size: u16,
     ) -> Result<(&'a Vec<String>, &'a Vec<String>)> {
         Ok((&req.get_keys(), &req.get_values()))
     }
 
-    fn emit_get_list_data<'a>(&self, req: &'a Self::RequestLine, size: u16) -> Result<&'a str> {
+    fn emit_get_list_data<'a>(&self, req: &'a Self::RequestLine, _size: u16) -> Result<&'a str> {
         Ok(req.get_keys()[0].as_str())
     }
 
     fn emit_put_list_data<'a>(
         &self,
         req: &'a Self::RequestLine,
-        size: u16,
+        _size: u16,
     ) -> Result<(&'a str, &'a Vec<String>)> {
         Ok((req.get_keys()[0].as_str(), &req.get_values()))
     }
@@ -240,7 +522,7 @@ impl RequestGenerator for YCSBClient {
     fn emit_append_data<'a>(
         &self,
         req: &'a Self::RequestLine,
-        size: u16,
+        _size: u16,
     ) -> Result<(&'a str, &'a str)> {
         Ok((req.get_keys()[0].as_str(), req.get_values()[0].as_str()))
     }
