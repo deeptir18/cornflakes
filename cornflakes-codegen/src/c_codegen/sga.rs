@@ -32,23 +32,17 @@ fn add_dependencies(_repr: &ProtoReprInfo, compiler: &mut SerializationCompiler)
     Ok(())
 }
 
-fn is_array(field: &FieldInfo) -> bool {
-    match &field.0.typ {
-        FieldType::Bytes | FieldType::RefCountedBytes => true,
-        _ => false,
-    }
-}
-
 enum ArgType {
     Rust(String),
     Bytes,
+    String,
     VoidPtr(String),
 }
 
 impl ArgType {
     fn is_array(&self) -> bool {
         match self {
-            ArgType::Bytes => true,
+            ArgType::Bytes | ArgType::String => true,
             _ => false,
         }
     }
@@ -57,6 +51,7 @@ impl ArgType {
         match self {
             ArgType::Rust(string) => string,
             ArgType::Bytes => "*const ::std::os::raw::c_uchar",
+            ArgType::String => "*const ::std::os::raw::c_uchar",
             ArgType::VoidPtr(_) => "*mut ::std::os::raw::c_void",
         }
     }
@@ -112,6 +107,10 @@ fn add_extern_c_wrapper_function(
                 "CFBytes::new(unsafe {{ std::slice::from_raw_parts({}, {}_len) }})",
                 arg_name, arg_name,
             ),
+            ArgType::String => format!(
+                "CFString::new_from_bytes(unsafe {{ std::slice::from_raw_parts({}, {}_len) }})",
+                arg_name, arg_name,
+            ),
             ArgType::VoidPtr(inner_ty) => format!(
                 "unsafe {{ Box::from_raw({} as *mut {}) }}",
                 arg_name, inner_ty,
@@ -136,6 +135,7 @@ fn add_extern_c_wrapper_function(
         match arg_ty {
             ArgType::Rust(_) => { continue; },
             ArgType::Bytes => { continue; },
+            ArgType::String => { continue; },
             ArgType::VoidPtr(_) => {
                 compiler.add_func_call(None, "Box::into_raw", vec![format!("arg{}", i)], false)?;
             },
@@ -162,6 +162,10 @@ fn add_extern_c_wrapper_function(
             }
             ArgType::Bytes => {
                 compiler.add_unsafe_set("return_ptr", "value.get_ptr().as_ptr()")?;
+                compiler.add_unsafe_set("return_len_ptr", "value.len()")?;
+            }
+            ArgType::String => {
+                compiler.add_unsafe_set("return_ptr", "value.bytes().as_ptr()")?;
                 compiler.add_unsafe_set("return_len_ptr", "value.len()")?;
             }
             ArgType::VoidPtr(_) => {
@@ -270,10 +274,10 @@ fn add_get(
     msg_info: &MessageInfo,
     field: &FieldInfo,
 ) -> Result<()> {
-    let return_type = if is_array(field) {
-        ArgType::Bytes
-    } else {
-        ArgType::Rust(fd.get_c_type(field.clone())?)
+    let return_type = match &field.0.typ {
+        FieldType::Bytes | FieldType::RefCountedBytes => ArgType::Bytes,
+        FieldType::String | FieldType::RefCountedString => ArgType::String,
+        _ => ArgType::Rust(fd.get_c_type(field.clone())?),
     };
     add_extern_c_wrapper_function(
         compiler,
@@ -315,10 +319,10 @@ fn add_set(
     field: &FieldInfo,
 ) -> Result<()> {
     let field_name = field.get_name();
-    let field_type = if is_array(field) {
-        ArgType::Bytes
-    } else {
-        ArgType::Rust(fd.get_c_type(field.clone())?)
+    let field_type = match &field.0.typ {
+        FieldType::Bytes | FieldType::RefCountedBytes => ArgType::Bytes,
+        FieldType::String | FieldType::RefCountedString => ArgType::String,
+        _ => ArgType::Rust(fd.get_c_type(field.clone())?),
     };
     add_extern_c_wrapper_function(
         compiler,

@@ -143,6 +143,9 @@ impl ProtoReprInfo {
             FieldType::Bytes | FieldType::RefCountedBytes => {
                 "*const ::std::os::raw::c_uchar".to_string()
             }
+            FieldType::String | FieldType::RefCountedString => {
+                "*const ::std::os::raw::c_uchar".to_string()
+            }
             _ => {
                 bail!("FieldType {:?} not supported by compiler", field.0.typ);
             }
