@@ -18,6 +18,7 @@ macro_rules! run_server (
 
         connection.set_copying_threshold($opt.copying_threshold);
         connection.set_inline_mode($opt.inline_mode);
+        tracing::info!(threshold = $opt.copying_threshold, "Setting zero-copy copying threshold");
 
         // init echo server
         let mut echo_server: $echo_server =

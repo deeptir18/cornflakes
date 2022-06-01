@@ -77,6 +77,7 @@ fn gen_cargo_toml(repr: &ProtoReprInfo, package_folder: &Path) -> Result<()> {
     // Dependencies
     // TODO: path to local dependencies depends on OUT_DIR
     compiler.add_line("[dependencies]")?;
+    compiler.add_line("bitmaps = \"3.2.0\"")?;
     compiler.add_line("color-eyre = \"0.5\"")?;
     compiler.add_line("cornflakes-libos = { path = \"../../../../../../cornflakes-libos\" }")?;
     compiler.add_line("cornflakes-codegen = { path = \"../../../../../../cornflakes-codegen\" }")?;

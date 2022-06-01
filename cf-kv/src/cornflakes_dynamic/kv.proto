@@ -1,0 +1,54 @@
+syntax = "proto3";
+package kv_sga_cornflakes;
+
+message GetReq {
+    uint32 id = 1;
+    string key = 2;
+}
+
+message GetMReq {
+    uint32 id = 1;
+    repeated string keys = 2;
+}
+
+message GetListReq {
+    uint32 id = 1;
+    string key = 2;
+}
+
+message GetResp {
+    uint32 id = 1;
+    bytes val = 2;
+}
+
+message GetMResp {
+    uint32 id = 1;
+    repeated bytes vals = 2;
+}
+
+message GetListResp {
+    uint32 id = 1;
+    repeated bytes val_list = 2;
+}
+
+message PutReq {
+    uint32 id = 1;
+    string key = 2;
+    bytes val = 3;
+}
+
+message PutMReq {
+    uint32 id = 1;
+    repeated string keys = 2;
+    repeated bytes vals = 3;
+}
+
+message PutListReq {
+    uint32 id = 1;
+    string key = 2;
+    repeated bytes vals = 3;
+}
+
+message PutResp {
+    uint32 id = 1;
+}

@@ -27,6 +27,10 @@ flatbuffers = "0.7.0"
 protobuf = "2.*.*"
 affinity = "0.1.1"
 cxx = "1.0"
+perftools = {git = "https://github.com/demikernel/perftools", rev = "94031ae", optional = true}
+bitmaps = "3.2.0"
+bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }
+
 
 [build-dependencies]
 protoc-rust = "2.23.0"
@@ -42,7 +46,7 @@ cornflakes-utils = { path = "../cornflakes-utils" }
 [features]
 default = []
 mlx5 = ["dpdk-datapath/mlx5"]
-profiler = ["cornflakes-libos/profiler"]
+profiler = ["cornflakes-libos/profiler", "perftools"]
 
 [[bin]]
 name = "ds_echo_dpdk"

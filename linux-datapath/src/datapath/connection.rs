@@ -3,7 +3,6 @@ use color_eyre::eyre::{bail, ensure, Result};
 use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, ExposeMempoolID, InlineMode, MetadataOps, ReceivedPkt},
-    serialize::Serializable,
     utils::{AddressInfo, HEADER_ID_SIZE},
     ConnID, MsgID, OrderedSga, RcSga, Sga,
 };
@@ -382,16 +381,6 @@ impl Datapath for LinuxConnection {
             assert_eq!(n, buf.len());
         }
         Ok(())
-    }
-
-    fn serialize_and_send(
-        &mut self,
-        _objects: &Vec<(MsgID, ConnID, impl Serializable<Self>)>,
-    ) -> Result<()>
-    where
-        Self: Sized,
-    {
-        unimplemented!();
     }
 
     fn echo(&mut self, mut _pkts: Vec<ReceivedPkt<Self>>) -> Result<()>

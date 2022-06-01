@@ -252,17 +252,14 @@ impl ContextPop for FunctionContext {
     fn pop(&mut self) -> Result<(String, bool)> {
         if !self.started {
             self.started = true;
-            let mut string = String::new();
+            let inline_str = "#[inline]";
             let is_pub_str = match self.is_pub {
                 true => "pub ".to_string(),
                 false => "".to_string(),
             };
-            let extern_c_str = match self.is_extern_c {
-                true => {
-                    string.push_str("#[no_mangle]\n");
-                    "extern \"C\" ".to_string()
-                },
-                false => "".to_string(),
+            let (no_mangle_str, extern_c_str) = match self.is_extern_c {
+                true => ("\n#[no_mangle]".to_string(), "extern \"C\" ".to_string()),
+                false => ("".to_string(), "".to_string()),
             };
             let lifetime_str = match &self.func_lifetime {
                 Some(x) => format!("<{}>", x),
@@ -280,11 +277,21 @@ impl ContextPop for FunctionContext {
                 Some(r) => format!(" -> {}", r),
                 None => "".to_string(),
             };
-            string.push_str(&format!(
-                "{}{}fn {}{}({}) {} {} {{",
-                is_pub_str, extern_c_str, self.name, lifetime_str, args_string, ret_value, where_str,
-            ));
-            Ok((string, false))
+            Ok((
+                format!(
+                    "{}{}\n{}{}fn {}{}({}) {} {} {{",
+                    inline_str,
+                    no_mangle_str,
+                    is_pub_str,
+                    extern_c_str,
+                    self.name,
+                    lifetime_str,
+                    args_string,
+                    ret_value,
+                    where_str,
+                ),
+                false,
+            ))
         } else {
             Ok(("}".to_string(), true))
         }
@@ -847,6 +854,11 @@ impl SerializationCompiler {
     pub fn add_plus_equals(&mut self, left: &str, right: &str) -> Result<()> {
         let line = format!("{} += {};", left, right);
         self.add_line(&line)?;
+        Ok(())
+    }
+
+    pub fn add_block(&mut self, block: &str) -> Result<()> {
+        self.add_line(block)?;
         Ok(())
     }
 

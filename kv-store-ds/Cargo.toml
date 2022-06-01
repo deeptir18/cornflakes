@@ -42,6 +42,6 @@ cornflakes-utils = { path = "../cornflakes-utils" }
 [features]
 default = ["mlx5"]
 mlx5 = ["dpdk-datapath/mlx5"]
-profiler = ["cornflakes-libos/profiler"]
+profiler = ["cornflakes-libos/profiler", "perftools"]
 
 

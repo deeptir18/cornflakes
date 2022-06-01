@@ -193,7 +193,6 @@ extern "C" {
 #[inline(never)]
 pub fn load_mlx5_driver() {
     tracing::debug!("Necessary to load driver");
-    tracing::warn!("{:?}", unsafe { rte_pmd_mlx5_get_dyn_flag_names() });
     if std::env::var("DONT_SET_THIS").is_ok() {
         unsafe {
             tracing::warn!("{:?}", rte_pmd_mlx5_get_dyn_flag_names());

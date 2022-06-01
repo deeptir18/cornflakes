@@ -6,6 +6,8 @@ use cornflakes_libos::{
     state_machine::server::ServerSM,
     ConnID, MsgID, OrderedSga, RcSga, RcSge, Sga, Sge,
 };
+#[cfg(feature = "profiler")]
+use perftools;
 use std::marker::PhantomData;
 
 pub struct SimpleEchoServer<D>
@@ -47,8 +49,11 @@ where
         pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
         datapath: &mut Self::Datapath,
     ) -> Result<()> {
-        let outgoing_sgas_result: Result<Vec<(MsgID, ConnID, OrderedSga)>> = pkts.iter().map(|pkt| {
-            let sge_results: Result<Vec<Sge>> = self.range_vec.iter().map(|range| {
+        let outgoing_sgas_iterator = pkts.iter().map(|pkt| {
+            let sge_results: Result<Vec<Sge>> = {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("Collect sge references");
+                self.range_vec.iter().map(|range| {
                 tracing::debug!("Getting contiguous slice out of received pkt [{}, {}]", range.0, range.0 + range.1);
                 match pkt.contiguous_slice(range.0, range.1) {
                     Some(s) => Ok(Sge::new(s)),
@@ -56,16 +61,25 @@ where
                         bail!(format!("Could not get contiguous slice out of received pkt length {} for range [{}, {}]", pkt.data_len(), range.0, range.0 + range.1));
                     }
                 }
-            }).collect();
-            let sga = Sga::with_entries(sge_results?);
+                }).collect()
+            };
+
+            let sga = {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("Allocate sga");
+                Sga::with_entries(sge_results?)
+            };
             let num_copy_entries = sga.iter().take_while(|seg| !(seg.len() > datapath.get_copying_threshold())).count();
             tracing::debug!(num_copy_entries, sga_len = sga.len(),"Constructing ordered sga");
             Ok((pkt.msg_id(), pkt.conn_id(), OrderedSga::new(sga, num_copy_entries)))
-        }).collect();
-        let outgoing_sgas = outgoing_sgas_result?;
-        datapath
-            .push_ordered_sgas(outgoing_sgas.as_slice())
-            .wrap_err("Failed to push sgas")?;
+        });
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("push iterator");
+            datapath
+                .push_ordered_sgas_iterator(outgoing_sgas_iterator)
+                .wrap_err("Failed to push sgas")?;
+        }
         Ok(())
     }
 

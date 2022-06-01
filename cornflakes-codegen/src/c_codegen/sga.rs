@@ -27,7 +27,7 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
 
 fn add_dependencies(_repr: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
     compiler.add_dependency("cornflakes_libos::OrderedSga")?;
-    compiler.add_dependency("cornflakes_codegen::utils::dynamic_sga_hdr::*")?;
+    compiler.add_dependency("cornflakes_libos::dynamic_sga_hdr::*")?;
     compiler.add_dependency("linux_datapath::datapath::connection::LinuxConnection")?;
     Ok(())
 }

@@ -1,4 +1,7 @@
 pub mod echo_messages_sga {
+    #![allow(non_camel_case_types)]
+    #![allow(non_upper_case_globals)]
+    #![allow(non_snake_case)]
     include!(concat!(env!("OUT_DIR"), "/echo_dynamic_sga.rs"));
 }
 
@@ -7,16 +10,16 @@ pub mod echo_messages_rcsga {
 }
 use super::ClientCerealizeMessage;
 use color_eyre::eyre::{ensure, Result};
-use cornflakes_codegen::utils::{
-    dynamic_rcsga_hdr, dynamic_rcsga_hdr::RcSgaHeaderRepr, dynamic_sga_hdr,
-    dynamic_sga_hdr::SgaHeaderRepr,
-};
 use cornflakes_libos::{
     datapath::{Datapath, PushBufType, ReceivedPkt},
+    dynamic_sga_hdr,
+    dynamic_sga_hdr::SgaHeaderRepr,
     state_machine::server::ServerSM,
-    ConnID, MsgID, OrderedSga, RcSga, Sga,
+    ArenaOrderedSga, OrderedSga,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
+#[cfg(feature = "profiler")]
+use perftools;
 use std::marker::PhantomData;
 
 pub struct CornflakesSerializer<D>
@@ -51,100 +54,285 @@ where
         self.push_buf_type
     }
 
+    fn process_requests_object(
+        &mut self,
+        pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        datapath: &mut Self::Datapath,
+    ) -> Result<()> {
+        let objects_iter = pkts.iter().map(|pkt| match self.message_type {
+            SimpleMessageType::Single => {
+                let mut single_deser = echo_messages_sga::SingleBufferCF::new();
+                let mut single_ser = echo_messages_sga::SingleBufferCF::new();
+                tracing::debug!(pkt_data =? pkt.seg(0).as_ref(), "Incoming packet data");
+                tracing::debug!(len = pkt.data_len(), "Incoming packet length");
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Deserialize pkt");
+                    single_deser.deserialize(pkt.seg(0).as_ref())?;
+                }
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Set message");
+                    tracing::debug!(get_msg =? single_deser.get_message().get_ptr());
+                    single_ser.set_message(dynamic_sga_hdr::CFBytes::new(
+                        single_deser.get_message().get_ptr(),
+                    ));
+                    tracing::debug!(set_msg =? single_ser.get_message().get_ptr());
+                }
+                Ok((pkt.msg_id(), pkt.conn_id(), single_ser))
+            }
+            _ => {
+                unimplemented!();
+            }
+        });
+
+        datapath.serialize_and_send(objects_iter)?;
+        Ok(())
+    }
+
     fn process_requests_ordered_sga(
         &mut self,
         pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
         datapath: &mut Self::Datapath,
     ) -> Result<()> {
-        let sga_results: Result<Vec<(MsgID, ConnID, OrderedSga)>> = pkts
-            .iter()
-            .map(|pkt| match self.message_type {
-                SimpleMessageType::Single => {
-                    tracing::debug!(len = pkt.data_len(), "Incoming packet length");
-                    let mut single_deser = echo_messages_sga::SingleBufferCF::new();
-                    let mut single_ser = echo_messages_sga::SingleBufferCF::new();
+        tracing::debug!("Processing packet");
+        let mut single_deser = echo_messages_sga::SingleBufferCF::new();
+        let mut single_ser = echo_messages_sga::SingleBufferCF::new();
+        let mut list_deser = echo_messages_sga::ListCF::new();
+        let mut list_ser = echo_messages_sga::ListCF::new();
+        let sga_results_iter = pkts.iter().map(|pkt| match self.message_type {
+            SimpleMessageType::Single => {
+                tracing::debug!(pkt_data =? pkt.seg(0).as_ref(), "Incoming packet data");
+                tracing::debug!(len = pkt.data_len(), "Incoming packet length");
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Deserialize pkt");
                     single_deser.deserialize(pkt.seg(0).as_ref())?;
+                }
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Set message");
+                    tracing::debug!(get_msg =? single_deser.get_message().get_ptr());
                     single_ser.set_message(dynamic_sga_hdr::CFBytes::new(
                         single_deser.get_message().get_ptr(),
                     ));
-                    tracing::debug!(
-                        "Pointer to set message: {:?}, get_message: {:?}",
-                        single_ser.get_message().get_ptr(),
-                        single_deser.get_message().get_ptr(),
-                    );
-                    let mut ordered_sga =
-                        OrderedSga::allocate(single_ser.num_scatter_gather_entries());
+                    tracing::debug!(set_msg =? single_ser.get_message().get_ptr());
+                }
+                let mut ordered_sga = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Allocate sga");
+                    OrderedSga::allocate(single_ser.num_scatter_gather_entries())
+                };
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Serialize into sga");
                     single_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
-                    Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
                 }
-                SimpleMessageType::List(_list_elts) => {
-                    let mut list_deser = echo_messages_sga::ListCF::new();
-                    let mut list_ser = echo_messages_sga::ListCF::new();
-                    list_deser.deserialize(pkt.seg(0).as_ref())?;
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Clear bitmap");
+                    single_deser.clear_bitmap();
+                    single_ser.clear_bitmap();
+                }
+                Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+            }
+            SimpleMessageType::List(_list_elts) => {
+                list_deser.deserialize(pkt.seg(0).as_ref())?;
 
-                    list_ser.init_messages(list_deser.get_messages().len());
-                    let messages = list_ser.get_mut_messages();
-                    for elt in list_deser.get_messages().iter() {
-                        messages.append(dynamic_sga_hdr::CFBytes::new(elt.get_ptr()));
-                    }
+                list_ser.init_messages(list_deser.get_messages().len());
+                let messages = list_ser.get_mut_messages();
+                for elt in list_deser.get_messages().iter() {
+                    messages.append(dynamic_sga_hdr::CFBytes::new(elt.get_ptr()));
+                }
 
+                let mut ordered_sga = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Allocate normal sga");
+                    OrderedSga::allocate(list_ser.num_scatter_gather_entries())
+                };
+                list_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
+                list_ser.clear_bitmap();
+                list_deser.clear_bitmap();
+                Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+            }
+
+            SimpleMessageType::Tree(depth) => match depth {
+                TreeDepth::One => {
+                    let mut tree_deser = echo_messages_sga::Tree1LCF::new();
+                    tree_deser.deserialize(pkt.seg(0).as_ref())?;
+                    let tree_ser = deserialize_tree1l_sga(&tree_deser)?;
                     let mut ordered_sga =
-                        OrderedSga::allocate(list_ser.num_scatter_gather_entries());
-                    list_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
+                        OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
+                    tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
                     Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
                 }
+                TreeDepth::Two => {
+                    let mut tree_deser = echo_messages_sga::Tree2LCF::new();
+                    tree_deser.deserialize(pkt.seg(0).as_ref())?;
+                    let tree_ser = deserialize_tree2l_sga(&tree_deser)?;
+                    let mut ordered_sga =
+                        OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
+                    tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
+                    Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+                }
+                TreeDepth::Three => {
+                    let mut tree_deser = echo_messages_sga::Tree3LCF::new();
+                    tree_deser.deserialize(pkt.seg(0).as_ref())?;
+                    let tree_ser = deserialize_tree3l_sga(&tree_deser)?;
+                    let mut ordered_sga =
+                        OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
+                    tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
+                    Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+                }
+                TreeDepth::Four => {
+                    let mut tree_deser = echo_messages_sga::Tree4LCF::new();
+                    tree_deser.deserialize(pkt.seg(0).as_ref())?;
+                    let tree_ser = deserialize_tree4l_sga(&tree_deser)?;
+                    let mut ordered_sga =
+                        OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
+                    tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
+                    Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+                }
+                TreeDepth::Five => {
+                    let mut tree_deser = echo_messages_sga::Tree5LCF::new();
+                    tree_deser.deserialize(pkt.seg(0).as_ref())?;
+                    let tree_ser = deserialize_tree5l_sga(&tree_deser)?;
+                    let mut ordered_sga =
+                        OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
+                    tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
+                    Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+                }
+            },
+        });
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("push iterator");
+            datapath.push_ordered_sgas_iterator(sga_results_iter)?;
+        }
+        Ok(())
+    }
 
-                SimpleMessageType::Tree(depth) => match depth {
-                    TreeDepth::One => {
-                        let mut tree_deser = echo_messages_sga::Tree1LCF::new();
-                        tree_deser.deserialize(pkt.seg(0).as_ref())?;
-                        let tree_ser = deserialize_tree1l_sga(&tree_deser)?;
-                        let mut ordered_sga =
-                            OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
-                        tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
-                        Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
-                    }
-                    TreeDepth::Two => {
-                        let mut tree_deser = echo_messages_sga::Tree2LCF::new();
-                        tree_deser.deserialize(pkt.seg(0).as_ref())?;
-                        let tree_ser = deserialize_tree2l_sga(&tree_deser)?;
-                        let mut ordered_sga =
-                            OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
-                        tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
-                        Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
-                    }
-                    TreeDepth::Three => {
-                        let mut tree_deser = echo_messages_sga::Tree3LCF::new();
-                        tree_deser.deserialize(pkt.seg(0).as_ref())?;
-                        let tree_ser = deserialize_tree3l_sga(&tree_deser)?;
-                        let mut ordered_sga =
-                            OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
-                        tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
-                        Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
-                    }
-                    TreeDepth::Four => {
-                        let mut tree_deser = echo_messages_sga::Tree4LCF::new();
-                        tree_deser.deserialize(pkt.seg(0).as_ref())?;
-                        let tree_ser = deserialize_tree4l_sga(&tree_deser)?;
-                        let mut ordered_sga =
-                            OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
-                        tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
-                        Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
-                    }
-                    TreeDepth::Five => {
-                        let mut tree_deser = echo_messages_sga::Tree5LCF::new();
-                        tree_deser.deserialize(pkt.seg(0).as_ref())?;
-                        let tree_ser = deserialize_tree5l_sga(&tree_deser)?;
-                        let mut ordered_sga =
-                            OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
-                        tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
-                        Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
-                    }
-                },
-            })
-            .collect();
-        let sgas = sga_results?;
-        datapath.push_ordered_sgas(&sgas.as_slice())?;
+    fn process_requests_arena_ordered_sga(
+        &mut self,
+        pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        datapath: &mut Self::Datapath,
+        arena: &mut bumpalo::Bump,
+    ) -> Result<()> {
+        let sga_results_iter = pkts.iter().map(|pkt| match self.message_type {
+            SimpleMessageType::Single => {
+                let mut single_deser = echo_messages_sga::SingleBufferCF::new();
+                let mut single_ser = echo_messages_sga::SingleBufferCF::new();
+                tracing::debug!(pkt_data =? pkt.seg(0).as_ref(), "Incoming packet data");
+                tracing::debug!(len = pkt.data_len(), "Incoming packet length");
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Deserialize pkt");
+                    single_deser.deserialize(pkt.seg(0).as_ref())?;
+                }
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Set message");
+                    tracing::debug!(get_msg =? single_deser.get_message().get_ptr());
+                    single_ser.set_message(dynamic_sga_hdr::CFBytes::new(
+                        single_deser.get_message().get_ptr(),
+                    ));
+                    tracing::debug!(set_msg =? single_ser.get_message().get_ptr());
+                }
+                let mut ordered_sga = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Allocate sga");
+                    ArenaOrderedSga::allocate(single_ser.num_scatter_gather_entries(), &arena)
+                };
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Serialize into sga");
+                    single_ser.serialize_into_arena_sga(&mut ordered_sga, datapath, &arena)?;
+                }
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Clear bitmap");
+                    single_deser.clear_bitmap();
+                    single_ser.clear_bitmap();
+                }
+                Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+            }
+            SimpleMessageType::List(_list_elts) => {
+                let mut list_deser = echo_messages_sga::ListCF::new();
+                let mut list_ser = echo_messages_sga::ListCF::new();
+                list_deser.deserialize(pkt.seg(0).as_ref())?;
+
+                list_ser.init_messages(list_deser.get_messages().len());
+                let messages = list_ser.get_mut_messages();
+                for elt in list_deser.get_messages().iter() {
+                    messages.append(dynamic_sga_hdr::CFBytes::new(elt.get_ptr()));
+                }
+
+                let mut ordered_sga = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Allocate arena sga");
+                    ArenaOrderedSga::allocate(list_ser.num_scatter_gather_entries(), &arena)
+                };
+                list_ser.serialize_into_arena_sga(&mut ordered_sga, datapath, &arena)?;
+                list_ser.clear_bitmap();
+                list_deser.clear_bitmap();
+                Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+            }
+            _ => {
+                unimplemented!();
+            } /*SimpleMessageType::Tree(depth) => match depth {
+                  TreeDepth::One => {
+                      let mut tree_deser = echo_messages_sga::Tree1LCF::new();
+                      tree_deser.deserialize(pkt.seg(0).as_ref())?;
+                      let tree_ser = deserialize_tree1l_sga(&tree_deser)?;
+                      let mut ordered_sga =
+                          OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
+                      tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
+                      Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+                  }
+                  TreeDepth::Two => {
+                      let mut tree_deser = echo_messages_sga::Tree2LCF::new();
+                      tree_deser.deserialize(pkt.seg(0).as_ref())?;
+                      let tree_ser = deserialize_tree2l_sga(&tree_deser)?;
+                      let mut ordered_sga =
+                          OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
+                      tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
+                      Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+                  }
+                  TreeDepth::Three => {
+                      let mut tree_deser = echo_messages_sga::Tree3LCF::new();
+                      tree_deser.deserialize(pkt.seg(0).as_ref())?;
+                      let tree_ser = deserialize_tree3l_sga(&tree_deser)?;
+                      let mut ordered_sga =
+                          OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
+                      tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
+                      Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+                  }
+                  TreeDepth::Four => {
+                      let mut tree_deser = echo_messages_sga::Tree4LCF::new();
+                      tree_deser.deserialize(pkt.seg(0).as_ref())?;
+                      let tree_ser = deserialize_tree4l_sga(&tree_deser)?;
+                      let mut ordered_sga =
+                          OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
+                      tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
+                      Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+                  }
+                  TreeDepth::Five => {
+                      let mut tree_deser = echo_messages_sga::Tree5LCF::new();
+                      tree_deser.deserialize(pkt.seg(0).as_ref())?;
+                      let tree_ser = deserialize_tree5l_sga(&tree_deser)?;
+                      let mut ordered_sga =
+                          OrderedSga::allocate(tree_ser.num_scatter_gather_entries());
+                      tree_ser.serialize_into_sga(&mut ordered_sga, datapath)?;
+                      Ok((pkt.msg_id(), pkt.conn_id(), ordered_sga))
+                  }
+              }*/
+        });
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("push iterator");
+            datapath.push_arena_ordered_sgas_iterator(sga_results_iter)?;
+        }
+        arena.reset();
         Ok(())
     }
 
@@ -159,16 +347,16 @@ where
 
     fn process_requests_rc_sga(
         &mut self,
-        sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
-        datapath: &mut Self::Datapath,
+        _sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
     ) -> Result<()> {
         Ok(())
     }
 
     fn process_requests_single_buf(
         &mut self,
-        sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
-        datapath: &mut Self::Datapath,
+        _sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
     ) -> Result<()> {
         Ok(())
     }

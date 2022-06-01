@@ -1,6 +1,6 @@
 use super::{
-    allocator::MempoolID, serialize::Serializable, utils::AddressInfo, ConnID, MsgID, OrderedSga,
-    RcSga, Sga,
+    allocator::MempoolID, dynamic_sga_hdr::SgaHeaderRepr, utils::AddressInfo, ArenaOrderedSga,
+    ConnID, MsgID, OrderedSga, RcSga, Sga,
 };
 use color_eyre::eyre::{bail, Result};
 use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
@@ -47,6 +47,8 @@ pub enum PushBufType {
     RcSga,
     SingleBuf,
     OrderedSga,
+    Object,
+    ArenaOrderedSga,
 }
 
 impl FromStr for PushBufType {
@@ -60,6 +62,10 @@ impl FromStr for PushBufType {
             "orderedsga" | "ordered_sga" | "OrderedSga" | "ORDEREDSGA" => {
                 Ok(PushBufType::OrderedSga)
             }
+            "arenaorderedsga" | "arena_ordered_sga" | "ArenaOrderedSga" | "ARENAORDEREDSGA" => {
+                Ok(PushBufType::ArenaOrderedSga)
+            }
+            "object" | "OBJECT" | "Object" => Ok(PushBufType::Object),
             x => {
                 bail!("Unknown push buf type: {:?}", x);
             }
@@ -264,6 +270,17 @@ pub trait Datapath {
     /// @pkts: Vector of (msg id, buffer, connection id) to send.
     fn push_buffers_with_copy(&mut self, pkts: &[(MsgID, ConnID, &[u8])]) -> Result<()>;
 
+    /// Send multiple buffers to the specified address.
+    /// Args:
+    /// @pkts: Vector of (msg id, buffer, connection id) to send.
+    fn push_buffers_with_copy_iterator<'a>(
+        &mut self,
+        pkts: impl Iterator<Item = (MsgID, ConnID, &'a [u8])>,
+    ) -> Result<()> {
+        let buffers: Vec<(MsgID, ConnID, &[u8])> = pkts.collect();
+        self.push_buffers_with_copy(buffers.as_slice())
+    }
+
     /// Echo the specified packet back to the  source.
     /// Args:
     /// @pkts: Vector of received packet objects to echo back.
@@ -274,12 +291,15 @@ pub trait Datapath {
     /// Serialize and send serializable objects.
     /// Args:
     /// @objects: Vector of (msg id, connection id, serializable objects) to send.
-    fn serialize_and_send(
+    fn serialize_and_send<'a>(
         &mut self,
-        objects: &Vec<(MsgID, ConnID, impl Serializable<Self>)>,
+        _objects: impl Iterator<Item = Result<(MsgID, ConnID, impl SgaHeaderRepr<'a>)>>,
     ) -> Result<()>
     where
-        Self: Sized;
+        Self: Sized,
+    {
+        Ok(())
+    }
 
     /// Send as a reference counted scatter-gather array.
     /// Args:
@@ -295,6 +315,29 @@ pub trait Datapath {
     /// zero-copy-able and pass the to-copy or not heuristics.
     /// First sga.len() - num_zero_copy_entries() will be copied together.
     fn push_ordered_sgas(&mut self, ordered_sgas: &[(MsgID, ConnID, OrderedSga)]) -> Result<()>;
+
+    /// Push an iterator over ordered SGAS.
+    fn push_ordered_sgas_iterator<'sge>(
+        &self,
+        _ordered_sgas: impl Iterator<Item = Result<(MsgID, ConnID, OrderedSga<'sge>)>>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn queue_arena_ordered_sga(
+        &mut self,
+        _arena_ordered_sga: (MsgID, ConnID, ArenaOrderedSga),
+        _end_batch: bool,
+    ) -> Result<()> {
+        unimplemented!();
+    }
+
+    fn push_arena_ordered_sgas_iterator<'sge>(
+        &self,
+        _arena_ordered_sgas: impl Iterator<Item = Result<(MsgID, ConnID, ArenaOrderedSga<'sge>)>>,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// Send scatter-gather arrays of addresses.
     /// Args:

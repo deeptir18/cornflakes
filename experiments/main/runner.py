@@ -357,7 +357,7 @@ class Iteration(metaclass=abc.ABCMeta):
         cxn = Connection(host=host_addr,
                          user=user,
                          port=22,
-                         connect_kwargs={"key_filename": key})
+                         connect_kwargs={"key_filename": [key]})
         return cxn
 
     def kill_remote_process(self, cmd, host, machine_config):

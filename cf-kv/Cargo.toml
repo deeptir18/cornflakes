@@ -1,5 +1,5 @@
 [package]
-name = "kv-store"
+name = "cf-kv"
 version = "0.1.0"
 authors = ["deeptir <deeptir@cs.stanford.edu>"]
 edition = "2021"
@@ -26,6 +26,8 @@ hashbrown = "0.11.*"
 affinity = "0.1.1"
 cxx = "1.0"
 perftools = {git = "https://github.com/demikernel/perftools", rev = "94031ae", optional = true }
+bitmaps = "3.2.0"
+bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }
 
 [build-dependencies]
 protoc-rust = "2.23.*"

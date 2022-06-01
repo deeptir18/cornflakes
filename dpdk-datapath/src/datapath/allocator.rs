@@ -321,7 +321,7 @@ impl DatapathMemoryPool for MempoolInfo {
     }
 
     fn alloc_data_buf(
-        &mut self,
+        &self,
         context: MempoolID,
     ) -> Result<Option<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>>
     {

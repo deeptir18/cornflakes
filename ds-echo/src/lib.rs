@@ -89,6 +89,7 @@ where
             .iter()
             .map(|(t, bytes)| C::get_serialized_bytes(*t, bytes, datapath))
             .collect();
+        tracing::debug!("Serialized bytes: {:?}", serialized_bytes);
         Ok(EchoClient {
             cerealizer: C::new(),
             last_sent_id: 0,
@@ -162,7 +163,10 @@ where
         self.server_addr.clone()
     }
 
-    fn get_next_msg(&mut self) -> Result<Option<(MsgID, &[u8])>> {
+    fn get_next_msg(
+        &mut self,
+        _datapath: &<Self as ClientSM>::Datapath,
+    ) -> Result<Option<(MsgID, &[u8])>> {
         Ok(Some((
             self.last_sent_id,
             self.get_bytes_to_transmit(self.last_sent_id),
@@ -183,6 +187,8 @@ where
             {
                 tracing::warn!(id = sga.msg_id(), "Payloads not equal");
                 bail!("Payloads not equal");
+            } else {
+                tracing::info!(id = sga.msg_id(), "Passed test");
             }
         }
         Ok(())
@@ -198,7 +204,7 @@ where
         Ok(())
     }
 
-    fn msg_timeout_cb(&mut self, id: MsgID) -> Result<&[u8]> {
+    fn msg_timeout_cb(&mut self, id: MsgID, _datapath: &Self::Datapath) -> Result<&[u8]> {
         tracing::info!(id, last_sent = self.last_sent_id, "Retry callback");
         Ok(self.get_bytes_to_transmit(self.last_sent_id))
     }

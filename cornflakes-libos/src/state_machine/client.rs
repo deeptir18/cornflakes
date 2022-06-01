@@ -32,7 +32,10 @@ pub trait ClientSM {
 
     fn server_addr(&self) -> AddressInfo;
 
-    fn get_next_msg(&mut self) -> Result<Option<(MsgID, &[u8])>>;
+    fn get_next_msg(
+        &mut self,
+        datapath: &<Self as ClientSM>::Datapath,
+    ) -> Result<Option<(MsgID, &[u8])>>;
 
     fn process_received_msg(
         &mut self,
@@ -41,7 +44,11 @@ pub trait ClientSM {
     ) -> Result<()>;
 
     /// What to do when a particular message times out.
-    fn msg_timeout_cb(&mut self, id: MsgID) -> Result<&[u8]>;
+    fn msg_timeout_cb(
+        &mut self,
+        id: MsgID,
+        datapath: &<Self as ClientSM>::Datapath,
+    ) -> Result<&[u8]>;
 
     /// Initializes any internal state with any datapath specific configuration,
     /// e.g., registering external memory.
@@ -113,7 +120,7 @@ pub trait ClientSM {
             .connect(self.server_addr())
             .wrap_err("Could not get connection ID")?;
 
-        while let Some((id, msg)) = self.get_next_msg()? {
+        while let Some((id, msg)) = self.get_next_msg(&datapath)? {
             if recved >= num_pkts {
                 break;
             }
@@ -133,7 +140,7 @@ pub trait ClientSM {
                     datapath.push_buffers_with_copy(&vec![(
                         *id,
                         *conn,
-                        self.msg_timeout_cb(*id)?,
+                        self.msg_timeout_cb(*id, &datapath)?,
                     )])?;
                 }
             };
@@ -171,7 +178,7 @@ pub trait ClientSM {
         let start = datapath.current_cycles();
         let mut deficit;
         let mut next = start;
-        while let Some((id, msg)) = self.get_next_msg()? {
+        while let Some((id, msg)) = self.get_next_msg(&datapath)? {
             if datapath.current_cycles() > (total_time * freq + start) {
                 tracing::debug!("Total time done");
                 break;
@@ -208,7 +215,7 @@ pub trait ClientSM {
                         datapath.push_buffers_with_copy(&vec![(
                             *id,
                             *conn,
-                            self.msg_timeout_cb(*id)?,
+                            self.msg_timeout_cb(*id, &datapath)?,
                         )])?;
                     }
                 }

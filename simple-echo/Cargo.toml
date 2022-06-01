@@ -26,8 +26,8 @@ affinity = "0.1.1"
 
 [features]
 default = []
-mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath", "dpdk-datapath"]
-profiler = ["cornflakes-libos/profiler"]
+mlx5 = ["dpdk-datapath/mlx5"]
+profiler = ["cornflakes-libos/profiler", "perftools"]
 
 [[bin]]
 name = "simple_echo_dpdk"

@@ -7,8 +7,7 @@ use cornflakes_libos::{
     RcSga, RcSge,
 };
 use std::{
-    convert::TryInto, default::Default, fmt::Debug, marker::PhantomData, mem::size_of, ops::Index,
-    slice, str,
+    default::Default, fmt::Debug, marker::PhantomData, mem::size_of, ops::Index, slice, str,
 };
 
 pub const SIZE_FIELD: usize = 4;
@@ -115,9 +114,7 @@ where
     ) -> Result<()> {
         if with_ref {
             // read forward pointer
-            let slice = &mut header
-                [constant_header_offset..(constant_header_offset + Self::CONSTANT_HEADER_SIZE)];
-            let mut forward_pointer = MutForwardPointer(slice);
+            let mut forward_pointer = MutForwardPointer(header, constant_header_offset);
             forward_pointer.write_offset(dynamic_header_start as _);
             // TODO: write size?
             self.inner_serialize(
@@ -167,10 +164,7 @@ where
         with_ref: bool,
     ) -> Result<()> {
         if with_ref {
-            let slice = &buffer.as_ref()
-                [header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)]
-                .try_into()?;
-            let forward_pointer = ForwardPointer(slice);
+            let forward_pointer = ForwardPointer(buffer.addr(), header_offset);
             self.inner_deserialize(buffer, forward_pointer.get_offset() as usize)
         } else {
             self.inner_deserialize(buffer, header_offset)
@@ -226,7 +220,7 @@ where
             .iter()
             .zip(offsets.into_iter())
         {
-            let mut obj_ref = MutForwardPointer(&mut header_buffer[offset..(offset + 8)]);
+            let mut obj_ref = MutForwardPointer(header_buffer, offset);
             obj_ref.write_size(rcsge.len() as u32);
             obj_ref.write_offset(cur_dynamic_offset as u32);
             cur_dynamic_offset += rcsge.len();
@@ -336,9 +330,7 @@ where
     }
 
     fn inner_deserialize(&mut self, buffer: &RcSge<'a, D>, header_offset: usize) -> Result<()> {
-        let slice = &buffer.as_ref()[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
-        let forward_pointer = ForwardPointer(slice);
+        let forward_pointer = ForwardPointer(buffer.addr(), header_offset);
         let off = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
         self.ptr = buffer.clone_with_bounds(off, size)?;
@@ -423,9 +415,7 @@ where
     }
 
     fn inner_deserialize(&mut self, buffer: &RcSge<'a, D>, header_offset: usize) -> Result<()> {
-        let slice = &buffer.as_ref()[header_offset..(header_offset + Self::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
-        let forward_pointer = ForwardPointer(slice);
+        let forward_pointer = ForwardPointer(buffer.addr(), header_offset);
         let off = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
         self.ptr = buffer.clone_with_bounds(off, size)?;
@@ -671,9 +661,7 @@ where
         _scatter_gather_entries: &mut [RcSge<'a, D>],
         _offsets: &mut [usize],
     ) -> Result<()> {
-        let header_slice = &mut header[constant_header_offset
-            ..(constant_header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)];
-        let mut forward_pointer = MutForwardPointer(header_slice);
+        let mut forward_pointer = MutForwardPointer(header, constant_header_offset);
         forward_pointer.write_size(self.num_set as _);
         forward_pointer.write_offset(dynamic_header_start as _);
         let dest_slice = &mut header
@@ -683,10 +671,7 @@ where
     }
 
     fn inner_deserialize(&mut self, buffer: &RcSge<'a, D>, header_offset: usize) -> Result<()> {
-        let header_slice = &buffer.as_ref()[header_offset
-            ..(header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
-        let forward_pointer = ForwardPointer(header_slice);
+        let forward_pointer = ForwardPointer(buffer.addr(), header_offset);
         let list_size = forward_pointer.get_size() as usize;
         let offset = forward_pointer.get_offset() as usize;
         self.num_set = list_size;
@@ -804,9 +789,7 @@ where
         _scatter_gather_entries: &mut [RcSge<'a, D>],
         _offsets: &mut [usize],
     ) -> Result<()> {
-        let header_slice = &mut header[constant_header_offset
-            ..(constant_header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)];
-        let mut forward_pointer = MutForwardPointer(header_slice);
+        let mut forward_pointer = MutForwardPointer(header, constant_header_offset);
         forward_pointer.write_size(self.num_space as _);
         forward_pointer.write_offset(dynamic_header_start as _);
         let list_slice = &mut header
@@ -816,10 +799,7 @@ where
     }
 
     fn inner_deserialize(&mut self, buffer: &RcSge<'a, D>, header_offset: usize) -> Result<()> {
-        let header_slice = &buffer.as_ref()[header_offset
-            ..(header_offset + <Self as RcSgaHeaderRepr<'a, D>>::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
-        let forward_pointer = ForwardPointer(header_slice);
+        let forward_pointer = ForwardPointer(buffer.addr(), header_offset);
         let list_size = forward_pointer.get_size() as usize;
         let offset = forward_pointer.get_offset() as usize;
         self.num_space = list_size;
@@ -932,9 +912,7 @@ where
         scatter_gather_entries: &mut [RcSge<'a, D>],
         offsets: &mut [usize],
     ) -> Result<()> {
-        let header_slice = &mut header_buffer
-            [constant_header_offset..(constant_header_offset) + Self::CONSTANT_HEADER_SIZE];
-        let mut forward_pointer = MutForwardPointer(header_slice);
+        let mut forward_pointer = MutForwardPointer(header_buffer, constant_header_offset);
         forward_pointer.write_size(self.num_set as u32);
         forward_pointer.write_offset(dynamic_header_start as u32);
 
@@ -959,10 +937,7 @@ where
 
     // TODO: should offsets be written RELATIVE to the object that is being deserialized?
     fn inner_deserialize(&mut self, buffer: &RcSge<'a, D>, constant_offset: usize) -> Result<()> {
-        let slice = &buffer.as_ref()
-            [constant_offset..(constant_offset + Self::CONSTANT_HEADER_SIZE)]
-            .try_into()?;
-        let forward_pointer = ForwardPointer(slice);
+        let forward_pointer = ForwardPointer(buffer.addr(), constant_offset);
         let size = forward_pointer.get_size() as usize;
         let dynamic_offset = forward_pointer.get_offset() as usize;
 
