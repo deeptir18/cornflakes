@@ -222,7 +222,8 @@ pub trait SgaHeaderRepr<'obj> {
         self.serialize_into_sga_with_hdr(header_buffer, &mut sga, datapath)?;
         // copy sga into header buffer
         let header_size = self.total_header_size(false, true);
-        sga.copy_into_buffer(&mut header_buffer[header_size..])
+        let size = sga.copy_into_buffer(&mut header_buffer[header_size..])?;
+        Ok(size + header_size)
     }
 
     #[inline]
@@ -323,6 +324,52 @@ pub trait SgaHeaderRepr<'obj> {
     }
 
     #[inline]
+    fn partially_serialize_into_arena_sga_with_hdr<'sge>(
+        &self,
+        header_buffer: &mut [u8],
+        ordered_sga: &mut ArenaOrderedSga<'sge>,
+    ) -> Result<()>
+    where
+        'obj: 'sge,
+    {
+        let required_entries = self.num_scatter_gather_entries();
+        if ordered_sga.capacity() < required_entries {
+            bail!(
+                "Cannot serialize into sga with num entries {} ({} required)",
+                ordered_sga.len(),
+                required_entries,
+            );
+        }
+        ordered_sga.set_length(required_entries);
+
+        let header_size = self.total_header_size(false, true);
+        if header_buffer.len() < header_size {
+            bail!(
+                "Cannot serialize into header with smaller than {} len, given: {:?}",
+                header_size,
+                header_buffer,
+            );
+        }
+
+        // recursive serialize each item
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("recursive serialization");
+            let entries = &mut ordered_sga.entries;
+            let offsets = &mut ordered_sga.offsets;
+            self.inner_serialize(
+                header_buffer,
+                0,
+                self.dynamic_header_start(),
+                &mut entries.as_mut_slice()[0..required_entries],
+                &mut offsets.as_mut_slice()[0..required_entries],
+            )?;
+        }
+
+        ordered_sga.set_header_offsets(self.total_header_size(false, false));
+        Ok(())
+    }
+    #[inline]
     fn serialize_into_arena_sga_with_hdr<'sge, D>(
         &self,
         header_buffer: &mut [u8],
@@ -352,27 +399,28 @@ pub trait SgaHeaderRepr<'obj> {
         }
 
         ordered_sga.set_length(required_entries);
-        let mut offsets: Vec<usize> = vec![0; required_entries];
 
         // recursive serialize each item
         {
             #[cfg(feature = "profiler")]
             perftools::timer!("recursive serialization");
+            let entries = &mut ordered_sga.entries;
+            let offsets = &mut ordered_sga.offsets;
             self.inner_serialize(
                 header_buffer,
                 0,
                 self.dynamic_header_start(),
-                ordered_sga.mut_entries_slice(0, required_entries),
-                offsets.as_mut_slice(),
+                &mut entries.as_mut_slice()[0..required_entries],
+                &mut offsets.as_mut_slice()[0..required_entries],
             )?;
         }
         // reorder entries according to size threshold and whether entries are registered.
         {
             #[cfg(feature = "profiler")]
             perftools::timer!("reorder sga");
-            ordered_sga.reorder_by_size_and_registration(datapath, &mut offsets)?;
+            ordered_sga.reorder_by_size_and_registration(datapath)?;
             // reorder entries if current (zero-copy segments + 1) exceeds max zero-copy segments
-            ordered_sga.reorder_by_max_segs(datapath, &mut offsets)?;
+            ordered_sga.reorder_by_max_segs(datapath)?;
         }
         let mut cur_dynamic_offset = self.total_header_size(false, false);
 
@@ -385,13 +433,13 @@ pub trait SgaHeaderRepr<'obj> {
             for (sge, offset) in ordered_sga
                 .entries_slice(0, required_entries)
                 .iter()
-                .zip(offsets.into_iter())
+                .zip(ordered_sga.offsets_slice(0, required_entries))
             {
-                tracing::debug!(addr =? &header_buffer[offset..(offset + 8)].as_ptr(), "Addr without cast");
-                let mut obj_ref = MutForwardPointer(header_buffer, offset);
+                tracing::debug!(addr =? &header_buffer[*offset..(*offset + 8)].as_ptr(), "Addr without cast");
+                let mut obj_ref = MutForwardPointer(header_buffer, *offset);
                 tracing::debug!(
                     "At offset {}, writing in size {} and offset {}",
-                    offset,
+                    *offset,
                     sge.len(),
                     cur_dynamic_offset
                 );
@@ -401,6 +449,29 @@ pub trait SgaHeaderRepr<'obj> {
                 cur_dynamic_offset += sge.len();
             }
         }
+        Ok(())
+    }
+
+    #[inline]
+    fn partially_serialize_into_arena_sga<'sge>(
+        &self,
+        ordered_sga: &mut ArenaOrderedSga<'sge>,
+        arena: &'sge bumpalo::Bump,
+    ) -> Result<()>
+    where
+        'obj: 'sge,
+    {
+        let mut owned_hdr = {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("alloc hdr");
+            let size = self.total_header_size(false, true);
+            bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
+        };
+        tracing::debug!("Header size: {}", owned_hdr.len());
+        let header_buffer = owned_hdr.as_mut_slice();
+        self.partially_serialize_into_arena_sga_with_hdr(header_buffer, ordered_sga)?;
+        ordered_sga.set_hdr(owned_hdr);
+
         Ok(())
     }
 
@@ -630,7 +701,6 @@ impl<'obj> SgaHeaderRepr<'obj> for CFBytes<'obj> {
 
     #[inline]
     fn dynamic_header_size(&self) -> usize {
-        tracing::debug!("Dynamic hdr size for cf bytes: 0");
         0
     }
 
@@ -1223,7 +1293,7 @@ where
 
     #[inline]
     pub fn append(&mut self, val: T) {
-        tracing::debug!("Appending to the list");
+        tracing::debug!(elts_len = self.elts.len(), "Appending to the list");
         self.elts.push(val);
         self.num_set += 1;
     }

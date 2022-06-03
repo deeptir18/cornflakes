@@ -1,7 +1,7 @@
 pub mod cornflakes_dynamic;
 pub mod retwis;
-pub mod run_datapath;
 pub mod ycsb;
+pub mod ycsb_run_datapath;
 
 use byteorder::{BigEndian, ByteOrder};
 use color_eyre::eyre::{bail, Result};
@@ -20,7 +20,7 @@ use std::{
     marker::PhantomData,
 };
 
-const MIN_MEMPOOL_SIZE: usize = 8192;
+const MIN_MEMPOOL_SIZE: usize = 262144;
 
 fn align_to_power(size: usize) -> Result<usize> {
     let available_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
@@ -196,6 +196,7 @@ where
         None => {
             let aligned_size = align_to_power(size)?;
             mempool_ids.append(&mut datapath.add_memory_pool(aligned_size, MIN_MEMPOOL_SIZE)?);
+            tracing::debug!("Added mempool");
             match datapath.allocate(size)? {
                 Some(buf) => Ok(buf),
                 None => {
@@ -271,6 +272,7 @@ where
             let request = self.read_request(&line?)?;
             self.modify_server_state(&request, kv_server, list_kv_server, mempool_ids, datapath)?;
         }
+        tracing::info!(trace = request_file, mempool_ids =? mempool_ids, "Finished loading trace file");
         Ok(())
     }
 
@@ -440,13 +442,9 @@ where
     D: Datapath,
 {
     pub fn new(
+        request_generator: R,
         server_addr: AddressInfo,
-        request_file: &str,
         max_num_requests: usize,
-        client_id: usize,
-        thread_id: usize,
-        max_clients: usize,
-        max_threads: usize,
         using_retries: bool,
         server_trace: Option<(&str, impl ServerLoadGenerator<D>)>,
     ) -> Result<KVClient<R, C, D>> {
@@ -455,13 +453,7 @@ where
             None => ((HashMap::default(), HashMap::default())),
         };
         Ok(KVClient {
-            request_generator: R::new(
-                request_file,
-                client_id,
-                thread_id,
-                max_clients,
-                max_threads,
-            )?,
+            request_generator: request_generator,
             serializer: C::new(),
             last_sent_id: 0,
             received: 0,
@@ -636,6 +628,7 @@ where
                 &self.ref_kv,
                 &self.ref_list_kv,
             )?;
+            tracing::info!(sga_id = sga.msg_id(), "Checked sga and it passed");
         }
         if self.using_retries {
             if let Some(_) = self.outgoing_requests.remove(&sga.msg_id()) {

@@ -66,7 +66,7 @@ void custom_mlx5_mempool_free_(void *item, struct custom_mlx5_mempool *mempool) 
 }
 
 struct custom_mlx5_mbuf *custom_mlx5_mbuf_at_index_(struct custom_mlx5_mempool *mempool, size_t index) {
-    return (struct custom_mlx5_mbuf *)((char *)mempool->buf + index * mempool->item_len);
+    return (struct custom_mlx5_mbuf *)((char *)mempool->buf + (index << mempool->log_item_len));
 }
 
 void mlx5_rte_memcpy_(void *dst, const void *src, size_t n) {

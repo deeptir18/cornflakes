@@ -38,9 +38,11 @@ impl YCSBLine {
         };
         let req = split.next().unwrap();
         let mut keys: Vec<String> = Vec::default();
-        for _i in 0..std::cmp::min(num_keys, MAX_BATCHES) {
+        for i in 0..MAX_BATCHES {
             let key = &split.next().unwrap();
-            keys.push(key.to_string());
+            if i < num_keys {
+                keys.push(key.to_string());
+            }
         }
 
         match req {

@@ -8,6 +8,8 @@ use cornflakes_libos::{
     allocator::{DatapathMemoryPool, MempoolID},
     datapath::Datapath,
 };
+#[cfg(feature = "profiler")]
+use perftools;
 use std::boxed::Box;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -33,16 +35,19 @@ impl Drop for DataMempool {
 }
 
 impl DataMempool {
+    #[inline]
     fn mempool(&self) -> *mut registered_mempool {
         self.mempool_ptr as *mut registered_mempool
     }
 
+    #[inline]
     pub fn new_from_ptr(mempool_ptr: *mut [u8]) -> Self {
         DataMempool {
             mempool_ptr: mempool_ptr,
         }
     }
 
+    #[inline]
     pub fn new(
         mempool_params: &sizes::MempoolAllocationParams,
         per_thread_context: &Mlx5PerThreadContext,
@@ -82,15 +87,22 @@ impl DataMempool {
     }
 
     #[inline]
-    pub unsafe fn recover_metadata_mbuf(&self, ptr: *const u8) -> *mut custom_mlx5_mbuf {
-        let data_pool = get_data_mempool(self.mempool());
-        let metadata_pool = get_metadata_mempool(self.mempool());
-        let mempool_start = access!(data_pool, buf, *const u8) as usize;
+    pub unsafe fn recover_metadata_mbuf(&self, ptr: *const u8) -> (*mut custom_mlx5_mbuf, usize) {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("recovery process");
+        let mempool = self.mempool();
+        let data_pool = get_data_mempool(mempool);
+        let metadata_pool = get_metadata_mempool(mempool);
+        let mempool_start = access!(data_pool, buf, usize);
         let item_len = access!(data_pool, item_len, usize);
-        let offset_within_alloc = (ptr as usize - mempool_start) % item_len;
-        let index = ((ptr as usize - offset_within_alloc) - mempool_start) / item_len;
-        let mbuf = custom_mlx5_mbuf_at_index(metadata_pool, index);
-        mbuf
+        let offset_within_alloc = ptr as usize - mempool_start;
+        let index =
+            (offset_within_alloc & !(item_len - 1)) >> access!(data_pool, log_item_len, usize);
+        let mbuf = (access!(metadata_pool, buf, usize)
+            + (index << access!(metadata_pool, log_item_len, usize)))
+            as *mut custom_mlx5_mbuf;
+        custom_mlx5_mbuf_refcnt_update_or_free(mbuf, 1);
+        (mbuf, ptr as usize - access!(mbuf, buf_addr, usize))
     }
 
     /*#[inline]
@@ -120,6 +132,7 @@ impl DatapathMemoryPool for DataMempool {
 
     type RegistrationContext = *mut custom_mlx5_per_thread_context;
 
+    #[inline]
     fn register(&mut self, registration_context: Self::RegistrationContext) -> Result<()> {
         unsafe {
             if custom_mlx5_register_memory_pool_from_thread(
@@ -134,6 +147,7 @@ impl DatapathMemoryPool for DataMempool {
         Ok(())
     }
 
+    #[inline]
     fn unregister(&mut self) -> Result<()> {
         unsafe {
             if custom_mlx5_deregister_memory_pool(self.mempool()) != 0 {
@@ -143,6 +157,7 @@ impl DatapathMemoryPool for DataMempool {
         Ok(())
     }
 
+    #[inline]
     fn is_registered(&self) -> bool {
         unsafe {
             let data_mempool = self.get_data_mempool();
@@ -154,17 +169,23 @@ impl DatapathMemoryPool for DataMempool {
         }
     }
 
+    #[inline]
+    fn has_allocated(&self) -> bool {
+        unsafe { access!(get_data_mempool(self.mempool()), allocated, usize) > 1 }
+    }
+
+    #[inline]
     fn is_buf_within_bounds(&self, buf: &[u8]) -> bool {
         let ptr = buf.as_ptr() as usize;
         let data_pool = unsafe { get_data_mempool(self.mempool()) };
         unsafe {
             ptr >= access!(data_pool, buf, *const u8) as usize
                 && ptr
-                    <= (access!(data_pool, buf, *const u8) as usize
-                        + access!(data_pool, len, usize))
+                    < (access!(data_pool, buf, *const u8) as usize + access!(data_pool, len, usize))
         }
     }
 
+    #[inline]
     fn recover_metadata(
         &self,
         buf: <<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer,
@@ -174,24 +195,30 @@ impl DatapathMemoryPool for DataMempool {
 
     /// Recovers buffer into datapath metadata IF the buffer is registered and within bounds.
     /// MUST be called ONLY if the buffer is registered and within bounds.
+    #[inline]
     fn recover_buffer(
         &self,
         buf: &[u8],
     ) -> Result<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata> {
         let ptr = buf.as_ptr();
         unsafe {
-            let mbuf = self.recover_metadata_mbuf(ptr);
-            let offset = ptr as usize - access!(mbuf, buf_addr, *const u8) as usize;
-            MbufMetadata::new(mbuf, offset, Some(buf.len()))
+            let (mbuf, offset) = self.recover_metadata_mbuf(ptr);
+
+            Ok(MbufMetadata {
+                mbuf: mbuf,
+                offset: offset,
+                len: buf.len(),
+            })
         }
     }
 
+    #[inline]
     fn alloc_data_buf(
         &self,
         context: MempoolID,
     ) -> Result<Option<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>>
     {
-        let mut metadata = unsafe { custom_mlx5_allocate_data_and_metadata_mbuf(self.mempool()) };
+        let metadata = unsafe { custom_mlx5_allocate_data_and_metadata_mbuf(self.mempool()) };
 
         if metadata.is_null() {
             return Ok(None);
@@ -201,13 +228,6 @@ impl DatapathMemoryPool for DataMempool {
             custom_mlx5_mbuf_refcnt_update_or_free(metadata, 1);
         }
         let buffer = unsafe { access!(metadata, buf_addr, *mut ::std::os::raw::c_void) };
-        tracing::debug!(
-            item_len = unsafe { access!(get_data_mempool(self.mempool()), item_len, usize) },
-            buffer =? buffer,
-            metadata =? metadata,
-            "Allocating from mempool with item len"
-        );
-
         Ok(Some(Mlx5Buffer::new(
             buffer,
             self.mempool(),

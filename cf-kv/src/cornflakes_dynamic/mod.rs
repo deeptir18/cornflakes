@@ -21,6 +21,8 @@ use super::{
     ServerLoadGenerator, REQ_TYPE_SIZE,
 };
 use color_eyre::eyre::{bail, ensure, Result};
+#[cfg(feature = "profiler")]
+use perftools;
 use std::{io::Write, marker::PhantomData};
 
 pub struct CornflakesSerializer<D>
@@ -44,7 +46,7 @@ where
         &self,
         kv_server: &'kv KVServer<D>,
         pkt: &ReceivedPkt<D>,
-        datapath: &D,
+        _datapath: &D,
         arena: &'arena bumpalo::Bump,
     ) -> Result<ArenaOrderedSga<'arena>>
     where
@@ -58,12 +60,19 @@ where
                 bail!("Could not find value for key: {:?}", get_req.get_key());
             }
         };
+        tracing::debug!(
+            "For given key {:?}, found value {:?} with length {}",
+            get_req.get_key().as_str(),
+            value.as_ref().as_ptr(),
+            value.as_ref().len()
+        );
         let mut get_resp = GetResp::new();
         get_resp.set_id(get_req.get_id());
         get_resp.set_val(CFBytes::new(value.as_ref()));
         let mut arena_sga =
             ArenaOrderedSga::allocate(get_resp.num_scatter_gather_entries(), &arena);
-        get_resp.serialize_into_arena_sga(&mut arena_sga, datapath, arena)?;
+        get_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
+        tracing::debug!("Done serializing response");
         Ok(arena_sga)
     }
     fn handle_put<'arena>(
@@ -87,7 +96,7 @@ where
         put_resp.set_id(put_req.get_id());
         let mut arena_sga =
             ArenaOrderedSga::allocate(put_resp.num_scatter_gather_entries(), &arena);
-        put_resp.serialize_into_arena_sga(&mut arena_sga, datapath, arena)?;
+        put_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
         Ok(arena_sga)
     }
 
@@ -95,30 +104,56 @@ where
         &self,
         kv_server: &'kv KVServer<D>,
         pkt: &ReceivedPkt<D>,
-        datapath: &D,
+        _datapath: &D,
         arena: &'arena bumpalo::Bump,
     ) -> Result<ArenaOrderedSga<'arena>>
     where
         'kv: 'arena,
     {
         let mut getm_req = GetMReq::new();
-        getm_req.deserialize(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Deserialize pkt");
+            getm_req.deserialize(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+        }
         let mut getm_resp = GetMResp::new();
         getm_resp.init_vals(getm_req.get_keys().len());
         let vals = getm_resp.get_mut_vals();
         for key in getm_req.get_keys().iter() {
-            let value = match kv_server.get(key.as_str()) {
-                Some(v) => v,
-                None => {
-                    bail!("Could not find value for key: {:?}", key);
+            let value = {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("got value");
+                match kv_server.get(key.as_str()) {
+                    Some(v) => v,
+                    None => {
+                        bail!("Could not find value for key: {:?}", key);
+                    }
                 }
             };
-            vals.append(CFBytes::new(value.as_ref()));
+            tracing::debug!(
+                "For given key {:?}, found value {:?} with length {}",
+                key.as_str(),
+                value.as_ref().as_ptr(),
+                value.as_ref().len()
+            );
+            {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("append value");
+                vals.append(CFBytes::new(value.as_ref()));
+            }
         }
         getm_resp.set_id(getm_req.get_id());
-        let mut arena_sga =
-            ArenaOrderedSga::allocate(getm_resp.num_scatter_gather_entries(), &arena);
-        getm_resp.serialize_into_arena_sga(&mut arena_sga, datapath, arena)?;
+
+        let mut arena_sga = {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("allocate sga");
+            ArenaOrderedSga::allocate(getm_resp.num_scatter_gather_entries(), &arena)
+        };
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("serialize sga");
+            getm_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
+        }
         Ok(arena_sga)
     }
 
@@ -143,14 +178,14 @@ where
         put_resp.set_id(putm_req.get_id());
         let mut arena_sga =
             ArenaOrderedSga::allocate(put_resp.num_scatter_gather_entries(), &arena);
-        put_resp.serialize_into_arena_sga(&mut arena_sga, datapath, arena)?;
+        put_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
         Ok(arena_sga)
     }
     fn handle_getlist<'kv, 'arena>(
         &self,
         list_kv_server: &'kv ListKVServer<D>,
         pkt: &ReceivedPkt<D>,
-        datapath: &D,
+        _datapath: &D,
         arena: &'arena bumpalo::Bump,
     ) -> Result<ArenaOrderedSga<'arena>>
     where
@@ -170,12 +205,13 @@ where
         getlist_resp.init_val_list(value_list.len());
         let list = getlist_resp.get_mut_val_list();
         for value in value_list.iter() {
+            tracing::debug!("Appending value: {:?} to list", value.as_ref());
             list.append(CFBytes::new(value.as_ref()));
         }
 
         let mut arena_sga =
             ArenaOrderedSga::allocate(getlist_resp.num_scatter_gather_entries(), &arena);
-        getlist_resp.serialize_into_arena_sga(&mut arena_sga, datapath, arena)?;
+        getlist_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
         Ok(arena_sga)
     }
 
@@ -207,7 +243,7 @@ where
         put_resp.set_id(putlist_req.get_id());
         let mut arena_sga =
             ArenaOrderedSga::allocate(put_resp.num_scatter_gather_entries(), &arena);
-        put_resp.serialize_into_arena_sga(&mut arena_sga, datapath, arena)?;
+        put_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
         Ok(arena_sga)
     }
 }
@@ -266,6 +302,11 @@ where
     ) -> Result<()> {
         let end = sga.len();
         for (i, pkt) in sga.into_iter().enumerate() {
+            tracing::debug!(
+                "Received packet with data {:?} and length {}",
+                pkt.seg(0).as_ref(),
+                pkt.data_len()
+            );
             let end_batch = i == (end - 1);
             let msg_type = MsgType::from_packet(&pkt)?;
             match msg_type {

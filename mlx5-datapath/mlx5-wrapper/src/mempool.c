@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
+#include <math.h>
 
 #include <base/debug.h>
 #include <base/mempool.h>
@@ -124,7 +125,9 @@ int custom_mlx5_mempool_create(struct custom_mlx5_mempool *m, size_t len,
 	m->buf = buf;
 	m->len = len;
 	m->pgsize = pgsize;
+    m->num_pages = (len / pgsize);
 	m->item_len = item_len;
+    m->log_item_len = (size_t)(log2((float)item_len));
 
 	return custom_mlx5_mempool_populate(m, buf, len, pgsize, item_len);
 }

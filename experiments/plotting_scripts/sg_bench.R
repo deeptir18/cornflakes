@@ -162,6 +162,7 @@ base_tput_plot <- function(data, factor_name, x_axis_name, x_axis_labels, metric
         y_min = "maxtputgbps - maxtputgbpssd"
         y_max = "maxtputgbps + maxtputgbpssd"
     }
+    print(data)
     plot <- ggplot(data,
                    aes_string(x=factor_name_string,
                        y = y_name,
@@ -170,7 +171,7 @@ base_tput_plot <- function(data, factor_name, x_axis_name, x_axis_labels, metric
                        group = "system_name",
                        shape = "system_name")) +
                 expand_limits(y = 0) +
-            geom_point(size = 4) + geom_line(size = 1) +
+            geom_line(size = 1) + geom_point(size = 4) +
             scale_shape_manual(values = shape_values, labels = labels) +
             scale_color_manual(values = color_values, labels = labels) +
             scale_fill_manual(values = color_values, labels = labels) +

@@ -316,6 +316,11 @@ fn main() -> Result<()> {
             }
             // calculate the number of lines in the trace file
             let num_lines = lines_in_file(&opt.trace_file)?;
+            tracing::info!(
+                num_lines = num_lines,
+                num_values = opt.num_values,
+                "Lines in trace file"
+            );
             connection
                 .add_mempool("kv_buffer_pool", opt.value_size, num_lines * opt.num_values)
                 .wrap_err("Could not add mempool to DPDK conneciton")?;
