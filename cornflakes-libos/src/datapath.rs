@@ -384,6 +384,8 @@ pub trait Datapath {
     /// for the memory pool).
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>>;
 
+    fn add_tx_mempool(&mut self, size: usize, min_elts: usize) -> Result<()>;
+
     /// Register given mempool ID
     fn register_mempool(&mut self, id: MempoolID) -> Result<()>;
 

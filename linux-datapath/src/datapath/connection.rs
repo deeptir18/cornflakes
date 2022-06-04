@@ -263,6 +263,10 @@ impl Datapath for LinuxConnection {
         Ok(Some(ByteBuffer::from_buf(buf)))
     }
 
+    fn add_tx_mempool(&mut self, _size: usize, _min_elts: usize) -> Result<()> {
+        unimplemented!();
+    }
+
     fn add_memory_pool(&mut self, _size: usize, _min_elts: usize) -> Result<Vec<MempoolID>> {
         unimplemented!();
     }

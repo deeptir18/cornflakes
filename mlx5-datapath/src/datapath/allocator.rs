@@ -8,8 +8,6 @@ use cornflakes_libos::{
     allocator::{DatapathMemoryPool, MempoolID},
     datapath::Datapath,
 };
-#[cfg(feature = "profiler")]
-use perftools;
 use std::boxed::Box;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -88,8 +86,6 @@ impl DataMempool {
 
     #[inline]
     pub unsafe fn recover_metadata_mbuf(&self, ptr: *const u8) -> (*mut custom_mlx5_mbuf, usize) {
-        #[cfg(feature = "profiler")]
-        perftools::timer!("recovery process");
         let mempool = self.mempool();
         let data_pool = get_data_mempool(mempool);
         let metadata_pool = get_metadata_mempool(mempool);
@@ -169,9 +165,9 @@ impl DatapathMemoryPool for DataMempool {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn has_allocated(&self) -> bool {
-        unsafe { access!(get_data_mempool(self.mempool()), allocated, usize) > 1 }
+        unsafe { access!(get_data_mempool(self.mempool()), allocated, usize) >= 1 }
     }
 
     #[inline]
@@ -179,7 +175,8 @@ impl DatapathMemoryPool for DataMempool {
         let ptr = buf.as_ptr() as usize;
         let data_pool = unsafe { get_data_mempool(self.mempool()) };
         unsafe {
-            ptr >= access!(data_pool, buf, *const u8) as usize
+            access!(data_pool, allocated, usize) >= 1
+                && ptr >= access!(data_pool, buf, *const u8) as usize
                 && ptr
                     < (access!(data_pool, buf, *const u8) as usize + access!(data_pool, len, usize))
         }

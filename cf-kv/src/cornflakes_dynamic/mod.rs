@@ -205,7 +205,6 @@ where
         getlist_resp.init_val_list(value_list.len());
         let list = getlist_resp.get_mut_val_list();
         for value in value_list.iter() {
-            tracing::debug!("Appending value: {:?} to list", value.as_ref());
             list.append(CFBytes::new(value.as_ref()));
         }
 
@@ -270,7 +269,7 @@ where
         push_buf_type: PushBufType,
     ) -> Result<Self>
     where
-        L: ServerLoadGenerator<D>,
+        L: ServerLoadGenerator,
     {
         let (kv, list_kv, mempool_ids) = load_generator.new_kv_state(file, datapath)?;
         Ok(CornflakesKVServer {

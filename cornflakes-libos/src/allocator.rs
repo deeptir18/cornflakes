@@ -3,7 +3,7 @@ use color_eyre::eyre::{bail, Result, WrapErr};
 use hashbrown::HashMap;
 #[cfg(feature = "profiler")]
 use perftools;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 pub type MempoolID = u32;
 
@@ -73,6 +73,10 @@ where
 
     /// Mempools that cannot be allocated from, but must be searched for recovery.
     recv_mempools: HashMap<MempoolID, M>,
+
+    /// Mempools that the application cannot allocate from; does not have to be searched for
+    /// recovery.
+    tx_mempools: BTreeMap<usize, Vec<(MempoolID, M)>>,
 }
 
 impl<M> Default for MemoryPoolAllocator<M>
@@ -85,6 +89,7 @@ where
             mempools: HashMap::default(),
             next_id_to_allocate: 0,
             recv_mempools: HashMap::default(),
+            tx_mempools: BTreeMap::default(),
         }
     }
 }
@@ -115,7 +120,18 @@ where
     pub fn add_recv_mempool(&mut self, mempool: M) {
         self.recv_mempools.insert(self.next_id_to_allocate, mempool);
         self.next_id_to_allocate += 1;
-        tracing::debug!("Pushing recv mempool into vector");
+    }
+
+    #[inline]
+    pub fn add_tx_mempool(&mut self, item_len: usize, mempool: M) {
+        if self.tx_mempools.contains_key(&item_len) {
+            let list = self.tx_mempools.get_mut(&item_len).unwrap();
+            list.push((self.next_id_to_allocate, mempool));
+        } else {
+            self.tx_mempools
+                .insert(item_len, vec![(self.next_id_to_allocate, mempool)]);
+        }
+        self.next_id_to_allocate += 1;
     }
 
     /// Registers the backing region behind the given mempool.
@@ -154,6 +170,30 @@ where
         Ok(())
     }
 
+    #[inline]
+    pub fn allocate_tx_buffer(
+        &self,
+        buf_size: usize,
+    ) -> Result<Option<<<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>> {
+        for (_size, mempools) in self
+            .tx_mempools
+            .iter()
+            .filter(|(size, _list)| *size >= &buf_size)
+        {
+            tracing::debug!("Looking for tx buffer to allocate {}", buf_size);
+            for (mempool_id, mempool) in mempools.iter() {
+                match mempool.alloc_data_buf(*mempool_id)? {
+                    Some(x) => {
+                        return Ok(Some(x));
+                    }
+                    None => {}
+                }
+            }
+        }
+        tracing::debug!("Returning none");
+        return Ok(None);
+    }
+
     /// Allocates a datapath buffer (if a mempool is available).
     /// Size is atleast buf_size.
     /// No guarantees on whether the resulting datapath buffer is registered or not.
@@ -189,16 +229,14 @@ where
         perftools::timer!("recover buffer func higher level allocator");
         // search through recv mempools first
         for (_id, mempool) in self.recv_mempools.iter() {
-            if mempool.has_allocated() {
-                if mempool.is_buf_within_bounds(buffer) {
-                    if mempool.is_registered() {
-                        let metadata = mempool
-                            .recover_buffer(buffer)
-                            .wrap_err("unable to recover metadata")?;
-                        return Ok(Some(metadata));
-                    } else {
-                        return Ok(None);
-                    }
+            if mempool.is_buf_within_bounds(buffer) {
+                if mempool.is_registered() {
+                    let metadata = mempool
+                        .recover_buffer(buffer)
+                        .wrap_err("unable to recover metadata")?;
+                    return Ok(Some(metadata));
+                } else {
+                    return Ok(None);
                 }
             }
         }

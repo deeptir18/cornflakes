@@ -21,7 +21,7 @@ macro_rules! run_server(
         tracing::info!(threshold = $opt.copying_threshold, "Setting zero-copy copying threshold");
 
         // init ycsb load generator
-        let load_generator = YCSBServerLoader::new($opt.value_size, $opt.num_values, $opt.num_keys);
+        let load_generator = YCSBServerLoader::new($opt.value_size, $opt.num_values, $opt.num_keys, $opt.allocate_contiguously);
         let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type)?;
         kv_server.init(&mut connection)?;
         kv_server.run_state_machine(&mut connection)?;
@@ -91,7 +91,7 @@ macro_rules! run_client(
                 let mut server_trace: Option<(&str, YCSBServerLoader)> = None;
                 if cfg!(debug_assertions) {
                     if opt_clone.trace_file != "" {
-                        let server_loader = YCSBServerLoader::new(opt_clone.value_size, opt_clone.num_values, opt_clone.num_keys);
+                        let server_loader = YCSBServerLoader::new(opt_clone.value_size, opt_clone.num_values, opt_clone.num_keys, false);
                         server_trace = Some((&opt_clone.trace_file.as_str(), server_loader));
                     }
                 }
@@ -261,4 +261,9 @@ pub struct YCSBOpt {
     pub start_cutoff: usize,
     #[structopt(long = "distribution", default_value = "exponential")]
     pub distribution: DistributionType,
+    #[structopt(
+        long = "allocate_contiguously",
+        help = "Allocate YCSB multiple values contiguously."
+    )]
+    pub allocate_contiguously: bool,
 }

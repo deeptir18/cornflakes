@@ -20,7 +20,7 @@ use std::{
     marker::PhantomData,
 };
 
-const MIN_MEMPOOL_SIZE: usize = 262144;
+const MIN_MEMPOOL_SIZE: usize = 262144 * 4;
 
 fn align_to_power(size: usize) -> Result<usize> {
     let available_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
@@ -153,6 +153,10 @@ where
         }
     }
 
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.map.contains_key(key)
+    }
+
     pub fn get_map(&self) -> &HashMap<String, Vec<D::DatapathBuffer>> {
         &self.map
     }
@@ -207,10 +211,7 @@ where
     }
 }
 
-pub trait ServerLoadGenerator<D>
-where
-    D: Datapath,
-{
+pub trait ServerLoadGenerator {
     type RequestLine: Clone + std::fmt::Debug + PartialEq + Eq;
 
     fn new_ref_kv_state(
@@ -223,11 +224,14 @@ where
         Ok((kv_server, list_kv_server))
     }
 
-    fn new_kv_state(
+    fn new_kv_state<D>(
         &self,
         file: &str,
         datapath: &mut D,
-    ) -> Result<(KVServer<D>, ListKVServer<D>, Vec<MempoolID>)> {
+    ) -> Result<(KVServer<D>, ListKVServer<D>, Vec<MempoolID>)>
+    where
+        D: Datapath,
+    {
         let mut kv_server = KVServer::new();
         let mut list_kv_server = ListKVServer::new();
         let mut mempool_ids: Vec<MempoolID> = Vec::default();
@@ -258,14 +262,17 @@ where
         Ok(())
     }
 
-    fn load_file(
+    fn load_file<D>(
         &self,
         request_file: &str,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        D: Datapath,
+    {
         let file = File::open(request_file)?;
         let reader = BufReader::new(file);
         for line in reader.lines() {
@@ -283,14 +290,16 @@ where
         list_kv: &mut HashMap<String, Vec<String>>,
     ) -> Result<()>;
 
-    fn modify_server_state(
+    fn modify_server_state<D>(
         &self,
         request: &Self::RequestLine,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
-    ) -> Result<()>;
+    ) -> Result<()>
+    where
+        D: Datapath;
 }
 
 pub trait RequestGenerator {
@@ -446,7 +455,7 @@ where
         server_addr: AddressInfo,
         max_num_requests: usize,
         using_retries: bool,
-        server_trace: Option<(&str, impl ServerLoadGenerator<D>)>,
+        server_trace: Option<(&str, impl ServerLoadGenerator)>,
     ) -> Result<KVClient<R, C, D>> {
         let (ref_kv, ref_list_kv) = match server_trace {
             Some((file, load_gen)) => load_gen.new_ref_kv_state(file)?,
@@ -628,7 +637,7 @@ where
                 &self.ref_kv,
                 &self.ref_list_kv,
             )?;
-            tracing::info!(sga_id = sga.msg_id(), "Checked sga and it passed");
+            tracing::debug!(sga_id = sga.msg_id(), "Checked sga and it passed");
         }
         if self.using_retries {
             if let Some(_) = self.outgoing_requests.remove(&sga.msg_id()) {

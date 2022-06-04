@@ -735,7 +735,7 @@ impl DpdkConnection {
         buffer_size: usize,
         data_len: usize,
     ) -> Result<DpdkBuffer> {
-        let mut dpdk_buffer = match self.allocator.allocate_buffer(buffer_size)? {
+        let mut dpdk_buffer = match self.allocator.allocate_tx_buffer(buffer_size)? {
             Some(x) => x,
             None => {
                 bail!("Error allocating mbuf to copy header into");
@@ -1574,6 +1574,56 @@ impl Datapath for DpdkConnection {
 
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>> {
         Ok(Some(RteMbufMetadata::from_dpdk_buf(buf)))
+    }
+
+    fn add_tx_mempool(&mut self, value_size: usize, min_elts: usize) -> Result<()> {
+        let name = format!(
+            "thread_{}_mempool_id_{}",
+            self.thread_context.get_queue_id(),
+            self.allocator.num_mempools_so_far()
+        );
+        tracing::info!(name = ?name, value_size, min_elts, "Adding mempool");
+        let (num_values, num_mempools) = {
+            let log2 = (min_elts as f64).log2().ceil() as u32;
+            let num_elts = usize::pow(2, log2) as usize;
+            let num_mempools = {
+                if num_elts < MEMPOOL_MAX_SIZE {
+                    1
+                } else {
+                    num_elts / MEMPOOL_MAX_SIZE
+                }
+            };
+            (num_elts / num_mempools, num_mempools)
+        };
+        let actual_value_size = align_up(value_size + RTE_PKTMBUF_HEADROOM as usize, 256);
+        tracing::info!(
+            "Creating {} mempools of amount {}, actual value size {}",
+            num_mempools,
+            num_values,
+            actual_value_size
+        );
+        for i in 0..num_mempools {
+            let mempool_name = format!("{}_{}", name, i);
+            let mempool = create_mempool(
+                &mempool_name,
+                1,
+                actual_value_size,
+                num_values - 1,
+            )
+            .wrap_err(format!(
+                "Unable to add mempool {:?} to mempool allocator; actual value_size {}, num_values {}",
+                name,actual_value_size, num_values
+            ))?;
+            tracing::debug!(
+                "Created mempool avail count: {}, in_use count: {}",
+                unsafe { rte_mempool_avail_count(mempool) },
+                unsafe { rte_mempool_in_use_count(mempool) },
+            );
+            let _ = self
+                .allocator
+                .add_tx_mempool(actual_value_size, MempoolInfo::new(mempool)?);
+        }
+        Ok(())
     }
 
     fn add_memory_pool(&mut self, value_size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {
