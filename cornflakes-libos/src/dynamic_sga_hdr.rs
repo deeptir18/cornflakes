@@ -291,7 +291,6 @@ pub trait SgaHeaderRepr<'obj> {
             perftools::timer!("reorder sga");
             ordered_sga.reorder_by_size_and_registration(datapath, &mut offsets)?;
             // reorder entries if current (zero-copy segments + 1) exceeds max zero-copy segments
-            ordered_sga.reorder_by_max_segs(datapath, &mut offsets)?;
         }
         let mut cur_dynamic_offset = self.total_header_size(false, false);
 
@@ -375,6 +374,7 @@ pub trait SgaHeaderRepr<'obj> {
         header_buffer: &mut [u8],
         ordered_sga: &mut ArenaOrderedSga<'sge>,
         datapath: &D,
+        with_copy: bool,
     ) -> Result<()>
     where
         D: Datapath,
@@ -414,13 +414,13 @@ pub trait SgaHeaderRepr<'obj> {
                 &mut offsets.as_mut_slice()[0..required_entries],
             )?;
         }
-        // reorder entries according to size threshold and whether entries are registered.
-        {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("reorder sga");
-            ordered_sga.reorder_by_size_and_registration(datapath)?;
-            // reorder entries if current (zero-copy segments + 1) exceeds max zero-copy segments
-            ordered_sga.reorder_by_max_segs(datapath)?;
+        if !with_copy {
+            // reorder entries according to size threshold and whether entries are registered.
+            {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("reorder sga");
+                ordered_sga.reorder_by_size_and_registration(datapath, with_copy)?;
+            }
         }
         let mut cur_dynamic_offset = self.total_header_size(false, false);
 
@@ -481,6 +481,7 @@ pub trait SgaHeaderRepr<'obj> {
         ordered_sga: &mut ArenaOrderedSga<'sge>,
         datapath: &D,
         arena: &'sge bumpalo::Bump,
+        with_copy: bool,
     ) -> Result<()>
     where
         D: Datapath,
@@ -494,7 +495,7 @@ pub trait SgaHeaderRepr<'obj> {
         };
         tracing::debug!("Header size: {}", owned_hdr.len());
         let header_buffer = owned_hdr.as_mut_slice();
-        self.serialize_into_arena_sga_with_hdr(header_buffer, ordered_sga, datapath)?;
+        self.serialize_into_arena_sga_with_hdr(header_buffer, ordered_sga, datapath, with_copy)?;
         ordered_sga.set_hdr(owned_hdr);
 
         Ok(())

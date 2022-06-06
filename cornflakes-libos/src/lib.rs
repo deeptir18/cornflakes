@@ -387,6 +387,7 @@ impl<'a> Sga<'a> {
         }
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.length
     }
@@ -400,6 +401,7 @@ impl<'a> Sga<'a> {
             .collect()
     }
 
+    #[inline]
     pub fn data_len(&self) -> usize {
         self.entries.iter().take(self.length).map(|e| e.len()).sum()
     }
@@ -413,9 +415,11 @@ impl<'a> Sga<'a> {
         &self.entries[idx]
     }
 
-    pub fn iter(&self) -> Iter<Sge<'a>> {
-        self.entries[0..self.length].iter()
+    #[inline]
+    pub fn iter(&self) -> std::iter::Take<Iter<Sge<'a>>> {
+        self.entries.iter().take(self.length)
     }
+
     pub fn entries_slice(&self, start: usize, length: usize) -> &[Sge<'a>] {
         &self.entries.as_slice()[start..(start + length)]
     }
@@ -428,6 +432,7 @@ impl<'a> Sga<'a> {
         self.entries.swap(a, b);
     }
 
+    #[inline]
     pub fn add_entry(&mut self, entry: Sge<'a>) {
         if self.length < self.entries.len() {
             self.replace(self.length, entry);
@@ -880,6 +885,7 @@ impl<'a> ArenaOrderedSga<'a> {
         } else {
             self.entries.push(entry);
         }
+        self.length += 1;
     }
 
     pub fn entries_slice(&self, start: usize, length: usize) -> &[Sge<'a>] {
@@ -913,25 +919,6 @@ impl<'a> ArenaOrderedSga<'a> {
     }
 
     #[inline]
-    fn recover_zero_copy_seg<M, D>(
-        &self,
-        i: usize,
-        copying_threshold: usize,
-        allocator: &allocator::MemoryPoolAllocator<M>,
-    ) -> Result<Option<D::DatapathMetadata>>
-    where
-        M: allocator::DatapathMemoryPool<DatapathImpl = D> + PartialEq + Eq + std::fmt::Debug,
-        D: datapath::Datapath,
-    {
-        let seg = self.entries[i].addr();
-        if seg.len() < copying_threshold {
-            return Ok(None);
-        } else {
-            return allocator.recover_buffer(seg);
-        }
-    }
-
-    #[inline]
     fn is_zero_copy_seg<D>(&self, i: usize, d: &D) -> bool
     where
         D: datapath::Datapath,
@@ -948,19 +935,14 @@ impl<'a> ArenaOrderedSga<'a> {
         allocator: &allocator::MemoryPoolAllocator<M>,
         copying_threshold: usize,
         buffers: &mut [Option<D::DatapathMetadata>],
+        with_copy: bool,
     ) -> Result<()>
     where
         M: allocator::DatapathMemoryPool<DatapathImpl = D> + std::fmt::Debug + Eq + PartialEq,
         D: datapath::Datapath,
     {
-        // special case for segment length 1: only need to recover zero-copy seg once
-        if self.length == 1 {
-            if let Some(metadata) = self.recover_zero_copy_seg(0, copying_threshold, allocator)? {
-                buffers[0] = Some(metadata);
-            } else {
-                self.num_copy_entries = 1;
-            }
-            tracing::debug!("Setting num copy entries as {}/1", self.num_copy_entries);
+        if with_copy {
+            self.num_copy_entries = self.length;
             self.finish_offsets();
             return Ok(());
         }
@@ -1058,10 +1040,17 @@ impl<'a> ArenaOrderedSga<'a> {
     /// @offsets: Corresponding offsets vector (where indices correspond to current entries in the
     /// scatter-gather list). When indices are swapped in sga, corresponding indices must be
     /// swapped in offsets (assumes self.length == offsets.len() + 1)
-    pub fn reorder_by_size_and_registration<D>(&mut self, datapath: &D) -> Result<()>
+    pub fn reorder_by_size_and_registration<D>(
+        &mut self,
+        datapath: &D,
+        with_copy: bool,
+    ) -> Result<()>
     where
         D: datapath::Datapath,
     {
+        if with_copy {
+            return Ok(());
+        }
         if self.length == 1 {
             // check if segment is zero-copy or not
             if !self.is_zero_copy_seg(0, datapath) {

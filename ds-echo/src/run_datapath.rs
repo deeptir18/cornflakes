@@ -22,9 +22,12 @@ macro_rules! run_server (
 
         // init echo server
         let mut echo_server: $echo_server =
-            <$echo_server>::new($opt.message_type , $opt.push_buf_type);
+            <$echo_server>::new($opt.push_buf_type);
 
             echo_server.init(&mut connection)?;
+            if $opt.serialization == SerializationType::CornflakesOneCopyDynamic {
+                echo_server.set_with_copy();
+            }
 
             echo_server.run_state_machine(&mut connection)?;
     }

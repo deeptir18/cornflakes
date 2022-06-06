@@ -1,5 +1,7 @@
 use cf_kv::{
+    capnproto::{CapnprotoClient, CapnprotoKVServer},
     cornflakes_dynamic::{CornflakesClient, CornflakesKVServer},
+    flatbuffers::{FlatbuffersClient, FlatbuffersKVServer},
     run_client, run_server,
     ycsb::{YCSBClient, YCSBServerLoader},
     ycsb_run_datapath::*,
@@ -23,6 +25,12 @@ fn main() -> Result<()> {
             SerializationType::CornflakesDynamic | SerializationType::CornflakesOneCopyDynamic => {
                 run_server!(CornflakesKVServer<DpdkConnection>, DpdkConnection, opt);
             }
+            SerializationType::Flatbuffers => {
+                run_server!(FlatbuffersKVServer<DpdkConnection>, DpdkConnection, opt);
+            }
+            SerializationType::Capnproto => {
+                run_server!(CapnprotoKVServer<DpdkConnection>, DpdkConnection, opt);
+            }
             _ => {
                 unimplemented!();
             }
@@ -30,6 +38,12 @@ fn main() -> Result<()> {
         AppMode::Client => match opt.serialization {
             SerializationType::CornflakesDynamic | SerializationType::CornflakesOneCopyDynamic => {
                 run_client!(CornflakesClient<DpdkConnection>, DpdkConnection, opt);
+            }
+            SerializationType::Flatbuffers => {
+                run_client!(FlatbuffersClient<DpdkConnection>, DpdkConnection, opt);
+            }
+            SerializationType::Capnproto => {
+                run_client!(CapnprotoClient<DpdkConnection>, DpdkConnection, opt);
             }
             _ => {
                 unimplemented!();

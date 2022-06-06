@@ -324,6 +324,22 @@ pub trait Datapath {
         Ok(())
     }
 
+    fn queue_sga_with_copy(
+        &mut self,
+        _buf: (MsgID, ConnID, &ArenaOrderedSga),
+        _end_batch: bool,
+    ) -> Result<()> {
+        unimplemented!();
+    }
+
+    fn queue_single_buffer_with_copy(
+        &mut self,
+        _buf: (MsgID, ConnID, &[u8]),
+        _end_batch: bool,
+    ) -> Result<()> {
+        unimplemented!();
+    }
+
     fn queue_arena_ordered_sga(
         &mut self,
         _arena_ordered_sga: (MsgID, ConnID, ArenaOrderedSga),

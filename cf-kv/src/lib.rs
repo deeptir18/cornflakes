@@ -1,7 +1,20 @@
+pub mod capnproto;
 pub mod cornflakes_dynamic;
+pub mod flatbuffers;
 pub mod retwis;
 pub mod ycsb;
 pub mod ycsb_run_datapath;
+
+// TODO: though capnpc 0.14^ supports generating nested namespace files
+// there seems to be a bug in the code generation, so must include it at crate root
+mod kv_capnp {
+    #![allow(non_upper_case_globals)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_snake_case)]
+    #![allow(dead_code)]
+    #![allow(improper_ctypes)]
+    include!(concat!(env!("OUT_DIR"), "/cf_kv_capnp.rs"));
+}
 
 use byteorder::{BigEndian, ByteOrder};
 use color_eyre::eyre::{bail, Result};
@@ -20,7 +33,7 @@ use std::{
     marker::PhantomData,
 };
 
-const MIN_MEMPOOL_SIZE: usize = 262144 * 4;
+const MIN_MEMPOOL_SIZE: usize = 262144 * 8;
 
 fn align_to_power(size: usize) -> Result<usize> {
     let available_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
