@@ -324,6 +324,22 @@ pub trait Datapath {
         Ok(())
     }
 
+    fn queue_sga_with_copy(
+        &mut self,
+        _buf: (MsgID, ConnID, &ArenaOrderedSga),
+        _end_batch: bool,
+    ) -> Result<()> {
+        unimplemented!();
+    }
+
+    fn queue_single_buffer_with_copy(
+        &mut self,
+        _buf: (MsgID, ConnID, &[u8]),
+        _end_batch: bool,
+    ) -> Result<()> {
+        unimplemented!();
+    }
+
     fn queue_arena_ordered_sga(
         &mut self,
         _arena_ordered_sga: (MsgID, ConnID, ArenaOrderedSga),
@@ -383,6 +399,8 @@ pub trait Datapath {
     /// Vector of memory pool IDs for mempools that were created (datapath may have a maximum size
     /// for the memory pool).
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>>;
+
+    fn add_tx_mempool(&mut self, size: usize, min_elts: usize) -> Result<()>;
 
     /// Register given mempool ID
     fn register_mempool(&mut self, id: MempoolID) -> Result<()>;

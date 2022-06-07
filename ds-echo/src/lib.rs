@@ -1,5 +1,6 @@
 pub mod cornflakes_dynamic;
 pub mod run_datapath;
+use byteorder::{BigEndian, ByteOrder};
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
     datapath::{Datapath, ReceivedPkt},
@@ -8,12 +9,72 @@ use cornflakes_libos::{
     utils::AddressInfo,
     MsgID,
 };
-use cornflakes_utils::SimpleMessageType;
+use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::{iter, iter::repeat, marker::PhantomData};
 
 const ALIGN_SIZE: usize = 64;
+pub const REQ_TYPE_SIZE: usize = 4;
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum MsgType {
+    Single,
+    List(u16),
+    Tree(u16),
+}
+
+fn read_message_type<D: Datapath>(packet: &ReceivedPkt<D>) -> Result<SimpleMessageType> {
+    let buf = &packet.seg(0).as_ref();
+    let msg_type = &buf[0..2];
+    let size = &buf[2..4];
+
+    match (BigEndian::read_u16(msg_type), BigEndian::read_u16(size)) {
+        (0, 0) => Ok(SimpleMessageType::Single),
+        (1, size) => Ok(SimpleMessageType::List(size as _)),
+        (2, size) => {
+            let tree_depth = match size {
+                1 => TreeDepth::One,
+                2 => TreeDepth::Two,
+                3 => TreeDepth::Three,
+                4 => TreeDepth::Four,
+                5 => TreeDepth::Five,
+                _ => {
+                    bail!("Tree depth of 6 or greater not supported");
+                }
+            };
+            Ok(SimpleMessageType::Tree(tree_depth))
+        }
+        _ => {
+            bail!("unrecognized message type for ds echo app.");
+        }
+    }
+}
+
+/// Writes message type into first four bytes of provided buffer.
+fn write_message_type(msg_type: SimpleMessageType, buf: &mut [u8]) {
+    match msg_type {
+        SimpleMessageType::Single => {
+            BigEndian::write_u16(&mut buf[0..2], 0);
+            BigEndian::write_u16(&mut buf[2..4], 0);
+        }
+        SimpleMessageType::List(size) => {
+            BigEndian::write_u16(&mut buf[0..2], 1);
+            BigEndian::write_u16(&mut buf[2..4], size as _);
+        }
+        SimpleMessageType::Tree(depth) => {
+            let size = match depth {
+                TreeDepth::One => 1,
+                TreeDepth::Two => 2,
+                TreeDepth::Three => 3,
+                TreeDepth::Four => 4,
+                TreeDepth::Five => 5,
+            };
+            BigEndian::write_u16(&mut buf[0..2], 2);
+            BigEndian::write_u16(&mut buf[2..4], size);
+        }
+    }
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum EchoMode {
@@ -87,7 +148,13 @@ where
             .collect();
         let serialized_bytes: Result<Vec<Vec<u8>>> = bytes_to_check
             .iter()
-            .map(|(t, bytes)| C::get_serialized_bytes(*t, bytes, datapath))
+            .map(|(t, bytes)| {
+                let mut type_buf: Vec<u8> = vec![0u8; REQ_TYPE_SIZE];
+                write_message_type(*t, &mut type_buf.as_mut_slice());
+                let mut serialized_bytes = C::get_serialized_bytes(*t, bytes, datapath)?;
+                type_buf.append(&mut serialized_bytes);
+                Ok(type_buf)
+            })
             .collect();
         tracing::debug!("Serialized bytes: {:?}", serialized_bytes);
         Ok(EchoClient {

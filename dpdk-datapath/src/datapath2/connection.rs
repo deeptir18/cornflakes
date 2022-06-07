@@ -361,6 +361,7 @@ impl DPDKConnection {
     ) -> Result<()> {
         //let num_values = (min_num_values as f64 * 1.20) as usize;
         // find optimal number of values above this
+        tracing::info!(value_size, min_num_values, "Trying to add mempool");
         tracing::info!(name, value_size, min_num_values, "Adding mempool");
         let (num_values, num_mempools) = {
             let log2 = (min_num_values as f64).log2().ceil() as u32;

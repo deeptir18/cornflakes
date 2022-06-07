@@ -13,6 +13,7 @@ structopt-derive="0.2.16"
 cornflakes-libos = { path = "../cornflakes-libos" }
 cornflakes-utils = { path = "../cornflakes-utils" }
 cornflakes-codegen = { path = "../cornflakes-codegen" }
+mlx5-datapath = { path = "../mlx5-datapath", optional = true }
 dpdk-datapath = { path = "../dpdk-datapath", optional = true }
 ctrlc = "3.1.7"
 memmap = "0.7.0"
@@ -42,7 +43,7 @@ cornflakes-utils = { path = "../cornflakes-utils" }
 
 [features]
 default = []
-mlx5 = ["dpdk-datapath/mlx5"]
+mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath", "dpdk-datapath"]
 profiler = ["cornflakes-libos/profiler", "perftools"]
 
 

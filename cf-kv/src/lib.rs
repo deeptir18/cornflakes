@@ -1,7 +1,20 @@
+pub mod capnproto;
 pub mod cornflakes_dynamic;
+pub mod flatbuffers;
 pub mod retwis;
-pub mod run_datapath;
 pub mod ycsb;
+pub mod ycsb_run_datapath;
+
+// TODO: though capnpc 0.14^ supports generating nested namespace files
+// there seems to be a bug in the code generation, so must include it at crate root
+mod kv_capnp {
+    #![allow(non_upper_case_globals)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_snake_case)]
+    #![allow(dead_code)]
+    #![allow(improper_ctypes)]
+    include!(concat!(env!("OUT_DIR"), "/cf_kv_capnp.rs"));
+}
 
 use byteorder::{BigEndian, ByteOrder};
 use color_eyre::eyre::{bail, Result};
@@ -20,7 +33,7 @@ use std::{
     marker::PhantomData,
 };
 
-const MIN_MEMPOOL_SIZE: usize = 8192;
+const MIN_MEMPOOL_SIZE: usize = 262144 * 8;
 
 fn align_to_power(size: usize) -> Result<usize> {
     let available_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
@@ -153,6 +166,10 @@ where
         }
     }
 
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.map.contains_key(key)
+    }
+
     pub fn get_map(&self) -> &HashMap<String, Vec<D::DatapathBuffer>> {
         &self.map
     }
@@ -196,6 +213,7 @@ where
         None => {
             let aligned_size = align_to_power(size)?;
             mempool_ids.append(&mut datapath.add_memory_pool(aligned_size, MIN_MEMPOOL_SIZE)?);
+            tracing::debug!("Added mempool");
             match datapath.allocate(size)? {
                 Some(buf) => Ok(buf),
                 None => {
@@ -206,10 +224,7 @@ where
     }
 }
 
-pub trait ServerLoadGenerator<D>
-where
-    D: Datapath,
-{
+pub trait ServerLoadGenerator {
     type RequestLine: Clone + std::fmt::Debug + PartialEq + Eq;
 
     fn new_ref_kv_state(
@@ -222,11 +237,14 @@ where
         Ok((kv_server, list_kv_server))
     }
 
-    fn new_kv_state(
+    fn new_kv_state<D>(
         &self,
         file: &str,
         datapath: &mut D,
-    ) -> Result<(KVServer<D>, ListKVServer<D>, Vec<MempoolID>)> {
+    ) -> Result<(KVServer<D>, ListKVServer<D>, Vec<MempoolID>)>
+    where
+        D: Datapath,
+    {
         let mut kv_server = KVServer::new();
         let mut list_kv_server = ListKVServer::new();
         let mut mempool_ids: Vec<MempoolID> = Vec::default();
@@ -257,20 +275,24 @@ where
         Ok(())
     }
 
-    fn load_file(
+    fn load_file<D>(
         &self,
         request_file: &str,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        D: Datapath,
+    {
         let file = File::open(request_file)?;
         let reader = BufReader::new(file);
         for line in reader.lines() {
             let request = self.read_request(&line?)?;
             self.modify_server_state(&request, kv_server, list_kv_server, mempool_ids, datapath)?;
         }
+        tracing::info!(trace = request_file, mempool_ids =? mempool_ids, "Finished loading trace file");
         Ok(())
     }
 
@@ -281,14 +303,16 @@ where
         list_kv: &mut HashMap<String, Vec<String>>,
     ) -> Result<()>;
 
-    fn modify_server_state(
+    fn modify_server_state<D>(
         &self,
         request: &Self::RequestLine,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
-    ) -> Result<()>;
+    ) -> Result<()>
+    where
+        D: Datapath;
 }
 
 pub trait RequestGenerator {
@@ -440,28 +464,18 @@ where
     D: Datapath,
 {
     pub fn new(
+        request_generator: R,
         server_addr: AddressInfo,
-        request_file: &str,
         max_num_requests: usize,
-        client_id: usize,
-        thread_id: usize,
-        max_clients: usize,
-        max_threads: usize,
         using_retries: bool,
-        server_trace: Option<(&str, impl ServerLoadGenerator<D>)>,
+        server_trace: Option<(&str, impl ServerLoadGenerator)>,
     ) -> Result<KVClient<R, C, D>> {
         let (ref_kv, ref_list_kv) = match server_trace {
             Some((file, load_gen)) => load_gen.new_ref_kv_state(file)?,
             None => ((HashMap::default(), HashMap::default())),
         };
         Ok(KVClient {
-            request_generator: R::new(
-                request_file,
-                client_id,
-                thread_id,
-                max_clients,
-                max_threads,
-            )?,
+            request_generator: request_generator,
             serializer: C::new(),
             last_sent_id: 0,
             received: 0,
@@ -636,6 +650,7 @@ where
                 &self.ref_kv,
                 &self.ref_list_kv,
             )?;
+            tracing::debug!(sga_id = sga.msg_id(), "Checked sga and it passed");
         }
         if self.using_retries {
             if let Some(_) = self.outgoing_requests.remove(&sga.msg_id()) {

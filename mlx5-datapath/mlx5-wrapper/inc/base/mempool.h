@@ -15,6 +15,8 @@ struct custom_mlx5_mempool {
     size_t len; /* Total region length. */
     size_t pgsize; /* Page size. Using larger pages leads to TLB efficiency. */
     size_t item_len; /* Length of mempool items. Must be aligned to page size. */
+    size_t log_item_len; /* Log of the item len*/
+    size_t num_pages; /* Number of pages */
     int32_t lkey; /* Lkey for the memory region backed by mempool. -1 if not registered. */
 };
 

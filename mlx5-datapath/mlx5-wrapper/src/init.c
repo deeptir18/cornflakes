@@ -76,14 +76,14 @@ struct custom_mlx5_mbuf *custom_mlx5_allocate_data_and_metadata_mbuf(struct regi
     void *data = custom_mlx5_mempool_alloc(&mempool->data_mempool);
     if (data == NULL) {
         errno = -ENOMEM;
-        NETPERF_WARN("Could not allocate data mbuf");
+        NETPERF_DEBUG("Could not allocate data mbuf");
         return NULL;
     }
     int index = custom_mlx5_mempool_find_index(&mempool->data_mempool, data);
     struct custom_mlx5_mbuf *metadata = (struct custom_mlx5_mbuf *)(custom_mlx5_mempool_alloc_by_idx(&mempool->metadata_mempool, (size_t)index));
     if (metadata == NULL) {
         custom_mlx5_mempool_free(&mempool->data_mempool, data);
-        NETPERF_WARN("Could not allocate metadata mbuf");
+        NETPERF_DEBUG("Could not allocate metadata mbuf");
         errno = -ENOMEM;
         return NULL;
     }

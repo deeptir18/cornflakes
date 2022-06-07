@@ -140,8 +140,8 @@ pub trait ServerSM {
         let min_elts = 8192;
         loop {
             // add a tx pool with buf size
-            tracing::info!("Adding memory pool of size {}", buf_size);
-            connection.add_memory_pool(buf_size, min_elts)?;
+            tracing::info!("Adding TX memory pool of size {}", buf_size);
+            connection.add_tx_mempool(buf_size, min_elts)?;
             buf_size *= 2;
             if buf_size > max_size {
                 break;

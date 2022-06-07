@@ -3,13 +3,13 @@ use cornflakes_libos::{
     datapath::{InlineMode, PushBufType},
     loadgen::request_schedule::DistributionType,
 };
-use cornflakes_utils::{AppMode, SerializationType, SimpleMessageType, TraceLevel};
+use cornflakes_utils::{AppMode, SerializationType, TraceLevel};
 use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
 #[macro_export]
-macro_rules! run_server (
-    ($echo_server: ty, $datapath: ty, $opt: ident) => {
+macro_rules! run_server(
+    ($kv_server: ty, $datapath: ty, $opt: ident) => {
         let mut datapath_params = <$datapath as Datapath>::parse_config_file(&$opt.config_file, &$opt.server_ip)?;
         let addresses = <$datapath as Datapath>::compute_affinity(&datapath_params, 1, None, AppMode::Server)?;
         let per_thread_contexts = <$datapath as Datapath>::global_init(1, &mut datapath_params, addresses)?;
@@ -20,21 +20,16 @@ macro_rules! run_server (
         connection.set_inline_mode($opt.inline_mode);
         tracing::info!(threshold = $opt.copying_threshold, "Setting zero-copy copying threshold");
 
-        // init echo server
-        let mut echo_server: $echo_server =
-            <$echo_server>::new($opt.push_buf_type);
-
-            echo_server.init(&mut connection)?;
-            if $opt.serialization == SerializationType::CornflakesOneCopyDynamic {
-                echo_server.set_with_copy();
-            }
-
-            echo_server.run_state_machine(&mut connection)?;
+        // init ycsb load generator
+        let load_generator = YCSBServerLoader::new($opt.value_size, $opt.num_values, $opt.num_keys, $opt.allocate_contiguously);
+        let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type)?;
+        kv_server.init(&mut connection)?;
+        kv_server.run_state_machine(&mut connection)?;
     }
 );
 
 #[macro_export]
-macro_rules! run_client (
+macro_rules! run_client(
     ($serializer: ty, $datapath: ty, $opt: ident) => {
         let server_addr = cornflakes_utils::parse_server_addr(&$opt.config_file, &$opt.server_ip)?;
         let mut datapath_params = <$datapath as Datapath>::parse_config_file(&$opt.config_file, &$opt.our_ip)?;
@@ -46,7 +41,7 @@ macro_rules! run_client (
             )?;
         let num_rtts = ($opt.rate * $opt.total_time * 2) as usize;
         let schedules =
-            cornflakes_libos::loadgen::request_schedule::generate_schedules(num_rtts, $opt.rate, $opt.distribution, $opt.num_threads)?;
+            cornflakes_libos::loadgen::request_schedule::generate_schedules(num_rtts, $opt.rate as _, $opt.distribution, $opt.num_threads)?;
 
         let per_thread_contexts = <$datapath as Datapath>::global_init(
             $opt.num_threads,
@@ -64,8 +59,7 @@ macro_rules! run_client (
         let server_addr_clone =
             cornflakes_libos::utils::AddressInfo::new(server_addr.2, server_addr.1.clone(), server_addr.0.clone());
             let datapath_params_clone = datapath_params.clone();
-            let message_type = $opt.message_type.clone();
-            let request_sizes = vec![(message_type, get_equal_fields( message_type, $opt.size))];
+
             let max_num_requests = num_rtts;
             let opt_clone = $opt.clone();
             threads.push(std::thread::spawn(move || {
@@ -89,12 +83,23 @@ macro_rules! run_client (
 
                 connection.set_copying_threshold(std::usize::MAX);
 
-                let mut client: EchoClient<$serializer, $datapath> =
-                    EchoClient::new(server_addr_clone, request_sizes, max_num_requests, &connection)?;
+                let mut ycsb_client = YCSBClient::new(&opt_clone.queries.as_str(),opt_clone.client_id, i, opt_clone.num_clients, opt_clone.num_threads)?;
+                ycsb_client.set_num_keys(opt_clone.num_keys);
+                ycsb_client.set_value_size(opt_clone.value_size);
+                ycsb_client.set_num_values(opt_clone.num_values);
 
-                client.init(&mut connection)?;
+                let mut server_trace: Option<(&str, YCSBServerLoader)> = None;
+                if cfg!(debug_assertions) {
+                    if opt_clone.trace_file != "" {
+                        let server_loader = YCSBServerLoader::new(opt_clone.value_size, opt_clone.num_values, opt_clone.num_keys, false);
+                        server_trace = Some((&opt_clone.trace_file.as_str(), server_loader));
+                    }
+                }
+                let mut kv_client: KVClient<YCSBClient, $serializer, $datapath> = KVClient::new(ycsb_client, server_addr_clone, max_num_requests,opt_clone.retries, server_trace)?;
 
-                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut client, &mut connection, opt_clone.retries, opt_clone.total_time, opt_clone.logfile.clone(), opt_clone.rate, opt_clone.size, &schedule)
+                kv_client.init(&mut connection)?;
+
+                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, (opt_clone.num_values * opt_clone.value_size) as _, &schedule)
             }));
         }
 
@@ -121,12 +126,12 @@ macro_rules! run_client (
     }
 );
 
-fn is_cf(opt: &DsEchoOpt) -> bool {
+fn is_cf(opt: &YCSBOpt) -> bool {
     opt.serialization == SerializationType::CornflakesDynamic
         || opt.serialization == SerializationType::CornflakesOneCopyDynamic
 }
 
-pub fn check_opt(opt: &mut DsEchoOpt) -> Result<()> {
+pub fn check_opt(opt: &mut YCSBOpt) -> Result<()> {
     if !is_cf(opt) && opt.push_buf_type != PushBufType::SingleBuf {
         bail!("For non-cornflakes serialization, push buf type must be single buffer.");
     }
@@ -138,13 +143,12 @@ pub fn check_opt(opt: &mut DsEchoOpt) -> Result<()> {
 
     Ok(())
 }
-
 #[derive(Debug, StructOpt, Clone)]
 #[structopt(
-    name = "Data structure echo command line",
-    about = "Binary to test simple echo application without serialization"
+    name = "YCSB KV Store App.",
+    about = "YCSB KV store server and client."
 )]
-pub struct DsEchoOpt {
+pub struct YCSBOpt {
     #[structopt(
         short = "debug",
         long = "debug_level",
@@ -158,48 +162,42 @@ pub struct DsEchoOpt {
         help = "Folder containing shared config information."
     )]
     pub config_file: String,
-    #[structopt(long = "mode", help = "App mode: client or server")]
+    #[structopt(long = "mode", help = "KV server or client mode.")]
     pub mode: AppMode,
-    #[structopt(long = "our_ip", help = "Our IP Address", default_value = "127.0.0.1")]
-    pub our_ip: Ipv4Addr,
     #[structopt(
-        long = "server_ip",
-        help = "Our IP Address",
-        default_value = "127.0.0.1"
+        long = "value_size",
+        help = "size of values in kv store",
+        default_value = "1024"
     )]
-    pub server_ip: Ipv4Addr,
+    pub value_size: usize,
     #[structopt(
-        short = "r",
-        long = "rate",
-        help = "Rate of client (in pkts/sec)",
-        default_value = "2000"
+        long = "num_values",
+        help = "number of batched puts and gets per line in trace",
+        default_value = "1"
     )]
-    pub rate: u64,
+    pub num_values: usize,
+    #[structopt(
+        long = "num_keys",
+        help = "Number of keys per line",
+        default_value = "1"
+    )]
+    pub num_keys: usize,
+    #[structopt(long = "time", help = "max time to run exp for", default_value = "30")]
+    pub total_time: usize,
     #[structopt(
         short = "t",
-        long = "time",
-        help = "Time to run the benchmark for in seconds.",
-        default_value = "1"
+        long = "trace",
+        help = "Trace file to load server side values from.",
+        default_value = ""
     )]
-    pub total_time: u64,
-    #[structopt(long = "retries", help = "Enable client retries.")]
-    pub retries: bool,
-    #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
-    pub logfile: Option<String>,
-    #[structopt(long = "threadlog", help = "Logfile to log per thread statistics")]
-    pub thread_log: Option<String>,
+    pub trace_file: String,
     #[structopt(
-        long = "distribution",
-        help = "Arrival distribution",
-        default_value = "exponential"
+        short = "q",
+        long = "queries",
+        help = "Query file to load queries from.",
+        default_value = ""
     )]
-    pub distribution: DistributionType,
-    #[structopt(
-        long = "num_threads",
-        help = "Total number of threads",
-        default_value = "1"
-    )]
-    pub num_threads: usize,
+    pub queries: String,
     #[structopt(
         long = "push_buf_type",
         help = "Push API to use",
@@ -218,19 +216,54 @@ pub struct DsEchoOpt {
         default_value = "256"
     )]
     pub copying_threshold: usize,
-    #[structopt(long = "size", help = "Total message size", default_value = "1024")]
-    pub size: usize,
+    #[structopt(
+        short = "r",
+        long = "rate",
+        help = "Rate of client (in pkts/sec)",
+        default_value = "2000"
+    )]
+    pub rate: usize,
+    #[structopt(
+        long = "server_ip",
+        help = "Server ip address",
+        default_value = "127.0.0.1"
+    )]
+    pub server_ip: Ipv4Addr,
+    #[structopt(long = "our_ip", help = "Our ip address", default_value = "127.0.0.1")]
+    pub our_ip: Ipv4Addr,
     #[structopt(
         long = "serialization",
         help = "Serialization library to use",
         default_value = "cornflakes-dynamic"
     )]
     pub serialization: SerializationType,
+    #[structopt(long = "retries", help = "Enable client retries.")]
+    pub retries: bool,
+    #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
+    pub logfile: Option<String>,
+    #[structopt(long = "threadlog", help = "Logfile to log per thread statistics")]
+    pub thread_log: Option<String>,
     #[structopt(
-        short = "msg",
-        long = "message",
-        help = "Message type to echo",
-        default_value = "single"
+        long = "num_threads",
+        help = "Number of (client) threads.",
+        default_value = "1"
     )]
-    pub message_type: SimpleMessageType,
+    pub num_threads: usize,
+    #[structopt(
+        long = "num_clients",
+        help = "Total number of clients",
+        default_value = "1"
+    )]
+    pub num_clients: usize,
+    #[structopt(long = "client_id", default_value = "0")]
+    pub client_id: usize,
+    #[structopt(long = "start_cutoff", default_value = "0")]
+    pub start_cutoff: usize,
+    #[structopt(long = "distribution", default_value = "exponential")]
+    pub distribution: DistributionType,
+    #[structopt(
+        long = "allocate_contiguously",
+        help = "Allocate YCSB multiple values contiguously."
+    )]
+    pub allocate_contiguously: bool,
 }

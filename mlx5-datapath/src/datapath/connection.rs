@@ -47,29 +47,53 @@ pub struct Mlx5Buffer {
     data: *mut ::std::os::raw::c_void,
     /// Pointer back to the data and metadata pool pair
     mempool: *mut registered_mempool,
+    /// Underlying metadata
+    metadata: *mut custom_mlx5_mbuf,
     /// Data len,
     data_len: usize,
     /// Mempool ID: which mempool was this allocated from?
     mempool_id: MempoolID,
 }
 
+impl Drop for Mlx5Buffer {
+    fn drop(&mut self) {
+        // Decrements ref count on underlying metadata
+        unsafe {
+            custom_mlx5_mbuf_refcnt_update_or_free(self.metadata, -1);
+        }
+    }
+}
+
 impl Mlx5Buffer {
     pub fn new(
         data: *mut ::std::os::raw::c_void,
         mempool: *mut registered_mempool,
+        metadata: *mut custom_mlx5_mbuf,
         data_len: usize,
         mempool_id: MempoolID,
     ) -> Self {
         Mlx5Buffer {
             data: data,
             mempool: mempool,
+            metadata: metadata,
             data_len: data_len,
             mempool_id: mempool_id,
         }
     }
 
-    pub fn get_inner(self) -> (*mut ::std::os::raw::c_void, *mut registered_mempool, usize) {
-        (self.data, self.mempool, self.data_len)
+    pub fn get_metadata(&self) -> *mut custom_mlx5_mbuf {
+        self.metadata
+    }
+
+    pub fn get_inner(
+        self,
+    ) -> (
+        *mut ::std::os::raw::c_void,
+        *mut registered_mempool,
+        *mut custom_mlx5_mbuf,
+        usize,
+    ) {
+        (self.data, self.mempool, self.metadata, self.data_len)
     }
 
     pub fn get_mempool(&self) -> *mut registered_mempool {
@@ -128,7 +152,7 @@ impl Write for Mlx5Buffer {
         let data_mempool = unsafe { get_data_mempool(self.mempool) };
         let written = std::cmp::min(unsafe { access!(data_mempool, item_len, usize) }, buf.len());
         let mut mut_slice =
-            unsafe { std::slice::from_raw_parts_mut(self.data as *mut u8, self.data_len) };
+            unsafe { std::slice::from_raw_parts_mut(self.data as *mut u8, written) };
         let written = mut_slice.write(&buf[0..written])?;
         self.data_len = written;
         Ok(written)
@@ -155,15 +179,14 @@ pub struct MbufMetadata {
 
 impl MbufMetadata {
     pub fn from_buf(mlx5_buffer: Mlx5Buffer) -> Result<Option<Self>> {
-        let (buf, registered_mempool, data_len) = mlx5_buffer.get_inner();
-        let metadata_buf = unsafe { alloc_metadata(registered_mempool, buf) };
-        if metadata_buf.is_null() {
-            // drop the data buffer
-            unsafe {
-                custom_mlx5_mempool_free(buf, get_data_mempool(registered_mempool));
-            }
-            return Ok(None);
+        let metadata_buf = mlx5_buffer.get_metadata();
+        unsafe {
+            custom_mlx5_mbuf_refcnt_update_or_free(metadata_buf, 1);
         }
+
+        let (buf, registered_mempool, _metadata_buf, data_len) = mlx5_buffer.get_inner();
+        // because the mlx5_buffer will be dropped,
+        // replace ref count drop from that
 
         ensure!(!metadata_buf.is_null(), "Allocated metadata buffer is null");
         unsafe {
@@ -191,29 +214,32 @@ impl MbufMetadata {
     /// @mbuf: mbuf structure that contains metadata
     /// @data_offset: Application data offset into this buffer.
     /// @data_len: Optional application data length into the buffer.
+    #[inline]
     pub fn new(
         mbuf: *mut custom_mlx5_mbuf,
         data_offset: usize,
         data_len: Option<usize>,
     ) -> Result<Self> {
-        tracing::debug!("Returning mbuf {:?}", mbuf);
-        ensure!(
+        tracing::debug!("Returning mbuf {:?}, data_buf: {:?}", mbuf, unsafe {
+            access!(mbuf, buf_addr, *mut u8)
+        });
+        /*ensure!(
             data_offset <= unsafe { access!(mbuf, data_buf_len, usize) },
             format!(
                 "Data offset too large: off: {}, data_buf_len: {}",
                 data_offset,
                 unsafe { access!(mbuf, data_buf_len, usize) }
             ),
-        );
+        );*/
         unsafe {
             custom_mlx5_mbuf_refcnt_update_or_free(mbuf, 1);
         }
         let len = match data_len {
             Some(x) => {
-                ensure!(
+                /*ensure!(
                     x <= unsafe { access!(mbuf, data_buf_len, usize) - data_offset },
                     "Data len to large"
-                );
+                );*/
                 x
             }
             None => unsafe { access!(mbuf, data_len, usize) - data_offset },
@@ -455,6 +481,8 @@ pub struct Mlx5Connection {
     /// Array of mbuf pointers used to receive packets
     recv_mbufs: [*mut custom_mlx5_mbuf; RECEIVE_BURST_SIZE],
     first_ctrl_seg: *mut mlx5_wqe_ctrl_seg,
+    /// Array of mbuf metadatas to store while finishing serialization
+    mbuf_metadatas: [Option<MbufMetadata>; 32],
 }
 
 impl Mlx5Connection {
@@ -657,6 +685,86 @@ impl Mlx5Connection {
     /// Depending on configured inline mode and first entry length,
     /// inlines the packet header and first entry,
     /// Returns whether header was inlined and whether first entry was inlined.   
+    fn inline_sga_with_copy_if_necessary(
+        &self,
+        conn_id: ConnID,
+        msg_id: MsgID,
+        inline_len: usize,
+        data_len: usize,
+        sga: &ArenaOrderedSga,
+    ) -> Result<(bool, usize)> {
+        tracing::debug!(inline_len, data_len, "In inline sga with copy if necessary");
+        match self.inline_mode {
+            InlineMode::Nothing => Ok((false, 0)),
+            InlineMode::PacketHeader => {
+                self.inline_hdr(conn_id, msg_id, inline_len, data_len)?;
+                Ok((true, 0))
+            }
+            InlineMode::ObjectHeader => {
+                if inline_len > 0 && inline_len <= self.max_inline_size {
+                    self.inline_hdr(conn_id, msg_id, inline_len, data_len)?;
+                    let mut offset = cornflakes_libos::utils::TOTAL_HEADER_SIZE;
+                    for seg in sga.iter().take(sga.len()) {
+                        unsafe {
+                            custom_mlx5_copy_inline_data(
+                                self.thread_context.get_context_ptr(),
+                                offset as _,
+                                seg.addr().as_ptr() as _,
+                                seg.len() as _,
+                                inline_len as _,
+                            );
+                            offset += seg.len();
+                        }
+                    }
+                    return Ok((true, sga.len()));
+                } else {
+                    return Ok((false, 0));
+                }
+            }
+        }
+    }
+
+    /// Depending on configured inline mode and first entry length,
+    /// inlines the packet header and first entry,
+    /// Returns whether header was inlined and whether first entry was inlined.   
+    fn inline_single_buffer_if_necessary(
+        &self,
+        conn_id: ConnID,
+        msg_id: MsgID,
+        inline_len: usize,
+        data_len: usize,
+        hdr: &[u8],
+    ) -> Result<(bool, usize)> {
+        match self.inline_mode {
+            InlineMode::Nothing => Ok((false, 0)),
+            InlineMode::PacketHeader => {
+                self.inline_hdr(conn_id, msg_id, inline_len, data_len)?;
+                Ok((true, 0))
+            }
+            InlineMode::ObjectHeader => {
+                if (cornflakes_libos::utils::TOTAL_HEADER_SIZE + hdr.len()) <= self.max_inline_size
+                {
+                    self.inline_hdr(conn_id, msg_id, inline_len, data_len)?;
+                    unsafe {
+                        custom_mlx5_copy_inline_data(
+                            self.thread_context.get_context_ptr(),
+                            cornflakes_libos::utils::TOTAL_HEADER_SIZE as _,
+                            hdr.as_ptr() as _,
+                            hdr.len() as _,
+                            inline_len as _,
+                        );
+                        return Ok((true, 1));
+                    }
+                } else {
+                    return Ok((false, 0));
+                }
+            }
+        }
+    }
+
+    /// Depending on configured inline mode and first entry length,
+    /// inlines the packet header and first entry,
+    /// Returns whether header was inlined and whether first entry was inlined.   
     fn inline_hdr_if_necessary(
         &self,
         conn_id: ConnID,
@@ -727,12 +835,14 @@ impl Mlx5Connection {
         return Ok(ret);
     }
 
+    /// Posts mbuf onto ring buffer, and increments reference count on mbuf
     fn post_mbuf_metadata(
         &self,
-        metadata_mbuf: &MbufMetadata,
+        metadata_mbuf: &mut MbufMetadata,
         curr_dpseg: *mut mlx5_wqe_data_seg,
         curr_completion: *mut custom_mlx5_transmission_info,
     ) -> (*mut mlx5_wqe_data_seg, *mut custom_mlx5_transmission_info) {
+        metadata_mbuf.increment_refcnt();
         tracing::debug!(
             len = metadata_mbuf.data_len(),
             off = metadata_mbuf.offset(),
@@ -814,7 +924,7 @@ impl Mlx5Connection {
             let mut completion =
                 unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
             if allocation_size > 0 {
-                let mut data_buffer = match self.allocator.allocate_buffer(allocation_size)? {
+                let mut data_buffer = match self.allocator.allocate_tx_buffer(allocation_size)? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -849,16 +959,19 @@ impl Mlx5Connection {
                     }
                 };
 
-                metadata_mbuf.increment_refcnt();
-
                 let (curr_dpseg, curr_completion) =
-                    self.post_mbuf_metadata(&metadata_mbuf, dpseg, completion);
+                    self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
                 dpseg = curr_dpseg;
                 completion = curr_completion;
             }
 
             // rest are zero-copy segments
-            for seg in ordered_sga.sga().iter().skip(first_zero_copy_seg) {
+            for seg in ordered_sga
+                .sga()
+                .iter()
+                .take(ordered_sga.len())
+                .skip(first_zero_copy_seg)
+            {
                 let curr_seg = seg.addr();
                 let mut mbuf_metadata = match self.allocator.recover_buffer(curr_seg)? {
                     Some(x) => x,
@@ -866,9 +979,8 @@ impl Mlx5Connection {
                         bail!("Failed to recover mbuf metadata for seg{:?}", curr_seg);
                     }
                 };
-                mbuf_metadata.increment_refcnt();
                 let (curr_dpseg, curr_completion) =
-                    self.post_mbuf_metadata(&mbuf_metadata, dpseg, completion);
+                    self.post_mbuf_metadata(&mut mbuf_metadata, dpseg, completion);
 
                 dpseg = curr_dpseg;
                 completion = curr_completion;
@@ -978,7 +1090,7 @@ impl Mlx5Connection {
                     // write in header
                     let mut data_buffer = match self
                         .allocator
-                        .allocate_buffer(cornflakes_libos::utils::TOTAL_HEADER_SIZE)?
+                        .allocate_tx_buffer(cornflakes_libos::utils::TOTAL_HEADER_SIZE)?
                     {
                         Some(buf) => buf,
                         None => {
@@ -996,19 +1108,18 @@ impl Mlx5Connection {
                         );
                         }
                     };
-                    metadata_mbuf.increment_refcnt();
                     let (curr_dpseg, completion) =
-                        self.post_mbuf_metadata(&metadata_mbuf, curr_data_seg, curr_completion);
+                        self.post_mbuf_metadata(&mut metadata_mbuf, curr_data_seg, curr_completion);
                     curr_data_seg = curr_dpseg;
                     curr_completion = completion;
 
                     header_written = true;
                 }
 
-                let mbuf_metadata = rc_sga.get_mut(entry_idx).inner_datapath_pkt_mut().unwrap();
+                let mut mbuf_metadata = rc_sga.get_mut(entry_idx).inner_datapath_pkt_mut().unwrap();
                 mbuf_metadata.increment_refcnt();
                 let (curr_dpseg, completion) =
-                    self.post_mbuf_metadata(&mbuf_metadata, curr_data_seg, curr_completion);
+                    self.post_mbuf_metadata(&mut mbuf_metadata, curr_data_seg, curr_completion);
                 curr_data_seg = curr_dpseg;
                 curr_completion = completion;
                 entry_idx += 1;
@@ -1025,7 +1136,7 @@ impl Mlx5Connection {
                 }
 
                 // allocate an mbuf that can fit this amount of data and copy data to it
-                let mut data_buffer = match self.allocator.allocate_buffer(mbuf_length)? {
+                let mut data_buffer = match self.allocator.allocate_tx_buffer(mbuf_length)? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -1065,10 +1176,8 @@ impl Mlx5Connection {
                         );
                     }
                 };
-                // increment refcount as MbufMetadata may be dropped before data is sent
-                metadata_mbuf.increment_refcnt();
                 let (curr_dpseg, completion) =
-                    self.post_mbuf_metadata(&metadata_mbuf, curr_data_seg, curr_completion);
+                    self.post_mbuf_metadata(&mut metadata_mbuf, curr_data_seg, curr_completion);
                 curr_data_seg = curr_dpseg;
                 curr_completion = completion;
                 entry_idx = curr_idx;
@@ -1084,6 +1193,39 @@ impl Mlx5Connection {
         }
 
         return Ok(ctrl_seg);
+    }
+
+    fn sga_with_copy_shape(&self, sga: &ArenaOrderedSga) -> (usize, usize) {
+        match self.inline_mode {
+            InlineMode::Nothing => (0, 1),
+            InlineMode::PacketHeader => (cornflakes_libos::utils::TOTAL_HEADER_SIZE, 1),
+            InlineMode::ObjectHeader => {
+                if (cornflakes_libos::utils::TOTAL_HEADER_SIZE + sga.data_len())
+                    < self.max_inline_size
+                {
+                    (
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE + sga.data_len(),
+                        0,
+                    )
+                } else {
+                    (0, 1)
+                }
+            }
+        }
+    }
+
+    fn single_buffer_shape(&self, buf: &[u8]) -> (usize, usize) {
+        match self.inline_mode {
+            InlineMode::Nothing => (0, 1),
+            InlineMode::PacketHeader => (cornflakes_libos::utils::TOTAL_HEADER_SIZE, 1),
+            InlineMode::ObjectHeader => {
+                if (cornflakes_libos::utils::TOTAL_HEADER_SIZE + buf.len()) < self.max_inline_size {
+                    (cornflakes_libos::utils::TOTAL_HEADER_SIZE + buf.len(), 0)
+                } else {
+                    (0, 1)
+                }
+            }
+        }
     }
 
     /// Returns (inline length, num_segs) for ordered sga.
@@ -1150,6 +1292,22 @@ impl Mlx5Connection {
         }
     }
 
+    fn wqes_required_sga_with_copy(&self, sga: &ArenaOrderedSga) -> usize {
+        let (inline_len, num_segs) = self.sga_with_copy_shape(sga);
+        unsafe {
+            custom_mlx5_num_wqes_required(custom_mlx5_num_octowords(inline_len as _, num_segs as _))
+                as _
+        }
+    }
+
+    fn wqes_required_single_buffer(&self, buf: &[u8]) -> usize {
+        let (inline_len, num_segs) = self.single_buffer_shape(buf);
+        unsafe {
+            custom_mlx5_num_wqes_required(custom_mlx5_num_octowords(inline_len as _, num_segs as _))
+                as _
+        }
+    }
+
     fn wqes_required_arena_ordered_sga(&self, ordered_sga: &ArenaOrderedSga) -> usize {
         let (inline_len, num_segs) = self.arena_ordered_sga_shape(ordered_sga);
         unsafe {
@@ -1211,7 +1369,7 @@ impl Mlx5Connection {
                     // write in header
                     let mut data_buffer = match self
                         .allocator
-                        .allocate_buffer(cornflakes_libos::utils::TOTAL_HEADER_SIZE)?
+                        .allocate_tx_buffer(cornflakes_libos::utils::TOTAL_HEADER_SIZE)?
                     {
                         Some(buf) => buf,
                         None => {
@@ -1229,9 +1387,8 @@ impl Mlx5Connection {
                         );
                         }
                     };
-                    metadata_mbuf.increment_refcnt();
                     let (dpseg, completion) =
-                        self.post_mbuf_metadata(&metadata_mbuf, curr_data_seg, curr_completion);
+                        self.post_mbuf_metadata(&mut metadata_mbuf, curr_data_seg, curr_completion);
                     curr_data_seg = dpseg;
                     curr_completion = completion;
                     header_written = true;
@@ -1239,9 +1396,8 @@ impl Mlx5Connection {
 
                 let curr_seg = sga.get(entry_idx).addr();
                 let mut mbuf_metadata = self.allocator.recover_buffer(curr_seg)?.unwrap();
-                mbuf_metadata.increment_refcnt();
                 let (dpseg, completion) =
-                    self.post_mbuf_metadata(&mbuf_metadata, curr_data_seg, curr_completion);
+                    self.post_mbuf_metadata(&mut mbuf_metadata, curr_data_seg, curr_completion);
                 curr_data_seg = dpseg;
                 curr_completion = completion;
                 entry_idx += 1;
@@ -1261,7 +1417,7 @@ impl Mlx5Connection {
                 }
 
                 // allocate an mbuf that can fit this amount of data and copy data to it
-                let mut data_buffer = match self.allocator.allocate_buffer(mbuf_length)? {
+                let mut data_buffer = match self.allocator.allocate_tx_buffer(mbuf_length)? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -1309,9 +1465,8 @@ impl Mlx5Connection {
                         );
                     }
                 };
-                metadata_mbuf.increment_refcnt();
                 let (dpseg, completion) =
-                    self.post_mbuf_metadata(&metadata_mbuf, curr_data_seg, curr_completion);
+                    self.post_mbuf_metadata(&mut metadata_mbuf, curr_data_seg, curr_completion);
                 curr_data_seg = dpseg;
                 curr_completion = completion;
                 entry_idx = curr_idx;
@@ -1356,7 +1511,7 @@ impl Mlx5Connection {
     fn calculate_shape_rc(&self, rc_sga: &RcSga<Self>) -> Result<(usize, usize)> {
         let (inline_size, sga_idx, mut num_segs) = self.calculate_inline_size(rc_sga.get(0).len());
         let mut prev_copy = (num_segs == 1) as _;
-        for rc_sga in rc_sga.iter().skip(sga_idx) {
+        for rc_sga in rc_sga.iter().take(rc_sga.len()).skip(sga_idx) {
             match self.zero_copy_rc_seg(rc_sga) {
                 true => {
                     num_segs += 1;
@@ -1380,7 +1535,7 @@ impl Mlx5Connection {
     fn calculate_shape(&self, sga: &Sga) -> Result<(usize, usize)> {
         let (inline_size, sga_idx, mut num_segs) = self.calculate_inline_size(sga.get(0).len());
         let mut prev_copy = (num_segs == 1) as _;
-        for seg in sga.iter().skip(sga_idx) {
+        for seg in sga.iter().take(sga.len()).skip(sga_idx) {
             match self.zero_copy_seg(seg.addr()) {
                 true => {
                     num_segs += 1;
@@ -1652,6 +1807,7 @@ impl Datapath for Mlx5Connection {
             max_inline_size: 256,
             recv_mbufs: [std::ptr::null_mut(); RECEIVE_BURST_SIZE],
             first_ctrl_seg: ptr::null_mut(),
+            mbuf_metadatas: Default::default(),
         })
     }
 
@@ -1812,12 +1968,13 @@ impl Datapath for Mlx5Connection {
                 if allocation_size > 0 {
                     // copy data into mbuf
                     // allocate an mbuf that can fit this amount of data and copy data to it
-                    let mut data_buffer = match self.allocator.allocate_buffer(allocation_size)? {
-                        Some(buf) => buf,
-                        None => {
-                            bail!("No tx mempools to allocate outgoing packet");
-                        }
-                    };
+                    let mut data_buffer =
+                        match self.allocator.allocate_tx_buffer(allocation_size)? {
+                            Some(buf) => buf,
+                            None => {
+                                bail!("No tx mempools to allocate outgoing packet");
+                            }
+                        };
                     let write_offset = match !written_header {
                         true => {
                             // copy in the header into a buffer
@@ -1833,7 +1990,7 @@ impl Datapath for Mlx5Connection {
 
                     // now put this inside an mbuf and post it.
                     // attach this data buffer to a metadata buffer
-                    let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
+                    let metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
                         Some(m) => m,
                         None => {
                             bail!(
@@ -1841,7 +1998,6 @@ impl Datapath for Mlx5Connection {
                         );
                         }
                     };
-                    metadata_mbuf.increment_refcnt();
 
                     // post this data buffer to the ring buffer
                     unsafe {
@@ -1977,12 +2133,13 @@ impl Datapath for Mlx5Connection {
                 if allocation_size > 0 {
                     // copy data into mbuf
                     // allocate an mbuf that can fit this amount of data and copy data to it
-                    let mut data_buffer = match self.allocator.allocate_buffer(allocation_size)? {
-                        Some(buf) => buf,
-                        None => {
-                            bail!("No tx mempools to allocate outgoing packet");
-                        }
-                    };
+                    let mut data_buffer =
+                        match self.allocator.allocate_tx_buffer(allocation_size)? {
+                            Some(buf) => buf,
+                            None => {
+                                bail!("No tx mempools to allocate outgoing packet");
+                            }
+                        };
                     let write_offset = match !written_header {
                         true => {
                             // copy in the header into a buffer
@@ -1998,7 +2155,7 @@ impl Datapath for Mlx5Connection {
 
                     // now put this inside an mbuf and post it.
                     // attach this data buffer to a metadata buffer
-                    let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
+                    let metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
                         Some(m) => m,
                         None => {
                             bail!(
@@ -2006,7 +2163,6 @@ impl Datapath for Mlx5Connection {
                         );
                         }
                     };
-                    metadata_mbuf.increment_refcnt();
 
                     // post this data buffer to the ring buffer
                     unsafe {
@@ -2212,6 +2368,290 @@ impl Datapath for Mlx5Connection {
         Ok(())
     }
 
+    /// Queues tuple buffer onto ring buffer.
+    /// If no more space, if current first ctrl seg exists, rings doorbell and polls for
+    /// completions.
+    /// If end batch is true -- rings doorbell and polls for completions after posting this buffer.
+    fn queue_sga_with_copy(
+        &mut self,
+        sga: (MsgID, ConnID, &ArenaOrderedSga),
+        end_batch: bool,
+    ) -> Result<()> {
+        let mut curr_available_wqes: usize =
+            unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                as usize;
+        let msg_id = sga.0;
+        let conn_id = sga.1;
+        let sga = sga.2;
+        tracing::debug!(
+            data_len = sga.data_len(),
+            segments = sga.len(),
+            "Sending sga with copy"
+        );
+
+        let num_required = self.wqes_required_sga_with_copy(&sga);
+
+        while num_required > curr_available_wqes {
+            if self.first_ctrl_seg != ptr::null_mut() {
+                if unsafe {
+                    custom_mlx5_post_transmissions(
+                        self.thread_context.get_context_ptr(),
+                        self.first_ctrl_seg,
+                    ) != 0
+                } {
+                    bail!("Failed to post transmissions so far");
+                } else {
+                    self.first_ctrl_seg = ptr::null_mut();
+                }
+            }
+            self.poll_for_completions()?;
+            curr_available_wqes =
+                unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                    as usize;
+        }
+        let (inline_len, _num_segs, num_wqes_required) = {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Ordered sga and filling in ctrl and ether seg");
+
+            let (inline_len, num_segs) = self.sga_with_copy_shape(&sga);
+            let num_octowords =
+                unsafe { custom_mlx5_num_octowords(inline_len as _, num_segs as _) };
+            let num_wqes_required = num_required as u64;
+            tracing::debug!(
+                inline_len,
+                num_segs,
+                num_octowords,
+                num_wqes_required,
+                "Header info"
+            );
+            let ctrl_seg = unsafe {
+                custom_mlx5_fill_in_hdr_segment(
+                    self.thread_context.get_context_ptr(),
+                    num_octowords as _,
+                    num_wqes_required as _,
+                    inline_len as _,
+                    num_segs as _,
+                    MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
+                )
+            };
+            if ctrl_seg.is_null() {
+                bail!("Error posting header segment for sga");
+            }
+
+            if self.first_ctrl_seg == ptr::null_mut() {
+                self.first_ctrl_seg = ctrl_seg;
+            }
+            (inline_len, num_segs, num_wqes_required)
+        };
+        let data_len = sga.data_len();
+        let (header_written, entry_idx) =
+            self.inline_sga_with_copy_if_necessary(conn_id, msg_id, inline_len, data_len, &sga)?;
+
+        // TODO: temporary hack for different code surrounding inlining first entry
+        let inlined_obj_hdr = entry_idx > 0;
+        tracing::debug!(
+            inlined_obj_hdr,
+            header_written,
+            entry_idx,
+            "Calculating allocation size"
+        );
+
+        let allocation_size = data_len - (inlined_obj_hdr as usize * data_len)
+            + (!header_written as usize * cornflakes_libos::utils::TOTAL_HEADER_SIZE);
+        let dpseg = unsafe {
+            custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), inline_len as _)
+        };
+        let completion =
+            unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
+        tracing::debug!("Allocation size: {}", allocation_size);
+        if allocation_size > 0 {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Copying stuff");
+
+            let mut data_buffer = {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("allocating stuff to copy into");
+                match self.allocator.allocate_tx_buffer(allocation_size)? {
+                    Some(buf) => buf,
+                    None => {
+                        bail!("No tx mempools to allocate outgoing packet");
+                    }
+                }
+            };
+            let mut offset = 0;
+            if !header_written {
+                self.copy_hdr(&mut data_buffer, conn_id, msg_id, data_len)?;
+                offset += cornflakes_libos::utils::TOTAL_HEADER_SIZE;
+            }
+            if !inlined_obj_hdr {
+                for seg in sga.iter().take(sga.len()) {
+                    let data_slice = data_buffer.mutable_slice(offset, offset + seg.len())?;
+                    data_slice.copy_from_slice(seg.addr());
+                    offset += seg.len();
+                }
+            }
+
+            let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
+                Some(m) => m,
+                None => {
+                    bail!("Could not allocate corresponding metadata for allocated data buffer");
+                }
+            };
+
+            let _ = self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
+        }
+
+        unsafe {
+            custom_mlx5_finish_single_transmission(
+                self.thread_context.get_context_ptr(),
+                num_wqes_required as _,
+            );
+        }
+
+        if end_batch {
+            if !self.first_ctrl_seg.is_null() {
+                let _ = self.post_curr_transmissions(Some(self.first_ctrl_seg));
+                self.poll_for_completions()?;
+                self.first_ctrl_seg = ptr::null_mut();
+            }
+        }
+        Ok(())
+    }
+
+    /// Queues single buffer onto ring buffer.
+    /// If no more space, if current first ctrl seg exists, rings doorbell and polls for
+    /// completions.
+    /// If end batch is true -- rings doorbell and polls for completions after posting this buffer.
+    fn queue_single_buffer_with_copy(
+        &mut self,
+        sga: (MsgID, ConnID, &[u8]),
+        end_batch: bool,
+    ) -> Result<()> {
+        let mut curr_available_wqes: usize =
+            unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                as usize;
+        let msg_id = sga.0;
+        let conn_id = sga.1;
+        let buf = sga.2;
+
+        let num_required = self.wqes_required_single_buffer(buf);
+
+        while num_required > curr_available_wqes {
+            if self.first_ctrl_seg != ptr::null_mut() {
+                if unsafe {
+                    custom_mlx5_post_transmissions(
+                        self.thread_context.get_context_ptr(),
+                        self.first_ctrl_seg,
+                    ) != 0
+                } {
+                    bail!("Failed to post transmissions so far");
+                } else {
+                    self.first_ctrl_seg = ptr::null_mut();
+                }
+            }
+            self.poll_for_completions()?;
+            curr_available_wqes =
+                unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                    as usize;
+        }
+        let (inline_len, _num_segs, num_wqes_required) = {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Ordered sga and filling in ctrl and ether seg");
+
+            let (inline_len, num_segs) = self.single_buffer_shape(buf);
+            let num_octowords =
+                unsafe { custom_mlx5_num_octowords(inline_len as _, num_segs as _) };
+            let num_wqes_required = num_required as u64;
+            tracing::debug!(
+                inline_len,
+                num_segs,
+                num_octowords,
+                num_wqes_required,
+                "Header info"
+            );
+            let ctrl_seg = unsafe {
+                custom_mlx5_fill_in_hdr_segment(
+                    self.thread_context.get_context_ptr(),
+                    num_octowords as _,
+                    num_wqes_required as _,
+                    inline_len as _,
+                    num_segs as _,
+                    MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
+                )
+            };
+            if ctrl_seg.is_null() {
+                bail!("Error posting header segment for sga");
+            }
+
+            if self.first_ctrl_seg == ptr::null_mut() {
+                self.first_ctrl_seg = ctrl_seg;
+            }
+            (inline_len, num_segs, num_wqes_required)
+        };
+        let (header_written, entry_idx) =
+            self.inline_single_buffer_if_necessary(conn_id, msg_id, inline_len, buf.len(), buf)?;
+
+        // TODO: temporary hack for different code surrounding inlining first entry
+        let inlined_obj_hdr = entry_idx == 1;
+
+        let allocation_size = buf.len() - (inlined_obj_hdr as usize * buf.len())
+            + (!header_written as usize * cornflakes_libos::utils::TOTAL_HEADER_SIZE);
+        let dpseg = unsafe {
+            custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), inline_len as _)
+        };
+        let completion =
+            unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
+        tracing::debug!("Allocation size: {}", allocation_size);
+        if allocation_size > 0 {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Copying stuff");
+
+            let mut data_buffer = {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("allocating stuff to copy into");
+                match self.allocator.allocate_tx_buffer(allocation_size)? {
+                    Some(buf) => buf,
+                    None => {
+                        bail!("No tx mempools to allocate outgoing packet");
+                    }
+                }
+            };
+            let mut offset = 0;
+            if !header_written {
+                self.copy_hdr(&mut data_buffer, conn_id, msg_id, buf.len())?;
+                offset += cornflakes_libos::utils::TOTAL_HEADER_SIZE;
+            }
+            if !inlined_obj_hdr {
+                let data_slice = data_buffer.mutable_slice(offset, offset + buf.len())?;
+                data_slice.copy_from_slice(buf);
+            }
+            let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
+                Some(m) => m,
+                None => {
+                    bail!("Could not allocate corresponding metadata for allocated data buffer");
+                }
+            };
+
+            let _ = self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
+        }
+
+        unsafe {
+            custom_mlx5_finish_single_transmission(
+                self.thread_context.get_context_ptr(),
+                num_wqes_required as _,
+            );
+        }
+
+        if end_batch {
+            if !self.first_ctrl_seg.is_null() {
+                let _ = self.post_curr_transmissions(Some(self.first_ctrl_seg));
+                self.poll_for_completions()?;
+                self.first_ctrl_seg = ptr::null_mut();
+            }
+        }
+        Ok(())
+    }
+
     /// Pushes sga onto ring buffer.
     /// If no more space, if current first ctrl seg exists, rings doorbell and polls for
     /// completions.
@@ -2221,12 +2661,28 @@ impl Datapath for Mlx5Connection {
         sga: (MsgID, ConnID, ArenaOrderedSga),
         end_batch: bool,
     ) -> Result<()> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("queue arena ordered sga");
+
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
         let msg_id = sga.0;
         let conn_id = sga.1;
-        let ordered_sga = sga.2;
+        let mut ordered_sga = sga.2;
+
+        let allocator = &self.allocator;
+        let mbuf_metadatas = &mut self.mbuf_metadatas;
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("finish serialization");
+            ordered_sga.reorder_by_size_and_registration_and_finish_serialization(
+                allocator,
+                self.copying_threshold,
+                mbuf_metadatas,
+                self.copying_threshold == std::usize::MAX,
+            )?;
+        }
 
         let num_required = {
             #[cfg(feature = "profiler")]
@@ -2315,7 +2771,7 @@ impl Datapath for Mlx5Connection {
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
                 perftools::timer!("allocating stuff to copy into");
-                match self.allocator.allocate_buffer(allocation_size)? {
+                match self.allocator.allocate_tx_buffer(allocation_size)? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -2333,15 +2789,18 @@ impl Datapath for Mlx5Connection {
                 data_slice.copy_from_slice(ordered_sga.get_hdr());
                 offset += ordered_sga.get_hdr().len();
             }
-            for seg in ordered_sga.iter().take(first_zero_copy_seg) {
-                tracing::debug!("Writing into slice [{}, {}]", offset, offset + seg.len());
-                let dst = data_buffer.mutable_slice(offset, offset + seg.len())?;
-                unsafe {
-                    mlx5_rte_memcpy(dst.as_mut_ptr() as _, seg.addr().as_ptr() as _, seg.len());
+            {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("Copying copy buffers");
+                for seg in ordered_sga.iter().take(first_zero_copy_seg) {
+                    tracing::debug!("Writing into slice [{}, {}]", offset, offset + seg.len());
+                    let dst = data_buffer.mutable_slice(offset, offset + seg.len())?;
+                    unsafe {
+                        mlx5_rte_memcpy(dst.as_mut_ptr() as _, seg.addr().as_ptr() as _, seg.len());
+                    }
+                    offset += seg.len();
                 }
-                offset += seg.len();
             }
-
             let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
                 Some(m) => m,
                 None => {
@@ -2349,35 +2808,61 @@ impl Datapath for Mlx5Connection {
                 }
             };
 
-            metadata_mbuf.increment_refcnt();
-
             let (curr_dpseg, curr_completion) =
-                self.post_mbuf_metadata(&metadata_mbuf, dpseg, completion);
+                self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
             dpseg = curr_dpseg;
             completion = curr_completion;
         }
 
         // rest are zero-copy segments
-        for seg in ordered_sga.iter().skip(first_zero_copy_seg) {
+        {
             #[cfg(feature = "profiler")]
-            perftools::timer!("work per zero copy sga");
-            let curr_seg = seg.addr();
-            tracing::debug!(seg =? seg.addr().as_ptr(), "Cur posting seg");
-
-            let mut mbuf_metadata = match self.allocator.recover_buffer(curr_seg)? {
-                Some(x) => x,
-                None => {
-                    bail!("Failed to recover mbuf metadata for seg{:?}", curr_seg);
+            perftools::timer!("process zero copy buffers");
+            for mbuf_metadata_option in self
+                .mbuf_metadatas
+                .iter_mut()
+                .skip(first_zero_copy_seg)
+                .take(ordered_sga.len() - first_zero_copy_seg)
+            {
+                match mbuf_metadata_option {
+                    Some(ref mut mbuf_metadata) => {
+                        mbuf_metadata.increment_refcnt();
+                        tracing::debug!(seg =? mbuf_metadata.as_ref().as_ptr(), "Cur posting seg");
+                        let (curr_dpseg, curr_completion) = {
+                            tracing::debug!(
+                                len = mbuf_metadata.data_len(),
+                                off = mbuf_metadata.offset(),
+                                buf =? mbuf_metadata.as_ref().as_ptr(),
+                                "posting dpseg"
+                            );
+                            unsafe {
+                                (
+                                    custom_mlx5_add_dpseg(
+                                        self.thread_context.get_context_ptr(),
+                                        dpseg,
+                                        mbuf_metadata.mbuf(),
+                                        mbuf_metadata.offset() as _,
+                                        mbuf_metadata.data_len() as _,
+                                    ),
+                                    custom_mlx5_add_completion_info(
+                                        self.thread_context.get_context_ptr(),
+                                        completion,
+                                        mbuf_metadata.mbuf(),
+                                    ),
+                                )
+                            }
+                        };
+                        dpseg = curr_dpseg;
+                        completion = curr_completion;
+                        *mbuf_metadata_option = None;
+                    }
+                    None => {
+                        bail!("Segment should exist");
+                    }
                 }
-            };
-            mbuf_metadata.increment_refcnt();
-            let (curr_dpseg, curr_completion) =
-                self.post_mbuf_metadata(&mbuf_metadata, dpseg, completion);
-
-            dpseg = curr_dpseg;
-            completion = curr_completion;
+                *mbuf_metadata_option = None;
+            }
         }
-
         unsafe {
             custom_mlx5_finish_single_transmission(
                 self.thread_context.get_context_ptr(),
@@ -2508,7 +2993,7 @@ impl Datapath for Mlx5Connection {
                 let mut data_buffer = {
                     #[cfg(feature = "profiler")]
                     perftools::timer!("allocating stuff to copy into");
-                    match self.allocator.allocate_buffer(allocation_size)? {
+                    match self.allocator.allocate_tx_buffer(allocation_size)? {
                         Some(buf) => buf,
                         None => {
                             bail!("No tx mempools to allocate outgoing packet");
@@ -2544,10 +3029,8 @@ impl Datapath for Mlx5Connection {
                     }
                 };
 
-                metadata_mbuf.increment_refcnt();
-
                 let (curr_dpseg, curr_completion) =
-                    self.post_mbuf_metadata(&metadata_mbuf, dpseg, completion);
+                    self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
                 dpseg = curr_dpseg;
                 completion = curr_completion;
             }
@@ -2565,9 +3048,8 @@ impl Datapath for Mlx5Connection {
                         bail!("Failed to recover mbuf metadata for seg{:?}", curr_seg);
                     }
                 };
-                mbuf_metadata.increment_refcnt();
                 let (curr_dpseg, curr_completion) =
-                    self.post_mbuf_metadata(&mbuf_metadata, dpseg, completion);
+                    self.post_mbuf_metadata(&mut mbuf_metadata, dpseg, completion);
 
                 dpseg = curr_dpseg;
                 completion = curr_completion;
@@ -2708,7 +3190,7 @@ impl Datapath for Mlx5Connection {
                 let mut data_buffer = {
                     #[cfg(feature = "profiler")]
                     perftools::timer!("allocating stuff to copy into");
-                    match self.allocator.allocate_buffer(allocation_size)? {
+                    match self.allocator.allocate_tx_buffer(allocation_size)? {
                         Some(buf) => buf,
                         None => {
                             bail!("No tx mempools to allocate outgoing packet");
@@ -2744,16 +3226,19 @@ impl Datapath for Mlx5Connection {
                     }
                 };
 
-                metadata_mbuf.increment_refcnt();
-
                 let (curr_dpseg, curr_completion) =
-                    self.post_mbuf_metadata(&metadata_mbuf, dpseg, completion);
+                    self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
                 dpseg = curr_dpseg;
                 completion = curr_completion;
             }
 
             // rest are zero-copy segments
-            for seg in ordered_sga.sga().iter().skip(first_zero_copy_seg) {
+            for seg in ordered_sga
+                .sga()
+                .iter()
+                .take(ordered_sga.len())
+                .skip(first_zero_copy_seg)
+            {
                 #[cfg(feature = "profiler")]
                 perftools::timer!("work per zero copy sga");
                 let curr_seg = seg.addr();
@@ -2765,9 +3250,8 @@ impl Datapath for Mlx5Connection {
                         bail!("Failed to recover mbuf metadata for seg{:?}", curr_seg);
                     }
                 };
-                mbuf_metadata.increment_refcnt();
                 let (curr_dpseg, curr_completion) =
-                    self.post_mbuf_metadata(&mbuf_metadata, dpseg, completion);
+                    self.post_mbuf_metadata(&mut mbuf_metadata, dpseg, completion);
 
                 dpseg = curr_dpseg;
                 completion = curr_completion;
@@ -2940,6 +3424,8 @@ impl Datapath for Mlx5Connection {
     }
 
     fn is_registered(&self, buf: &[u8]) -> bool {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Is registered function");
         self.allocator.is_registered(buf)
     }
 
@@ -2960,12 +3446,29 @@ impl Datapath for Mlx5Connection {
         let mempool_params =
             sizes::MempoolAllocationParams::new(min_elts, metadata_pgsize, PGSIZE_2MB, size)
                 .wrap_err("Incorrect mempool allocation params")?;
+        tracing::debug!(mempool_params = ?mempool_params, "Adding mempool");
         let data_mempool = DataMempool::new(&mempool_params, &self.thread_context)?;
         let id = self
             .allocator
             .add_mempool(mempool_params.get_item_len(), data_mempool)?;
 
         Ok(vec![id])
+    }
+
+    fn add_tx_mempool(&mut self, size: usize, min_elts: usize) -> Result<()> {
+        let metadata_pgsize = match min_elts > 8192 {
+            true => PGSIZE_4KB,
+            false => PGSIZE_2MB,
+        };
+        let mempool_params =
+            sizes::MempoolAllocationParams::new(min_elts, metadata_pgsize, PGSIZE_2MB, size)
+                .wrap_err("Incorrect mempool allocation params")?;
+        tracing::debug!(mempool_params = ?mempool_params, "Adding mempool");
+        let data_mempool = DataMempool::new(&mempool_params, &self.thread_context)?;
+        let _ = self
+            .allocator
+            .add_tx_mempool(mempool_params.get_item_len(), data_mempool);
+        Ok(())
     }
 
     fn register_mempool(&mut self, id: MempoolID) -> Result<()> {

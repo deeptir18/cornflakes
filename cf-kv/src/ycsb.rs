@@ -38,9 +38,11 @@ impl YCSBLine {
         };
         let req = split.next().unwrap();
         let mut keys: Vec<String> = Vec::default();
-        for _i in 0..std::cmp::min(num_keys, MAX_BATCHES) {
+        for i in 0..MAX_BATCHES {
             let key = &split.next().unwrap();
-            keys.push(key.to_string());
+            if i < num_keys {
+                keys.push(key.to_string());
+            }
         }
 
         match req {
@@ -98,22 +100,96 @@ pub struct YCSBServerLoader {
     value_size: usize,
     num_values: usize,
     num_keys: usize,
+    allocate_contiguously: bool,
 }
 
 impl YCSBServerLoader {
-    pub fn new(value_size: usize, num_values: usize, num_keys: usize) -> Self {
+    pub fn new(
+        value_size: usize,
+        num_values: usize,
+        num_keys: usize,
+        allocate_contiguously: bool,
+    ) -> Self {
         YCSBServerLoader {
             value_size: value_size,
             num_values: num_values,
             num_keys: num_keys,
+            allocate_contiguously: allocate_contiguously,
         }
+    }
+
+    fn modify_server_state_round<D>(
+        &self,
+        request: &<Self as ServerLoadGenerator>::RequestLine,
+        kv_server: &mut KVServer<D>,
+        list_kv_server: &mut ListKVServer<D>,
+        mempool_ids: &mut Vec<MempoolID>,
+        datapath: &mut D,
+        round: usize,
+    ) -> Result<()>
+    where
+        D: Datapath,
+    {
+        let msg_type = request.msg_type();
+        match msg_type {
+            MsgType::Put => {
+                assert!(round == 0);
+                let key = request.get_keys()[0].as_str();
+                let value = request.get_values()[0].as_str();
+                let mut datapath_buffer =
+                    allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
+                let _ = datapath_buffer.write(value.as_bytes())?;
+                kv_server.insert(key.to_string(), datapath_buffer);
+            }
+            MsgType::PutM(size) => {
+                ensure!(
+                    request.get_values().len() == size as usize && request.get_keys().len() == size as usize,
+                    format!(
+                        "values and keys expected to have length {}, instead has length: values {}, keys {}",
+                        size,
+                        request.get_values().len(),
+                        request.get_keys().len(),
+                    )
+                );
+                let key = request.get_keys()[round].as_str();
+                let value = request.get_values()[round].as_str();
+                let mut datapath_buffer =
+                    allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
+                let _ = datapath_buffer.write(value.as_bytes())?;
+                kv_server.insert(key.to_string(), datapath_buffer);
+            }
+            MsgType::PutList(size) => {
+                ensure!(
+                    request.get_values().len() == size as usize,
+                    format!(
+                        "values expected to have length {}, instead has length {}",
+                        size,
+                        request.get_values().len()
+                    )
+                );
+                let key = request.get_keys()[0].as_str();
+                let value = request.get_values()[round].as_str();
+                let mut datapath_buffer =
+                    allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
+                let _ = datapath_buffer.write(value.as_bytes())?;
+                if list_kv_server.contains_key(key) {
+                    let list = list_kv_server.get_mut_map().get_mut(key).unwrap();
+                    list.push(datapath_buffer);
+                } else {
+                    list_kv_server.insert(key.to_string(), vec![datapath_buffer]);
+                }
+            }
+            _ => {
+                bail!(
+                    "YCSBLine  for server loader should only be parsed as Put, PutM, and PutList"
+                );
+            }
+        }
+        Ok(())
     }
 }
 
-impl<D> ServerLoadGenerator<D> for YCSBServerLoader
-where
-    D: Datapath,
-{
+impl ServerLoadGenerator for YCSBServerLoader {
     type RequestLine = YCSBLine;
 
     fn read_request(&self, line: &str) -> Result<Self::RequestLine> {
@@ -171,70 +247,74 @@ where
         Ok(())
     }
 
-    fn modify_server_state(
+    fn load_file<D>(
+        &self,
+        request_file: &str,
+        kv_server: &mut KVServer<D>,
+        list_kv_server: &mut ListKVServer<D>,
+        mempool_ids: &mut Vec<MempoolID>,
+        datapath: &mut D,
+    ) -> Result<()>
+    where
+        D: Datapath,
+    {
+        if !self.allocate_contiguously {
+            for i in 0..self.num_values {
+                let file = File::open(request_file)?;
+                let reader = BufReader::new(file);
+                for line in reader.lines() {
+                    let request = self.read_request(&line?)?;
+                    self.modify_server_state_round(
+                        &request,
+                        kv_server,
+                        list_kv_server,
+                        mempool_ids,
+                        datapath,
+                        i,
+                    )?;
+                }
+            }
+        } else {
+            let file = File::open(request_file)?;
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                let request = self.read_request(&line?)?;
+                for i in 0..self.num_values {
+                    self.modify_server_state_round(
+                        &request,
+                        kv_server,
+                        list_kv_server,
+                        mempool_ids,
+                        datapath,
+                        i,
+                    )?;
+                }
+            }
+        }
+        tracing::info!(trace = request_file, mempool_ids =? mempool_ids, "Finished loading trace file");
+        Ok(())
+    }
+
+    fn modify_server_state<D>(
         &self,
         request: &Self::RequestLine,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
-    ) -> Result<()> {
-        let msg_type = request.msg_type();
-        match msg_type {
-            MsgType::Put => {
-                let key = request.get_keys()[0].as_str();
-                let value = request.get_values()[0].as_str();
-                let mut datapath_buffer =
-                    allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
-                let _ = datapath_buffer.write(value.as_bytes())?;
-                kv_server.insert(key.to_string(), datapath_buffer);
-            }
-            MsgType::PutM(size) => {
-                let keys = request.get_keys();
-                let values = request.get_values();
-                ensure!(
-                    keys.len() == size as usize && values.len() == size as usize,
-                    format!(
-                        "Keys and values expected to have length {}, instead have length {} and {}",
-                        size,
-                        keys.len(),
-                        values.len()
-                    )
-                );
-                for (key, value) in keys.iter().zip(values.iter()) {
-                    let mut datapath_buffer =
-                        allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
-                    let _ = datapath_buffer.write(value.as_str().as_bytes())?;
-                    kv_server.insert(key.to_string(), datapath_buffer);
-                }
-            }
-            MsgType::PutList(size) => {
-                let key = request.get_keys()[0].as_str();
-                let values = request.get_values();
-                ensure!(
-                    values.len() == size as usize,
-                    format!(
-                        "values expected to have length {}, instead has length {}",
-                        size,
-                        values.len()
-                    )
-                );
-                let datapath_buffers: Result<Vec<D::DatapathBuffer>> = values
-                    .iter()
-                    .map(|value| {
-                        let mut datapath_buffer =
-                            allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
-                        let _ = datapath_buffer.write(value.as_str().as_bytes())?;
-                        Ok(datapath_buffer)
-                    })
-                    .collect();
-                list_kv_server.insert(key.to_string(), datapath_buffers?);
-            }
-            _ => {
-                bail!(
-                    "YCSBLine  for server loader should only be parsed as Put, PutM, and PutList"
-                );
-            }
+    ) -> Result<()>
+    where
+        D: Datapath,
+    {
+        for i in 0..self.num_values {
+            self.modify_server_state_round(
+                request,
+                kv_server,
+                list_kv_server,
+                mempool_ids,
+                datapath,
+                i,
+            )?;
         }
         Ok(())
     }

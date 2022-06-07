@@ -1,81 +1,79 @@
-pub mod kv_serializer {
-    #![allow(unused_variables)]
-    #![allow(non_camel_case_types)]
+pub mod kv_api {
     #![allow(non_upper_case_globals)]
+    #![allow(non_camel_case_types)]
     #![allow(non_snake_case)]
-    include!(concat!(env!("OUT_DIR"), "/kv_sga_cornflakes.rs"));
+    #![allow(dead_code)]
+    #![allow(improper_ctypes)]
+    #![allow(unused_imports)]
+    include!(concat!(env!("OUT_DIR"), "/cf_kv_fb_generated.rs"));
 }
+use super::{
+    allocate_datapath_buffer, ClientSerializer, KVServer, ListKVServer, MsgType, RequestGenerator,
+    ServerLoadGenerator, REQ_TYPE_SIZE,
+};
+use color_eyre::eyre::{bail, ensure, Result};
 use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, PushBufType, ReceivedPkt},
     dynamic_sga_hdr::SgaHeaderRepr,
     dynamic_sga_hdr::*,
     state_machine::server::ServerSM,
-    ArenaOrderedSga,
 };
+use flatbuffers::{get_root, FlatBufferBuilder, WIPOffset};
 use hashbrown::HashMap;
-use kv_serializer::*;
-
-use super::{
-    allocate_datapath_buffer, ClientSerializer, KVServer, ListKVServer, MsgType, RequestGenerator,
-    ServerLoadGenerator, REQ_TYPE_SIZE,
-};
-use color_eyre::eyre::{bail, ensure, Result};
+use kv_api::cf_kv_fbs;
 #[cfg(feature = "profiler")]
 use perftools;
 use std::{io::Write, marker::PhantomData};
 
-pub struct CornflakesSerializer<D>
+pub struct FlatbuffersSerializer<D>
 where
     D: Datapath,
 {
     _phantom: PhantomData<D>,
 }
 
-impl<D> CornflakesSerializer<D>
+impl<D> FlatbuffersSerializer<D>
 where
     D: Datapath,
 {
     pub fn new() -> Self {
-        CornflakesSerializer {
+        FlatbuffersSerializer {
             _phantom: PhantomData::default(),
         }
     }
 
-    fn handle_get<'kv, 'arena>(
+    fn handle_get(
         &self,
-        kv_server: &'kv KVServer<D>,
+        kv_server: &KVServer<D>,
         pkt: &ReceivedPkt<D>,
-        _datapath: &D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedSga<'arena>>
-    where
-        'kv: 'arena,
-    {
-        let mut get_req = GetReq::new();
-        get_req.deserialize(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-        let value = match kv_server.get(get_req.get_key().as_str()) {
+        builder: &mut FlatBufferBuilder,
+    ) -> Result<()> {
+        let get_request = get_root::<cf_kv_fbs::GetReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+        let value = match kv_server.get(get_request.key().unwrap()) {
             Some(v) => v,
             None => {
-                bail!("Could not find value for key: {:?}", get_req.get_key());
+                bail!("Could not find value for key: {:?}", get_request.key());
             }
         };
+
         tracing::debug!(
             "For given key {:?}, found value {:?} with length {}",
-            get_req.get_key().as_str(),
+            get_request.key().unwrap(),
             value.as_ref().as_ptr(),
             value.as_ref().len()
         );
-        let mut get_resp = GetResp::new();
-        get_resp.set_id(get_req.get_id());
-        get_resp.set_val(CFBytes::new(value.as_ref()));
-        let mut arena_sga =
-            ArenaOrderedSga::allocate(get_resp.num_scatter_gather_entries(), &arena);
-        get_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
-        tracing::debug!("Done serializing response");
-        Ok(arena_sga)
+        let args = cf_kv_fbs::GetRespArgs {
+            val: Some(builder.create_vector_direct::<u8>(value.as_ref())),
+            id: get_request.id(),
+        };
+
+        let get_resp = cf_kv_fbs::GetResp::create(builder, &args);
+        builder.finish(get_resp, None);
+        Ok(())
     }
-    fn handle_put<'arena>(
+
+    /*fn handle_put<'arena>(
         &self,
         kv_server: &mut KVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
@@ -212,53 +210,21 @@ where
             ArenaOrderedSga::allocate(getlist_resp.num_scatter_gather_entries(), &arena);
         getlist_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
         Ok(arena_sga)
-    }
-
-    fn handle_putlist<'arena>(
-        &self,
-        list_kv_server: &mut ListKVServer<D>,
-        mempool_ids: &mut Vec<MempoolID>,
-        pkt: &ReceivedPkt<D>,
-        datapath: &mut D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedSga<'arena>> {
-        let mut putlist_req = PutListReq::new();
-        putlist_req.deserialize(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-
-        let key = putlist_req.get_key();
-        let values: Result<Vec<D::DatapathBuffer>> = putlist_req
-            .get_vals()
-            .iter()
-            .map(|value| {
-                let mut datapath_buffer =
-                    allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
-                let _ = datapath_buffer.write(value.get_ptr())?;
-                Ok(datapath_buffer)
-            })
-            .collect();
-        list_kv_server.insert(key.to_string(), values?);
-
-        let mut put_resp = PutResp::new();
-        put_resp.set_id(putlist_req.get_id());
-        let mut arena_sga =
-            ArenaOrderedSga::allocate(put_resp.num_scatter_gather_entries(), &arena);
-        put_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
-        Ok(arena_sga)
-    }
+    }*/
 }
 
-pub struct CornflakesKVServer<D>
+pub struct FlatbuffersKVServer<D>
 where
     D: Datapath,
 {
     kv_server: KVServer<D>,
     list_kv_server: ListKVServer<D>,
     mempool_ids: Vec<MempoolID>,
-    serializer: CornflakesSerializer<D>,
+    serializer: FlatbuffersSerializer<D>,
     push_buf_type: PushBufType,
 }
 
-impl<D> CornflakesKVServer<D>
+impl<D> FlatbuffersKVServer<D>
 where
     D: Datapath,
 {
@@ -272,17 +238,17 @@ where
         L: ServerLoadGenerator,
     {
         let (kv, list_kv, mempool_ids) = load_generator.new_kv_state(file, datapath)?;
-        Ok(CornflakesKVServer {
+        Ok(FlatbuffersKVServer {
             kv_server: kv,
             list_kv_server: list_kv,
             mempool_ids: mempool_ids,
             push_buf_type: push_buf_type,
-            serializer: CornflakesSerializer::new(),
+            serializer: FlatbuffersSerializer::new(),
         })
     }
 }
 
-impl<D> ServerSM for CornflakesKVServer<D>
+impl<D> ServerSM for FlatbuffersKVServer<D>
 where
     D: Datapath,
 {
@@ -293,98 +259,58 @@ where
     }
 
     #[inline]
-    fn process_requests_arena_ordered_sga(
+    fn process_requests_single_buf(
         &mut self,
         sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
         datapath: &mut Self::Datapath,
-        arena: &mut bumpalo::Bump,
     ) -> Result<()> {
-        let end = sga.len();
+        let mut builder = FlatBufferBuilder::new();
+        let pkts_len = sga.len();
         for (i, pkt) in sga.into_iter().enumerate() {
-            tracing::debug!(
-                "Received packet with data {:?} and length {}",
-                pkt.seg(0).as_ref(),
-                pkt.data_len()
-            );
-            let end_batch = i == (end - 1);
-            let msg_type = MsgType::from_packet(&pkt)?;
-            match msg_type {
+            builder.reset();
+            let message_type = MsgType::from_packet(&pkt)?;
+            match message_type {
                 MsgType::Get => {
-                    let sga =
-                        self.serializer
-                            .handle_get(&self.kv_server, &pkt, &datapath, &arena)?;
-                    datapath
-                        .queue_arena_ordered_sga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
+                    self.serializer
+                        .handle_get(&self.kv_server, &pkt, &mut builder)?;
+                }
+                MsgType::GetM(size) => {
+                    unimplemented!();
+                }
+                MsgType::GetList(size) => {
+                    unimplemented!();
                 }
                 MsgType::Put => {
-                    let sga = self.serializer.handle_put(
-                        &mut self.kv_server,
-                        &mut self.mempool_ids,
-                        &pkt,
-                        datapath,
-                        &arena,
-                    )?;
-                    datapath
-                        .queue_arena_ordered_sga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
+                    unimplemented!();
                 }
-                MsgType::GetM(_size) => {
-                    let sga =
-                        self.serializer
-                            .handle_getm(&self.kv_server, &pkt, datapath, &arena)?;
-                    datapath
-                        .queue_arena_ordered_sga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
+                MsgType::PutM(size) => {
+                    unimplemented!();
                 }
-                MsgType::PutM(_size) => {
-                    let sga = self.serializer.handle_putm(
-                        &mut self.kv_server,
-                        &mut self.mempool_ids,
-                        &pkt,
-                        datapath,
-                        &arena,
-                    )?;
-                    datapath
-                        .queue_arena_ordered_sga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
+                MsgType::PutList(size) => {
+                    unimplemented!();
                 }
-                MsgType::GetList(_size) => {
-                    let sga = self.serializer.handle_getlist(
-                        &self.list_kv_server,
-                        &pkt,
-                        datapath,
-                        &arena,
-                    )?;
-                    datapath
-                        .queue_arena_ordered_sga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
-                }
-                MsgType::PutList(_size) => {
-                    let sga = self.serializer.handle_putlist(
-                        &mut self.list_kv_server,
-                        &mut self.mempool_ids,
-                        &pkt,
-                        datapath,
-                        &arena,
-                    )?;
-                    datapath
-                        .queue_arena_ordered_sga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
-                }
-                MsgType::AppendToList(_) => {
+                MsgType::AppendToList(size) => {
                     unimplemented!();
                 }
             }
+            datapath.queue_single_buffer_with_copy(
+                (pkt.msg_id(), pkt.conn_id(), &builder.finished_data()),
+                i == (pkts_len - 1),
+            )?;
         }
-        arena.reset();
         Ok(())
     }
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
-pub struct CornflakesClient<D>
+pub struct FlatbuffersClient<D>
 where
     D: Datapath,
 {
     _datapath: PhantomData<D>,
 }
 
-impl<D> ClientSerializer<D> for CornflakesClient<D>
+impl<D> ClientSerializer<D> for FlatbuffersClient<D>
 where
     D: Datapath,
 {
@@ -392,7 +318,7 @@ where
     where
         Self: Sized,
     {
-        CornflakesClient {
+        FlatbuffersClient {
             _datapath: PhantomData::default(),
         }
     }
@@ -411,14 +337,18 @@ where
     {
         match request_generator.message_type(request)? {
             MsgType::Get => {
-                let mut get_resp = GetResp::new();
-                get_resp.deserialize(buf)?;
-                ensure!(get_resp.has_val(), "Get Response does not have a value");
-                request_generator.check_get(request, get_resp.get_val().get_ptr(), ref_kv)?;
+                let get_resp = get_root::<cf_kv_fbs::GetResp>(buf);
+                let val = match get_resp.val() {
+                    Some(x) => x,
+                    None => {
+                        bail!("Key not present in get response");
+                    }
+                };
+                request_generator.check_get(request, val, ref_kv)?;
             }
             MsgType::Put => {}
             MsgType::GetM(_size) => {
-                let mut getm_resp = GetMResp::new();
+                /*let mut getm_resp = GetMResp::new();
                 getm_resp.deserialize(buf)?;
                 ensure!(
                     getm_resp.has_vals(),
@@ -429,11 +359,11 @@ where
                     .iter()
                     .map(|cf_bytes| cf_bytes.get_ptr())
                     .collect();
-                request_generator.check_getm(request, vec, ref_kv)?;
+                request_generator.check_getm(request, vec, ref_kv)?;*/
             }
             MsgType::PutM(_size) => {}
             MsgType::GetList(_size) => {
-                let mut getlist_resp = GetListResp::new();
+                /*let mut getlist_resp = GetListResp::new();
                 getlist_resp.deserialize(buf)?;
                 ensure!(
                     getlist_resp.has_val_list(),
@@ -444,7 +374,7 @@ where
                     .iter()
                     .map(|cf_bytes| cf_bytes.get_ptr())
                     .collect();
-                request_generator.check_get_list(request, vec, ref_list_kv)?;
+                request_generator.check_get_list(request, vec, ref_list_kv)?;*/
             }
             MsgType::PutList(_size) => {}
             MsgType::AppendToList(_size) => {}
@@ -453,26 +383,23 @@ where
     }
 
     fn serialize_get(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize> {
-        let mut get = GetReq::new();
-        get.set_key(CFString::new(key));
-        get.serialize_into_buf(datapath, buf)
+        let mut builder = FlatBufferBuilder::new();
+        let args = cf_kv_fbs::GetReqArgs {
+            // TODO: actually add in ID
+            id: 0,
+            key: Some(builder.create_string(key.as_ref())),
+        };
+        let get_req = cf_kv_fbs::GetReq::create(&mut builder, &args);
+        builder.finish(get_req, None);
+        Ok(copy_into_buf(buf, &builder))
     }
 
     fn serialize_put(&self, buf: &mut [u8], key: &str, value: &str, datapath: &D) -> Result<usize> {
-        let mut put = PutReq::new();
-        put.set_key(CFString::new(key));
-        put.set_val(CFBytes::new(value.as_bytes()));
-        put.serialize_into_buf(datapath, buf)
+        Ok(0)
     }
 
     fn serialize_getm(&self, buf: &mut [u8], keys: &Vec<String>, datapath: &D) -> Result<usize> {
-        let mut getm = GetMReq::new();
-        getm.init_keys(keys.len());
-        let keys_list = getm.get_mut_keys();
-        for key in keys.iter() {
-            keys_list.append(CFString::new(key.as_str()));
-        }
-        getm.serialize_into_buf(datapath, buf)
+        Ok(0)
     }
 
     fn serialize_putm(
@@ -482,25 +409,11 @@ where
         values: &Vec<String>,
         datapath: &D,
     ) -> Result<usize> {
-        let mut putm = PutMReq::new();
-        putm.init_keys(keys.len());
-        let keys_list = putm.get_mut_keys();
-        for key in keys.iter() {
-            keys_list.append(CFString::new(key.as_str()));
-        }
-
-        putm.init_vals(values.len());
-        let vals_list = putm.get_mut_vals();
-        for val in values.iter() {
-            vals_list.append(CFBytes::new(val.as_str().as_bytes()));
-        }
-        putm.serialize_into_buf(datapath, buf)
+        Ok(0)
     }
 
     fn serialize_get_list(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize> {
-        let mut get = GetListReq::new();
-        get.set_key(CFString::new(key));
-        get.serialize_into_buf(datapath, buf)
+        Ok(0)
     }
 
     fn serialize_put_list(
@@ -510,14 +423,7 @@ where
         values: &Vec<String>,
         datapath: &D,
     ) -> Result<usize> {
-        let mut put = PutListReq::new();
-        put.set_key(CFString::new(key));
-        put.init_vals(values.len());
-        let vals = put.get_mut_vals();
-        for val in values.iter() {
-            vals.append(CFBytes::new(val.as_str().as_bytes()));
-        }
-        put.serialize_into_buf(datapath, buf)
+        Ok(0)
     }
 
     fn serialize_append(
@@ -527,9 +433,13 @@ where
         value: &str,
         datapath: &D,
     ) -> Result<usize> {
-        let mut append = PutReq::new();
-        append.set_key(CFString::new(key));
-        append.set_val(CFBytes::new(value.as_bytes()));
-        append.serialize_into_buf(datapath, buf)
+        Ok(0)
     }
+}
+
+fn copy_into_buf<'fbb>(buf: &mut [u8], builder: &FlatBufferBuilder<'fbb>) -> usize {
+    let data = builder.finished_data();
+    let mut buf_to_copy = &mut buf[0..data.len()];
+    buf_to_copy.copy_from_slice(data);
+    data.len()
 }
