@@ -2,8 +2,8 @@ use capnpc;
 use cornflakes_codegen::{compile, CompileOptions, HeaderType, Language};
 use std::{
     env,
-    fs::canonicalize,
-    //io::{BufWriter, Write},
+    fs::{canonicalize, read_to_string, File},
+    io::{BufWriter, Write},
     path::Path,
     process::Command,
 };
@@ -12,6 +12,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/cornflakes_dynamic/kv.proto");
     println!("cargo:rerun-if-changed=src/flatbuffers/kv_fb.fbs");
     println!("cargo:rerun-if-changed=src/capnproto/cf_kv.capnp");
+    println!("cargo:rerun-if-changed=src/protobuf/kv.proto");
     // store all compiled proto files in out_dir
     //let out_dir = env::var("OUT_DIR").unwrap();
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -71,4 +72,34 @@ fn main() {
             "Capnp compilation failed on {:?}.",
             input_capnp_file
         ));
+
+    // compile protobuf baseline
+    let input_proto_path = kv_src_path.clone().join("protobuf");
+    let input_proto_file = input_proto_path.clone().join("kv_protobuf.proto");
+    let mut customize = protobuf_codegen::Customize::default();
+    customize = customize.gen_mod_rs(true);
+    protobuf_codegen::Codegen::new()
+        .out_dir(&out_dir)
+        .inputs(&[input_proto_file.as_path()])
+        .includes(&[input_proto_path.as_path()])
+        .customize(customize)
+        .run()
+        .expect(&format!(
+            "Protoc compilation failed on {:?}.",
+            input_proto_file
+        ));
+
+    // issue with includes and ![allow()]s in generated code; remove them:
+    // Resolve the path to the generated file.
+    let proto_outpath = Path::new(&out_dir).join("kv_protobuf.rs");
+    // Read the generated code to a string.
+    let code = read_to_string(&proto_outpath).expect("Failed to read generated file");
+    // Write filtered lines to the same file.
+    let mut writer = BufWriter::new(File::create(proto_outpath).unwrap());
+    for line in code.lines() {
+        if !line.starts_with("//!") && !line.starts_with("#!") {
+            writer.write_all(line.as_bytes()).unwrap();
+            writer.write_all(&[b'\n']).unwrap();
+        }
+    }
 }

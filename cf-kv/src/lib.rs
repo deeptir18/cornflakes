@@ -1,6 +1,7 @@
 pub mod capnproto;
 pub mod cornflakes_dynamic;
 pub mod flatbuffers;
+pub mod protobuf;
 pub mod retwis;
 pub mod ycsb;
 pub mod ycsb_run_datapath;
