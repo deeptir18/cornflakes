@@ -81,11 +81,11 @@ where
                 bail!("Cannot find value for key in KV store: {:?}", key);
             }
         };
+        tracing::debug!("Value len: {:?}", value.as_ref().len());
 
         // construct response
         let mut response = builder.init_root::<kv_capnp::get_resp::Builder>();
         response.set_val(value.as_ref());
-        response.set_id(get_request.get_id());
         Ok(())
     }
 
@@ -288,9 +288,9 @@ where
         sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
         datapath: &mut Self::Datapath,
     ) -> Result<()> {
-        let mut builder = Builder::new_default();
         let pkts_len = sga.len();
         for (i, pkt) in sga.into_iter().enumerate() {
+            let mut builder = Builder::new_default();
             let message_type = MsgType::from_packet(&pkt)?;
             let framing_vec = match message_type {
                 MsgType::Get => self
