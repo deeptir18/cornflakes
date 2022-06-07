@@ -29,6 +29,7 @@ cxx = "1.0"
 perftools = {git = "https://github.com/demikernel/perftools", rev = "94031ae", optional = true }
 bitmaps = "3.2.0"
 bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }
+redis = "0.21.5"
 
 [build-dependencies]
 protoc-rust = "2.23.*"
