@@ -22,7 +22,7 @@ bytes = "1.0.1"
 libc = "0.2.81"
 capnp = { version = "0.13.6", features = ["unaligned"] }
 flatbuffers = "0.7.0"
-protobuf = "2.*.*"
+protobuf = "3.0.3"
 hashbrown = "0.11.*"
 affinity = "0.1.1"
 cxx = "1.0"
@@ -32,7 +32,7 @@ bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collectio
 redis = "0.21.5"
 
 [build-dependencies]
-protoc-rust = "2.23.*"
+protobuf-codegen = "3.0.3"
 capnpc = "0.13"
 cornflakes-codegen = { path = "../cornflakes-codegen" }
 cxx-build = "1.0"

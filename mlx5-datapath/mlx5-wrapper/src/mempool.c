@@ -82,10 +82,9 @@ static int custom_mlx5_mempool_populate(struct custom_mlx5_mempool *m, void *buf
 	size_t nr_pages = len / pgsize;
 	int i, j;
 
-    NETPERF_DEBUG("Items per page: %u, item_len: %zu, # pages: %u, LEN: %zu, current capacity: %zu", (unsigned)items_per_page, m->item_len, (unsigned)nr_pages, len, m->capacity);
 	m->free_items = calloc(nr_pages * items_per_page, sizeof(void *));
 	if (!m->free_items) {
-        NETPERF_DEBUG("Calloc didn't allocate free items list.");
+            NETPERF_DEBUG("Calloc didn't allocate free items list.");
 		return -ENOMEM;
     }
 
@@ -96,6 +95,7 @@ static int custom_mlx5_mempool_populate(struct custom_mlx5_mempool *m, void *buf
 		}
 	}
 
+    NETPERF_DEBUG("Allocated Items per page: %u, item_len: %zu, # pages: %u, LEN: %zu, current capacity: %zu", (unsigned)items_per_page, m->item_len, (unsigned)nr_pages, len, m->capacity);
 	return 0;
 }
 
@@ -110,13 +110,18 @@ int custom_mlx5_mempool_create(struct custom_mlx5_mempool *m, size_t len,
 		   size_t pgsize, size_t item_len)
 {
 	if (item_len == 0 || !is_power_of_two(pgsize) || len % pgsize != 0) {
-        NETPERF_DEBUG("Invalid params to create mempool.");
+        NETPERF_WARN("Invalid params to create mempool.");
 		return -EINVAL;
 	}
 
     void *buf = custom_mlx5_mem_map_anom(NULL, len, pgsize, 0);
     if (buf ==  NULL) {
-        NETPERF_DEBUG("mem_map_anom failed: resulting buffer is null.");
+        NETPERF_WARN("mem_map_anom failed: resulting buffer is null.");
+        return -EINVAL;
+    }
+
+    if (buf == MAP_FAILED) {
+        NETPERF_WARN("mem_map_anom failed: resulting buffer is 0xffffffffffffffff; len %lu, pgsize %lu num_pages %lu", len, pgsize, len / pgsize);
         return -EINVAL;
     }
 
