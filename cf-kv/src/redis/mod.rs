@@ -83,12 +83,14 @@ where
 
     fn serialize_put(
         &self,
-        _buf: &mut [u8],
-        _key: &str,
-        _value: &str,
+        buf: &mut [u8],
+        key: &str,
+        value: &str,
         _datapath: &D,
     ) -> Result<usize> {
-        unimplemented!()
+        let data = redis::cmd("SET").arg(key).arg(value).get_packed_command();
+        buf[0..data.len()].copy_from_slice(&data);
+        Ok(data.len())
     }
 
     fn serialize_getm(
