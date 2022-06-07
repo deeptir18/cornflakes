@@ -2,6 +2,7 @@ use cf_kv::{
     capnproto::{CapnprotoClient, CapnprotoKVServer},
     cornflakes_dynamic::{CornflakesClient, CornflakesKVServer},
     flatbuffers::{FlatbuffersClient, FlatbuffersKVServer},
+    redis::RedisClient,
     run_client, run_server,
     ycsb::{YCSBClient, YCSBServerLoader},
     ycsb_run_datapath::*,
@@ -44,6 +45,9 @@ fn main() -> Result<()> {
             }
             SerializationType::Capnproto => {
                 run_client!(CapnprotoClient<DpdkConnection>, DpdkConnection, opt);
+            }
+            SerializationType::Redis => {
+                run_client!(RedisClient<DpdkConnection>, DpdkConnection, opt);
             }
             _ => {
                 unimplemented!();
