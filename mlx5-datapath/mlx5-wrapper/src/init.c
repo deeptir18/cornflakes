@@ -80,6 +80,12 @@ struct custom_mlx5_mbuf *custom_mlx5_allocate_data_and_metadata_mbuf(struct regi
         return NULL;
     }
     int index = custom_mlx5_mempool_find_index(&mempool->data_mempool, data);
+    if (index == -1 ) {
+        NETPERF_WARN("Calculated index out of bounds for data %p mempool buf: %p, mempool len: %lu", data, (&mempool->data_mempool)->buf, (&mempool->data_mempool)->len);
+        custom_mlx5_mempool_free(&mempool->data_mempool, data);
+        errno = -EINVAL;
+        return NULL;
+    }
     struct custom_mlx5_mbuf *metadata = (struct custom_mlx5_mbuf *)(custom_mlx5_mempool_alloc_by_idx(&mempool->metadata_mempool, (size_t)index));
     if (metadata == NULL) {
         custom_mlx5_mempool_free(&mempool->data_mempool, data);
@@ -98,6 +104,7 @@ void custom_mlx5_clear_registered_mempool(struct registered_mempool *mempool) {
     custom_mlx5_clear_mempool(&mempool->data_mempool);
     custom_mlx5_clear_mempool(&mempool->metadata_mempool);
 }
+
 
 void custom_mlx5_clear_per_thread_context(struct custom_mlx5_global_context *context, size_t idx) {
     struct custom_mlx5_per_thread_context *per_thread_context = custom_mlx5_get_per_thread_context(context, idx);

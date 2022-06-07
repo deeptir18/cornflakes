@@ -2474,7 +2474,10 @@ impl Datapath for Mlx5Connection {
                 match self.allocator.allocate_tx_buffer(allocation_size)? {
                     Some(buf) => buf,
                     None => {
-                        bail!("No tx mempools to allocate outgoing packet");
+                        bail!(
+                            "No tx mempools to allocate outgoing packet of size: {}",
+                            allocation_size
+                        );
                     }
                 }
             };
@@ -3440,8 +3443,8 @@ impl Datapath for Mlx5Connection {
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {
         // use 2MB pages for data, 2MB pages for metadata (?)
         let metadata_pgsize = match min_elts > 8192 {
-            true => PGSIZE_4KB,
-            false => PGSIZE_2MB,
+            true => PGSIZE_2MB,
+            false => PGSIZE_4KB,
         };
         let mempool_params =
             sizes::MempoolAllocationParams::new(min_elts, metadata_pgsize, PGSIZE_2MB, size)
