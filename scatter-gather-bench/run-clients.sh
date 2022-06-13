@@ -5,6 +5,7 @@ sudo LD_LIBRARY_PATH=$LD_LIBRARY_PATH ./build/netperf \
      --server_mac=1c:34:da:41:c7:4c \
      --server_ip=128.110.218.241 \
      --client_ip=128.110.218.253 \
+     --client_port=50000 \
      --time=5 \
      --rate=1000000 \
      --array_size=32768000 \

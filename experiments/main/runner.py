@@ -350,9 +350,11 @@ class Iteration(metaclass=abc.ABCMeta):
     def create_folder(self, high_level_folder):
         folder_name = self.get_folder_name(high_level_folder)
         folder_name.mkdir(parents=True, exist_ok=True)
+        os.chmod(folder_name, 0o777)
 
     def new_connection(self, host, machine_config):
-        host_addr = machine_config["hosts"][host]["addr"]
+        host_addr = machine_config["hosts"][host]["ip"]
+        #print(machine_config['hosts'][host])
         key = machine_config["key"]
         user = machine_config["user"]
         cxn = Connection(host=host_addr,
@@ -372,6 +374,7 @@ class Iteration(metaclass=abc.ABCMeta):
     def run_cmd_sudo(self, cmd, host, machine_config, fail_ok=False, return_dict=None, proc_counter=None):
 
         cxn = self.new_connection(host, machine_config)
+        print('Host and config:', host, machine_config)
         res = None
         try:
             res = cxn.sudo(cmd, hide=False)
@@ -380,7 +383,8 @@ class Iteration(metaclass=abc.ABCMeta):
             if return_dict is not None and proc_counter is not None:
                 return_dict[proc_counter] = True
             return
-        except:
+        except Exception as e:
+            print('Exception on run sudo:', e)
             if not fail_ok:
                 utils.error(
                     "Failed to run cmd {} on host {}.".format(cmd, host))

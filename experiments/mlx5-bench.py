@@ -77,7 +77,7 @@ def parse_log_info(log):
 class ScatterGatherIteration(runner.Iteration):
     def __init__(self, client_rates, segment_size,
                  num_segments, with_copy, as_one, num_threads, trial=None,
-                 array_size=8192, busy_cycles=0, recv_pkt_size=0):
+                 array_size=8192, busy_cycles=0, recv_pkt_size=0, num_cores=1):
         """
         Arguments:
         * client_rates: Mapping from {int, int} specifying rates and how many
@@ -97,7 +97,11 @@ class ScatterGatherIteration(runner.Iteration):
         self.array_size = array_size
         self.busy_cycles = busy_cycles
         self.recv_pkt_size = recv_pkt_size
+        self.num_cores = num_cores
 
+    def get_num_cores(self):
+        return self.num_cores
+        
     def get_busy_cycles(self):
         return self.busy_cycles
 
@@ -137,6 +141,9 @@ class ScatterGatherIteration(runner.Iteration):
     def get_total_size(self):
         return self.num_segments * self.segment_size
 
+    def get_num_cores_string(self):
+        return "server_cores_{:d}".format(self.num_cores)
+    
     def get_client_rate_string(self):
         # 2@300000,1@100000 implies 2 clients at 300000 pkts / sec and 1 at
         # 100000 pkts / sec
@@ -250,7 +257,8 @@ class ScatterGatherIteration(runner.Iteration):
             self.get_recv_pkt_size_string() /\
             self.get_busy_cycles_string() /\
             self.get_client_rate_string() / self.get_num_threads_string() / \
-            self.get_with_copy_string()
+            self.get_with_copy_string() / \
+            self.get_num_cores_string()
 
     def get_folder_name(self, high_level_folder):
         return self.get_parent_folder(high_level_folder) / self.get_trial_string()
@@ -321,7 +329,7 @@ class ScatterGatherIteration(runner.Iteration):
                 ret["read_pkt_str"] = " --read_incoming_packet"
             else:
                 ret["read_pkt_str"] = ""
-            pass
+            ret['num_cores'] = "{:d}".format(self.num_cores)
         elif program == "start_client":
             if (self.recv_pkt_size != 0):
                 ret["send_packet_size_str"] = " --has_send_packet_size --send_packet_size={}".format(
@@ -373,7 +381,8 @@ class ScatterGather(runner.Experiment):
                                         total_args.num_threads,
                                         array_size=total_args.array_size,
                                         busy_cycles=total_args.busy_cycles,
-                                        recv_pkt_size=total_args.recv_size)
+                                        recv_pkt_size=total_args.recv_size,
+                                        num_cores=total_args.num_cores)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             it.set_trial(num_trials_finished)
@@ -505,6 +514,11 @@ class ScatterGather(runner.Experiment):
                             type=int,
                             default=0,
                             help="Busy cycles in us")
+        parser.add_argument("-k", "--num_cores",
+                            dest="num_cores",
+                            type=int,
+                            default=1,
+                            help="Number of server cores")
         if namespace.exp_type == "individual":
             parser.add_argument("-r", "--rate",
                                 dest="rate",
@@ -535,7 +549,8 @@ class ScatterGather(runner.Experiment):
             parser.add_argument("-lp", "--looping_variable",
                                 dest="looping_variable",
                                 choices=["array_total_size", "total_size",
-                                         "num_segments, recv_size"],
+                                         "num_segments, recv_size",
+                                         "num_cores"],
                                 default="array_total_size",
                                 help="What variable to loop over")
         args = parser.parse_args(namespace=namespace)
@@ -759,24 +774,26 @@ class ScatterGather(runner.Experiment):
         percent_acheived_load = float(total_achieved_load_pps /
                                       total_offered_load_pps)
 
-        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_segment_size(),
-                                                                                  iteration.get_num_segments(),
-                                                                                  iteration.get_with_copy(),
-                                                                                  iteration.get_as_one(),
-                                                                                  iteration.get_array_size(),
-                                                                                  iteration.get_busy_cycles(),
-                                                                                  iteration.get_recv_pkt_size(),
-                                                                                  iteration.get_num_threads(),
-                                                                                  iteration.get_num_clients(),
-                                                                                  total_offered_load_pps,
-                                                                                  total_offered_load_gbps,
-                                                                                  total_achieved_load_pps,
-                                                                                  total_achieved_load_gbps,
-                                                                                  percent_acheived_load,
-                                                                                  avg * 1000,
-                                                                                  median * 1000,
-                                                                                  p99 * 1000,
-                                                                                  p999 * 1000)
+        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(
+            iteration.get_num_cores(),
+            iteration.get_segment_size(),
+            iteration.get_num_segments(),
+            iteration.get_with_copy(),
+            iteration.get_as_one(),
+            iteration.get_array_size(),
+            iteration.get_busy_cycles(),
+            iteration.get_recv_pkt_size(),
+            iteration.get_num_threads(),
+            iteration.get_num_clients(),
+            total_offered_load_pps,
+            total_offered_load_gbps,
+            total_achieved_load_pps,
+            total_achieved_load_gbps,
+            percent_acheived_load,
+            avg * 1000,
+            median * 1000,
+            p99 * 1000,
+            p999 * 1000)
         return csv_line
 
     def graph_results(self, total_args, folder, logfile,

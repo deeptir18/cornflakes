@@ -44,6 +44,9 @@ build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
 	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
 	#$(CXX) $(CFLAGS) $(SRC-cc) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
 
+test-hash: test_hash.c Makefile $(PC_FILE) | build
+	$(CC) $(CFLAGS) test_hash.c -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
+
 build/$(APP)-static: $(SRCS-y) Makefile $(PC_FILE) | build
 	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_STATIC)
 	#$(CXX) $(CFLAGS) $(SRC-cc) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
