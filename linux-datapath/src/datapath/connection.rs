@@ -89,6 +89,17 @@ impl ByteBuffer {
         }
     }
 
+    pub fn from_raw_buf(buffer: &[u8]) -> Self {
+        let mut bytes = BytesMut::with_capacity(buffer.len());
+        bytes.copy_from_slice(buffer);
+        let buf = bytes.freeze();
+        ByteBuffer {
+            bytes: buf,
+            offset: 0,
+            len: buffer.len(),
+        }
+    }
+
     pub fn new(buf: &[u8], data_offset: usize, data_len: Option<usize>) -> Result<Self> {
         ensure!(data_offset <= buf.len(), "Provided data offset too large");
         let len = match data_len {
@@ -142,7 +153,7 @@ pub struct LinuxPerThreadContext {
 #[derive(Debug, Clone)]
 pub struct LinuxDatapathSpecificParams {
     // TODO: insert datapath specific params:
-// Server UDP port, Server IP address, potentially server interface name
+    // Server UDP port, Server IP address, potentially server interface name
 }
 
 pub struct LinuxConnection {
@@ -261,6 +272,10 @@ impl Datapath for LinuxConnection {
 
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>> {
         Ok(Some(ByteBuffer::from_buf(buf)))
+    }
+
+    fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>> {
+        Ok(Some(ByteBuffer::from_raw_buf(buf)))
     }
 
     fn add_tx_mempool(&mut self, _size: usize, _min_elts: usize) -> Result<()> {

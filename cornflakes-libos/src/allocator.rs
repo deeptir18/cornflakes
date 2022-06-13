@@ -218,7 +218,47 @@ where
         return Ok(None);
     }
 
-    /// Returns metadata associated with this buffer, if it exists.
+    /// Returns metadata associated with this buffer, even if the buffer is not registered.
+    #[inline]
+    pub fn recover_metadata(
+        &self,
+        buffer: &[u8],
+    ) -> Result<Option<<<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata>>
+    {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("recover buffer func higher level allocator");
+        // search through recv mempools first
+        for (_id, mempool) in self.recv_mempools.iter() {
+            if mempool.is_buf_within_bounds(buffer) {
+                let metadata = mempool
+                    .recover_buffer(buffer)
+                    .wrap_err("unable to recover metadata")?;
+                return Ok(Some(metadata));
+            }
+        }
+
+        for size in self
+            .mempool_ids
+            .keys()
+            .filter(|size| *size >= &buffer.len())
+        {
+            for mempool_id in self.mempool_ids.get(size).unwrap() {
+                let mempool = self.mempools.get(mempool_id).unwrap();
+                if mempool.has_allocated() {
+                    if mempool.is_buf_within_bounds(buffer) {
+                        let metadata = mempool
+                            .recover_buffer(buffer)
+                            .wrap_err("unable to recover metadata")?;
+                        return Ok(Some(metadata));
+                    }
+                }
+            }
+        }
+        return Ok(None);
+    }
+
+    /// Returns metadata associated with this buffer, if it exists, and the buffer is
+    /// registered.
     #[inline]
     pub fn recover_buffer(
         &self,

@@ -1,11 +1,11 @@
 use super::{
-    datapath::Datapath,
-    {ArenaOrderedSga, OrderedSga, Sge},
+    datapath::{Datapath, ReceivedPkt},
+    ArenaOrderedRcSga, OrderedRcSga, RcSga, RcSge,
 };
 use bitmaps::Bitmap;
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{bail, Result, WrapErr};
 use std::{
     default::Default, fmt::Debug, marker::PhantomData, mem::size_of, ops::Index, slice,
     slice::Iter, str,
@@ -13,6 +13,21 @@ use std::{
 
 #[cfg(feature = "profiler")]
 use perftools;
+
+#[inline]
+pub fn read_size_and_offset<'buf, D>(
+    offset: usize,
+    buffer: &RcSge<'buf, D>,
+) -> Result<(usize, usize)>
+where
+    D: Datapath,
+{
+    let forward_pointer = ForwardPointer(buffer.addr(), offset);
+    Ok((
+        forward_pointer.get_size() as usize,
+        forward_pointer.get_offset() as usize,
+    ))
+}
 
 struct ForwardPointer<'a>(&'a [u8], usize);
 
@@ -47,24 +62,10 @@ pub const OFFSET_FIELD: usize = 4;
 /// u32 at beginning representing bitmap size in bytes
 pub const BITMAP_LENGTH_FIELD: usize = 4;
 
-#[inline]
-pub fn read_size_and_offset(offset: usize, buffer: &[u8]) -> Result<(usize, usize)> {
-    let forward_pointer = ForwardPointer(buffer, offset);
-    Ok((
-        forward_pointer.get_size() as usize,
-        forward_pointer.get_offset() as usize,
-    ))
-}
-
-#[inline]
-pub fn write_size_and_offset(write_offset: usize, size: usize, offset: usize, buffer: &mut [u8]) {
-    let mut forward_pointer = MutForwardPointer(buffer, write_offset);
-    tracing::debug!(write_offset, size, offset, "Writing in size and offset");
-    forward_pointer.write_size(size as u32);
-    forward_pointer.write_offset(offset as u32);
-}
-
-pub trait SgaHeaderRepr<'obj> {
+pub trait RcSgaHeaderRepr<'obj, D>
+where
+    D: Datapath,
+{
     /// Maximum number of fields is max u32 * 8
     const NUMBER_OF_FIELDS: usize;
 
@@ -150,10 +151,8 @@ pub trait SgaHeaderRepr<'obj> {
     fn dynamic_header_size(&self) -> usize;
 
     /// Total header size.
-    #[inline]
-    fn total_header_size(&self, with_ref: bool, _with_bitmap: bool) -> usize {
-        //(BITMAP_LENGTH_FIELD + Self::bitmap_length()) * (with_bitmap as usize)
-        <Self as SgaHeaderRepr>::CONSTANT_HEADER_SIZE * (with_ref as usize)
+    fn total_header_size(&self, with_ref: bool) -> usize {
+        <Self as RcSgaHeaderRepr<D>>::CONSTANT_HEADER_SIZE * (with_ref as usize)
             + self.dynamic_header_size()
     }
 
@@ -165,20 +164,18 @@ pub trait SgaHeaderRepr<'obj> {
     /// object header data).
     fn dynamic_header_start(&self) -> usize;
 
-    /// Allocates context required for serialization: header vector and scatter-gather array with
-    /// required capacity.
+    fn is_list(&self) -> bool {
+        false
+    }
+
     #[inline]
-    fn alloc_sga(&self) -> OrderedSga {
-        OrderedSga::allocate(self.num_scatter_gather_entries())
+    fn alloc_sga(&self) -> OrderedRcSga<D> {
+        OrderedRcSga::allocate(self.num_scatter_gather_entries())
     }
 
     #[inline]
     fn alloc_hdr(&self) -> Vec<u8> {
-        vec![0u8; self.total_header_size(false, true)]
-    }
-
-    fn is_list(&self) -> bool {
-        false
+        vec![0u8; self.total_header_size(false)]
     }
 
     /// Nested serialization function.
@@ -199,7 +196,7 @@ pub trait SgaHeaderRepr<'obj> {
         header: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
-        scatter_gather_entries: &mut [Sge<'sge>],
+        scatter_gather_entries: &mut [RcSge<'sge, D>],
         offsets: &mut [usize],
     ) -> Result<()>
     where
@@ -209,28 +206,27 @@ pub trait SgaHeaderRepr<'obj> {
     /// Params:
     /// @buffer - Buffer to deserialize.
     /// @header_offset - Offset into constant part of header for nested deserialization.
-    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], header_offset: usize) -> Result<()>
+    fn inner_deserialize<'buf>(
+        &mut self,
+        buffer: &RcSge<'buf, D>,
+        header_offset: usize,
+    ) -> Result<()>
     where
         'buf: 'obj;
 
+    /// Serialize into buffer
     #[inline]
-    fn serialize_into_buf<D>(&self, datapath: &D, header_buffer: &mut [u8]) -> Result<usize>
-    where
-        D: Datapath,
-    {
+    fn serialize_into_buf(&self, datapath: &D, header_buffer: &mut [u8]) -> Result<usize> {
         let mut sga = self.alloc_sga();
         self.serialize_into_sga_with_hdr(header_buffer, &mut sga, datapath)?;
         // copy sga into header buffer
-        let header_size = self.total_header_size(false, true);
+        let header_size = self.total_header_size(false);
         let size = sga.copy_into_buffer(&mut header_buffer[header_size..])?;
         Ok(size + header_size)
     }
 
     #[inline]
-    fn serialize_to_owned<D>(&self, datapath: &D) -> Result<Vec<u8>>
-    where
-        D: Datapath,
-    {
+    fn serialize_to_owned(&self, datapath: &D) -> Result<Vec<u8>> {
         let mut sga = self.alloc_sga();
         self.serialize_into_sga(&mut sga, datapath)?;
         tracing::debug!(
@@ -242,14 +238,13 @@ pub trait SgaHeaderRepr<'obj> {
     }
 
     #[inline]
-    fn serialize_into_sga_with_hdr<'sge, D>(
+    fn serialize_into_sga_with_hdr<'sge>(
         &self,
         header_buffer: &mut [u8],
-        ordered_sga: &mut OrderedSga<'sge>,
+        ordered_sga: &mut OrderedRcSga<'sge, D>,
         datapath: &D,
     ) -> Result<()>
     where
-        D: Datapath,
         'obj: 'sge,
     {
         let required_entries = self.num_scatter_gather_entries();
@@ -261,7 +256,7 @@ pub trait SgaHeaderRepr<'obj> {
             );
         }
 
-        let header_size = self.total_header_size(false, true);
+        let header_size = self.total_header_size(false);
         if header_buffer.len() < header_size {
             bail!(
                 "Cannot serialize into header with smaller than {} len, given: {:?}",
@@ -292,7 +287,7 @@ pub trait SgaHeaderRepr<'obj> {
             ordered_sga.reorder_by_size_and_registration(datapath, &mut offsets)?;
             // reorder entries if current (zero-copy segments + 1) exceeds max zero-copy segments
         }
-        let mut cur_dynamic_offset = self.total_header_size(false, false);
+        let mut cur_dynamic_offset = self.total_header_size(false);
 
         tracing::debug!(starting_offsets = cur_dynamic_offset, "starting offsets");
         // iterate over header, writing in forward pointers based on new ordering
@@ -322,11 +317,34 @@ pub trait SgaHeaderRepr<'obj> {
         Ok(())
     }
 
+    /// Serialize with context of existing ordered sga and existing header buffer.
+    #[inline]
+    fn serialize_into_sga<'sge>(
+        &self,
+        ordered_sga: &mut OrderedRcSga<'sge, D>,
+        datapath: &D,
+    ) -> Result<()>
+    where
+        'obj: 'sge,
+    {
+        let mut owned_hdr = {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("alloc hdr");
+            self.alloc_hdr()
+        };
+        tracing::debug!("Header size: {}", owned_hdr.len());
+        let header_buffer = owned_hdr.as_mut_slice();
+        self.serialize_into_sga_with_hdr(header_buffer, ordered_sga, datapath)?;
+        ordered_sga.set_hdr(owned_hdr);
+
+        Ok(())
+    }
+
     #[inline]
     fn partially_serialize_into_arena_sga_with_hdr<'sge>(
         &self,
         header_buffer: &mut [u8],
-        ordered_sga: &mut ArenaOrderedSga<'sge>,
+        ordered_sga: &mut ArenaOrderedRcSga<'sge, D>,
     ) -> Result<()>
     where
         'obj: 'sge,
@@ -341,7 +359,7 @@ pub trait SgaHeaderRepr<'obj> {
         }
         ordered_sga.set_length(required_entries);
 
-        let header_size = self.total_header_size(false, true);
+        let header_size = self.total_header_size(false);
         if header_buffer.len() < header_size {
             bail!(
                 "Cannot serialize into header with smaller than {} len, given: {:?}",
@@ -365,20 +383,19 @@ pub trait SgaHeaderRepr<'obj> {
             )?;
         }
 
-        ordered_sga.set_header_offsets(self.total_header_size(false, false));
+        ordered_sga.set_header_offsets(self.total_header_size(false));
         Ok(())
     }
 
     #[inline]
-    fn serialize_into_arena_sga_with_hdr<'sge, D>(
+    fn serialize_into_arena_sga_with_hdr<'sge>(
         &self,
         header_buffer: &mut [u8],
-        ordered_sga: &mut ArenaOrderedSga<'sge>,
+        ordered_sga: &mut ArenaOrderedRcSga<'sge, D>,
         datapath: &D,
         with_copy: bool,
     ) -> Result<()>
     where
-        D: Datapath,
         'obj: 'sge,
     {
         let required_entries = self.num_scatter_gather_entries();
@@ -390,7 +407,7 @@ pub trait SgaHeaderRepr<'obj> {
             );
         }
 
-        let header_size = self.total_header_size(false, true);
+        let header_size = self.total_header_size(false);
         if header_buffer.len() < header_size {
             bail!(
                 "Cannot serialize into header with smaller than {} len, given: {:?}",
@@ -423,7 +440,7 @@ pub trait SgaHeaderRepr<'obj> {
                 ordered_sga.reorder_by_size_and_registration(datapath, with_copy)?;
             }
         }
-        let mut cur_dynamic_offset = self.total_header_size(false, false);
+        let mut cur_dynamic_offset = self.total_header_size(false);
 
         tracing::debug!(starting_offsets = cur_dynamic_offset, "starting offsets");
         // iterate over header, writing in forward pointers based on new ordering
@@ -456,7 +473,7 @@ pub trait SgaHeaderRepr<'obj> {
     #[inline]
     fn partially_serialize_into_arena_sga<'sge>(
         &self,
-        ordered_sga: &mut ArenaOrderedSga<'sge>,
+        ordered_sga: &mut ArenaOrderedRcSga<'sge, D>,
         arena: &'sge bumpalo::Bump,
     ) -> Result<()>
     where
@@ -465,7 +482,7 @@ pub trait SgaHeaderRepr<'obj> {
         let mut owned_hdr = {
             #[cfg(feature = "profiler")]
             perftools::timer!("alloc hdr");
-            let size = self.total_header_size(false, true);
+            let size = self.total_header_size(false);
             bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
         tracing::debug!("Header size: {}", owned_hdr.len());
@@ -475,23 +492,21 @@ pub trait SgaHeaderRepr<'obj> {
 
         Ok(())
     }
-
     #[inline]
-    fn serialize_into_arena_sga<'sge, D>(
+    fn serialize_into_arena_sga<'sge>(
         &self,
-        ordered_sga: &mut ArenaOrderedSga<'sge>,
+        ordered_sga: &mut ArenaOrderedRcSga<'sge, D>,
         datapath: &D,
         arena: &'sge bumpalo::Bump,
         with_copy: bool,
     ) -> Result<()>
     where
-        D: Datapath,
         'obj: 'sge,
     {
         let mut owned_hdr = {
             #[cfg(feature = "profiler")]
             perftools::timer!("alloc hdr");
-            let size = self.total_header_size(false, true);
+            let size = self.total_header_size(false);
             bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
         tracing::debug!("Header size: {}", owned_hdr.len());
@@ -502,93 +517,97 @@ pub trait SgaHeaderRepr<'obj> {
         Ok(())
     }
 
-    /// Serialize with context of existing ordered sga and existing header buffer.
     #[inline]
-    fn serialize_into_sga<'sge, D>(
-        &self,
-        ordered_sga: &mut OrderedSga<'sge>,
-        datapath: &D,
-    ) -> Result<()>
-    where
-        D: Datapath,
-        'obj: 'sge,
-    {
-        let mut owned_hdr = {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("alloc hdr");
-            self.alloc_hdr()
-        };
-        tracing::debug!("Header size: {}", owned_hdr.len());
-        let header_buffer = owned_hdr.as_mut_slice();
-        self.serialize_into_sga_with_hdr(header_buffer, ordered_sga, datapath)?;
-        ordered_sga.set_hdr(owned_hdr);
-
+    fn deserialize_from_pkt(
+        &mut self,
+        packet: &ReceivedPkt<D>,
+        framing_offset: usize,
+    ) -> Result<()> {
+        let packet_len = packet.data_len();
+        let metadata = packet
+            .contiguous_datapath_metadata(framing_offset, packet_len - framing_offset)?
+            .unwrap();
+        let rc_sge = RcSge::RefCounted(metadata);
+        self.inner_deserialize(&rc_sge, 0)?;
         Ok(())
     }
 
-    /// Deserialize contiguous buffer into this object.
-    #[inline]
-    fn deserialize<'buf>(&mut self, buffer: &'buf [u8]) -> Result<()>
+    fn deserialize_from_buf<'buf>(&mut self, buf: &'buf [u8]) -> Result<()>
     where
         'buf: 'obj,
     {
-        tracing::debug!("buf addr: {:?}", buffer.as_ptr());
-        self.inner_deserialize(buffer, 0)?;
+        let rc_sge = RcSge::RawRef(buf);
+        self.inner_deserialize(&rc_sge, 0)?;
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub struct CFString<'obj> {
-    pub ptr: &'obj [u8],
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CFString<'obj, D>
+where
+    D: Datapath,
+{
+    ptr: RcSge<'obj, D>,
 }
 
-impl<'obj> CFString<'obj> {
+impl<'obj, D> CFString<'obj, D>
+where
+    D: Datapath,
+{
+    /// Constructs a new raw cf string from a string pointer.
     #[inline]
-    pub fn new(ptr: &'obj str) -> Self {
+    pub fn new_from_str(ptr: &'obj str) -> Self {
         CFString {
-            ptr: ptr.as_bytes(),
+            ptr: RcSge::RawRef(ptr.as_bytes()),
         }
     }
 
+    /// Constructs a raw cf string from bytes.
     #[inline]
     pub fn new_from_bytes(ptr: &'obj [u8]) -> Self {
-        CFString { ptr: ptr }
+        CFString {
+            ptr: RcSge::RawRef(ptr),
+        }
     }
 
+    /// Transparently constructs from bytes, recovering datapath metadata if possible.
     #[inline]
-    pub fn bytes(&self) -> &'obj [u8] {
-        self.ptr
+    pub fn new(buf: &'obj [u8], datapath: &D) -> Result<Self> {
+        let rc_sge = match datapath.recover_metadata(buf)? {
+            Some(m) => RcSge::RefCounted(m),
+            None => RcSge::RawRef(buf),
+        };
+        Ok(CFString { ptr: rc_sge })
     }
 
-    #[inline]
-    pub fn as_str(&self) -> &'obj str {
-        std::str::from_utf8(self.ptr).unwrap()
-    }
-
-    #[inline]
     pub fn len(&self) -> usize {
         self.ptr.len()
+    }
+
+    pub fn to_str(&self) -> Result<&str> {
+        let slice = self.ptr.as_ref();
+        let s = str::from_utf8(slice).wrap_err("Could not turn bytes into string")?;
+        Ok(s)
     }
 
     /// Assumes that the string is utf8-encoded.
-    #[inline]
-    pub fn to_string(&self) -> String {
-        str::from_utf8(self.ptr).unwrap().to_string()
+    pub fn to_string(&self) -> Result<String> {
+        let s = self.to_str()?;
+        Ok(s.to_string())
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        self.ptr.as_ref()
     }
 }
 
-impl<'obj> Default for CFString<'obj> {
-    #[inline]
-    fn default() -> Self {
-        CFString { ptr: &[] }
-    }
-}
-
-impl<'obj> SgaHeaderRepr<'obj> for CFString<'obj> {
+impl<'obj, D> RcSgaHeaderRepr<'obj, D> for CFString<'obj, D>
+where
+    D: Datapath,
+{
     const NUMBER_OF_FIELDS: usize = 1;
 
-    const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
+    const CONSTANT_HEADER_SIZE: usize = SIZE_FIELD + OFFSET_FIELD;
 
     const NUM_U32_BITMAPS: usize = 0;
 
@@ -617,8 +636,8 @@ impl<'obj> SgaHeaderRepr<'obj> for CFString<'obj> {
         0
     }
 
-    fn check_deep_equality(&self, other: &CFString) -> bool {
-        self.len() == other.len() && self.bytes().to_vec() == other.bytes().to_vec()
+    fn check_deep_equality(&self, other: &CFString<D>) -> bool {
+        self.len() == other.len() && self.as_bytes().to_vec() == other.as_bytes().to_vec()
     }
 
     #[inline]
@@ -627,67 +646,75 @@ impl<'obj> SgaHeaderRepr<'obj> for CFString<'obj> {
         _header: &mut [u8],
         constant_header_offset: usize,
         _dynamic_header_start: usize,
-        scatter_gather_entries: &mut [Sge<'sge>],
+        scatter_gather_entries: &mut [RcSge<'sge, D>],
         offsets: &mut [usize],
     ) -> Result<()>
     where
         'obj: 'sge,
     {
-        scatter_gather_entries[0] = Sge::new(self.ptr);
+        scatter_gather_entries[0] = self.ptr.clone();
         offsets[0] = constant_header_offset;
         Ok(())
     }
 
-    #[inline]
-    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], header_offset: usize) -> Result<()>
+    fn inner_deserialize<'buf>(
+        &mut self,
+        buffer: &RcSge<'buf, D>,
+        header_offset: usize,
+    ) -> Result<()>
     where
         'buf: 'obj,
     {
-        let forward_pointer = ForwardPointer(buffer, header_offset);
-        let offset = forward_pointer.get_offset() as usize;
+        let forward_pointer = ForwardPointer(buffer.addr(), header_offset);
+        let off = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
-        tracing::debug!(offset = offset, size = size, "Deserializing into cf bytes");
-        let ptr = &buffer[offset..(offset + size)];
-        self.ptr = ptr;
+        self.ptr = buffer.clone_with_bounds(off, size)?;
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub struct CFBytes<'obj> {
-    ptr: &'obj [u8],
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CFBytes<'obj, D>
+where
+    D: Datapath,
+{
+    ptr: RcSge<'obj, D>,
 }
 
-impl<'obj> CFBytes<'obj> {
-    #[inline]
-    pub fn new(ptr: &'obj [u8]) -> Self {
-        CFBytes { ptr: ptr }
+impl<'obj, D> CFBytes<'obj, D>
+where
+    D: Datapath,
+{
+    pub fn new_from_bytes(ptr: &'obj [u8]) -> Self {
+        CFBytes {
+            ptr: RcSge::RawRef(ptr),
+        }
     }
 
-    #[inline]
+    pub fn new(ptr: &'obj [u8], datapath: &D) -> Result<Self> {
+        let rc_sge = match datapath.recover_metadata(ptr)? {
+            Some(m) => RcSge::RefCounted(m),
+            None => RcSge::RawRef(ptr),
+        };
+        Ok(CFBytes { ptr: rc_sge })
+    }
+
     pub fn len(&self) -> usize {
         self.ptr.len()
     }
 
-    #[inline]
-    pub fn get_ptr(&self) -> &'obj [u8] {
-        self.ptr
+    pub fn as_bytes(&self) -> &[u8] {
+        self.ptr.as_ref()
     }
 }
 
-impl<'obj> Default for CFBytes<'obj> {
-    #[inline]
-    fn default() -> Self {
-        CFBytes {
-            ptr: Default::default(),
-        }
-    }
-}
-
-impl<'obj> SgaHeaderRepr<'obj> for CFBytes<'obj> {
+impl<'obj, D> RcSgaHeaderRepr<'obj, D> for CFBytes<'obj, D>
+where
+    D: Datapath,
+{
     const NUMBER_OF_FIELDS: usize = 1;
 
-    const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
+    const CONSTANT_HEADER_SIZE: usize = SIZE_FIELD + OFFSET_FIELD;
 
     const NUM_U32_BITMAPS: usize = 0;
 
@@ -716,20 +743,8 @@ impl<'obj> SgaHeaderRepr<'obj> for CFBytes<'obj> {
         0
     }
 
-    fn check_deep_equality(&self, other: &CFBytes) -> bool {
-        if self.len() != other.len() {
-            tracing::debug!(ours = self.len(), theirs = other.len(), "Lengths not equal");
-        }
-
-        if self.get_ptr().to_vec() != other.get_ptr().to_vec() {
-            tracing::debug!("ours: {:?} {:?}", self.get_ptr().as_ptr(), self.get_ptr());
-            tracing::debug!(
-                "theirs: {:?} {:?}",
-                other.get_ptr().as_ptr(),
-                other.get_ptr()
-            );
-        }
-        self.len() == other.len() && self.get_ptr().to_vec() == other.get_ptr().to_vec()
+    fn check_deep_equality(&self, other: &CFBytes<D>) -> bool {
+        self.len() == other.len() && self.as_bytes().to_vec() == other.as_bytes().to_vec()
     }
 
     #[inline]
@@ -738,44 +753,47 @@ impl<'obj> SgaHeaderRepr<'obj> for CFBytes<'obj> {
         _header: &mut [u8],
         constant_header_offset: usize,
         _dynamic_header_start: usize,
-        scatter_gather_entries: &mut [Sge<'sge>],
+        scatter_gather_entries: &mut [RcSge<'sge, D>],
         offsets: &mut [usize],
     ) -> Result<()>
     where
         'obj: 'sge,
     {
-        scatter_gather_entries[0] = Sge::new(self.ptr);
+        scatter_gather_entries[0] = self.ptr.clone();
         offsets[0] = constant_header_offset;
         Ok(())
     }
 
-    #[inline]
-    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], header_offset: usize) -> Result<()>
+    fn inner_deserialize<'buf>(
+        &mut self,
+        buffer: &RcSge<'buf, D>,
+        header_offset: usize,
+    ) -> Result<()>
     where
         'buf: 'obj,
     {
-        tracing::debug!("buffer addr: {:?}", buffer.as_ptr());
-        let forward_pointer = ForwardPointer(buffer, header_offset);
-        let offset = forward_pointer.get_offset() as usize;
+        let forward_pointer = ForwardPointer(buffer.addr(), header_offset);
+        let off = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
-        let ptr = &buffer[offset..(offset + size)];
-        self.ptr = ptr;
+        self.ptr = buffer.clone_with_bounds(off, size)?;
         Ok(())
     }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum List<'a, T>
+pub enum List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
+    D: Datapath,
 {
     Owned(OwnedList<T>),
-    Ref(RefList<'a, T>),
+    Ref(RefList<'a, T, D>),
 }
 
-impl<'a, T> Default for List<'a, T>
+impl<'a, T, D> Default for List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
+    D: Datapath,
 {
     #[inline]
     fn default() -> Self {
@@ -783,9 +801,10 @@ where
     }
 }
 
-impl<'a, T> Index<usize> for List<'a, T>
+impl<'a, T, D> Index<usize> for List<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
+    D: Datapath,
 {
     type Output = T;
     #[inline]
@@ -797,17 +816,18 @@ where
     }
 }
 
-impl<'obj, T> List<'obj, T>
+impl<'obj, T, D> List<'obj, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
+    D: Datapath,
 {
     #[inline]
-    pub fn init(size: usize) -> List<'obj, T> {
+    pub fn init(size: usize) -> Self {
         List::Owned(OwnedList::init(size))
     }
 
     #[inline]
-    pub fn init_ref() -> List<'obj, T> {
+    pub fn init_ref() -> Self {
         List::Ref(RefList::default())
     }
 
@@ -838,9 +858,10 @@ where
     }
 }
 
-impl<'obj, T> SgaHeaderRepr<'obj> for List<'obj, T>
+impl<'obj, T, D> RcSgaHeaderRepr<'obj, D> for List<'obj, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
+    D: Datapath,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
@@ -851,7 +872,9 @@ where
     #[inline]
     fn get_mut_bitmap_entry(&mut self, offset: usize) -> &mut Bitmap<32> {
         match self {
-            List::Owned(owned_list) => owned_list.get_mut_bitmap_entry(offset),
+            List::Owned(owned_list) => {
+                <OwnedList<T> as RcSgaHeaderRepr<'obj, D>>::get_mut_bitmap_entry(owned_list, offset)
+            }
             List::Ref(ref_list) => ref_list.get_mut_bitmap_entry(offset),
         }
     }
@@ -859,7 +882,9 @@ where
     #[inline]
     fn get_bitmap_entry(&self, offset: usize) -> &Bitmap<32> {
         match self {
-            List::Owned(owned_list) => owned_list.get_bitmap_entry(offset),
+            List::Owned(owned_list) => {
+                <OwnedList<T> as RcSgaHeaderRepr<'obj, D>>::get_bitmap_entry(owned_list, offset)
+            }
             List::Ref(ref_list) => ref_list.get_bitmap_entry(offset),
         }
     }
@@ -867,7 +892,9 @@ where
     #[inline]
     fn dynamic_header_size(&self) -> usize {
         match self {
-            List::Owned(owned_list) => owned_list.dynamic_header_size(),
+            List::Owned(owned_list) => {
+                <OwnedList<T> as RcSgaHeaderRepr<'obj, D>>::dynamic_header_size(owned_list)
+            }
             List::Ref(ref_list) => ref_list.dynamic_header_size(),
         }
     }
@@ -888,7 +915,7 @@ where
     }
 
     #[inline]
-    fn check_deep_equality(&self, other: &List<T>) -> bool {
+    fn check_deep_equality(&self, other: &Self) -> bool {
         if self.len() != other.len() {
             tracing::debug!(
                 "List length not equal, ours: {}, theirs: {}",
@@ -912,7 +939,7 @@ where
         header: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
-        scatter_gather_entries: &mut [Sge<'sge>],
+        scatter_gather_entries: &mut [RcSge<'sge, D>],
         offsets: &mut [usize],
     ) -> Result<()>
     where
@@ -937,7 +964,11 @@ where
     }
 
     #[inline]
-    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], header_offset: usize) -> Result<()>
+    fn inner_deserialize<'buf>(
+        &mut self,
+        buffer: &RcSge<'buf, D>,
+        header_offset: usize,
+    ) -> Result<()>
     where
         'buf: 'obj,
     {
@@ -1017,9 +1048,10 @@ where
     }
 }
 
-impl<'obj, T> SgaHeaderRepr<'obj> for OwnedList<T>
+impl<'obj, D, T> RcSgaHeaderRepr<'obj, D> for OwnedList<T>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
+    D: Datapath,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
@@ -1077,7 +1109,7 @@ where
         header: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
-        _scatter_gather_entries: &mut [Sge<'sge>],
+        _scatter_gather_entries: &mut [RcSge<'sge, D>],
         _offsets: &mut [usize],
     ) -> Result<()>
     where
@@ -1093,11 +1125,15 @@ where
     }
 
     #[inline]
-    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], header_offset: usize) -> Result<()>
+    fn inner_deserialize<'buf>(
+        &mut self,
+        buffer: &RcSge<'buf, D>,
+        header_offset: usize,
+    ) -> Result<()>
     where
         'buf: 'obj,
     {
-        let forward_pointer = ForwardPointer(buffer, header_offset);
+        let forward_pointer = ForwardPointer(buffer.addr(), header_offset);
         let list_size = forward_pointer.get_size() as usize;
         let offset = forward_pointer.get_offset() as usize;
         self.num_set = list_size;
@@ -1105,38 +1141,41 @@ where
         self.list_ptr = BytesMut::with_capacity(list_size * size_of::<T>());
         self.list_ptr
             .chunk_mut()
-            .copy_from_slice(&buffer[offset..(offset + list_size)]);
+            .copy_from_slice(&buffer.addr()[offset..(offset + list_size)]);
         Ok(())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RefList<'obj, T>
+pub struct RefList<'obj, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
+    D: Datapath,
 {
     num_space: usize,
-    list_ptr: &'obj [u8],
+    list_ptr: RcSge<'obj, D>,
     _marker: PhantomData<&'obj [T]>,
 }
 
-impl<'obj, T> Default for RefList<'obj, T>
+impl<'obj, T, D> Default for RefList<'obj, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
+    D: Datapath,
 {
     #[inline]
     fn default() -> Self {
         RefList {
             num_space: 0,
-            list_ptr: &[],
+            list_ptr: RcSge::RawRef(&[]),
             _marker: PhantomData,
         }
     }
 }
 
-impl<'obj, T> RefList<'obj, T>
+impl<'obj, T, D> RefList<'obj, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
+    D: Datapath,
 {
     #[inline]
     pub fn replace(&mut self, idx: usize, val: T) {
@@ -1151,22 +1190,25 @@ where
     // TODO: should this not be allowed? Would break ownership rules
     #[inline]
     fn write_val(&mut self, val_idx: usize, val: T) {
-        let offset = unsafe { (self.list_ptr.as_ptr() as *mut T).offset(val_idx as isize) };
+        let offset =
+            unsafe { (self.list_ptr.as_ref().as_ptr() as *mut T).offset(val_idx as isize) };
         let t_slice = unsafe { slice::from_raw_parts_mut(offset, 1) };
         t_slice[0] = val;
     }
 
     #[inline]
     fn read_val(&self, val_idx: usize) -> &T {
-        let offset = unsafe { (self.list_ptr.as_ptr() as *const T).offset(val_idx as isize) };
+        let offset =
+            unsafe { (self.list_ptr.as_ref().as_ptr() as *const T).offset(val_idx as isize) };
         let t_slice = unsafe { slice::from_raw_parts(offset, 1) };
         &t_slice[0]
     }
 }
 
-impl<'a, T> Index<usize> for RefList<'a, T>
+impl<'a, T, D> Index<usize> for RefList<'a, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
+    D: Datapath,
 {
     type Output = T;
     #[inline]
@@ -1175,9 +1217,10 @@ where
     }
 }
 
-impl<'obj, T> SgaHeaderRepr<'obj> for RefList<'obj, T>
+impl<'obj, D, T> RcSgaHeaderRepr<'obj, D> for RefList<'obj, T, D>
 where
     T: Default + Debug + Clone + PartialEq + Eq,
+    D: Datapath,
 {
     const NUMBER_OF_FIELDS: usize = 1;
 
@@ -1216,7 +1259,7 @@ where
     }
 
     #[inline]
-    fn check_deep_equality(&self, other: &RefList<T>) -> bool {
+    fn check_deep_equality(&self, other: &Self) -> bool {
         if self.len() != other.len() {
             return false;
         }
@@ -1235,7 +1278,7 @@ where
         header: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
-        _scatter_gather_entries: &mut [Sge<'sge>],
+        _scatter_gather_entries: &mut [RcSge<'sge, D>],
         _offsets: &mut [usize],
     ) -> Result<()>
     where
@@ -1246,40 +1289,46 @@ where
         forward_pointer.write_offset(dynamic_header_start as _);
         let list_slice = &mut header
             [dynamic_header_start..(dynamic_header_start + self.num_space * size_of::<T>())];
-        list_slice.copy_from_slice(&self.list_ptr[0..self.num_space * size_of::<T>()]);
+        list_slice.copy_from_slice(&self.list_ptr.as_ref()[0..self.num_space * size_of::<T>()]);
         Ok(())
     }
 
-    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], header_offset: usize) -> Result<()>
+    fn inner_deserialize<'buf>(
+        &mut self,
+        buffer: &RcSge<'buf, D>,
+        header_offset: usize,
+    ) -> Result<()>
     where
         'buf: 'obj,
     {
-        let forward_pointer = ForwardPointer(&buffer, header_offset);
+        let forward_pointer = ForwardPointer(&buffer.addr(), header_offset);
         let list_size = forward_pointer.get_size() as usize;
         let offset = forward_pointer.get_offset() as usize;
         self.num_space = list_size;
-        self.list_ptr = &buffer[offset as usize..(list_size * size_of::<T>())];
+        self.list_ptr = buffer.clone_with_bounds(offset as usize, list_size * size_of::<T>())?;
         Ok(())
     }
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
-pub struct VariableList<'obj, T>
+pub struct VariableList<'obj, T, D>
 where
-    T: SgaHeaderRepr<'obj> + Debug + Default + PartialEq + Eq + Clone,
+    T: RcSgaHeaderRepr<'obj, D> + Debug + Default + PartialEq + Eq + Clone,
+    D: Datapath,
 {
     num_space: usize,
     num_set: usize,
     elts: Vec<T>,
-    _phantom_data: PhantomData<&'obj [u8]>,
+    _phantom_data: PhantomData<(&'obj [u8], D)>,
 }
 
-impl<'obj, T> VariableList<'obj, T>
+impl<'obj, T, D> VariableList<'obj, T, D>
 where
-    T: SgaHeaderRepr<'obj> + Debug + Default + PartialEq + Eq + Clone,
+    T: RcSgaHeaderRepr<'obj, D> + Debug + Default + PartialEq + Eq + Clone,
+    D: Datapath,
 {
     #[inline]
-    pub fn init(num: usize) -> VariableList<'obj, T> {
+    pub fn init(num: usize) -> VariableList<'obj, T, D> {
         VariableList {
             num_space: num,
             num_set: 0,
@@ -1310,9 +1359,10 @@ where
         self.num_set
     }
 }
-impl<'obj, T> Index<usize> for VariableList<'obj, T>
+impl<'obj, T, D> Index<usize> for VariableList<'obj, T, D>
 where
-    T: SgaHeaderRepr<'obj> + Debug + Default + PartialEq + Eq + Clone,
+    T: RcSgaHeaderRepr<'obj, D> + Debug + Default + PartialEq + Eq + Clone,
+    D: Datapath,
 {
     type Output = T;
     fn index(&self, idx: usize) -> &Self::Output {
@@ -1321,9 +1371,10 @@ where
     }
 }
 
-impl<'obj, T> SgaHeaderRepr<'obj> for VariableList<'obj, T>
+impl<'obj, T, D> RcSgaHeaderRepr<'obj, D> for VariableList<'obj, T, D>
 where
-    T: SgaHeaderRepr<'obj> + Debug + Default + PartialEq + Eq + Clone,
+    T: RcSgaHeaderRepr<'obj, D> + Debug + Default + PartialEq + Eq + Clone,
+    D: Datapath,
 {
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
 
@@ -1394,7 +1445,7 @@ where
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
-        scatter_gather_entries: &mut [Sge<'sge>],
+        scatter_gather_entries: &mut [RcSge<'sge, D>],
         offsets: &mut [usize],
     ) -> Result<()>
     where
@@ -1445,11 +1496,15 @@ where
     }
 
     #[inline]
-    fn inner_deserialize<'buf>(&mut self, buffer: &'buf [u8], constant_offset: usize) -> Result<()>
+    fn inner_deserialize<'buf>(
+        &mut self,
+        buffer: &RcSge<'buf, D>,
+        constant_offset: usize,
+    ) -> Result<()>
     where
         'buf: 'obj,
     {
-        let forward_pointer = ForwardPointer(buffer, constant_offset);
+        let forward_pointer = ForwardPointer(buffer.addr(), constant_offset);
         let size = forward_pointer.get_size() as usize;
         let dynamic_offset = forward_pointer.get_offset() as usize;
 

@@ -123,6 +123,27 @@ where
         self.pkts.iter_mut()
     }
 
+    pub fn contiguous_datapath_metadata_from_buf(
+        &self,
+        buf: &[u8],
+    ) -> Result<Option<D::DatapathMetadata>> {
+        let buf_ptr = buf.as_ptr() as usize;
+        let buf_end = buf.as_ptr() as usize + buf.len();
+        for pkt in self.pkts.iter() {
+            let ref_buf = pkt.as_ref().as_ptr() as usize;
+            let ref_buf_end = pkt.as_ref().as_ptr() as usize + pkt.data_len();
+            if buf_ptr >= ref_buf && buf_end < ref_buf_end {
+                let mut cloned_metadata = pkt.clone();
+                cloned_metadata.set_data_len_and_offset(
+                    buf.len(),
+                    cloned_metadata.offset() + (buf_ptr - ref_buf),
+                )?;
+                return Ok(Some(cloned_metadata));
+            }
+        }
+        return Ok(None);
+    }
+
     /// Given a start index and length, return a datapath metadata object referring to the given
     /// contiguous slice within the packet if it exists.
     /// Arguments:
@@ -388,6 +409,11 @@ pub trait Datapath {
     /// Args:
     /// @buf: Datapath buffer object.
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>>;
+
+    /// Takes a buffer and recovers underlying metadata if it is refcounted.
+    /// Args:
+    /// @buf: Buffer.
+    fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>>;
 
     /// Elastically add a memory pool with a particular size.
     /// Will add a new region of memory registered with the NIC.

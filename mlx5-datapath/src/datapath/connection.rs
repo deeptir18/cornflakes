@@ -3440,6 +3440,11 @@ impl Datapath for Mlx5Connection {
         MbufMetadata::from_buf(buf)
     }
 
+    #[inline]
+    fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>> {
+        self.allocator.recover_metadata(buf)
+    }
+
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {
         // use 2MB pages for data, 2MB pages for metadata (?)
         let metadata_pgsize = match min_elts > 8192 {
