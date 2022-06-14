@@ -22,7 +22,7 @@ macro_rules! run_server(
 
         // init ycsb load generator
         let load_generator = YCSBServerLoader::new($opt.value_size, $opt.num_values, $opt.num_keys, $opt.allocate_contiguously);
-        let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type)?;
+        let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type, false)?;
         kv_server.init(&mut connection)?;
         kv_server.run_state_machine(&mut connection)?;
     }

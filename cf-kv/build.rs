@@ -34,7 +34,7 @@ fn main() {
     match compile(
         input_cf_file_sga.as_path().to_str().unwrap(),
         &out_dir,
-        CompileOptions::new(HeaderType::Sga, Language::Rust),
+        CompileOptions::new_with_datapath_param(HeaderType::RcSga, Language::Rust),
     ) {
         Ok(_) => {}
         Err(e) => {

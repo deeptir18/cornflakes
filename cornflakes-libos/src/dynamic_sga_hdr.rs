@@ -141,7 +141,7 @@ pub trait SgaHeaderRepr<'obj> {
                 Bitmap::<32>::from_value(num)
             }),
         );
-        bitmap_size as usize
+        bitmap_size as usize * 4
     }
 
     fn check_deep_equality(&self, other: &Self) -> bool;

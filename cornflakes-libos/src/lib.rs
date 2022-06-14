@@ -1492,13 +1492,38 @@ impl<'a> ArenaOrderedSga<'a> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum RcSge<'a, D>
 where
     D: datapath::Datapath,
 {
     RawRef(&'a [u8]),
     RefCounted(D::DatapathMetadata),
+}
+
+impl<'a, D> Default for RcSge<'a, D>
+where
+    D: datapath::Datapath,
+{
+    fn default() -> RcSge<'a, D> {
+        RcSge::RawRef(&[])
+    }
+}
+
+impl<'a, D> std::fmt::Debug for RcSge<'a, D>
+where
+    D: datapath::Datapath,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RcSge::RawRef(ptr) => {
+                write!(f, "RcSge::RawRef: {:?}", ptr.as_ptr())
+            }
+            RcSge::RefCounted(ptr) => {
+                write!(f, "RcSge::RefCounted: {:?}", ptr)
+            }
+        }
+    }
 }
 
 impl<'a, D> Clone for RcSge<'a, D>
@@ -1510,15 +1535,6 @@ where
             RcSge::RawRef(buf) => RcSge::RawRef(buf),
             RcSge::RefCounted(metadata) => RcSge::RefCounted(metadata.clone()),
         }
-    }
-}
-
-impl<'a, D> Default for RcSge<'a, D>
-where
-    D: datapath::Datapath,
-{
-    fn default() -> Self {
-        RcSge::RawRef(&[])
     }
 }
 
@@ -1572,7 +1588,16 @@ where
             RcSge::RawRef(buf) => Ok(RcSge::RawRef(&buf[off..(off + size)])),
             RcSge::RefCounted(metadata) => {
                 let mut new_metadata = metadata.clone();
-                new_metadata.set_data_len_and_offset(metadata.offset() + off, size)?;
+                tracing::debug!(
+                    old_offset = metadata.offset(),
+                    old_size = metadata.data_len(),
+                    new_offset = metadata.offset() + off,
+                    new_size = size,
+                    "Cloning with bounds: {:?}",
+                    metadata
+                );
+                new_metadata.set_data_len_and_offset(size, metadata.offset() + off)?;
+                tracing::debug!("New metadata: {:?}", new_metadata);
                 Ok(RcSge::RefCounted(new_metadata))
             }
         }
@@ -2047,7 +2072,7 @@ where
     #[inline]
     pub fn reorder_by_size_and_registration_and_finish_serialization<M>(
         &mut self,
-        allocator: &allocator::MemoryPoolAllocator<M>,
+        _allocator: &allocator::MemoryPoolAllocator<M>,
         copying_threshold: usize,
         buffers: &mut [Option<D::DatapathMetadata>],
         with_copy: bool,
@@ -2174,7 +2199,7 @@ where
     #[inline]
     pub fn reorder_by_size_and_registration(
         &mut self,
-        datapath: &D,
+        _datapath: &D,
         with_copy: bool,
     ) -> Result<()> {
         if with_copy {

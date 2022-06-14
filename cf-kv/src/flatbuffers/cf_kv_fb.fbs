@@ -56,3 +56,46 @@ table PutResp {
     id:uint32;
 }
 
+table AddUser {
+    keys:[Value];
+    values:[Value];
+}
+
+table AddUserResponse {
+    first_value:[ubyte];
+}
+
+table FollowUnfollow {
+    keys:[Value];
+    values:[Value];
+}
+
+table FollowUnfollowResponse {
+    original_values:[Value];
+}
+
+table PostTweet {
+    keys:[Value];
+    values:[Value];
+}
+
+table PostTweetResponse {
+    values:[Value];
+}
+
+table GetTimeline {
+    keys:[Value];
+}
+
+table GetTimelineResponse {
+    values:[Value];
+}
+
+table RetwisMessage {
+    get_requests:[GetReq]
+    put_requests:[PutReq]
+}
+
+table RetwisResponse {
+    get_responses:[GetResp]
+}

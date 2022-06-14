@@ -1,0 +1,40 @@
+// TODO: make one that is more realistic?
+pub enum RetwisValueSizeGenerator {
+    UniformOverSizes(Vec<usize>),
+    UniformOverRange(usize, usize), 
+}
+
+pub struct RetwisClient {
+    num_total_keys: usize,
+    key_length: usize,
+    zipf_coefficient: usize,
+    value_generator: RetwisValueSizeGenerator,
+    keys: Vec<String>,
+}
+
+impl RetwisClient {
+    pub fn new(total_keys: usize, key_length: usize, zipf_coefficient: usize, value_generator: RetwisValueSizeGenerator) -> Result<Self> {
+        ensure!(key_length >= 32, "Key length must atleast be 32");
+        let alphabet = "abcdefgjhikjlmnopqrstuvwxyz";
+        let keys: Vec<String> = 0..total_keys.map(|idx| { let key_name = format!("key_{}", idx);
+           let additional_chars = std::iter::repeat("a").take(key_length - key_name.len()).collect(); 
+        } ).collect();
+    }
+    pub fn set_num_total_keys(&mut self, keys: usize) {
+        self.num_total_keys = keys;
+    }
+
+    pub fn set_key_length(&mut self, key_length: usize) {
+        self.key_length = key_length;
+    }
+
+    pub fn set_zipf(&mut self, coeff: usize) {
+        self.coeff = zipf_coefficient;
+    }
+
+    pub fn set_value_generator(&mut self, gen: RetwisValueSizeGenerator) {
+        self.value_generator = gen;
+    }
+}
+
+

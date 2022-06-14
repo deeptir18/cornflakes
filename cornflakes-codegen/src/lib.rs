@@ -53,6 +53,7 @@ impl std::str::FromStr for Language {
 pub struct CompileOptions {
     pub header_type: HeaderType,
     pub language: Language,
+    pub needs_datapath_param: bool,
 }
 
 impl CompileOptions {
@@ -60,6 +61,15 @@ impl CompileOptions {
         CompileOptions {
             header_type: header_type,
             language: language,
+            needs_datapath_param: false,
+        }
+    }
+
+    pub fn new_with_datapath_param(header_type: HeaderType, language: Language) -> Self {
+        CompileOptions {
+            header_type: header_type,
+            language: language,
+            needs_datapath_param: true,
         }
     }
 }
@@ -111,6 +121,10 @@ pub fn compile(input_file: &str, output_folder: &str, options: CompileOptions) -
     }
     if options.header_type == HeaderType::Sga || options.header_type == HeaderType::RcSga {
         repr.set_lifetime_name("obj");
+    }
+
+    if options.needs_datapath_param {
+        repr.set_needs_datapath_param();
     }
     match options.language {
         Language::C => {

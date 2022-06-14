@@ -1,6 +1,6 @@
 use super::{
     allocate_datapath_buffer, kv_capnp, ClientSerializer, KVServer, ListKVServer, MsgType,
-    RequestGenerator, ServerLoadGenerator, REQ_TYPE_SIZE,
+    RequestGenerator, ServerLoadGenerator, ZeroCopyPutKVServer, REQ_TYPE_SIZE,
 };
 use bumpalo::Bump;
 use byteorder::{ByteOrder, LittleEndian};
@@ -46,15 +46,17 @@ where
     D: Datapath,
 {
     _phantom: PhantomData<D>,
+    zero_copy_puts: bool,
 }
 
 impl<D> CapnprotoSerializer<D>
 where
     D: Datapath,
 {
-    pub fn new() -> Self {
+    pub fn new(zero_copy_puts: bool) -> Self {
         CapnprotoSerializer {
             _phantom: PhantomData::default(),
+            zero_copy_puts: zero_copy_puts,
         }
     }
 
@@ -235,6 +237,7 @@ where
 {
     kv_server: KVServer<D>,
     list_kv_server: ListKVServer<D>,
+    zero_copy_put_kv_server: ZeroCopyPutKVServer<D>,
     mempool_ids: Vec<MempoolID>,
     serializer: CapnprotoSerializer<D>,
     push_buf_type: PushBufType,
@@ -250,17 +253,20 @@ where
         load_generator: L,
         datapath: &mut D,
         push_buf_type: PushBufType,
+        zero_copy_puts: bool,
     ) -> Result<Self>
     where
         L: ServerLoadGenerator,
     {
-        let (kv, list_kv, mempool_ids) = load_generator.new_kv_state(file, datapath)?;
+        let (kv, list_kv, zero_copy_put_kv, mempool_ids) =
+            load_generator.new_kv_state(file, datapath, zero_copy_puts)?;
         Ok(CapnprotoKVServer {
             kv_server: kv,
             list_kv_server: list_kv,
+            zero_copy_put_kv_server: zero_copy_put_kv,
             mempool_ids: mempool_ids,
             push_buf_type: push_buf_type,
-            serializer: CapnprotoSerializer::new(),
+            serializer: CapnprotoSerializer::new(zero_copy_puts),
             arena: bumpalo::Bump::with_capacity(
                 ArenaOrderedSga::arena_size(
                     D::batch_size(),
@@ -312,6 +318,9 @@ where
                     unimplemented!();
                 }
                 MsgType::AppendToList(size) => {
+                    unimplemented!();
+                }
+                _ => {
                     unimplemented!();
                 }
             }?;
@@ -413,65 +422,49 @@ where
         }
     }
 
-    fn check_recved_msg<L>(
-        &self,
-        buf: &[u8],
-        _datapath: &D,
-        request_generator: &L,
-        request: &L::RequestLine,
-        ref_kv: &HashMap<String, String>,
-        ref_list_kv: &HashMap<String, Vec<String>>,
-    ) -> Result<()>
-    where
-        L: RequestGenerator,
-    {
+    fn deserialize_get_response(&self, buf: &[u8]) -> Result<Vec<u8>> {
         let segment_array_vec = read_context(buf)?;
         let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
         let message_reader = Reader::new(segment_array, ReaderOptions::default());
-        match request_generator.message_type(request)? {
-            MsgType::Get => {
-                let get_resp = message_reader
-                    .get_root::<kv_capnp::get_resp::Reader>()
-                    .wrap_err("Failed to deserialize GetResp.")?;
-                let val = get_resp
-                    .get_val()
-                    .wrap_err("deserialized get response does not have value")?;
-                request_generator.check_get(request, &val, ref_kv)?;
-            }
-            MsgType::Put => {}
-            MsgType::GetM(_size) => {
-                /*let mut getm_resp = GetMResp::new();
-                getm_resp.deserialize(buf)?;
-                ensure!(
-                    getm_resp.has_vals(),
-                    "GetM Response does not have value list"
-                );
-                let vec: Vec<&[u8]> = getm_resp
-                    .get_vals()
-                    .iter()
-                    .map(|cf_bytes| cf_bytes.get_ptr())
-                    .collect();
-                request_generator.check_getm(request, vec, ref_kv)?;*/
-            }
-            MsgType::PutM(_size) => {}
-            MsgType::GetList(_size) => {
-                /*let mut getlist_resp = GetListResp::new();
-                getlist_resp.deserialize(buf)?;
-                ensure!(
-                    getlist_resp.has_val_list(),
-                    "Get List Response does not have value list"
-                );
-                let vec: Vec<&[u8]> = getlist_resp
-                    .get_val_list()
-                    .iter()
-                    .map(|cf_bytes| cf_bytes.get_ptr())
-                    .collect();
-                request_generator.check_get_list(request, vec, ref_list_kv)?;*/
-            }
-            MsgType::PutList(_size) => {}
-            MsgType::AppendToList(_size) => {}
+        let get_resp = message_reader
+            .get_root::<kv_capnp::get_resp::Reader>()
+            .wrap_err("Failed to deserialize GetResp.")?;
+        if get_resp.has_val() {
+            let val = get_resp
+                .get_val()
+                .wrap_err("deserialized get response does not have value")?;
+            return Ok(val.to_vec());
+        } else {
+            return Ok(vec![]);
         }
-        Ok(())
+    }
+
+    fn deserialize_getm_response(&self, buf: &[u8]) -> Result<Vec<Vec<u8>>> {
+        unimplemented!();
+    }
+
+    fn deserialize_getlist_response(&self, buf: &[u8]) -> Result<Vec<Vec<u8>>> {
+        unimplemented!();
+    }
+
+    fn check_add_user_num_values(&self, buf: &[u8]) -> Result<usize> {
+        unimplemented!();
+    }
+
+    fn check_follow_unfollow_num_values(&self, buf: &[u8]) -> Result<usize> {
+        unimplemented!();
+    }
+
+    fn check_post_tweet_num_values(&self, buf: &[u8]) -> Result<usize> {
+        unimplemented!();
+    }
+
+    fn check_get_timeline_num_values(&self, buf: &[u8]) -> Result<usize> {
+        unimplemented!();
+    }
+
+    fn check_retwis_response_num_values(&self, buf: &[u8]) -> Result<usize> {
+        unimplemented!();
     }
 
     fn serialize_get(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize> {

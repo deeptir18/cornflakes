@@ -762,11 +762,11 @@ fn add_deserialization_func(
     compiler.add_context(Context::Function(func_context))?;
 
     // copy bitmap
-    compiler.add_func_call(
-        Some("self".to_string()),
-        "deserialize_bitmap",
-        vec!["buffer".to_string(), "header_offset".to_string()],
+    compiler.add_def_with_let(
         false,
+        None,
+        "bitmap_size",
+        "self.deserialize_bitmap(buffer, header_offset)",
     )?;
 
     let constant_off_mut = msg_info.constant_fields_left(-1) > 1;
@@ -774,7 +774,7 @@ fn add_deserialization_func(
         constant_off_mut,
         None,
         "cur_constant_offset",
-        "header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length()",
+        "header_offset + BITMAP_LENGTH_FIELD + bitmap_size",
     )?;
     for field_idx in 0..msg_info.num_fields() {
         let field_info = msg_info.get_field_from_id(field_idx as i32)?;

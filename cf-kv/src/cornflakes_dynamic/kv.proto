@@ -1,5 +1,5 @@
 syntax = "proto3";
-package kv_sga_cornflakes;
+package kv_rcsga_cornflakes;
 
 message GetReq {
     uint32 id = 1;
@@ -51,4 +51,47 @@ message PutListReq {
 
 message PutResp {
     uint32 id = 1;
+}
+
+message AddUser {
+    repeated string keys = 1;
+    repeated bytes values = 2;
+}
+
+message AddUserResponse {
+    bytes first_value = 1;
+}
+
+message FollowUnfollow {
+    repeated string keys = 1;
+    repeated bytes values = 2;
+}
+
+message FollowUnfollowResponse {
+    repeated bytes original_values = 1;
+}
+
+message PostTweet {
+    repeated string keys = 1;
+    repeated bytes values = 2;
+}
+message PostTweetResponse {
+    repeated bytes values = 1;
+}
+
+message GetTimeline {
+    repeated string keys = 1;
+}
+
+message GetTimelineResponse {
+    repeated bytes values = 1;
+}
+
+message RetwisMessage {
+    repeated GetReq get_requests = 1;
+    repeated PutReq put_requests = 2;
+}
+
+message RetwisResponse {
+    repeated GetResp get_responses = 1;
 }

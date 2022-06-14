@@ -244,7 +244,7 @@ where
         &mut self,
         sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
         _datapath: &<Self as ClientSM>::Datapath,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // if in debug mode, check whether the bytes are what they should be
         tracing::debug!(id = sga.msg_id(), size = sga.data_len(), "Received sga");
         if cfg!(debug_assertions) {
@@ -258,7 +258,7 @@ where
                 tracing::info!(id = sga.msg_id(), "Passed test");
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {

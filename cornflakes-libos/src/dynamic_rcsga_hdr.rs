@@ -1,6 +1,6 @@
 use super::{
-    datapath::{Datapath, ReceivedPkt},
-    ArenaOrderedRcSga, OrderedRcSga, RcSga, RcSge,
+    datapath::{Datapath, MetadataOps, ReceivedPkt},
+    ArenaOrderedRcSga, OrderedRcSga, RcSge,
 };
 use bitmaps::Bitmap;
 use byteorder::{ByteOrder, LittleEndian};
@@ -13,6 +13,14 @@ use std::{
 
 #[cfg(feature = "profiler")]
 use perftools;
+
+#[inline]
+pub fn write_size_and_offset(write_offset: usize, size: usize, offset: usize, buffer: &mut [u8]) {
+    let mut forward_pointer = MutForwardPointer(buffer, write_offset);
+    tracing::debug!(write_offset, size, offset, "Writing in size and offset");
+    forward_pointer.write_size(size as u32);
+    forward_pointer.write_offset(offset as u32);
+}
 
 #[inline]
 pub fn read_size_and_offset<'buf, D>(
@@ -131,7 +139,11 @@ where
 
     /// Copies bitmap into object's bitmap, returning the space from offset that the bitmap
     /// in the serialized header format takes.
-    fn deserialize_bitmap(&mut self, header: &[u8], offset: usize) -> usize {
+    fn deserialize_bitmap<'buf>(&mut self, pkt: &RcSge<'buf, D>, offset: usize) -> usize
+    where
+        'buf: 'obj,
+    {
+        let header = pkt.as_ref();
         let bitmap_size = LittleEndian::read_u32(&header[offset..(offset + BITMAP_LENGTH_FIELD)]);
         self.set_bitmap(
             (0..std::cmp::min(bitmap_size, Self::NUM_U32_BITMAPS as u32) as usize).map(|i| {
@@ -142,7 +154,7 @@ where
                 Bitmap::<32>::from_value(num)
             }),
         );
-        bitmap_size as usize
+        bitmap_size as usize * 4
     }
 
     fn check_deep_equality(&self, other: &Self) -> bool;
@@ -151,7 +163,7 @@ where
     fn dynamic_header_size(&self) -> usize;
 
     /// Total header size.
-    fn total_header_size(&self, with_ref: bool) -> usize {
+    fn total_header_size(&self, with_ref: bool, _with_bitmap: bool) -> usize {
         <Self as RcSgaHeaderRepr<D>>::CONSTANT_HEADER_SIZE * (with_ref as usize)
             + self.dynamic_header_size()
     }
@@ -175,7 +187,7 @@ where
 
     #[inline]
     fn alloc_hdr(&self) -> Vec<u8> {
-        vec![0u8; self.total_header_size(false)]
+        vec![0u8; self.total_header_size(false, false)]
     }
 
     /// Nested serialization function.
@@ -219,8 +231,12 @@ where
     fn serialize_into_buf(&self, datapath: &D, header_buffer: &mut [u8]) -> Result<usize> {
         let mut sga = self.alloc_sga();
         self.serialize_into_sga_with_hdr(header_buffer, &mut sga, datapath)?;
+        tracing::debug!(
+            "Finished serialize into header; total header size: {}",
+            self.total_header_size(false, false)
+        );
         // copy sga into header buffer
-        let header_size = self.total_header_size(false);
+        let header_size = self.total_header_size(false, false);
         let size = sga.copy_into_buffer(&mut header_buffer[header_size..])?;
         Ok(size + header_size)
     }
@@ -256,7 +272,7 @@ where
             );
         }
 
-        let header_size = self.total_header_size(false);
+        let header_size = self.total_header_size(false, false);
         if header_buffer.len() < header_size {
             bail!(
                 "Cannot serialize into header with smaller than {} len, given: {:?}",
@@ -268,6 +284,7 @@ where
         ordered_sga.set_length(required_entries);
         let mut offsets: Vec<usize> = vec![0; required_entries];
 
+        tracing::debug!("About to start recursive serialization for header buffer length {}, required_entries {}", header_size, required_entries);
         // recursive serialize each item
         {
             #[cfg(feature = "profiler")]
@@ -281,13 +298,14 @@ where
             )?;
         }
         // reorder entries according to size threshold and whether entries are registered.
+        tracing::debug!("Finished recursive serialization");
         {
             #[cfg(feature = "profiler")]
             perftools::timer!("reorder sga");
             ordered_sga.reorder_by_size_and_registration(datapath, &mut offsets)?;
             // reorder entries if current (zero-copy segments + 1) exceeds max zero-copy segments
         }
-        let mut cur_dynamic_offset = self.total_header_size(false);
+        let mut cur_dynamic_offset = self.total_header_size(false, false);
 
         tracing::debug!(starting_offsets = cur_dynamic_offset, "starting offsets");
         // iterate over header, writing in forward pointers based on new ordering
@@ -359,7 +377,7 @@ where
         }
         ordered_sga.set_length(required_entries);
 
-        let header_size = self.total_header_size(false);
+        let header_size = self.total_header_size(false, false);
         if header_buffer.len() < header_size {
             bail!(
                 "Cannot serialize into header with smaller than {} len, given: {:?}",
@@ -383,7 +401,7 @@ where
             )?;
         }
 
-        ordered_sga.set_header_offsets(self.total_header_size(false));
+        ordered_sga.set_header_offsets(self.total_header_size(false, false));
         Ok(())
     }
 
@@ -407,7 +425,7 @@ where
             );
         }
 
-        let header_size = self.total_header_size(false);
+        let header_size = self.total_header_size(false, false);
         if header_buffer.len() < header_size {
             bail!(
                 "Cannot serialize into header with smaller than {} len, given: {:?}",
@@ -439,8 +457,10 @@ where
                 perftools::timer!("reorder sga");
                 ordered_sga.reorder_by_size_and_registration(datapath, with_copy)?;
             }
+        } else {
+            ordered_sga.set_num_copy_entries(required_entries);
         }
-        let mut cur_dynamic_offset = self.total_header_size(false);
+        let mut cur_dynamic_offset = self.total_header_size(false, false);
 
         tracing::debug!(starting_offsets = cur_dynamic_offset, "starting offsets");
         // iterate over header, writing in forward pointers based on new ordering
@@ -482,7 +502,7 @@ where
         let mut owned_hdr = {
             #[cfg(feature = "profiler")]
             perftools::timer!("alloc hdr");
-            let size = self.total_header_size(false);
+            let size = self.total_header_size(false, false);
             bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
         tracing::debug!("Header size: {}", owned_hdr.len());
@@ -496,8 +516,8 @@ where
     fn serialize_into_arena_sga<'sge>(
         &self,
         ordered_sga: &mut ArenaOrderedRcSga<'sge, D>,
-        datapath: &D,
         arena: &'sge bumpalo::Bump,
+        datapath: &D,
         with_copy: bool,
     ) -> Result<()>
     where
@@ -506,7 +526,7 @@ where
         let mut owned_hdr = {
             #[cfg(feature = "profiler")]
             perftools::timer!("alloc hdr");
-            let size = self.total_header_size(false);
+            let size = self.total_header_size(false, false);
             bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
         tracing::debug!("Header size: {}", owned_hdr.len());
@@ -527,6 +547,11 @@ where
         let metadata = packet
             .contiguous_datapath_metadata(framing_offset, packet_len - framing_offset)?
             .unwrap();
+        tracing::debug!(
+            "deserializing data with length: {:?}, {}",
+            metadata.as_ref(),
+            metadata.data_len()
+        );
         let rc_sge = RcSge::RefCounted(metadata);
         self.inner_deserialize(&rc_sge, 0)?;
         Ok(())
@@ -542,12 +567,42 @@ where
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CFString<'obj, D>
 where
     D: Datapath,
 {
     ptr: RcSge<'obj, D>,
+}
+
+impl<'obj, D> Clone for CFString<'obj, D>
+where
+    D: Datapath,
+{
+    fn clone(&self) -> Self {
+        CFString {
+            ptr: self.ptr.clone(),
+        }
+    }
+}
+
+impl<'obj, D> Default for CFString<'obj, D>
+where
+    D: Datapath,
+{
+    fn default() -> Self {
+        CFString {
+            ptr: RcSge::default(),
+        }
+    }
+}
+
+impl<'obj, D> std::fmt::Debug for CFString<'obj, D>
+where
+    D: Datapath,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CFString").field("ptr", &self.ptr).finish()
+    }
 }
 
 impl<'obj, D> CFString<'obj, D>
@@ -668,17 +723,49 @@ where
         let forward_pointer = ForwardPointer(buffer.addr(), header_offset);
         let off = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
+        tracing::debug!(off, size, "Forward pointer");
         self.ptr = buffer.clone_with_bounds(off, size)?;
+        tracing::debug!("Buffer: {:?}, new ptr: {:?}", buffer, self.ptr);
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CFBytes<'obj, D>
 where
     D: Datapath,
 {
     ptr: RcSge<'obj, D>,
+}
+
+impl<'obj, D> Clone for CFBytes<'obj, D>
+where
+    D: Datapath,
+{
+    fn clone(&self) -> Self {
+        CFBytes {
+            ptr: self.ptr.clone(),
+        }
+    }
+}
+
+impl<'obj, D> Default for CFBytes<'obj, D>
+where
+    D: Datapath,
+{
+    fn default() -> Self {
+        CFBytes {
+            ptr: RcSge::default(),
+        }
+    }
+}
+
+impl<'obj, D> std::fmt::Debug for CFBytes<'obj, D>
+where
+    D: Datapath,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CFBytes").field("ptr", &self.ptr).finish()
+    }
 }
 
 impl<'obj, D> CFBytes<'obj, D>
@@ -1310,10 +1397,9 @@ where
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub struct VariableList<'obj, T, D>
 where
-    T: RcSgaHeaderRepr<'obj, D> + Debug + Default + PartialEq + Eq + Clone,
+    T: RcSgaHeaderRepr<'obj, D> + Clone + Default + std::fmt::Debug,
     D: Datapath,
 {
     num_space: usize,
@@ -1322,9 +1408,52 @@ where
     _phantom_data: PhantomData<(&'obj [u8], D)>,
 }
 
+impl<'obj, T, D> Clone for VariableList<'obj, T, D>
+where
+    T: RcSgaHeaderRepr<'obj, D> + Clone + Default + std::fmt::Debug,
+    D: Datapath,
+{
+    fn clone(&self) -> Self {
+        VariableList {
+            num_space: self.num_space,
+            num_set: self.num_set,
+            elts: self.elts.clone(),
+            _phantom_data: PhantomData,
+        }
+    }
+}
+
+impl<'obj, T, D> std::fmt::Debug for VariableList<'obj, T, D>
+where
+    T: RcSgaHeaderRepr<'obj, D> + Clone + Default + std::fmt::Debug,
+    D: Datapath,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VariableList<T>")
+            .field("num_space", &self.num_space)
+            .field("num_set", &self.num_set)
+            .field("elts", &self.elts)
+            .finish()
+    }
+}
+impl<'obj, T, D> Default for VariableList<'obj, T, D>
+where
+    T: RcSgaHeaderRepr<'obj, D> + Clone + Default + std::fmt::Debug,
+    D: Datapath,
+{
+    fn default() -> Self {
+        VariableList {
+            num_space: 0,
+            num_set: 0,
+            elts: vec![],
+            _phantom_data: PhantomData,
+        }
+    }
+}
+
 impl<'obj, T, D> VariableList<'obj, T, D>
 where
-    T: RcSgaHeaderRepr<'obj, D> + Debug + Default + PartialEq + Eq + Clone,
+    T: RcSgaHeaderRepr<'obj, D> + Clone + Default + std::fmt::Debug,
     D: Datapath,
 {
     #[inline]
@@ -1361,7 +1490,7 @@ where
 }
 impl<'obj, T, D> Index<usize> for VariableList<'obj, T, D>
 where
-    T: RcSgaHeaderRepr<'obj, D> + Debug + Default + PartialEq + Eq + Clone,
+    T: RcSgaHeaderRepr<'obj, D> + Clone + Default + std::fmt::Debug,
     D: Datapath,
 {
     type Output = T;
@@ -1373,7 +1502,7 @@ where
 
 impl<'obj, T, D> RcSgaHeaderRepr<'obj, D> for VariableList<'obj, T, D>
 where
-    T: RcSgaHeaderRepr<'obj, D> + Debug + Default + PartialEq + Eq + Clone,
+    T: RcSgaHeaderRepr<'obj, D> + Clone + Default + std::fmt::Debug,
     D: Datapath,
 {
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
@@ -1507,6 +1636,12 @@ where
         let forward_pointer = ForwardPointer(buffer.addr(), constant_offset);
         let size = forward_pointer.get_size() as usize;
         let dynamic_offset = forward_pointer.get_offset() as usize;
+        tracing::debug!(
+            constant_offset,
+            size,
+            dynamic_offset,
+            "Reading forward offset"
+        );
 
         self.num_set = size;
         if self.elts.len() < size {

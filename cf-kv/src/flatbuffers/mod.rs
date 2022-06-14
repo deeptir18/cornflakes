@@ -9,7 +9,7 @@ pub mod kv_api {
 }
 use super::{
     allocate_datapath_buffer, ClientSerializer, KVServer, ListKVServer, MsgType, RequestGenerator,
-    ServerLoadGenerator, REQ_TYPE_SIZE,
+    ServerLoadGenerator, ZeroCopyPutKVServer, REQ_TYPE_SIZE,
 };
 use color_eyre::eyre::{bail, ensure, Result};
 use cornflakes_libos::{
@@ -31,15 +31,17 @@ where
     D: Datapath,
 {
     _phantom: PhantomData<D>,
+    zero_copy_puts: bool,
 }
 
 impl<D> FlatbuffersSerializer<D>
 where
     D: Datapath,
 {
-    pub fn new() -> Self {
+    pub fn new(zero_copy_puts: bool) -> Self {
         FlatbuffersSerializer {
             _phantom: PhantomData::default(),
+            zero_copy_puts: zero_copy_puts,
         }
     }
 
@@ -213,18 +215,20 @@ where
     }*/
 }
 
-pub struct FlatbuffersKVServer<D>
+pub struct FlatbuffersKVServer<'fbb, D>
 where
     D: Datapath,
 {
     kv_server: KVServer<D>,
     list_kv_server: ListKVServer<D>,
+    zero_copy_put_kv_server: ZeroCopyPutKVServer<D>,
     mempool_ids: Vec<MempoolID>,
     serializer: FlatbuffersSerializer<D>,
     push_buf_type: PushBufType,
+    builder: FlatBufferBuilder<'fbb>,
 }
 
-impl<D> FlatbuffersKVServer<D>
+impl<'fbb, D> FlatbuffersKVServer<'fbb, D>
 where
     D: Datapath,
 {
@@ -233,22 +237,26 @@ where
         load_generator: L,
         datapath: &mut D,
         push_buf_type: PushBufType,
+        zero_copy_puts: bool,
     ) -> Result<Self>
     where
         L: ServerLoadGenerator,
     {
-        let (kv, list_kv, mempool_ids) = load_generator.new_kv_state(file, datapath)?;
+        let (kv, list_kv, zero_copy_put_kv, mempool_ids) =
+            load_generator.new_kv_state(file, datapath, zero_copy_puts)?;
         Ok(FlatbuffersKVServer {
             kv_server: kv,
             list_kv_server: list_kv,
+            zero_copy_put_kv_server: zero_copy_put_kv,
             mempool_ids: mempool_ids,
             push_buf_type: push_buf_type,
-            serializer: FlatbuffersSerializer::new(),
+            serializer: FlatbuffersSerializer::new(zero_copy_puts),
+            builder: FlatBufferBuilder::new(),
         })
     }
 }
 
-impl<D> ServerSM for FlatbuffersKVServer<D>
+impl<'fbb, D> ServerSM for FlatbuffersKVServer<'fbb, D>
 where
     D: Datapath,
 {
@@ -264,15 +272,14 @@ where
         sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
         datapath: &mut Self::Datapath,
     ) -> Result<()> {
-        let mut builder = FlatBufferBuilder::new();
         let pkts_len = sga.len();
         for (i, pkt) in sga.into_iter().enumerate() {
-            builder.reset();
+            self.builder.reset();
             let message_type = MsgType::from_packet(&pkt)?;
             match message_type {
                 MsgType::Get => {
                     self.serializer
-                        .handle_get(&self.kv_server, &pkt, &mut builder)?;
+                        .handle_get(&self.kv_server, &pkt, &mut self.builder)?;
                 }
                 MsgType::GetM(size) => {
                     unimplemented!();
@@ -292,9 +299,12 @@ where
                 MsgType::AppendToList(size) => {
                     unimplemented!();
                 }
+                _ => {
+                    unimplemented!();
+                }
             }
             datapath.queue_single_buffer_with_copy(
-                (pkt.msg_id(), pkt.conn_id(), &builder.finished_data()),
+                (pkt.msg_id(), pkt.conn_id(), &self.builder.finished_data()),
                 i == (pkts_len - 1),
             )?;
         }
@@ -323,63 +333,44 @@ where
         }
     }
 
-    fn check_recved_msg<L>(
-        &self,
-        buf: &[u8],
-        _datapath: &D,
-        request_generator: &L,
-        request: &L::RequestLine,
-        ref_kv: &HashMap<String, String>,
-        ref_list_kv: &HashMap<String, Vec<String>>,
-    ) -> Result<()>
-    where
-        L: RequestGenerator,
-    {
-        match request_generator.message_type(request)? {
-            MsgType::Get => {
-                let get_resp = get_root::<cf_kv_fbs::GetResp>(buf);
-                let val = match get_resp.val() {
-                    Some(x) => x,
-                    None => {
-                        bail!("Key not present in get response");
-                    }
-                };
-                request_generator.check_get(request, val, ref_kv)?;
+    fn deserialize_get_response(&self, buf: &[u8]) -> Result<Vec<u8>> {
+        let get_resp = get_root::<cf_kv_fbs::GetResp>(buf);
+        match get_resp.val() {
+            Some(x) => {
+                return Ok(x.to_vec());
             }
-            MsgType::Put => {}
-            MsgType::GetM(_size) => {
-                /*let mut getm_resp = GetMResp::new();
-                getm_resp.deserialize(buf)?;
-                ensure!(
-                    getm_resp.has_vals(),
-                    "GetM Response does not have value list"
-                );
-                let vec: Vec<&[u8]> = getm_resp
-                    .get_vals()
-                    .iter()
-                    .map(|cf_bytes| cf_bytes.get_ptr())
-                    .collect();
-                request_generator.check_getm(request, vec, ref_kv)?;*/
+            None => {
+                return Ok(vec![]);
             }
-            MsgType::PutM(_size) => {}
-            MsgType::GetList(_size) => {
-                /*let mut getlist_resp = GetListResp::new();
-                getlist_resp.deserialize(buf)?;
-                ensure!(
-                    getlist_resp.has_val_list(),
-                    "Get List Response does not have value list"
-                );
-                let vec: Vec<&[u8]> = getlist_resp
-                    .get_val_list()
-                    .iter()
-                    .map(|cf_bytes| cf_bytes.get_ptr())
-                    .collect();
-                request_generator.check_get_list(request, vec, ref_list_kv)?;*/
-            }
-            MsgType::PutList(_size) => {}
-            MsgType::AppendToList(_size) => {}
-        }
-        Ok(())
+        };
+    }
+
+    fn deserialize_getm_response(&self, buf: &[u8]) -> Result<Vec<Vec<u8>>> {
+        unimplemented!();
+    }
+
+    fn deserialize_getlist_response(&self, buf: &[u8]) -> Result<Vec<Vec<u8>>> {
+        unimplemented!();
+    }
+
+    fn check_add_user_num_values(&self, buf: &[u8]) -> Result<usize> {
+        unimplemented!();
+    }
+
+    fn check_follow_unfollow_num_values(&self, buf: &[u8]) -> Result<usize> {
+        unimplemented!();
+    }
+
+    fn check_post_tweet_num_values(&self, buf: &[u8]) -> Result<usize> {
+        unimplemented!();
+    }
+
+    fn check_get_timeline_num_values(&self, buf: &[u8]) -> Result<usize> {
+        unimplemented!();
+    }
+
+    fn check_retwis_response_num_values(&self, buf: &[u8]) -> Result<usize> {
+        unimplemented!();
     }
 
     fn serialize_get(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize> {

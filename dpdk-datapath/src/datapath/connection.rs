@@ -1576,6 +1576,10 @@ impl Datapath for DpdkConnection {
         Ok(Some(RteMbufMetadata::from_dpdk_buf(buf)))
     }
 
+    fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>> {
+        self.allocator.recover_metadata(buf)
+    }
+
     fn add_tx_mempool(&mut self, value_size: usize, min_elts: usize) -> Result<()> {
         let name = format!(
             "thread_{}_mempool_id_{}",
