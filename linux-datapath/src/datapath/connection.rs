@@ -8,7 +8,7 @@ use cornflakes_libos::{
 };
 use std::{io::Write, net::Ipv4Addr, time::Duration};
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone, Default)]
 pub struct MutableByteBuffer {
     buf: BytesMut,
 }
@@ -68,7 +68,7 @@ impl Write for MutableByteBuffer {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug, Default)]
 pub struct ByteBuffer {
     /// Actual data: not write-able.
     pub bytes: Bytes,

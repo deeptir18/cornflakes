@@ -548,6 +548,10 @@ impl YCSBClient {
         }
         Ok(())
     }
+
+    fn get_request(&self, line: &str) -> Result<<Self as RequestGenerator>::RequestLine> {
+        YCSBLine::new(line, self.num_keys, self.num_values, self.value_size)
+    }
 }
 
 impl RequestGenerator for YCSBClient {
@@ -580,7 +584,7 @@ impl RequestGenerator for YCSBClient {
         })
     }
 
-    fn next_line(&mut self) -> Result<Option<String>> {
+    fn next_request(&mut self) -> Result<Option<Self::RequestLine>> {
         loop {
             // find the next request with our client and thread id
             if self.cur_client_id == self.client_id && self.cur_thread_id == self.thread_id {
@@ -594,7 +598,7 @@ impl RequestGenerator for YCSBClient {
                                 self.line_id
                             );
                             self.increment();
-                            return Ok(Some(s));
+                            return Ok(Some(self.get_request(&s)?));
                         }
                         Err(e) => {
                             bail!("Could not get next line in iterator: {:?}", e);
@@ -613,17 +617,13 @@ impl RequestGenerator for YCSBClient {
         }
     }
 
-    fn get_request(&self, line: &str) -> Result<Self::RequestLine> {
-        YCSBLine::new(line, self.num_keys, self.num_values, self.value_size)
-    }
-
-    fn message_type(&self, req: &Self::RequestLine) -> Result<MsgType> {
+    fn message_type(&self, req: &<Self as RequestGenerator>::RequestLine) -> Result<MsgType> {
         Ok(req.msg_type())
     }
 
     fn serialize_request<S, D>(
         &self,
-        request: &Self::RequestLine,
+        request: &<Self as RequestGenerator>::RequestLine,
         buf: &mut [u8],
         serializer: &S,
         datapath: &D,
@@ -689,10 +689,9 @@ impl RequestGenerator for YCSBClient {
         };
         Ok(bufsize + REQ_TYPE_SIZE)
     }
-
     fn check_response<S, D>(
         &self,
-        request: &Self::RequestLine,
+        request: &<Self as RequestGenerator>::RequestLine,
         buf: &[u8],
         serializer: &S,
         kv: &HashMap<String, String>,

@@ -17,8 +17,9 @@ use hashbrown::HashMap;
 use kv_serializer::*;
 
 use super::{
-    allocate_datapath_buffer, ClientSerializer, KVServer, ListKVServer, MsgType, RequestGenerator,
-    ServerLoadGenerator, ZeroCopyPutKVServer, REQ_TYPE_SIZE,
+    allocate_and_copy_into_datapath_buffer, allocate_datapath_buffer, ClientSerializer, KVServer,
+    ListKVServer, MsgType, RequestGenerator, ServerLoadGenerator, ZeroCopyPutKVServer,
+    REQ_TYPE_SIZE,
 };
 use color_eyre::eyre::{bail, ensure, Result};
 #[cfg(feature = "profiler")]
@@ -46,6 +47,13 @@ where
         }
     }
 
+    pub fn with_copies(&self) -> bool {
+        self.with_copies
+    }
+
+    pub fn zero_copy_puts(&self) -> bool {
+        self.zero_copy_puts
+    }
     pub fn set_with_copies(&mut self) {
         self.with_copies = true;
     }
@@ -257,47 +265,6 @@ where
         datapath: &mut D,
         arena: &'arena bumpalo::Bump,
     ) -> Result<ArenaOrderedRcSga<'arena, D>> {
-        /*let mut add_user = AddUser::new();
-        get_req.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
-
-        let mut add_user_response = AddUserResponse::new();
-        let value = match self.zero_copy_puts {
-            true => {
-                let value = zero_copy_puts_kv
-                    .remove(add_user.get_keys()[0].as_str())
-                    .unwrap();
-                add_user_response.set_first_value(CFBytes::new(value.as_ref(), &datapath)?);
-            }
-            false => {
-                let value = kv_server.remove(add_user.get_keys()[0].as_str()).unwrap();
-                add_user_response.set_first_value(CFBytes::new(value.as_ref(), &dataapth)?);
-                value
-            }
-        }
-
-        for (key, value) in add_user.get_keys().iter().zip(add_user.get_values().iter()) {
-            if self.zero_copy_puts {
-                zero_copy_puts_kv.insert_with_or_without_copies(
-                    key.as_str(),
-                    value.get_ptr(),
-                    pkt,
-                    datapath,
-                    mempool_ids,
-                    true,
-                )?;
-            } else {
-                kv_server.insert_with_copies(
-                    key.as_str(),
-                    value.get_ptr(),
-                    datapath,
-                    mempool_ids,
-                )?;
-            }
-        }
-        let mut arena_sga =
-            ArenaOrderedRcSga::allocate(add_user_response.num_scatter_gather_entries(), &arena);
-        add_user_response.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
-        Ok(arena_sga)*/
         unimplemented!();
     }
 
@@ -400,13 +367,14 @@ where
     ) -> Result<()> {
         let end = sga.len();
         for (i, pkt) in sga.into_iter().enumerate() {
-            tracing::debug!(
-                "Received packet with data {:?} and length {}",
-                pkt.seg(0).as_ref(),
-                pkt.data_len()
-            );
             let end_batch = i == (end - 1);
             let msg_type = MsgType::from_packet(&pkt)?;
+            tracing::debug!(
+                msg_type =? msg_type,
+                "Received packet with data {:?} ptr and length {}",
+                pkt.seg(0).as_ref().as_ptr(),
+                pkt.data_len()
+            );
             match msg_type {
                 MsgType::Get => {
                     let sga =
@@ -466,51 +434,335 @@ where
                         .queue_arena_ordered_rcsga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
                 }
                 MsgType::AddUser => {
-                    let sga = self.serializer.add_user(
-                        &mut self.kv_server,
-                        &mut self.zero_copy_put_kv_server,
-                        &mut self.mempool_ids,
-                        &pkt,
-                        datapath,
-                        &arena,
-                    )?;
-                    datapath
-                        .queue_arena_ordered_rcsga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
+                    let mut add_user = AddUser::<D>::new();
+                    add_user.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
+
+                    let mut add_user_response = AddUserResponse::<D>::new();
+                    match self.serializer.zero_copy_puts() {
+                        true => {
+                            let value = self
+                                .zero_copy_put_kv_server
+                                .remove(add_user.get_keys()[0].to_str()?)
+                                .unwrap();
+                            add_user_response
+                                .set_first_value(CFBytes::new(value.as_ref(), datapath)?);
+                            for (key, value) in
+                                add_user.get_keys().iter().zip(add_user.get_values().iter())
+                            {
+                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                    key.to_str()?,
+                                    value.as_bytes(),
+                                    &pkt,
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                    true,
+                                )?;
+                            }
+                            let mut arena_sga = ArenaOrderedRcSga::allocate(
+                                add_user_response.num_scatter_gather_entries(),
+                                &arena,
+                            );
+                            add_user_response.serialize_into_arena_sga(
+                                &mut arena_sga,
+                                arena,
+                                datapath,
+                                self.serializer.with_copies(),
+                            )?;
+                            datapath.queue_arena_ordered_rcsga(
+                                (pkt.msg_id(), pkt.conn_id(), arena_sga),
+                                end_batch,
+                            )?
+                        }
+                        false => {
+                            let value = self
+                                .kv_server
+                                .remove(add_user.get_keys()[0].to_str()?)
+                                .unwrap();
+                            add_user_response
+                                .set_first_value(CFBytes::new(value.as_ref(), datapath)?);
+                            for (key, value) in
+                                add_user.get_keys().iter().zip(add_user.get_values().iter())
+                            {
+                                self.kv_server.insert_with_copies(
+                                    key.to_str()?,
+                                    value.as_bytes(),
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                )?;
+                            }
+                            let mut arena_sga = ArenaOrderedRcSga::allocate(
+                                add_user_response.num_scatter_gather_entries(),
+                                &arena,
+                            );
+                            add_user_response.serialize_into_arena_sga(
+                                &mut arena_sga,
+                                arena,
+                                datapath,
+                                self.serializer.with_copies(),
+                            )?;
+
+                            datapath.queue_arena_ordered_rcsga(
+                                (pkt.msg_id(), pkt.conn_id(), arena_sga),
+                                end_batch,
+                            )?;
+                        }
+                    }
                 }
                 MsgType::FollowUnfollow => {
-                    let sga = self.serializer.follow_unfollow(
-                        &mut self.kv_server,
-                        &mut self.zero_copy_put_kv_server,
-                        &mut self.mempool_ids,
-                        &pkt,
-                        datapath,
-                        &arena,
-                    )?;
-                    datapath
-                        .queue_arena_ordered_rcsga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
+                    let mut follow_unfollow = FollowUnfollow::<D>::new();
+                    follow_unfollow.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
+
+                    let mut follow_unfollow_response = FollowUnfollowResponse::<D>::new();
+                    follow_unfollow_response.init_original_values(2);
+                    let response_vals = follow_unfollow_response.get_mut_original_values();
+                    match self.serializer.zero_copy_puts() {
+                        true => {
+                            let mut old_values: [D::DatapathMetadata; 2] = [
+                                D::DatapathMetadata::default(),
+                                D::DatapathMetadata::default(),
+                            ];
+                            for (i, (cf_key, value)) in follow_unfollow
+                                .get_keys()
+                                .iter()
+                                .zip(follow_unfollow.get_values().iter())
+                                .take(2)
+                                .enumerate()
+                            {
+                                let key = cf_key.to_str()?;
+                                let old_value = self.zero_copy_put_kv_server.remove(key).unwrap();
+                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                    key,
+                                    value.as_bytes(),
+                                    &pkt,
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                    true,
+                                )?;
+                                old_values[i] = old_value;
+                            }
+                            response_vals.append(CFBytes::new(old_values[0].as_ref(), datapath)?);
+                            response_vals.append(CFBytes::new(old_values[1].as_ref(), datapath)?);
+                            let mut arena_sga = ArenaOrderedRcSga::allocate(
+                                follow_unfollow_response.num_scatter_gather_entries(),
+                                &arena,
+                            );
+                            follow_unfollow_response.serialize_into_arena_sga(
+                                &mut arena_sga,
+                                arena,
+                                datapath,
+                                self.serializer.with_copies(),
+                            )?;
+
+                            datapath.queue_arena_ordered_rcsga(
+                                (pkt.msg_id(), pkt.conn_id(), arena_sga),
+                                end_batch,
+                            )?;
+                        }
+                        false => {
+                            let mut old_values: [D::DatapathBuffer; 2] =
+                                [D::DatapathBuffer::default(), D::DatapathBuffer::default()];
+                            for (i, (cf_key, value)) in follow_unfollow
+                                .get_keys()
+                                .iter()
+                                .zip(follow_unfollow.get_values().iter())
+                                .take(2)
+                                .enumerate()
+                            {
+                                let key = cf_key.to_str()?;
+                                let old_value = self.kv_server.remove(key).unwrap();
+                                self.kv_server.insert_with_copies(
+                                    key,
+                                    value.as_bytes(),
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                )?;
+                                old_values[i] = old_value;
+                            }
+                            response_vals.append(CFBytes::new(old_values[0].as_ref(), datapath)?);
+                            response_vals.append(CFBytes::new(old_values[1].as_ref(), datapath)?);
+                            let mut arena_sga = ArenaOrderedRcSga::allocate(
+                                follow_unfollow_response.num_scatter_gather_entries(),
+                                &arena,
+                            );
+                            follow_unfollow_response.serialize_into_arena_sga(
+                                &mut arena_sga,
+                                arena,
+                                datapath,
+                                self.serializer.with_copies(),
+                            )?;
+
+                            datapath.queue_arena_ordered_rcsga(
+                                (pkt.msg_id(), pkt.conn_id(), arena_sga),
+                                end_batch,
+                            )?;
+                        }
+                    }
                 }
                 MsgType::PostTweet => {
-                    let sga = self.serializer.post_tweet(
-                        &mut self.kv_server,
-                        &mut self.zero_copy_put_kv_server,
-                        &mut self.mempool_ids,
-                        &pkt,
-                        datapath,
-                        &arena,
-                    )?;
-                    datapath
-                        .queue_arena_ordered_rcsga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
+                    let mut post_tweet = FollowUnfollow::<D>::new();
+                    post_tweet.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
+
+                    let mut post_tweet_response = FollowUnfollowResponse::<D>::new();
+                    post_tweet_response.init_original_values(3);
+                    let response_vals = post_tweet_response.get_mut_original_values();
+                    match self.serializer.zero_copy_puts() {
+                        true => {
+                            let mut old_values: [D::DatapathMetadata; 3] = [
+                                D::DatapathMetadata::default(),
+                                D::DatapathMetadata::default(),
+                                D::DatapathMetadata::default(),
+                            ];
+                            for (i, (cf_key, value)) in post_tweet
+                                .get_keys()
+                                .iter()
+                                .zip(post_tweet.get_values().iter())
+                                .take(3)
+                                .enumerate()
+                            {
+                                let key = cf_key.to_str()?;
+                                let old_value = self.zero_copy_put_kv_server.remove(key).unwrap();
+                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                    key,
+                                    value.as_bytes(),
+                                    &pkt,
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                    true,
+                                )?;
+                                old_values[i] = old_value;
+                            }
+                            response_vals.append(CFBytes::new(old_values[0].as_ref(), datapath)?);
+                            response_vals.append(CFBytes::new(old_values[1].as_ref(), datapath)?);
+                            response_vals.append(CFBytes::new(old_values[2].as_ref(), datapath)?);
+                            for (cf_key, value) in post_tweet
+                                .get_keys()
+                                .iter()
+                                .zip(post_tweet.get_values().iter())
+                                .skip(3)
+                                .take(2)
+                            {
+                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                    cf_key.to_str()?,
+                                    value.as_bytes(),
+                                    &pkt,
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                    true,
+                                )?;
+                            }
+                            let mut arena_sga = ArenaOrderedRcSga::allocate(
+                                post_tweet_response.num_scatter_gather_entries(),
+                                &arena,
+                            );
+                            post_tweet_response.serialize_into_arena_sga(
+                                &mut arena_sga,
+                                arena,
+                                datapath,
+                                self.serializer.with_copies(),
+                            )?;
+
+                            datapath.queue_arena_ordered_rcsga(
+                                (pkt.msg_id(), pkt.conn_id(), arena_sga),
+                                end_batch,
+                            )?;
+                        }
+                        false => {
+                            let mut old_values: [D::DatapathBuffer; 3] = [
+                                D::DatapathBuffer::default(),
+                                D::DatapathBuffer::default(),
+                                D::DatapathBuffer::default(),
+                            ];
+                            for (i, (cf_key, value)) in post_tweet
+                                .get_keys()
+                                .iter()
+                                .zip(post_tweet.get_values().iter())
+                                .take(3)
+                                .enumerate()
+                            {
+                                let key = cf_key.to_str()?;
+                                let old_value = self.kv_server.remove(key).unwrap();
+                                self.kv_server.insert_with_copies(
+                                    key,
+                                    value.as_bytes(),
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                )?;
+                                old_values[i] = old_value;
+                            }
+                            response_vals.append(CFBytes::new(old_values[0].as_ref(), datapath)?);
+                            response_vals.append(CFBytes::new(old_values[1].as_ref(), datapath)?);
+                            response_vals.append(CFBytes::new(old_values[2].as_ref(), datapath)?);
+                            for (cf_key, value) in post_tweet
+                                .get_keys()
+                                .iter()
+                                .zip(post_tweet.get_values().iter())
+                                .skip(3)
+                                .take(2)
+                            {
+                                self.kv_server.insert_with_copies(
+                                    cf_key.to_str()?,
+                                    value.as_bytes(),
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                )?;
+                            }
+                            let mut arena_sga = ArenaOrderedRcSga::allocate(
+                                post_tweet_response.num_scatter_gather_entries(),
+                                &arena,
+                            );
+                            post_tweet_response.serialize_into_arena_sga(
+                                &mut arena_sga,
+                                arena,
+                                datapath,
+                                self.serializer.with_copies(),
+                            )?;
+
+                            datapath.queue_arena_ordered_rcsga(
+                                (pkt.msg_id(), pkt.conn_id(), arena_sga),
+                                end_batch,
+                            )?;
+                        }
+                    }
                 }
                 MsgType::GetTimeline(_) => {
-                    let sga = self.serializer.get_timeline(
-                        &self.kv_server,
-                        &self.zero_copy_put_kv_server,
-                        &pkt,
-                        datapath,
+                    let mut get_timeline = FollowUnfollow::<D>::new();
+                    get_timeline.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
+
+                    let mut get_timeline_response = FollowUnfollowResponse::<D>::new();
+                    get_timeline_response.init_original_values(get_timeline.get_keys().len());
+                    let response_vals = get_timeline_response.get_mut_original_values();
+                    for key in get_timeline.get_keys().iter() {
+                        let cf_bytes = match self.serializer.zero_copy_puts() {
+                            true => {
+                                let val = self.zero_copy_put_kv_server.get(key.to_str()?).unwrap();
+                                CFBytes::new(val.as_ref(), datapath)?
+                            }
+                            false => {
+                                let val = self.kv_server.get(key.to_str()?).unwrap();
+                                CFBytes::new(val.as_ref(), datapath)?
+                            }
+                        };
+                        response_vals.append(cf_bytes);
+                    }
+                    let mut arena_sga = ArenaOrderedRcSga::allocate(
+                        get_timeline_response.num_scatter_gather_entries(),
                         &arena,
+                    );
+                    get_timeline_response.serialize_into_arena_sga(
+                        &mut arena_sga,
+                        arena,
+                        datapath,
+                        self.serializer.with_copies(),
                     )?;
-                    datapath
-                        .queue_arena_ordered_rcsga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
+
+                    tracing::debug!(
+                        "Sending back get timeline response with msg id {}",
+                        pkt.msg_id()
+                    );
+                    datapath.queue_arena_ordered_rcsga(
+                        (pkt.msg_id(), pkt.conn_id(), arena_sga),
+                        end_batch,
+                    )?;
                 }
                 _ => {
                     unimplemented!();
@@ -785,6 +1037,7 @@ where
         values: &Vec<String>,
         datapath: &D,
     ) -> Result<usize> {
+        tracing::debug!(keys_len = keys.len(), "Serializing get timeline");
         let mut get_timeline = GetTimeline::new();
         get_timeline.init_keys(keys.len());
         let skeys = get_timeline.get_mut_keys();

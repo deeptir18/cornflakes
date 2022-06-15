@@ -224,10 +224,22 @@ pub trait ExposeMempoolID {
 
 pub trait Datapath {
     /// Mutable buffer type that can be written into.
-    type DatapathBuffer: AsRef<[u8]> + Write + PartialEq + Eq + std::fmt::Debug + ExposeMempoolID;
+    type DatapathBuffer: AsRef<[u8]>
+        + Write
+        + PartialEq
+        + Eq
+        + std::fmt::Debug
+        + ExposeMempoolID
+        + Default;
 
     /// Metadata that wraps around a datapath buffer.
-    type DatapathMetadata: AsRef<[u8]> + PartialEq + Eq + Clone + std::fmt::Debug + MetadataOps;
+    type DatapathMetadata: AsRef<[u8]>
+        + PartialEq
+        + Eq
+        + Clone
+        + std::fmt::Debug
+        + MetadataOps
+        + Default;
 
     /// Any per thread context required by the datapath per thread.
     type PerThreadContext: Send + Clone;

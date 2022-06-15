@@ -549,7 +549,7 @@ where
             .unwrap();
         tracing::debug!(
             "deserializing data with length: {:?}, {}",
-            metadata.as_ref(),
+            metadata.as_ref().as_ptr(),
             metadata.data_len()
         );
         let rc_sge = RcSge::RefCounted(metadata);

@@ -56,6 +56,18 @@ pub struct Mlx5Buffer {
     mempool_id: MempoolID,
 }
 
+impl Default for Mlx5Buffer {
+    fn default() -> Self {
+        Mlx5Buffer {
+            data: std::ptr::null_mut(),
+            mempool: std::ptr::null_mut(),
+            metadata: std::ptr::null_mut(),
+            data_len: 0,
+            mempool_id: 0,
+        }
+    }
+}
+
 impl Drop for Mlx5Buffer {
     fn drop(&mut self) {
         // Decrements ref count on underlying metadata

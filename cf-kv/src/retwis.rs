@@ -2,7 +2,7 @@ use super::{
     allocate_datapath_buffer, ClientSerializer, KVServer, ListKVServer, MsgType, RequestGenerator,
     ServerLoadGenerator, ZeroCopyPutKVServer, REQ_TYPE_SIZE,
 };
-use color_eyre::eyre::{bail, ensure, Result};
+use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_libos::{allocator::MempoolID, datapath::Datapath};
 use hashbrown::HashMap;
 use rand::{
@@ -27,11 +27,11 @@ const RETWIS_DEFAULT_VALUE_SIZE: usize = 64;
 const RETWIS_DEFAULT_NUM_KEYS: usize = 1_000_000;
 const RETWIS_DEFAULT_KEY_SIZE: usize = 64;
 const RETWIS_DEFAULT_ZIPF: f64 = 0.75;
-const ADD_USER_WEIGHT: usize = 5;
-const FOLLOW_UNFOLLOW_WEIGHT: usize = 15;
-const POST_TWEET_WEIGHT: usize = 20;
-const GET_TIMELINE_WEIGHT: usize = 50;
-const GET_TIMELINE_MAX_SIZE: usize = 10;
+const ADD_USER_WEIGHT: usize = 0;
+const FOLLOW_UNFOLLOW_WEIGHT: usize = 0;
+const POST_TWEET_WEIGHT: usize = 0;
+const GET_TIMELINE_WEIGHT: usize = 100;
+const GET_TIMELINE_MAX_SIZE: usize = 8;
 const POSSIBLE_MESSAGE_TYPES: [MsgType; 4] = [
     MsgType::AddUser,
     MsgType::FollowUnfollow,
@@ -49,9 +49,55 @@ fn get_key(idx: usize, key_length: usize) -> String {
 
 #[derive(Debug, Clone)]
 pub enum RetwisValueSizeGenerator {
-    UniformOverSizes(Vec<usize>, Uniform<usize>),
-    UniformOverRange(Uniform<usize>),
+    UniformOverSizes(Vec<usize>, Uniform<usize>, usize),
+    UniformOverRange(Uniform<usize>, usize),
     SingleValue(usize),
+}
+
+impl std::str::FromStr for RetwisValueSizeGenerator {
+    type Err = color_eyre::eyre::Error;
+    fn from_str(s: &str) -> Result<RetwisValueSizeGenerator> {
+        let split: Vec<&str> = s.split("-").collect();
+        if split.len() < 2 {
+            bail!(
+                "Request shape pattern needs atleast 2 items, got: {:?}",
+                split
+            );
+        }
+        let numbers_result: Result<Vec<usize>> = split
+            .iter()
+            .skip(1)
+            .map(|x| match x.parse::<usize>() {
+                Ok(s) => Ok(s),
+                Err(e) => {
+                    bail!("Failed to parse {}", x);
+                }
+            })
+            .collect();
+        let numbers = numbers_result.wrap_err("Not able to parse numbers result")?;
+        if split[0] == "UniformOverRange" {
+            if numbers.len() != 2 {
+                bail!(
+                    "UniformOverRange must provide a start and end range; got: {:?}",
+                    numbers
+                );
+            }
+
+            Ok(RetwisValueSizeGenerator::from_range(numbers[0], numbers[1]))
+        } else if split[0] == "UniformOverSizes" {
+            Ok(RetwisValueSizeGenerator::from_sizes(numbers))
+        } else if split[0] == "SingleValue" {
+            if numbers.len() != 1 {
+                bail!(
+                    "Single value must provide a single size, got: {:?}",
+                    numbers
+                );
+            }
+            Ok(RetwisValueSizeGenerator::from_single_size(numbers[0]))
+        } else {
+            bail!("First part of value generator must be one of [UniformOverSizes, UniformOverRange, SingleValue], got: {:?}", split[0]);
+        }
+    }
 }
 
 impl Default for RetwisValueSizeGenerator {
@@ -63,11 +109,12 @@ impl Default for RetwisValueSizeGenerator {
 impl RetwisValueSizeGenerator {
     pub fn from_sizes(sizes: Vec<usize>) -> Self {
         let uniform = Uniform::from(0..sizes.len());
-        RetwisValueSizeGenerator::UniformOverSizes(sizes, uniform)
+        let average = sizes.iter().sum::<usize>() / sizes.len();
+        RetwisValueSizeGenerator::UniformOverSizes(sizes, uniform, average)
     }
 
     pub fn from_range(a: usize, b: usize) -> Self {
-        RetwisValueSizeGenerator::UniformOverRange(Uniform::from(a..b))
+        RetwisValueSizeGenerator::UniformOverRange(Uniform::from(a..b), (a + b) / 2)
     }
 
     pub fn from_single_size(a: usize) -> Self {
@@ -76,15 +123,23 @@ impl RetwisValueSizeGenerator {
 
     fn sample(&self) -> usize {
         match self {
-            RetwisValueSizeGenerator::UniformOverSizes(sizes, uniform) => {
+            RetwisValueSizeGenerator::UniformOverSizes(sizes, uniform, _) => {
                 let mut rng = thread_rng();
                 let index = uniform.sample(&mut rng);
                 sizes[index]
             }
-            RetwisValueSizeGenerator::UniformOverRange(uniform) => {
+            RetwisValueSizeGenerator::UniformOverRange(uniform, _) => {
                 let mut rng = thread_rng();
                 uniform.sample(&mut rng)
             }
+            RetwisValueSizeGenerator::SingleValue(value_size) => *value_size,
+        }
+    }
+
+    pub fn avg_size(&self) -> usize {
+        match self {
+            RetwisValueSizeGenerator::UniformOverSizes(_, _, x) => *x,
+            RetwisValueSizeGenerator::UniformOverRange(_, x) => *x,
             RetwisValueSizeGenerator::SingleValue(value_size) => *value_size,
         }
     }
@@ -182,6 +237,12 @@ impl ServerLoadGenerator for RetwisServerLoader {
                 use_zero_copy_puts,
             )?;
         }
+        tracing::info!(
+            "After load, kv_server size: {}, list kv server size: {}, zero copy server size {}",
+            kv_server.len(),
+            list_kv_server.len(),
+            zero_copy_server.len()
+        );
         tracing::info!(trace = request_file, mempool_ids =? mempool_ids, "Finished loading trace file");
         Ok(())
     }
@@ -339,11 +400,7 @@ impl RequestGenerator for RetwisClient {
         Ok(RetwisClient::default())
     }
 
-    fn next_line(&mut self) -> Result<Option<String>> {
-        Ok(Some("".to_string()))
-    }
-
-    fn get_request(&self, _line: &str) -> Result<Self::RequestLine> {
+    fn next_request(&mut self) -> Result<Option<Self::RequestLine>> {
         let mut rng = thread_rng();
         let req = match POSSIBLE_MESSAGE_TYPES[self.request_generator.sample(&mut rng)] {
             MsgType::AddUser => {
@@ -379,16 +436,16 @@ impl RequestGenerator for RetwisClient {
                 bail!("Other message types not implemented for retwis");
             }
         };
-        Ok(req)
+        Ok(Some(req))
     }
 
-    fn message_type(&self, req: &Self::RequestLine) -> Result<MsgType> {
+    fn message_type(&self, req: &<Self as RequestGenerator>::RequestLine) -> Result<MsgType> {
         Ok(req.msg_type())
     }
 
     fn serialize_request<S, D>(
         &self,
-        request: &Self::RequestLine,
+        request: &<Self as RequestGenerator>::RequestLine,
         buf: &mut [u8],
         serializer: &S,
         datapath: &D,
@@ -398,6 +455,11 @@ impl RequestGenerator for RetwisClient {
         D: Datapath,
     {
         request.msg_type().to_buf(buf);
+        tracing::debug!(
+            "Serializing request with msg type {:?} and keys length {}",
+            request.msg_type(),
+            request.get_keys().len()
+        );
         let keys: Vec<&str> = request
             .get_keys()
             .iter()
@@ -438,7 +500,7 @@ impl RequestGenerator for RetwisClient {
 
     fn check_response<S, D>(
         &self,
-        request: &Self::RequestLine,
+        request: &<Self as RequestGenerator>::RequestLine,
         buf: &[u8],
         serializer: &S,
         _kv: &HashMap<String, String>,
@@ -457,6 +519,11 @@ impl RequestGenerator for RetwisClient {
                 Ok(serializer.check_post_tweet_num_values(buf)? == FOLLOW_UNFOLLOW_GETS)
             }
             MsgType::GetTimeline(size) => {
+                tracing::debug!(
+                    "Received get timeline of size {}, should be {}",
+                    serializer.check_get_timeline_num_values(buf)?,
+                    size
+                );
                 Ok(serializer.check_get_timeline_num_values(buf)? == size)
             }
             _ => {

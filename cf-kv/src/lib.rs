@@ -3,6 +3,7 @@ pub mod cornflakes_dynamic;
 pub mod flatbuffers;
 pub mod protobuf;
 pub mod retwis;
+pub mod retwis_run_datapath;
 pub mod ycsb;
 pub mod ycsb_run_datapath;
 
@@ -157,6 +158,10 @@ where
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
     pub fn get_map(&self) -> &HashMap<String, D::DatapathMetadata> {
         &self.map
     }
@@ -224,6 +229,10 @@ where
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
     pub fn get_map(&self) -> &HashMap<String, D::DatapathBuffer> {
         &self.map
     }
@@ -259,6 +268,19 @@ where
     }
 }
 
+pub fn allocate_and_copy_into_datapath_buffer<D>(
+    value: &[u8],
+    datapath: &mut D,
+    mempool_ids: &mut Vec<MempoolID>,
+) -> Result<D::DatapathBuffer>
+where
+    D: Datapath,
+{
+    let mut datapath_buffer = allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
+    let _ = datapath_buffer.write(value)?;
+    Ok(datapath_buffer)
+}
+
 pub struct ListKVServer<D>
 where
     D: Datapath,
@@ -274,6 +296,10 @@ where
         ListKVServer {
             map: HashMap::default(),
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
@@ -481,9 +507,7 @@ pub trait RequestGenerator {
         unimplemented!();
     }
 
-    fn next_line(&mut self) -> Result<Option<String>>;
-
-    fn get_request(&self, line: &str) -> Result<Self::RequestLine>;
+    fn next_request(&mut self) -> Result<Option<Self::RequestLine>>;
 
     fn message_type(&self, req: &Self::RequestLine) -> Result<MsgType>;
 
@@ -624,7 +648,7 @@ where
     server_addr: AddressInfo,
     rtts: ManualHistogram,
     buf: Vec<u8>,
-    outgoing_requests: HashMap<MsgID, String>,
+    outgoing_requests: HashMap<MsgID, R::RequestLine>,
     outgoing_msg_types: HashMap<MsgID, R::RequestLine>,
     using_retries: bool,
     ref_kv: HashMap<String, String>,
@@ -667,8 +691,7 @@ where
         })
     }
 
-    pub fn write_request<'a>(&mut self, req: &'a str, datapath: &D) -> Result<usize> {
-        let request = self.request_generator.get_request(req)?;
+    pub fn write_request<'a>(&mut self, request: &R::RequestLine, datapath: &D) -> Result<usize> {
         self.request_generator.serialize_request(
             &request,
             &mut self.buf,
@@ -730,18 +753,24 @@ where
         &mut self,
         datapath: &<Self as ClientSM>::Datapath,
     ) -> Result<Option<(MsgID, &[u8])>> {
-        let next_line = match self.request_generator.next_line()? {
+        let next_request = match self.request_generator.next_request()? {
             Some(l) => l,
             None => {
                 return Ok(None);
             }
         };
-        let buf_size = self.write_request(next_line.as_str(), &datapath)?;
-        let request = self.request_generator.get_request(&next_line.as_str())?;
-        self.outgoing_msg_types.insert(self.last_sent_id, request);
+        let buf_size = self.write_request(&next_request, &datapath)?;
+        tracing::debug!(
+            msg_id = self.last_sent_id,
+            "Sending msg of type {:?}",
+            next_request
+        );
+        self.outgoing_msg_types
+            .insert(self.last_sent_id, next_request.clone());
 
         if self.using_retries {
-            self.outgoing_requests.insert(self.last_sent_id, next_line);
+            self.outgoing_requests
+                .insert(self.last_sent_id, next_request.clone());
         }
 
         Ok(Some((
@@ -788,14 +817,14 @@ where
     }
 
     fn msg_timeout_cb(&mut self, id: MsgID, datapath: &Self::Datapath) -> Result<&[u8]> {
-        let line = match self.outgoing_requests.get(&id) {
-            Some(l) => l.to_string(),
+        let req = match self.outgoing_requests.get(&id) {
+            Some(r) => r.clone(),
             None => {
                 bail!("Cannot find data for msg # {} to send retry", id);
             }
         };
 
-        let buf_size = self.write_request(&line, datapath)?;
+        let buf_size = self.write_request(&req, datapath)?;
         Ok(&self.buf.as_slice()[0..buf_size])
     }
 }

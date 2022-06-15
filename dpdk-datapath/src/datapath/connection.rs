@@ -54,6 +54,15 @@ pub struct DpdkBuffer {
     mempool_id: MempoolID,
 }
 
+impl Default for DpdkBuffer {
+    fn default() -> Self {
+        DpdkBuffer {
+            mbuf: ptr::null_mut(),
+            mempool_id: 0,
+        }
+    }
+}
+
 impl ExposeMempoolID for DpdkBuffer {
     fn set_mempool_id(&mut self, id: MempoolID) {
         self.mempool_id = id;
