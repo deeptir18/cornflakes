@@ -1697,6 +1697,11 @@ impl Datapath for DpdkConnection {
         Ok(ret)
     }
 
+    #[inline]
+    fn has_mempool(&self, size: usize) -> bool {
+        self.allocator.has_mempool(size)
+    }
+
     fn register_mempool(&mut self, id: MempoolID) -> Result<()> {
         self.allocator.register(id, ())
     }

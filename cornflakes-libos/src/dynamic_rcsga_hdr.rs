@@ -17,7 +17,6 @@ use perftools;
 #[inline]
 pub fn write_size_and_offset(write_offset: usize, size: usize, offset: usize, buffer: &mut [u8]) {
     let mut forward_pointer = MutForwardPointer(buffer, write_offset);
-    tracing::debug!(write_offset, size, offset, "Writing in size and offset");
     forward_pointer.write_size(size as u32);
     forward_pointer.write_offset(offset as u32);
 }
@@ -56,7 +55,6 @@ struct MutForwardPointer<'a>(&'a mut [u8], usize);
 impl<'a> MutForwardPointer<'a> {
     #[inline]
     pub fn write_size(&mut self, size: u32) {
-        tracing::debug!("Writing size {} at {:?}", size, self.0.as_ptr());
         LittleEndian::write_u32(&mut self.0[self.1..(self.1 + 4)], size);
     }
 
@@ -231,10 +229,6 @@ where
     fn serialize_into_buf(&self, datapath: &D, header_buffer: &mut [u8]) -> Result<usize> {
         let mut sga = self.alloc_sga();
         self.serialize_into_sga_with_hdr(header_buffer, &mut sga, datapath)?;
-        tracing::debug!(
-            "Finished serialize into header; total header size: {}",
-            self.total_header_size(false, false)
-        );
         // copy sga into header buffer
         let header_size = self.total_header_size(false, false);
         let size = sga.copy_into_buffer(&mut header_buffer[header_size..])?;
@@ -245,11 +239,6 @@ where
     fn serialize_to_owned(&self, datapath: &D) -> Result<Vec<u8>> {
         let mut sga = self.alloc_sga();
         self.serialize_into_sga(&mut sga, datapath)?;
-        tracing::debug!(
-            "Resulting header: {:?}, length: {}",
-            sga.get_hdr(),
-            sga.get_hdr().len()
-        );
         Ok(sga.flatten())
     }
 
@@ -284,7 +273,6 @@ where
         ordered_sga.set_length(required_entries);
         let mut offsets: Vec<usize> = vec![0; required_entries];
 
-        tracing::debug!("About to start recursive serialization for header buffer length {}, required_entries {}", header_size, required_entries);
         // recursive serialize each item
         {
             #[cfg(feature = "profiler")]
@@ -298,7 +286,6 @@ where
             )?;
         }
         // reorder entries according to size threshold and whether entries are registered.
-        tracing::debug!("Finished recursive serialization");
         {
             #[cfg(feature = "profiler")]
             perftools::timer!("reorder sga");
@@ -307,9 +294,7 @@ where
         }
         let mut cur_dynamic_offset = self.total_header_size(false, false);
 
-        tracing::debug!(starting_offsets = cur_dynamic_offset, "starting offsets");
         // iterate over header, writing in forward pointers based on new ordering
-        tracing::debug!(header_addr =? header_buffer.as_ptr());
         {
             #[cfg(feature = "profiler")]
             perftools::timer!("fill in sga offsets");
@@ -318,14 +303,7 @@ where
                 .iter()
                 .zip(offsets.into_iter())
             {
-                tracing::debug!(addr =? &header_buffer[offset..(offset + 8)].as_ptr(), "Addr without cast");
                 let mut obj_ref = MutForwardPointer(header_buffer, offset);
-                tracing::debug!(
-                    "At offset {}, writing in size {} and offset {}",
-                    offset,
-                    sge.len(),
-                    cur_dynamic_offset
-                );
                 obj_ref.write_size(sge.len() as u32);
                 obj_ref.write_offset(cur_dynamic_offset as u32);
 
@@ -350,7 +328,6 @@ where
             perftools::timer!("alloc hdr");
             self.alloc_hdr()
         };
-        tracing::debug!("Header size: {}", owned_hdr.len());
         let header_buffer = owned_hdr.as_mut_slice();
         self.serialize_into_sga_with_hdr(header_buffer, ordered_sga, datapath)?;
         ordered_sga.set_hdr(owned_hdr);
@@ -462,9 +439,7 @@ where
         }
         let mut cur_dynamic_offset = self.total_header_size(false, false);
 
-        tracing::debug!(starting_offsets = cur_dynamic_offset, "starting offsets");
         // iterate over header, writing in forward pointers based on new ordering
-        tracing::debug!(header_addr =? header_buffer.as_ptr());
         {
             #[cfg(feature = "profiler")]
             perftools::timer!("fill in sga offsets");
@@ -473,14 +448,7 @@ where
                 .iter()
                 .zip(ordered_sga.offsets_slice(0, required_entries))
             {
-                tracing::debug!(addr =? &header_buffer[*offset..(*offset + 8)].as_ptr(), "Addr without cast");
                 let mut obj_ref = MutForwardPointer(header_buffer, *offset);
-                tracing::debug!(
-                    "At offset {}, writing in size {} and offset {}",
-                    *offset,
-                    sge.len(),
-                    cur_dynamic_offset
-                );
                 obj_ref.write_size(sge.len() as u32);
                 obj_ref.write_offset(cur_dynamic_offset as u32);
 
@@ -505,7 +473,6 @@ where
             let size = self.total_header_size(false, false);
             bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
-        tracing::debug!("Header size: {}", owned_hdr.len());
         let header_buffer = owned_hdr.as_mut_slice();
         self.partially_serialize_into_arena_sga_with_hdr(header_buffer, ordered_sga)?;
         ordered_sga.set_hdr(owned_hdr);
@@ -529,7 +496,6 @@ where
             let size = self.total_header_size(false, false);
             bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
-        tracing::debug!("Header size: {}", owned_hdr.len());
         let header_buffer = owned_hdr.as_mut_slice();
         self.serialize_into_arena_sga_with_hdr(header_buffer, ordered_sga, datapath, with_copy)?;
         ordered_sga.set_hdr(owned_hdr);
@@ -547,11 +513,6 @@ where
         let metadata = packet
             .contiguous_datapath_metadata(framing_offset, packet_len - framing_offset)?
             .unwrap();
-        tracing::debug!(
-            "deserializing data with length: {:?}, {}",
-            metadata.as_ref().as_ptr(),
-            metadata.data_len()
-        );
         let rc_sge = RcSge::RefCounted(metadata);
         self.inner_deserialize(&rc_sge, 0)?;
         Ok(())
@@ -723,9 +684,7 @@ where
         let forward_pointer = ForwardPointer(buffer.addr(), header_offset);
         let off = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
-        tracing::debug!(off, size, "Forward pointer");
         self.ptr = buffer.clone_with_bounds(off, size)?;
-        tracing::debug!("Buffer: {:?}, new ptr: {:?}", buffer, self.ptr);
         Ok(())
     }
 }
@@ -1473,7 +1432,6 @@ where
 
     #[inline]
     pub fn append(&mut self, val: T) {
-        tracing::debug!(elts_len = self.elts.len(), "Appending to the list");
         self.elts.push(val);
         self.num_set += 1;
     }
@@ -1495,7 +1453,6 @@ where
 {
     type Output = T;
     fn index(&self, idx: usize) -> &Self::Output {
-        tracing::debug!(idx = idx, self.num_space = self.num_space, "CALLING INDEX");
         &self.elts[idx]
     }
 }
@@ -1559,7 +1516,6 @@ where
         }
 
         for i in 0..self.len() {
-            tracing::debug!(i = i, "Checking equality for list elt");
             if !(self[i].check_deep_equality(&other[i])) {
                 return false;
             }
@@ -1591,7 +1547,6 @@ where
 
         let mut sge_idx = 0;
         let mut cur_dynamic_off = dynamic_header_start + self.dynamic_header_start();
-        tracing::debug!(num_elts = self.elts.len(), "Info about list items");
         for (i, elt) in self.elts.iter().take(self.num_set).enumerate() {
             let required_sges = elt.num_scatter_gather_entries();
             if elt.dynamic_header_size() != 0 {
@@ -1636,25 +1591,12 @@ where
         let forward_pointer = ForwardPointer(buffer.addr(), constant_offset);
         let size = forward_pointer.get_size() as usize;
         let dynamic_offset = forward_pointer.get_offset() as usize;
-        tracing::debug!(
-            constant_offset,
-            size,
-            dynamic_offset,
-            "Reading forward offset"
-        );
 
         self.num_set = size;
         if self.elts.len() < size {
             self.elts.resize(size, T::default());
         }
         self.num_space = size;
-        tracing::debug!(
-            size = size,
-            offset = dynamic_offset,
-            num_space = self.num_space,
-            num_set = self.num_set,
-            "Deserializing list at offset and size"
-        );
 
         for (i, elt) in self.elts.iter_mut().take(size).enumerate() {
             if elt.dynamic_header_size() == 0 {

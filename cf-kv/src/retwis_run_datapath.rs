@@ -51,12 +51,14 @@ macro_rules! run_client_retwis(
         )?;
         let mut threads: Vec<std::thread::JoinHandle<Result<cornflakes_libos::loadgen::client_threads::ThreadStats>>> = vec![];
 
+        let mut retwis_keys = retwis_keys($opt.num_keys, $opt.key_size);
         // spawn a thread to run client for each connection
         for (i, (schedule, per_thread_context)) in schedules
             .into_iter()
             .zip(per_thread_contexts.into_iter())
             .enumerate()
         {
+        let thread_keys = retwis_keys.clone();
         let server_addr_clone =
             cornflakes_libos::utils::AddressInfo::new(server_addr.2, server_addr.1.clone(), server_addr.0.clone());
             let datapath_params_clone = datapath_params.clone();
@@ -84,8 +86,10 @@ macro_rules! run_client_retwis(
 
                 connection.set_copying_threshold(std::usize::MAX);
 
+                tracing::info!("Finished initializing datapath connection for thread {}", i);
                 let size = opt_clone.value_size_generator.avg_size();
-                let mut retwis_client = RetwisClient::new(opt_clone.num_keys, opt_clone.key_size, opt_clone.zipf, opt_clone.value_size_generator)?;
+                let mut retwis_client = RetwisClient::new(thread_keys, opt_clone.zipf, opt_clone.value_size_generator)?;
+                tracing::info!("Finished initializing retwis client");
 
                 let mut server_load_generator_opt: Option<(&str, RetwisServerLoader)> = None;
                 let mut kv_client: KVClient<RetwisClient, $serializer, $datapath> = KVClient::new(retwis_client, server_addr_clone, max_num_requests,opt_clone.retries, server_load_generator_opt)?;

@@ -731,14 +731,28 @@ where
                     let mut get_timeline_response = FollowUnfollowResponse::<D>::new();
                     get_timeline_response.init_original_values(get_timeline.get_keys().len());
                     let response_vals = get_timeline_response.get_mut_original_values();
-                    for key in get_timeline.get_keys().iter() {
+                    for (_i, key) in get_timeline.get_keys().iter().enumerate() {
                         let cf_bytes = match self.serializer.zero_copy_puts() {
                             true => {
                                 let val = self.zero_copy_put_kv_server.get(key.to_str()?).unwrap();
+                                tracing::debug!(
+                                    msg_id = pkt.msg_id(),
+                                    conn_id = pkt.conn_id(),
+                                    key_idx = _i,
+                                    "Get timeline val size {}",
+                                    val.as_ref().len()
+                                );
                                 CFBytes::new(val.as_ref(), datapath)?
                             }
                             false => {
                                 let val = self.kv_server.get(key.to_str()?).unwrap();
+                                tracing::debug!(
+                                    msg_id = pkt.msg_id(),
+                                    conn_id = pkt.conn_id(),
+                                    key_idx = _i,
+                                    "Get timeline val size {}",
+                                    val.as_ref().len()
+                                );
                                 CFBytes::new(val.as_ref(), datapath)?
                             }
                         };

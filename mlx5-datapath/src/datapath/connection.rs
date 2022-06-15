@@ -3747,6 +3747,11 @@ impl Datapath for Mlx5Connection {
         Ok(())
     }
 
+    #[inline]
+    fn has_mempool(&self, size: usize) -> bool {
+        return self.allocator.has_mempool(size);
+    }
+
     fn register_mempool(&mut self, id: MempoolID) -> Result<()> {
         self.allocator
             .register(id, self.thread_context.get_context_ptr())

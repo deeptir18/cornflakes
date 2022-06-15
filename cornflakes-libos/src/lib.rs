@@ -1588,16 +1588,7 @@ where
             RcSge::RawRef(buf) => Ok(RcSge::RawRef(&buf[off..(off + size)])),
             RcSge::RefCounted(metadata) => {
                 let mut new_metadata = metadata.clone();
-                tracing::debug!(
-                    old_offset = metadata.offset(),
-                    old_size = metadata.data_len(),
-                    new_offset = metadata.offset() + off,
-                    new_size = size,
-                    "Cloning with bounds: {:?}",
-                    metadata
-                );
                 new_metadata.set_data_len_and_offset(size, metadata.offset() + off)?;
-                tracing::debug!("New metadata: {:?}", new_metadata);
                 Ok(RcSge::RefCounted(new_metadata))
             }
         }
@@ -2063,127 +2054,9 @@ where
     }
 
     #[inline]
-    fn is_zero_copy_seg(&self, seg_idx: usize) -> bool {
+    fn is_zero_copy_seg(&self, seg_idx: usize, copying_threshold: usize) -> bool {
         let seg = &self.entries[seg_idx];
-        seg.is_ref_counted()
-    }
-
-    /// Reorders scatter-gather array AND fills in offsets in header buffer.
-    #[inline]
-    pub fn reorder_by_size_and_registration_and_finish_serialization<M>(
-        &mut self,
-        _allocator: &allocator::MemoryPoolAllocator<M>,
-        copying_threshold: usize,
-        buffers: &mut [Option<D::DatapathMetadata>],
-        with_copy: bool,
-    ) -> Result<()>
-    where
-        M: allocator::DatapathMemoryPool<DatapathImpl = D> + std::fmt::Debug + Eq + PartialEq,
-    {
-        if with_copy {
-            self.num_copy_entries = self.length;
-            self.finish_offsets();
-            return Ok(());
-        }
-
-        // iterate over all segments, and recover buffers and increment ref count if need be
-        for (seg, buf) in self
-            .entries
-            .iter()
-            .take(self.length)
-            .zip(buffers.iter_mut())
-        {
-            if seg.len() < copying_threshold {
-                *buf = None;
-            } else {
-                match seg {
-                    RcSge::RawRef(_) => {
-                        *buf = None;
-                    }
-                    RcSge::RefCounted(metadata) => {
-                        *buf = Some(metadata.clone());
-                    }
-                }
-            }
-        }
-
-        if self.length == 1 {
-            if let Some(_x) = &buffers[0] {
-                self.num_copy_entries = 0;
-            } else {
-                self.num_copy_entries = 1;
-            }
-            self.finish_offsets();
-            return Ok(());
-        }
-
-        let mut forward_index = 0;
-        let mut end_index = self.length - 1;
-        let mut switch_forward = buffers[forward_index] != None;
-        let mut switch_backward = buffers[end_index] == None;
-        let mut num_copy_segs = 0; // copy object header segment
-        let mut ct: usize = 0;
-
-        // everytime forward index is advanced, we record a copy segment
-        while !(forward_index >= end_index) {
-            tracing::debug!(
-                forward_index,
-                end_index,
-                switch_forward,
-                switch_backward,
-                "Looping over reordering segments"
-            );
-            ct += 1;
-            match (switch_forward, switch_backward) {
-                (true, true) => {
-                    num_copy_segs += 1;
-                    self.entries.swap(forward_index, end_index);
-                    self.offsets.swap(forward_index, end_index);
-                    buffers.swap(forward_index, end_index);
-                    forward_index += 1;
-                    end_index -= 1;
-                    if forward_index >= end_index {
-                        break;
-                    }
-                    switch_forward = buffers[forward_index] != None;
-                    switch_backward = buffers[end_index] == None;
-                }
-                (true, false) => {
-                    end_index -= 1;
-                    if forward_index >= end_index {
-                        break;
-                    }
-                    switch_backward = buffers[end_index] == None;
-                }
-                (false, true) => {
-                    num_copy_segs += 1;
-                    forward_index += 1;
-                    if forward_index >= end_index {
-                        num_copy_segs += 1;
-                        break;
-                    }
-                    switch_forward = buffers[forward_index] != None;
-                }
-                (false, false) => {
-                    num_copy_segs += 1;
-                    forward_index += 1;
-                    end_index -= 1;
-                    if forward_index >= end_index {
-                        break;
-                    }
-                    switch_forward = buffers[forward_index] != None;
-                    switch_backward = buffers[end_index] == None;
-                }
-            }
-        }
-        self.num_copy_entries = num_copy_segs;
-        self.finish_offsets();
-        tracing::debug!(
-            num_copy_segs = self.num_copy_entries,
-            loop_ct = ct,
-            "DONE WITH REORDERING"
-        );
-        Ok(())
+        seg.len() >= copying_threshold && seg.is_ref_counted()
     }
 
     /// Reorders the scatter-gather array according to size heuristics, from the first entry
@@ -2199,15 +2072,16 @@ where
     #[inline]
     pub fn reorder_by_size_and_registration(
         &mut self,
-        _datapath: &D,
+        datapath: &D,
         with_copy: bool,
     ) -> Result<()> {
         if with_copy {
             return Ok(());
         }
+        let copying_threshold = datapath.get_copying_threshold();
         if self.length == 1 {
             // check if segment is zero-copy or not
-            if !self.is_zero_copy_seg(0) {
+            if !self.is_zero_copy_seg(0, copying_threshold) {
                 self.num_copy_entries = 1;
             }
             tracing::debug!("Setting num copy entries as {}/1", self.num_copy_entries);
@@ -2216,8 +2090,8 @@ where
 
         let mut forward_index = 0;
         let mut end_index = self.length - 1;
-        let mut switch_forward = self.is_zero_copy_seg(forward_index);
-        let mut switch_backward = !self.is_zero_copy_seg(end_index);
+        let mut switch_forward = self.is_zero_copy_seg(forward_index, copying_threshold);
+        let mut switch_backward = !self.is_zero_copy_seg(end_index, copying_threshold);
         let mut num_copy_segs = 0; // copy object header segment
         let mut ct: usize = 0;
 
@@ -2236,20 +2110,27 @@ where
                     num_copy_segs += 1;
                     self.entries.swap(forward_index, end_index);
                     self.offsets.swap(forward_index, end_index);
+                    tracing::debug!(
+                        "Swapping {} and {}; length 1: {}, length 2: {}",
+                        forward_index,
+                        end_index,
+                        self.entries[forward_index].len(),
+                        self.entries[end_index].len()
+                    );
                     forward_index += 1;
                     end_index -= 1;
                     if forward_index >= end_index {
                         break;
                     }
-                    switch_forward = self.is_zero_copy_seg(forward_index);
-                    switch_backward = !self.is_zero_copy_seg(end_index);
+                    switch_forward = self.is_zero_copy_seg(forward_index, copying_threshold);
+                    switch_backward = !self.is_zero_copy_seg(end_index, copying_threshold);
                 }
                 (true, false) => {
                     end_index -= 1;
                     if forward_index >= end_index {
                         break;
                     }
-                    switch_backward = !self.is_zero_copy_seg(end_index);
+                    switch_backward = !self.is_zero_copy_seg(end_index, copying_threshold);
                 }
                 (false, true) => {
                     num_copy_segs += 1;
@@ -2258,7 +2139,7 @@ where
                         num_copy_segs += 1;
                         break;
                     }
-                    switch_forward = self.is_zero_copy_seg(forward_index);
+                    switch_forward = self.is_zero_copy_seg(forward_index, copying_threshold);
                 }
                 (false, false) => {
                     num_copy_segs += 1;
@@ -2267,8 +2148,8 @@ where
                     if forward_index >= end_index {
                         break;
                     }
-                    switch_forward = self.is_zero_copy_seg(forward_index);
-                    switch_backward = !self.is_zero_copy_seg(end_index);
+                    switch_forward = self.is_zero_copy_seg(forward_index, copying_threshold);
+                    switch_backward = !self.is_zero_copy_seg(end_index, copying_threshold);
                 }
             }
         }

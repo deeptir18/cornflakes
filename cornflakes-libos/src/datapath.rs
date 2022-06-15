@@ -454,6 +454,9 @@ pub trait Datapath {
 
     fn add_tx_mempool(&mut self, size: usize, min_elts: usize) -> Result<()>;
 
+    /// Checks whether datapath has mempool of size size given (must be power of 2).
+    fn has_mempool(&self, size: usize) -> bool;
+
     /// Register given mempool ID
     fn register_mempool(&mut self, id: MempoolID) -> Result<()>;
 

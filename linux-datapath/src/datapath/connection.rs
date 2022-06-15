@@ -322,6 +322,11 @@ impl Datapath for LinuxConnection {
         std::usize::MAX
     }
 
+    #[inline]
+    fn has_mempool(&self, _size: usize) -> bool {
+        true
+    }
+
     fn set_inline_mode(&mut self, _mode: InlineMode) {}
 
     fn max_packet_size() -> usize {

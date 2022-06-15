@@ -3,7 +3,7 @@ use cf_kv::{
     cornflakes_dynamic::{CornflakesClient, CornflakesKVServer},
     flatbuffers::{FlatbuffersClient, FlatbuffersKVServer},
     protobuf::{ProtobufClient, ProtobufKVServer},
-    retwis::{RetwisClient, RetwisServerLoader},
+    retwis::{retwis_keys, RetwisClient, RetwisServerLoader},
     retwis_run_datapath::*,
     run_client_retwis, run_server_retwis, KVClient, RequestGenerator,
 };

@@ -295,8 +295,7 @@ pub struct RetwisClient {
 impl Default for RetwisClient {
     fn default() -> Self {
         RetwisClient::new(
-            RETWIS_DEFAULT_NUM_KEYS,
-            RETWIS_DEFAULT_KEY_SIZE,
+            retwis_keys(RETWIS_DEFAULT_NUM_KEYS, RETWIS_DEFAULT_KEY_SIZE),
             RETWIS_DEFAULT_ZIPF,
             RetwisValueSizeGenerator::default(),
         )
@@ -304,17 +303,23 @@ impl Default for RetwisClient {
     }
 }
 
+pub fn retwis_keys(total_keys: usize, key_length: usize) -> Vec<String> {
+    tracing::info!("Starting to initialize retwis client");
+    let keys: Vec<String> = (0..total_keys)
+        .map(|idx| get_key(idx, key_length))
+        .collect();
+    tracing::info!("Finished initializing retwis keys");
+    keys
+}
+
 impl RetwisClient {
     pub fn new(
-        total_keys: usize,
-        key_length: usize,
+        keys: Vec<String>,
         zipf_coefficient: f64,
         value_generator: RetwisValueSizeGenerator,
     ) -> Result<Self> {
-        let keys: Vec<String> = (0..total_keys)
-            .map(|idx| get_key(idx, key_length))
-            .collect();
-        let zipf = ZipfDistribution::new(total_keys, zipf_coefficient).unwrap();
+        let zipf = ZipfDistribution::new(keys.len(), zipf_coefficient).unwrap();
+        tracing::info!("Finished initializing zipf");
         let weights = [
             ADD_USER_WEIGHT,
             FOLLOW_UNFOLLOW_WEIGHT,
@@ -405,14 +410,14 @@ impl RequestGenerator for RetwisClient {
         let req = match POSSIBLE_MESSAGE_TYPES[self.request_generator.sample(&mut rng)] {
             MsgType::AddUser => {
                 let keys: Vec<usize> = (0..ADD_USER_GETS)
-                    .map(|_i| self.zipf_distribution.sample(&mut rng))
+                    .map(|_i| self.zipf_distribution.sample(&mut rng) - 1)
                     .collect();
                 let values: Vec<String> = (0..ADD_USER_PUTS).map(|_i| self.get_value()).collect();
                 RetwisRequest::new(MsgType::AddUser, keys, values)
             }
             MsgType::FollowUnfollow => {
                 let keys: Vec<usize> = (0..FOLLOW_UNFOLLOW_GETS)
-                    .map(|_i| self.zipf_distribution.sample(&mut rng))
+                    .map(|_i| self.zipf_distribution.sample(&mut rng) - 1)
                     .collect();
                 let values: Vec<String> = (0..FOLLOW_UNFOLLOW_PUTS)
                     .map(|_i| self.get_value())
@@ -421,14 +426,14 @@ impl RequestGenerator for RetwisClient {
             }
             MsgType::PostTweet => {
                 let keys: Vec<usize> = (0..POST_TWEET_GETS)
-                    .map(|_i| self.zipf_distribution.sample(&mut rng))
+                    .map(|_i| self.zipf_distribution.sample(&mut rng) - 1)
                     .collect();
                 let values: Vec<String> = (0..POST_TWEET_PUTS).map(|_i| self.get_value()).collect();
                 RetwisRequest::new(MsgType::PostTweet, keys, values)
             }
             MsgType::GetTimeline(_default) => {
                 let keys: Vec<usize> = (0..self.get_timeline_size_generator.sample(&mut rng) + 1)
-                    .map(|_i| self.zipf_distribution.sample(&mut rng))
+                    .map(|_i| self.zipf_distribution.sample(&mut rng) - 1)
                     .collect();
                 RetwisRequest::new(MsgType::GetTimeline(keys.len()), keys, vec![])
             }

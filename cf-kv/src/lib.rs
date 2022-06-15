@@ -37,16 +37,6 @@ use std::{
 
 const MIN_MEMPOOL_SIZE: usize = 262144 * 8;
 
-fn align_to_power(size: usize) -> Result<usize> {
-    let available_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
-    for mempool_size in available_sizes.iter() {
-        if *mempool_size >= size {
-            return Ok(*mempool_size);
-        }
-    }
-    bail!("Provided size {} too large; larger than 8192", size);
-}
-
 // 8 bytes at front of message for framing
 pub const REQ_TYPE_SIZE: usize = 4;
 
@@ -367,8 +357,7 @@ where
     match datapath.allocate(size)? {
         Some(buf) => Ok(buf),
         None => {
-            let aligned_size = align_to_power(size)?;
-            mempool_ids.append(&mut datapath.add_memory_pool(aligned_size, MIN_MEMPOOL_SIZE)?);
+            mempool_ids.append(&mut datapath.add_memory_pool(size, MIN_MEMPOOL_SIZE)?);
             tracing::debug!("Added mempool");
             match datapath.allocate(size)? {
                 Some(buf) => Ok(buf),

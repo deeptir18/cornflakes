@@ -6,6 +6,22 @@ use perftools;
 use std::collections::{BTreeMap, HashSet};
 
 pub type MempoolID = u32;
+pub fn align_to_pow2(x: usize) -> usize {
+    if x & (x - 1) == 0 {
+        return x + (x == 0) as usize;
+    }
+    let mut size = x;
+    size -= 1;
+    size |= size >> 1;
+    size |= size >> 2;
+    size |= size >> 4;
+    size |= size >> 8;
+    size |= size >> 16;
+    size |= size >> 32;
+    size += 1;
+    size += (size == 0) as usize;
+    size
+}
 
 pub fn align_up(x: usize, align_size: usize) -> usize {
     let divisor = x / align_size;
@@ -99,7 +115,8 @@ where
 {
     #[inline]
     pub fn add_mempool(&mut self, size: usize, handle: M) -> Result<MempoolID> {
-        match self.mempool_ids.get_mut(&size) {
+        let aligned_size = align_to_pow2(size);
+        match self.mempool_ids.get_mut(&aligned_size) {
             Some(mempool_ids_list) => {
                 mempool_ids_list.insert(self.next_id_to_allocate);
                 self.mempools.insert(self.next_id_to_allocate, handle);
@@ -108,7 +125,7 @@ where
             None => {
                 let mut set = HashSet::default();
                 set.insert(self.next_id_to_allocate);
-                self.mempool_ids.insert(size, set);
+                self.mempool_ids.insert(aligned_size, set);
                 self.mempools.insert(self.next_id_to_allocate, handle);
                 self.next_id_to_allocate += 1;
             }
@@ -175,18 +192,33 @@ where
         &self,
         buf_size: usize,
     ) -> Result<Option<<<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>> {
-        for (_size, mempools) in self
-            .tx_mempools
-            .iter()
-            .filter(|(size, _list)| *size >= &buf_size)
-        {
-            tracing::debug!("Looking for tx buffer to allocate {}", buf_size);
-            for (mempool_id, mempool) in mempools.iter() {
-                match mempool.alloc_data_buf(*mempool_id)? {
-                    Some(x) => {
-                        return Ok(Some(x));
+        let align_size = align_to_pow2(buf_size);
+        match self.tx_mempools.get(&align_size) {
+            Some(mempools) => {
+                for (mempool_id, mempool) in mempools.iter() {
+                    match mempool.alloc_data_buf(*mempool_id)? {
+                        Some(x) => {
+                            return Ok(Some(x));
+                        }
+                        None => {}
                     }
-                    None => {}
+                }
+            }
+            None => {
+                for (_size, mempools) in self
+                    .tx_mempools
+                    .iter()
+                    .filter(|(size, _list)| *size > &align_size)
+                {
+                    tracing::debug!("Looking for tx buffer to allocate {}", buf_size);
+                    for (mempool_id, mempool) in mempools.iter() {
+                        match mempool.alloc_data_buf(*mempool_id)? {
+                            Some(x) => {
+                                return Ok(Some(x));
+                            }
+                            None => {}
+                        }
+                    }
                 }
             }
         }
@@ -195,30 +227,37 @@ where
     }
 
     /// Allocates a datapath buffer (if a mempool is available).
-    /// Size is atleast buf_size.
+    /// Size will be aligned to the next power of 2. If no buffers available in that mempool, will
+    /// return None.
     /// No guarantees on whether the resulting datapath buffer is registered or not.
-    /// TODO: is there a more optimal way to keep track of this data structure
     #[inline]
     pub fn allocate_buffer(
         &self,
         buf_size: usize,
     ) -> Result<Option<<<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>> {
-        for size in self.mempool_ids.keys().filter(|size| *size >= &buf_size) {
-            for mempool_id in self.mempool_ids.get(size).unwrap() {
-                let mempool = self.mempools.get(mempool_id).unwrap();
-                match mempool.alloc_data_buf(*mempool_id)? {
-                    Some(x) => {
-                        return Ok(Some(x));
+        let align_size = align_to_pow2(buf_size);
+        match self.mempool_ids.get(&align_size) {
+            Some(mempools) => {
+                for mempool_id in mempools.iter() {
+                    let mempool = self.mempools.get(mempool_id).unwrap();
+                    match mempool.alloc_data_buf(*mempool_id)? {
+                        Some(x) => {
+                            return Ok(Some(x));
+                        }
+                        None => {}
                     }
-                    None => {}
                 }
+                return Ok(None);
+            }
+            None => {
+                tracing::debug!("Returning none");
+                return Ok(None);
             }
         }
-        tracing::debug!("Returning none");
-        return Ok(None);
     }
 
-    /// Returns metadata associated with this buffer, even if the buffer is not registered.
+    /// Returns metadata associated with this buffer, even if the buffer is not registered. Only
+    /// searches through recv mempools and mempools with size aligned up to next power of 2.
     #[inline]
     pub fn recover_metadata(
         &self,
@@ -237,28 +276,30 @@ where
             }
         }
 
-        for size in self
-            .mempool_ids
-            .keys()
-            .filter(|size| *size >= &buffer.len())
-        {
-            for mempool_id in self.mempool_ids.get(size).unwrap() {
-                let mempool = self.mempools.get(mempool_id).unwrap();
-                if mempool.has_allocated() {
-                    if mempool.is_buf_within_bounds(buffer) {
-                        let metadata = mempool
-                            .recover_buffer(buffer)
-                            .wrap_err("unable to recover metadata")?;
-                        return Ok(Some(metadata));
+        let align_size = align_to_pow2(buffer.len());
+        match self.mempool_ids.get(&align_size) {
+            Some(mempools) => {
+                for mempool_id in mempools.iter() {
+                    let mempool = self.mempools.get(mempool_id).unwrap();
+                    if mempool.has_allocated() {
+                        if mempool.is_buf_within_bounds(buffer) {
+                            let metadata = mempool
+                                .recover_buffer(buffer)
+                                .wrap_err("unable to recover metadata")?;
+                            return Ok(Some(metadata));
+                        }
                     }
                 }
+                return Ok(None);
+            }
+            None => {
+                return Ok(None);
             }
         }
-        return Ok(None);
     }
 
     /// Returns metadata associated with this buffer, if it exists, and the buffer is
-    /// registered.
+    /// registered. Only looks at mempools with aligned size and receive mempools.
     #[inline]
     pub fn recover_buffer(
         &self,
@@ -281,28 +322,30 @@ where
             }
         }
 
-        for size in self
-            .mempool_ids
-            .keys()
-            .filter(|size| *size >= &buffer.len())
-        {
-            for mempool_id in self.mempool_ids.get(size).unwrap() {
-                let mempool = self.mempools.get(mempool_id).unwrap();
-                if mempool.has_allocated() {
-                    if mempool.is_buf_within_bounds(buffer) {
-                        if mempool.is_registered() {
-                            let metadata = mempool
-                                .recover_buffer(buffer)
-                                .wrap_err("unable to recover metadata")?;
-                            return Ok(Some(metadata));
-                        } else {
-                            return Ok(None);
+        let align_size = align_to_pow2(buffer.len());
+        match self.mempool_ids.get(&align_size) {
+            Some(mempools) => {
+                for mempool_id in mempools.iter() {
+                    let mempool = self.mempools.get(mempool_id).unwrap();
+                    if mempool.has_allocated() {
+                        if mempool.is_buf_within_bounds(buffer) {
+                            if mempool.is_registered() {
+                                let metadata = mempool
+                                    .recover_buffer(buffer)
+                                    .wrap_err("unable to recover metadata")?;
+                                return Ok(Some(metadata));
+                            } else {
+                                return Ok(None);
+                            }
                         }
                     }
                 }
+                return Ok(None);
+            }
+            None => {
+                return Ok(None);
             }
         }
-        return Ok(None);
     }
 
     /// Consumes a datapath buffer object and returns a corresponding datapath metadata object.
@@ -348,6 +391,7 @@ where
     }
 
     /// Checks whether a given datapath buffer is in registered memory or not.
+    /// Checks only receive mempools and mempools with aligned to power of 2 size.
     #[inline]
     pub fn is_registered(&self, buf: &[u8]) -> bool {
         // search through recv mempools first
@@ -357,19 +401,30 @@ where
             }
         }
 
-        for size in self.mempool_ids.keys().filter(|size| *size >= &buf.len()) {
-            for mempool_id in self.mempool_ids.get(size).unwrap() {
-                let mempool = self.mempools.get(mempool_id).unwrap();
-                if mempool.is_buf_within_bounds(buf) {
-                    return mempool.is_registered();
+        let align_size = align_to_pow2(buf.len());
+        match self.mempool_ids.get(&align_size) {
+            Some(mempools) => {
+                for mempool_id in mempools.iter() {
+                    let mempool = self.mempools.get(mempool_id).unwrap();
+                    if mempool.is_buf_within_bounds(buf) {
+                        return mempool.is_registered();
+                    }
                 }
+                return false;
+            }
+            None => {
+                return false;
             }
         }
-        return false;
     }
 
     #[inline]
     pub fn num_mempools_so_far(&self) -> u32 {
         self.next_id_to_allocate
+    }
+
+    #[inline]
+    pub fn has_mempool(&self, size: usize) -> bool {
+        return self.mempool_ids.contains_key(&size);
     }
 }
