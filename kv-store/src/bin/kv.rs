@@ -104,7 +104,8 @@ struct Opt {
         default_value = "cornflakes-dynamic"
     )]
     serialization: SerializationType,
-    #[structopt(long = "retries", help = "Enable client retries.")]
+    #[structopt(long = "retries", 
+                help = "Enable client retries.")]
     retries: bool,
     #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
     logfile: Option<String>,
@@ -143,7 +144,7 @@ struct Opt {
     splits_per_chunk: usize,
     #[structopt(
         long = "epoch_duration",
-        help = "Length in mu-seconds of each epoch for working set measurements",
+        help = "Length in seconds of each epoch for working set measurements",
         default_value = "100"
     )]
     epoch_duration: usize,
@@ -186,7 +187,7 @@ macro_rules! init_kv_server(
         let mut kv_server: KVServer<$serializer,$datapath> = KVServer::new($opt.use_native_buffers, connection.num_mempool_ids, $opt.epoch_duration)?;
         set_ctrlc_handler(&kv_server)?;
         // load values into kv store
-        let working_set_hist = ManualHistogram::new(1);
+        // let working_set_hist = ManualHistogram::new(1);
         kv_server.init(&mut connection)?;
         kv_server.load(&$opt.trace_file, &mut connection, $opt.value_size, $opt.num_values)?;
         kv_server.run_state_machine(&mut connection)?;
@@ -253,22 +254,17 @@ where
     S: KVSerializer<D>,
     D: Datapath,
 {
-    let echo_histograms = server.get_histograms();
-    // get max # of epochs
-    let trace_histogram = server.get_epoch_requests_per_mempool_histogram(/* epoch # */);
+    // let echo_histograms = server.get_histograms(); // TODO what is going on here?
     {
-        let h = echo_histograms;
-        let runtime_stats = trace_histogram; // ARC : Atomic Ref Counting
+        // let h = echo_histograms;
         ctrlc::set_handler(move || {
             tracing::info!("In ctrl-c handler");
-            for timer_m in h.iter() {
-                let timer = timer_m.lock().unwrap();
-                timer.dump_stats();
-            }
-            for stats in runtime_stats.iter() {
-                let stat = runtime_stats.lock().unwrap();
-                stat.dump_stats();
-            }
+            // server.dump();
+            // for timer_m in h.iter() {
+            //     let timer = timer_m.lock().unwrap();
+            //     timer.dump_stats();
+            // }
+            
             exit(0);
         })?;
     }
@@ -467,10 +463,11 @@ where
         .wrap_err("Failed to parse server port from config file")?;
     tracing::debug!("Server port: {}", server_port);
     loadgen.init(connection)?;
-    let timeout = match opt.retries {
-        true => cornflakes_libos::high_timeout_at_start,
-        false => cornflakes_libos::no_retries_timeout,
-    };
+    let timeout = cornflakes_libos::no_retries_timeout;
+    // let timeout = match opt.retries {
+    //     true => cornflakes_libos::high_timeout_at_start,
+    //     false => cornflakes_libos::no_retries_timeout,
+    // };
 
     // if start cutoff is > 0, run_closed_loop for that many packets
     loadgen

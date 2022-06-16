@@ -7,7 +7,7 @@ use cornflakes_libos::{
     mem,
     timing::{record, timefunc, HistogramWrapper},
     utils, CornType, Datapath, MsgID, PtrAttributes, RcCornflake, ReceivedPkt, RefCnt,
-    ScatterGather, USING_REF_COUNTING,
+    ScatterGather, USING_REF_COUNTING, allocator::MempoolID,
 };
 use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
@@ -18,6 +18,7 @@ use std::{
     ptr, slice,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
+    convert::TryInto,
 };
 use tracing::warn;
 
@@ -38,10 +39,12 @@ pub struct DPDKBuffer {
     pub mbuf: *mut rte_mbuf,
     /// Actual application data offset (header could be in front)
     pub offset: usize,
+    /// Mempool ID that the Buffer is part of
+    pub id: MempoolID,
 }
 
 impl DPDKBuffer {
-    fn new(mbuf: *mut rte_mbuf, data_offset: usize, data_len: Option<usize>) -> Self {
+    fn new(mbuf: *mut rte_mbuf, data_offset: usize, data_len: Option<usize>, id: MempoolID) -> Self {
         match data_len {
             Some(x) => unsafe {
                 (*mbuf).data_len = x as u16;
@@ -54,6 +57,7 @@ impl DPDKBuffer {
         DPDKBuffer {
             mbuf: mbuf,
             offset: data_offset,
+            id: id,
         }
     }
 
@@ -191,9 +195,10 @@ pub struct DPDKConnection {
     send_mbufs: [[*mut rte_mbuf; wrapper::RECEIVE_BURST_SIZE as usize]; wrapper::MAX_SCATTERS],
     /// Mbufs used for rx_burst.
     recv_mbufs: [*mut rte_mbuf; wrapper::RECEIVE_BURST_SIZE as usize],
-
     /// For scatter-gather mode debugging: splits per chunk of data
     splits_per_chunk: usize,
+    /// Number of mempools
+    pub num_mempool_ids: u32,
 }
 
 impl DPDKConnection {
@@ -274,11 +279,12 @@ impl DPDKConnection {
         let mut num_mempools : u32 = 0;
         for mempool in mempools.iter() {
             mempool_allocator
-                .add_mempool(*mempool, wrapper::MBUF_BUF_SIZE as _)
+                .add_mempool(*mempool, wrapper::MBUF_BUF_SIZE as _, num_mempools.clone())
                 .wrap_err("Failed to add DPDK default mempool to mempool allocator")?;
             num_mempools += 1;
+            tracing::info!("Number of mempools before connection finalizes: {:?}", num_mempools);
         }
-
+        tracing::info!("Number of mempools before connection finalizes: {:?}", num_mempools);
         tracing::debug!("Use scatter_gather: {}", use_scatter_gather);
         Ok(DPDKConnection {
             queue_id: 0,
@@ -377,6 +383,7 @@ impl DPDKConnection {
             };
             (num_elts / num_mempools, num_mempools)
         };
+        tracing::info!("Number of mempools: {:?}", num_mempools);
         tracing::info!("Creating {} mempools of size {}", num_mempools, num_values);
         for i in 0..num_mempools {
             let mempool_name = format!("{}_{}", name, i);
@@ -397,14 +404,14 @@ impl DPDKConnection {
                 dpdk_call!(rte_mempool_in_use_count(mempool)),
             );
             self.mempool_allocator
-                .add_mempool(mempool, value_size)
+                .add_mempool(mempool, value_size, i.clone().try_into().unwrap())
                 .wrap_err(format!(
                     "Unable to add mempool {:?} to mempool allocator; value_size {}, num_values {}",
                     name, value_size, num_values
                 ))?;
         }
         Ok(())
-    }
+    } 
 }
 
 fn init_timers(mode: AppMode) -> Result<HashMap<String, Arc<Mutex<HistogramWrapper>>>> {
@@ -587,7 +594,7 @@ impl Datapath for DPDKConnection {
 
         let mut mempool_allocator = allocator::MempoolAllocator::default();
         mempool_allocator
-            .add_mempool(rx_allocator.0, wrapper::MBUF_BUF_SIZE as _)
+            .add_mempool(rx_allocator.0, wrapper::MBUF_BUF_SIZE as _, 0)
             .wrap_err("Failed to add default mempool to mempool allocator.")?;
 
         Ok(DPDKConnection {
@@ -607,6 +614,7 @@ impl Datapath for DPDKConnection {
                 wrapper::MAX_SCATTERS],
             recv_mbufs: [ptr::null_mut(); wrapper::RECEIVE_BURST_SIZE as usize],
             splits_per_chunk: 1,
+            num_mempool_ids: 1,
         })
     }
 

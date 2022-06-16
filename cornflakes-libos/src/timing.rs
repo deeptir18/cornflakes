@@ -1,4 +1,5 @@
 use super::{loadgen::client_threads::ThreadLatencies, MsgID};
+use crate::allocator::MempoolID;
 use color_eyre::eyre::{bail, ensure, Result};
 use hashbrown::HashMap;
 use hdrhistogram::Histogram;
@@ -32,6 +33,17 @@ pub fn timefunc(
 
 #[inline]
 pub fn record(timer: Option<Arc<Mutex<HistogramWrapper>>>, val: u64) -> Result<()> {
+    match timer {
+        Some(inner) => {
+            inner.lock().unwrap().record(val)?;
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+#[inline]
+pub fn record_wss(timer: Option<Arc<Mutex<WSSHistogramWrapper>>>, val: u64) -> Result<()> {
     match timer {
         Some(inner) => {
             inner.lock().unwrap().record(val)?;
@@ -331,47 +343,134 @@ impl RTTHistogram for HistogramWrapper {
 ///     Get ranking of mempool_ids for a given epoch from most to least accessed
 ///     Reach Goal: Get detailed information on the values that were actually accessed in the mempool
 pub trait WorkingSetStats {
-    // Gets histogram of requests/epoch for each mempool 
-    fn get_epoch_requests_per_mempool_histogram_mut(&mut self, epoch: Epoch) -> &mut Histogram<u64>;
-    fn get_epoch_requests_per_mempool_histogram(&self, epoch: Epoch) -> &Histogram<u64>;
-    fn get_overall_requests_per_mempool_histogram(&self) -> &Histogram<u64>; // total # of requests over the entire length of the program
+    // For a given epoch, histogram mapping x-axis mempool ID to # requests
+    fn get_epoch_requests_per_mempool_histogram_mut(&mut self, epoch: u64) -> &mut Histogram<u64>;
+    fn get_epoch_requests_per_mempool_histogram(&self, epoch: u64) -> &Histogram<u64>;
 
-    // Gets list of epochs, where each epoch contains a list of mempool_ids sorted from most to least accessed
-    fn get_mempool_ranking_per_epoch_mut(epoch: Epoch) -> &mut Vec<MempoolID>;
-    fn get_mempool_ranking_per_epoch(epoch: Epoch) -> &Vec<MempoolID>;
+    // Histogram mapping x-axis mempool ID to # requests over all epochs
+    // fn get_overall_requests_per_mempool_histogram_mut(&self) -> &mut Histogram<u64>;
+    // fn get_overall_requests_per_mempool_histogram(&self) -> &Histogram<u64>;
 
-    fn increment_epoch(&mut self) -> u64;
-    fn get_current_epoch(&self) -> u64;
-
+    // // Gets list of epochs, where each epoch contains a list of mempool_ids sorted from most to least accessed
+    // fn get_mempool_ranking_per_epoch_mut(epoch: u64) -> &mut Vec<MempoolID>;
+    // fn get_mempool_ranking_per_epoch(epoch: u64) -> &Vec<MempoolID>;
+    
+    // Add a request to the histogram
     fn add_request(&mut self, epoch: u64, mempool_id: u64) -> Result<()> {
         tracing::debug!("Recording request for mempool {} in epoch {}", mempool_id, epoch);
-        self.get_epoch_requests_per_mempool_histogram_mut(epoch).record(1)?; //TODO: NOT RIGHT
+        self.get_epoch_requests_per_mempool_histogram_mut(epoch).record(mempool_id);
         Ok(())
     }
 
     // Dumps statistics from the current epoch
-    fn dump(&self, msg: &str, epoch: u64) {
+    fn dump(&self, epoch: u64) {
         if self.get_epoch_requests_per_mempool_histogram(epoch).len() == 0 {
             return;
         }
         tracing::info!(
-            msg,
-            p5_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.05),
-            p25_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.25),
-            p50_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.5),
-            p75_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.75),
-            p95_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.95),
-            p99_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.99),
-            pkts_sent = self.get_epoch_requests_per_mempool_histogram().len(),
-            min_ns = self.get_epoch_requests_per_mempool_histogram().min(),
-            max_ns = self.get_epoch_requests_per_mempool_histogram().max(),
-            avg_ns = ?self.get_epoch_requests_per_mempool_histogram().mean(),
+            epoch,
+            p5_ns = self.get_epoch_requests_per_mempool_histogram(epoch).value_at_quantile(0.05),
+            p25_ns = self.get_epoch_requests_per_mempool_histogram(epoch).value_at_quantile(0.25),
+            p50_ns = self.get_epoch_requests_per_mempool_histogram(epoch).value_at_quantile(0.5),
+            p75_ns = self.get_epoch_requests_per_mempool_histogram(epoch).value_at_quantile(0.75),
+            p95_ns = self.get_epoch_requests_per_mempool_histogram(epoch).value_at_quantile(0.95),
+            p99_ns = self.get_epoch_requests_per_mempool_histogram(epoch).value_at_quantile(0.99),
+            pkts_sent = self.get_epoch_requests_per_mempool_histogram(epoch).len(),
+            min_ns = self.get_epoch_requests_per_mempool_histogram(epoch).min(),
+            max_ns = self.get_epoch_requests_per_mempool_histogram(epoch).max(),
+            avg_ns = ?self.get_epoch_requests_per_mempool_histogram(epoch).mean(),
         );
         tracing::info!(
-            msg = ?format!("{}: summary statistics:", msg),
-            p50_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.5),
-            avg_ns = ?self.get_epoch_requests_per_mempool_histogram().mean(),
-            p99_ns = self.get_epoch_requests_per_mempool_histogram().value_at_quantile(0.99)
+            epoch = ?format!("{}: summary statistics:", epoch),
+            p50_ns = self.get_epoch_requests_per_mempool_histogram(epoch).value_at_quantile(0.5),
+            avg_ns = ?self.get_epoch_requests_per_mempool_histogram(epoch).mean(),
+            p99_ns = self.get_epoch_requests_per_mempool_histogram(epoch).value_at_quantile(0.99)
         );
     }
+}
+
+pub struct WSSHistogramWrapper {
+    /// Epoch of the measurement
+    epoch: u64,
+    /// Actual histogram
+    hist: Histogram<u64>,
+    /// Map of MempoolID => # requests in the epoch.
+    mempool_map: HashMap<MempoolID, u64>,
+}
+
+impl WSSHistogramWrapper {
+    pub fn new(curr_epoch: u64, max_mempool_id: MempoolID) -> Result<WSSHistogramWrapper> {
+        Ok(WSSHistogramWrapper {
+            epoch: curr_epoch,
+            hist: Histogram::new_with_max(max_mempool_id.into(), 2)?,
+            mempool_map: HashMap::default(),
+        })
+    }
+
+    pub fn get_hist(&self) -> Histogram<u64> {
+        self.hist.clone()
+    }
+
+    pub fn combine(&mut self, other: &WSSHistogramWrapper) -> Result<()> {
+        self.hist.add(other.get_hist())?;
+        Ok(())
+    }
+
+    pub fn record(&mut self, val: u64) -> Result<()> {
+        self.add_request(val, self.epoch)
+    }
+
+    pub fn start_entry(&mut self, id: MempoolID) -> Result<()> {
+        if self.mempool_map.contains_key(&id) {
+            tracing::warn!(
+                epoch = ?self.epoch,
+                "Already contains key for insertion."
+            );
+            let request_num = self.mempool_map.get_mut(&id);
+            *request_num.unwrap() += 1;
+        } else {
+            self.mempool_map.insert(id, 1);
+        }
+        Ok(())
+    }
+
+    pub fn end_entry(&mut self, id: MempoolID) -> Result<()> {
+        let mut delete = false;
+        let head_start = match self.mempool_map.get_mut(&id) {
+            Some(s) => {
+                if *s == 0 {
+                    delete = true;
+                }
+                s
+            }
+            None => {
+                tracing::warn!(
+                    epoch = ?self.epoch,
+                    "Already contains key for insertion."
+                );
+                bail!("Histogram insertion error.");
+            }
+        };
+        self.add_request(self.epoch, id.into())?;
+        if delete {
+            let _ = self.mempool_map.remove(&id);
+        }
+        Ok(())
+    }
+}
+
+impl WorkingSetStats for WSSHistogramWrapper {
+    fn get_epoch_requests_per_mempool_histogram_mut(&mut self, epoch: u64) -> &mut Histogram<u64> {
+        &mut self.hist
+    }
+
+    fn get_epoch_requests_per_mempool_histogram(&self, epoch: u64) -> &Histogram<u64> {
+        &self.hist
+    }
+}
+
+pub trait EpochTracker {
+    fn increment_epoch(&mut self);
+
+    fn get_current_epoch(&self) -> u64;
 }

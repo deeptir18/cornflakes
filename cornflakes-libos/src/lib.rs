@@ -14,6 +14,7 @@ pub mod state_machine;
 pub mod timing;
 pub mod utils;
 
+use crate::allocator::MempoolID;
 use color_eyre::eyre::{ensure, Result, WrapErr};
 use cornflakes_utils::AppMode;
 use datapath::MetadataOps;
@@ -27,7 +28,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use timing::{HistogramWrapper, StatsWrapper};
+use timing::{HistogramWrapper};
 use utils::AddressInfo;
 
 #[cfg(feature = "profiler")]
@@ -689,6 +690,7 @@ where
     buf: D::DatapathPkt,
     offset: usize,
     len: usize,
+    mempool_id: MempoolID,
 }
 
 impl<D> PartialEq for CfBuf<D>
@@ -710,11 +712,13 @@ where
     pub fn free_inner(&mut self) {
         self.buf.free_inner();
     }
+    
     pub fn new(buf: D::DatapathPkt) -> Self {
         CfBuf {
             len: buf.buf_size(),
             buf: buf,
             offset: 0,
+            mempool_id: 0,
         }
     }
 
@@ -740,6 +744,7 @@ where
             len: len,
             offset: offset,
             buf: owned_buf,
+            mempool_id: 0,
         }
     }
 
@@ -766,6 +771,14 @@ where
         self.buf.clone()
     }
 
+    pub fn get_mempool_id(&self) -> MempoolID {
+        self.mempool_id.clone()
+    }
+
+    pub fn set_mempool_id(&mut self, id: MempoolID) {
+        self.mempool_id = id;
+    }
+
     /// Assumes len is valid
     pub fn set_len(&mut self, len: usize) {
         self.len = len;
@@ -782,6 +795,7 @@ where
             len: buf.buf_size(),
             buf: buf,
             offset: 0,
+            mempool_id: 0,
         })
     }
 
@@ -799,6 +813,7 @@ where
             buf: D::DatapathPkt::default(),
             offset: 0,
             len: 0,
+            mempool_id: 0,
         }
     }
 }
@@ -813,6 +828,7 @@ where
             buf: self.buf.clone(),
             offset: self.offset,
             len: self.len,
+            mempool_id: self.mempool_id,
         }
     }
 }
@@ -1352,8 +1368,6 @@ pub trait ServerSM {
     fn cleanup(&mut self, connection: &mut Self::Datapath) -> Result<()>;
 
     fn get_histograms(&self) -> Vec<Arc<Mutex<HistogramWrapper>>>;
-
-    fn get_epoch_requests_per_mempool_histogram(&self, epoch: u64) -> Vec<Arc<Mutex<HistogramWrapper>>>;
 
     fn get_all_requests_per_mempool_histogram(&self) -> Vec<Arc<Mutex<HistogramWrapper>>>;
 }

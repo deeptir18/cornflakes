@@ -4,6 +4,7 @@ pub mod kv_messages {
     include!(concat!(env!("OUT_DIR"), "/kv_cf_dynamic.rs"));
 }
 
+use cornflakes_libos::allocator::MempoolID;
 use super::{ycsb_parser::YCSBRequest, KVSerializer, MsgType, SerializedRequestGenerator};
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_codegen::utils::rc_dynamic_hdr::{CFBytes, CFString, HeaderRepr};
@@ -46,7 +47,7 @@ where
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
         offset: usize,
-    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>, MempoolID)> {
         #[cfg(feature = "profiler")]
         perftools::timer!("Handle get cornflakes");
 
@@ -84,7 +85,7 @@ where
                         }
                     }
                 };
-                tracing::debug!("Found val for key {:?}: value {:?}", key.to_str()?, value);
+                tracing::info!("Found val for key {:?}: value {:?}", key.to_str()?, value);
 
                 // construct response
                 let mut response = kv_messages::GetResp::<D>::new();
@@ -101,7 +102,7 @@ where
                     perftools::timer!("Serialize resp");
                     response.serialize(rte_memcpy)?
                 };
-                return Ok((header_vec, cf));
+                return Ok((header_vec, cf, value.get_mempool_id()));
             }
             x => {
                 let mut getm_request = kv_messages::GetMReq::<D>::new();
@@ -151,7 +152,7 @@ where
                 if unsafe { !USING_REF_COUNTING } {
                     pkt.free_inner();
                 }
-                return Ok((header_vec, cf));
+                return Ok((header_vec, cf, 0)); // TODO
             }
         }
     }
@@ -163,7 +164,7 @@ where
         num_values: usize,
         offset: usize,
         _connection: &mut D,
-    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>, MempoolID)> {
         match num_values {
             0 => {
                 bail!("Cannot have 0 values for a put request.");
@@ -188,7 +189,7 @@ where
 
                 // serialize response
                 let (header_vec, cf) = response.serialize(rte_memcpy)?;
-                return Ok((header_vec, cf));
+                return Ok((header_vec, cf, 0));
             }
             x => {
                 let mut putm_request = kv_messages::PutMReq::new();
@@ -208,7 +209,7 @@ where
                 if unsafe { !USING_REF_COUNTING } {
                     pkt.free_inner();
                 }
-                return Ok((header_vec, cf));
+                return Ok((header_vec, cf, 0));
             }
         }
     }

@@ -83,6 +83,7 @@ fn main() {
     }
 
     let mut builder = Builder::default();
+    println!("TEST!");
     for header_location in &header_locations {
         println!("Adding header location {}", header_location);
         builder = builder.clang_arg(&format!("-I{}", header_location.trim()));

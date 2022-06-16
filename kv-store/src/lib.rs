@@ -7,10 +7,10 @@ pub mod ycsb_parser;
 use byteorder::{BigEndian, ByteOrder};
 use color_eyre::eyre::{bail, eyre, Result, WrapErr};
 use cornflakes_libos::{
-    timing::{HistogramWrapper, ManualHistogram},
+    timing::{HistogramWrapper, ManualHistogram, EpochTracker},
     utils::AddressInfo,
     CfBuf, ClientSM, Datapath, MsgID, RcCornflake, ReceivedPkt, ScatterGather, ServerSM,
-    allocator::{MempoolID, Epoch},
+    allocator::MempoolID,
     USING_REF_COUNTING,
 };
 use hashbrown::HashMap;
@@ -22,7 +22,7 @@ use std::{
     marker::PhantomData,
     net::Ipv4Addr,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use ycsb_parser::YCSBRequest;
 
@@ -554,7 +554,7 @@ where
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
         offset: usize, // to account for any framing
-    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)>;
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>, MempoolID)>;
 
     fn handle_put<'a>(
         &self,
@@ -563,7 +563,7 @@ where
         num_values: usize,
         offset: usize,
         connection: &mut D,
-    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)>;
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>, MempoolID)>;
 
     // Integrates the header ctx object into the cornflake.
     fn process_header<'a>(
@@ -580,35 +580,11 @@ where
 {
     map: HashMap<String, CfBuf<D>>,
     serializer: S,
-    mempool_accesses: HashMap<Epoch, ManualHistogram>,
+    mempool_accesses: HashMap<u64, HashMap<MempoolID, u64>>, // Map from epoch -> all MempoolID -> request pairs
     current_epoch: Arc<Mutex<u64>>,
     max_mempool_id: Arc<MempoolID>,
-    epoch_duration: u64,
-}
-
-impl<S, D> WorkingSetStats for KVServer<S, D>
-where
-    D: Datapath,
-    S: KVSerializer<D>, 
-{
-    fn get_epoch_requests_per_mempool_histogram_mut(&mut self, epoch: u64) -> &mut Histogram<u64>;
-    fn get_epoch_requests_per_mempool_histogram(&self, epoch:u64) -> &Histogram<u64>;
-    fn get_overall_requests_per_mempool_histogram(&self) -> &Histogram<u64>; // total # of requests over the entire length of the program
-
-    // Gets list of epochs, where each epoch contains a list of mempool_ids sorted from most to least accessed
-    fn get_mempool_ranking_per_epoch_mut(epoch: Epoch) -> &mut Vec<MempoolID>;
-    fn get_mempool_ranking_per_epoch(epoch: Epoch) -> &Vec<MempoolID>;
-
-    fn increment_epoch(&mut self) -> u64 {
-        let v = self.current_epoch.fetch_add(1, Ordering::SeqCst);
-        static COUNTER : AtomicU32 = AtomicU32::new(0);
-        println!("ID Counter: Adding {} Mempool ID", COUNTER.fetch_add(1, Ordering::Relaxed));
-        COUNTER.clone().into_inner()
-    }
-
-    fn get_current_epoch(&self) -> u64 {
-        Arc::try_unwrap(self.current_epoch.clone())
-    }
+    epoch_duration: Duration,
+    last_time: SystemTime,
 }
 
 impl<S, D> KVServer<S, D>
@@ -617,7 +593,7 @@ where
     S: KVSerializer<D>,
 {
     pub fn new(serialize_to_native_buffers: bool,
-                max_mempool_id: u32
+                max_mempool_id: u32,
                epoch_duration: usize) -> Result<Self> {
         let serializer = S::new_server(serialize_to_native_buffers)
             .wrap_err("Could not initialize server serializer.")?;
@@ -627,31 +603,58 @@ where
             mempool_accesses: HashMap::default(),
             current_epoch: Arc::new(Mutex::new(0)),
             max_mempool_id: Arc::new(max_mempool_id),
-            epoch_duration: epoch_duration,
+            epoch_duration: Duration::new(epoch_duration as u64, 0),
+            last_time: SystemTime::now(),
         })
     }
 
     pub fn add_mempool_access(&mut self, id: MempoolID) -> u64 {
-        self.mempool_accesses[id] += 1
+        if let Some(epoch_map) = self.mempool_accesses.get_mut(&self.get_current_epoch()) {
+            if let Some(x) = epoch_map.get_mut(&id) {
+                *x += 1;
+                let num = (*x).clone();
+                tracing::info!("Mempool access id {:?} number {:?}", id, num);
+                *x
+            } else {
+                epoch_map.insert(id, 1);
+                tracing::info!("Mempool access id {:?} number 1", id);
+                1
+            }
+        } else {
+            self.mempool_accesses.insert(self.get_current_epoch(), HashMap::default());
+            self.add_mempool_access(id)
+        }
     }
 
-    pub fn get_mut_mempool_accesses(&mut self) -> &mut ManualHistogram {
-        // TODO
-
+    pub fn get_mempool_accesses(&mut self, epoch: u64, id: MempoolID) -> u64 {
+        if let Some(epoch_map) = self.mempool_accesses.get_mut(&epoch) {
+            if let Some(x) = epoch_map.get(&id) {
+                (*x).clone()
+            } else {
+                tracing::info!("ERROR!!! No entries for MempoolID");
+                0
+            }
+        } else {
+            tracing::info!("Current epoch {:?} doesn't have any entries!", epoch);
+            0
+        }
     } 
 
     pub fn dump(
         &mut self,
-        epoch: u64,
     ) -> Result<()> {
-        for elt in self.mempool_accesses {
-            tracing::info!("Mempool accesses for ID {} in epoch {} is {}", 
-                           elt.first, 
-                           epoch, 
-                           elt.second);
+        for (epoch, mempool_map) in &self.mempool_accesses {
+            tracing::info!("In epoch {} we had the following accesses: ", epoch);
+            for (mempool_id, num_request) in mempool_map {
+                tracing::info!("                   Number of Mempool accesses for ID {}: {}", 
+                           mempool_id,
+                           num_request);
+            }
         }
+        Ok(())
     }
 
+    #![feature(iter_partition_in_place)]
     pub fn load(
         &mut self,
         trace_file: &str,
@@ -663,7 +666,7 @@ where
         let file = File::open(trace_file)?;
         let reader = BufReader::new(file);
         let mut cur_idx = 0;
-
+        reader.iter_mut().partition_in_place(|&n| n % 2 == 0);;
         for line_res in reader.lines() {
             let line = line_res?;
             let mut req = YCSBRequest::new(&line, num_values, value_size, cur_idx)?;
@@ -698,6 +701,23 @@ where
     }
 }
 
+impl<S, D> EpochTracker for KVServer<S, D>
+where
+    D: Datapath,
+    S: KVSerializer<D>, {
+
+    fn increment_epoch(&mut self) {
+        *self.current_epoch.lock().unwrap() += 1;
+        self.dump();
+    }
+
+    fn get_current_epoch(&self) -> u64 {
+        let current_epoch = self.current_epoch.lock().unwrap();
+        // tracing::info!("Current Epoch: {:?}", *current_epoch);
+        *current_epoch
+    }
+}
+
 impl<S, D> ServerSM for KVServer<S, D>
 where
     D: Datapath,
@@ -729,7 +749,7 @@ where
             tracing::debug!("Parsed {:?} request", msg_type);
             let id = in_sga.get_id();
             let addr = in_sga.get_addr().clone();
-            let (header_ctx, mut cf) = match msg_type {
+            let (header_ctx, mut cf, mempool_id) = match msg_type {
                 MsgType::Get(size) => {
                     self.serializer
                         .handle_get(in_sga, &self.map, size, REQ_TYPE_SIZE)
@@ -742,16 +762,32 @@ where
             cf.set_id(id);
             contexts.push(header_ctx);
             out_sgas.push((cf, addr));
+            self.add_mempool_access(mempool_id);
         }
 
+        // Finishes formatting the outgoing sgas
         for i in 0..out_sgas.len() {
             let (cf, _addr) = &mut out_sgas[i];
             let ctx = &contexts[i];
             self.serializer.process_header(ctx, cf)?;
         }
-
         conn.push_sgas(&out_sgas)
             .wrap_err("Unable to send response sgas in datapath.")?;
+
+        // Measures time since last epoch and increments if necessary
+        match self.last_time.elapsed() {
+            Ok(elapsed) => {
+                if elapsed >= self.epoch_duration {
+                    self.increment_epoch();
+                    tracing::info!("Current Epoch: {:?}", self.get_current_epoch());
+                }
+                
+            }
+            Err(e) => {
+                println!("Error when checking epochs: {e:?}");
+            }
+        }
+        tracing::info!("Number of mempool accesses: {:?}", self.get_mempool_accesses(self.get_current_epoch(), 0));
         Ok(())
     }
 
@@ -759,9 +795,14 @@ where
         Vec::default()
     }
 
-    fn get_epoch_requests_per_mempool_histogram(&self, epoch: u64) -> Vec<Arc<Mutex<HistogramWrapper>>> {
+    fn get_all_requests_per_mempool_histogram(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {
+        // self.histograms.iter().map(|(_, h)| h.clone()).collect();
         Vec::default()
     }
+
+    // fn get_raw_mempool_requests(&self) -> Arc<Mutex<HashMap<u64, HashMap<MempoolID, u64>>>> {
+    //     self.mempool_accesses.iter().map(|(_, h)| h.clone()).collect()
+    // }
 }
 
 impl<S, D> Drop for KVServer<S, D>

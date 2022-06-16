@@ -248,4 +248,8 @@ impl ServerSM for EchoServer {
     fn get_histograms(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {
         self.histograms.iter().map(|(_, h)| h.clone()).collect()
     }
+
+    fn get_all_requests_per_mempool_histogram(&self) -> Vec<Arc<Mutex<HistogramWrapper>>> {
+        self.histograms.iter().map(|(_, h)| h.clone()).collect()
+    }
 }

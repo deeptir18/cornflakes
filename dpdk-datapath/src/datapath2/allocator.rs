@@ -5,17 +5,6 @@ use cornflakes_libos::{
     mem::closest_2mb_page,
 };
 use hashbrown::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
-
-trait IDCounter {
-    fn id_counter() -> u32 {
-        static COUNTER: AtomicU32 = AtomicU32::new(0);
-        println!("ID Counter: Adding {} Mempool ID", COUNTER.fetch_add(1, Ordering::Relaxed));
-        COUNTER.clone().into_inner()
-    }
-
-    fn id_counter_dummy() -> u32;
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MempoolInfo {
@@ -27,7 +16,7 @@ pub struct MempoolInfo {
     beginning_offset: usize, // page offset at beginning of region
     page_offset: usize,      // offset on each page
     headroom: usize,         // headroom at front of mbuf
-    id: MempoolID,           // Unique MempoolID
+    id: MempoolID, // Unique MempoolID
 }
 
 impl Default for MempoolInfo {
@@ -39,14 +28,8 @@ impl Default for MempoolInfo {
     }
 }
 
-impl IDCounter for MempoolInfo {
-    fn id_counter_dummy() -> u32 {
-        0
-    }
-}
-
 impl MempoolInfo {
-    pub fn new(handle: *mut rte_mempool) -> Result<Self> {
+    pub fn new(handle: *mut rte_mempool, mempool_id: u32) -> Result<Self> {
         let (start, size, object_size, beginning_offset, page_offset, headroom) =
             get_mempool_memzone_area(handle).wrap_err(format!(
                 "Not able to find memzone area for mempool: {:?}",
@@ -64,7 +47,7 @@ impl MempoolInfo {
             beginning_offset: beginning_offset,
             page_offset: page_offset,
             headroom: headroom,
-            id: IDCounter::id_counter(),
+            id: mempool_id,
         })
     }
 
@@ -167,8 +150,8 @@ pub struct MempoolAllocator {
 }
 
 impl MempoolAllocator {
-    pub fn add_mempool(&mut self, mempool: *mut rte_mempool, obj_size: usize) -> Result<()> {
-        let mempool_info = MempoolInfo::new(mempool)?;
+    pub fn add_mempool(&mut self, mempool: *mut rte_mempool, obj_size: usize, mempool_id: u32) -> Result<()> {
+        let mempool_info = MempoolInfo::new(mempool, mempool_id)?;
         if self.mempools.contains_key(&obj_size) {
             let info_vec = self.mempools.get_mut(&obj_size).unwrap();
             info_vec.push(mempool_info);

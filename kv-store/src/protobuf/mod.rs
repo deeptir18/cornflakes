@@ -7,6 +7,7 @@ pub mod kv_messages {
     #![allow(unused_imports)]
     include!(concat!(env!("OUT_DIR"), "/kv_proto.rs"));
 }
+use cornflakes_libos::allocator::MempoolID;
 use super::{
     ycsb_parser::YCSBRequest, KVSerializer, MsgType, SerializedRequestGenerator, ALIGN_SIZE,
 };
@@ -44,7 +45,7 @@ where
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
         offset: usize,
-    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>, MempoolID)> {
         let mut output_vec = Vec::default();
         let mut output_stream = CodedOutputStream::vec(&mut output_vec);
         let message = pkt.contiguous_slice(offset, pkt.data_len() - offset)?;
@@ -96,7 +97,7 @@ where
         output_stream
             .flush()
             .wrap_err("Failed to flush output stream.")?;
-        Ok((output_vec, RcCornflake::with_capacity(1)))
+        Ok((output_vec, RcCornflake::with_capacity(1), 0))
     }
 
     fn handle_put<'a>(
@@ -106,7 +107,7 @@ where
         num_values: usize,
         offset: usize,
         connection: &mut D,
-    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>, MempoolID)> {
         let mut output_vec = Vec::default();
         let mut output_stream = CodedOutputStream::vec(&mut output_vec);
         let message = pkt.contiguous_slice(offset, pkt.data_len() - offset)?;
@@ -178,7 +179,7 @@ where
             .flush()
             .wrap_err("Failed to flush output stream.")?;
         tracing::debug!("Output bytes: {:?}", output_vec);
-        Ok((output_vec, RcCornflake::with_capacity(1)))
+        Ok((output_vec, RcCornflake::with_capacity(1), 0))
     }
 
     fn process_header<'a>(

@@ -1,3 +1,4 @@
+use cornflakes_libos::allocator::MempoolID;
 use super::{
     kv_capnp, ycsb_parser::YCSBRequest, KVSerializer, MsgType, SerializedRequestGenerator,
     ALIGN_SIZE,
@@ -121,7 +122,7 @@ where
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
         offset: usize,
-    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>, MempoolID)> {
         let segment_array_vec = read_context(&pkt, offset)?;
         let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
         let message_reader = Reader::new(segment_array, ReaderOptions::default());
@@ -151,7 +152,7 @@ where
                 let (context, num_segments) = fill_in_context(&builder);
 
                 let cf = RcCornflake::with_capacity(num_segments + 1);
-                Ok(((context, builder), cf))
+                Ok(((context, builder), cf, 0))
             }
             x => {
                 // deserialize multi get request
@@ -203,7 +204,7 @@ where
                 };
 
                 let cf = RcCornflake::with_capacity(num_segments + 1);
-                Ok(((context, builder), cf))
+                Ok(((context, builder), cf, 0))
             }
         }
     }
@@ -215,7 +216,7 @@ where
         num_values: usize,
         offset: usize,
         connection: &mut D,
-    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>, MempoolID)> {
         let segment_array_vec = read_context(&pkt, offset)?;
         let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
         let message_reader = Reader::new(segment_array, ReaderOptions::default());
@@ -252,7 +253,7 @@ where
                 let (context, num_segments) = fill_in_context(&builder);
 
                 let cf = RcCornflake::with_capacity(num_segments + 1);
-                Ok(((context, builder), cf))
+                Ok(((context, builder), cf, 0))
             }
             x => {
                 let putm_request = message_reader
@@ -286,7 +287,7 @@ where
                 let (context, num_segments) = fill_in_context(&builder);
 
                 let cf = RcCornflake::with_capacity(num_segments + 1);
-                Ok(((context, builder), cf))
+                Ok(((context, builder), cf, 0))
             }
         }
     }

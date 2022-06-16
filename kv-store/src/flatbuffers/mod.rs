@@ -7,6 +7,7 @@ pub mod kv_api {
     #![allow(unused_imports)]
     include!(concat!(env!("OUT_DIR"), "/kv_fb_generated.rs"));
 }
+use cornflakes_libos::allocator::MempoolID;
 use kv_api::kv_fb;
 
 use super::{
@@ -47,7 +48,7 @@ where
         map: &HashMap<String, CfBuf<D>>,
         num_values: usize,
         offset: usize,
-    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>, MempoolID)> {
         let pkt_data = pkt.contiguous_slice(offset, pkt.data_len() - offset)?;
         match num_values {
             0 => {
@@ -79,7 +80,7 @@ where
 
                 let get_resp = kv_fb::GetResp::create(&mut builder, &args);
                 builder.finish(get_resp, None);
-                Ok((builder, RcCornflake::with_capacity(1)))
+                Ok((builder, RcCornflake::with_capacity(1), value.get_mempool_id()))
             }
             x => {
                 let getm_request = get_root::<kv_fb::GetMReq>(pkt_data);
@@ -114,7 +115,7 @@ where
                 };
                 let getm_resp = kv_fb::GetMResp::create(&mut builder, &getm_resp_args);
                 builder.finish(getm_resp, None);
-                Ok((builder, RcCornflake::with_capacity(1)))
+                Ok((builder, RcCornflake::with_capacity(1), 0))
             }
         }
     }
@@ -126,7 +127,7 @@ where
         num_values: usize,
         offset: usize,
         connection: &mut D,
-    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>)> {
+    ) -> Result<(Self::HeaderCtx, RcCornflake<'a, D>, MempoolID)> {
         let pkt_data = pkt.contiguous_slice(offset, pkt.data_len() - offset)?;
         match num_values {
             0 => {
@@ -170,7 +171,7 @@ where
 
                 let put_resp = kv_fb::PutResp::create(&mut builder, &args);
                 builder.finish(put_resp, None);
-                Ok((builder, RcCornflake::with_capacity(1)))
+                Ok((builder, RcCornflake::with_capacity(1), 0))
             }
             x => {
                 let putm_request = get_root::<kv_fb::PutMReq>(&pkt_data);
@@ -223,7 +224,7 @@ where
 
                 let put_resp = kv_fb::PutResp::create(&mut builder, &args);
                 builder.finish(put_resp, None);
-                Ok((builder, RcCornflake::with_capacity(1)))
+                Ok((builder, RcCornflake::with_capacity(1), 0))
             }
         }
     }
