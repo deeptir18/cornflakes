@@ -70,6 +70,9 @@ impl Default for Mlx5Buffer {
 
 impl Drop for Mlx5Buffer {
     fn drop(&mut self) {
+        if self.metadata == std::ptr::null_mut() || self.data == std::ptr::null_mut() {
+            return;
+        }
         // Decrements ref count on underlying metadata
         unsafe {
             custom_mlx5_mbuf_refcnt_update_or_free(self.metadata, -1);
@@ -160,13 +163,17 @@ impl AsRef<[u8]> for Mlx5Buffer {
 }
 
 impl Write for Mlx5Buffer {
+    #[inline]
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         // only write the maximum amount
         let data_mempool = unsafe { get_data_mempool(self.mempool) };
         let written = std::cmp::min(unsafe { access!(data_mempool, item_len, usize) }, buf.len());
         let mut mut_slice =
             unsafe { std::slice::from_raw_parts_mut(self.data as *mut u8, written) };
-        let written = mut_slice.write(&buf[0..written])?;
+        unsafe {
+            mlx5_rte_memcpy(self.data as *mut u8 as _, buf.as_ptr() as _, written);
+        }
+        //let written = mut_slice.write(&buf[0..written])?;
         self.data_len = written;
         Ok(written)
     }
@@ -233,9 +240,6 @@ impl MbufMetadata {
         data_offset: usize,
         data_len: Option<usize>,
     ) -> Result<Self> {
-        tracing::debug!("Returning mbuf {:?}, data_buf: {:?}", mbuf, unsafe {
-            access!(mbuf, buf_addr, *mut u8)
-        });
         /*ensure!(
             data_offset <= unsafe { access!(mbuf, data_buf_len, usize) },
             format!(
@@ -306,9 +310,11 @@ impl Default for MbufMetadata {
 
 impl Drop for MbufMetadata {
     fn drop(&mut self) {
+        if self.mbuf == std::ptr::null_mut() {
+            return;
+        }
         unsafe {
             if USING_REF_COUNTING {
-                tracing::debug!(mbuf =? self.mbuf, "Dropping");
                 custom_mlx5_mbuf_refcnt_update_or_free(self.mbuf, -1);
             } else {
                 custom_mlx5_mbuf_free(self.mbuf);
@@ -3715,12 +3721,13 @@ impl Datapath for Mlx5Connection {
 
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {
         // use 2MB pages for data, 2MB pages for metadata (?)
+        let actual_size = cornflakes_libos::allocator::align_to_pow2(size);
         let metadata_pgsize = match min_elts > 8192 {
             true => PGSIZE_2MB,
             false => PGSIZE_4KB,
         };
         let mempool_params =
-            sizes::MempoolAllocationParams::new(min_elts, metadata_pgsize, PGSIZE_2MB, size)
+            sizes::MempoolAllocationParams::new(min_elts, metadata_pgsize, PGSIZE_2MB, actual_size)
                 .wrap_err("Incorrect mempool allocation params")?;
         tracing::debug!(mempool_params = ?mempool_params, "Adding mempool");
         let data_mempool = DataMempool::new(&mempool_params, &self.thread_context)?;

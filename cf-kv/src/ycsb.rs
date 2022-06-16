@@ -2,7 +2,7 @@ use super::{
     allocate_datapath_buffer, ClientSerializer, KVServer, ListKVServer, MsgType, RequestGenerator,
     ServerLoadGenerator, ZeroCopyPutKVServer, REQ_TYPE_SIZE,
 };
-use color_eyre::eyre::{bail, ensure, Result};
+use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_libos::{allocator::MempoolID, datapath::Datapath};
 use hashbrown::HashMap;
 use std::{
@@ -13,6 +13,103 @@ const MAX_BATCHES: usize = 8;
 const DEFAULT_VALUE_SIZE: usize = 4096;
 const DEFAULT_NUM_KEYS: usize = 1;
 const DEFAULT_NUM_VALUES: usize = 1;
+use rand::{
+    distributions::{Alphanumeric, Distribution, Uniform, WeightedIndex},
+    thread_rng, Rng,
+};
+
+#[derive(Debug, Clone)]
+pub enum YCSBValueSizeGenerator {
+    UniformOverSizes(Vec<usize>, Uniform<usize>, usize),
+    UniformOverRange(Uniform<usize>, usize),
+    SingleValue(usize),
+}
+
+impl std::str::FromStr for YCSBValueSizeGenerator {
+    type Err = color_eyre::eyre::Error;
+    fn from_str(s: &str) -> Result<YCSBValueSizeGenerator> {
+        tracing::info!("Parsing from {}", s);
+        let split: Vec<&str> = s.split("-").collect();
+        if split.len() < 2 {
+            bail!(
+                "Request shape pattern needs atleast 2 items, got: {:?}",
+                split
+            );
+        }
+        let numbers_result: Result<Vec<usize>> = split
+            .iter()
+            .skip(1)
+            .map(|x| match x.parse::<usize>() {
+                Ok(s) => Ok(s),
+                Err(e) => {
+                    bail!("Failed to parse {}", x);
+                }
+            })
+            .collect();
+        let numbers = numbers_result.wrap_err("Not able to parse numbers result")?;
+        if split[0] == "UniformOverRange" {
+            if numbers.len() != 2 {
+                bail!(
+                    "UniformOverRange must provide a start and end range; got: {:?}",
+                    numbers
+                );
+            }
+
+            Ok(YCSBValueSizeGenerator::from_range(numbers[0], numbers[1]))
+        } else if split[0] == "UniformOverSizes" {
+            Ok(YCSBValueSizeGenerator::from_sizes(numbers))
+        } else if split[0] == "SingleValue" {
+            if numbers.len() != 1 {
+                bail!(
+                    "Single value must provide a single size, got: {:?}",
+                    numbers
+                );
+            }
+            Ok(YCSBValueSizeGenerator::from_single_size(numbers[0]))
+        } else {
+            bail!("First part of value generator must be one of [UniformOverSizes, UniformOverRange, SingleValue], got: {:?}", split[0]);
+        }
+    }
+}
+
+impl YCSBValueSizeGenerator {
+    pub fn from_sizes(sizes: Vec<usize>) -> Self {
+        let uniform = Uniform::from(0..sizes.len());
+        let average = sizes.iter().sum::<usize>() / sizes.len();
+        YCSBValueSizeGenerator::UniformOverSizes(sizes, uniform, average)
+    }
+
+    pub fn from_range(a: usize, b: usize) -> Self {
+        YCSBValueSizeGenerator::UniformOverRange(Uniform::from(a..b), (a + b) / 2)
+    }
+
+    pub fn from_single_size(a: usize) -> Self {
+        YCSBValueSizeGenerator::SingleValue(a)
+    }
+
+    fn sample(&self) -> usize {
+        match self {
+            YCSBValueSizeGenerator::UniformOverSizes(sizes, uniform, _) => {
+                let mut rng = thread_rng();
+                let index = uniform.sample(&mut rng);
+                sizes[index]
+            }
+            YCSBValueSizeGenerator::UniformOverRange(uniform, _) => {
+                let mut rng = thread_rng();
+                uniform.sample(&mut rng)
+            }
+            YCSBValueSizeGenerator::SingleValue(value_size) => *value_size,
+        }
+    }
+
+    pub fn avg_size(&self) -> usize {
+        match self {
+            YCSBValueSizeGenerator::UniformOverSizes(_, _, x) => *x,
+            YCSBValueSizeGenerator::UniformOverRange(_, x) => *x,
+            YCSBValueSizeGenerator::SingleValue(value_size) => *value_size,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YCSBLine {
@@ -97,7 +194,7 @@ impl YCSBLine {
 }
 
 pub struct YCSBServerLoader {
-    value_size: usize,
+    value_size: YCSBValueSizeGenerator,
     num_values: usize,
     num_keys: usize,
     allocate_contiguously: bool,
@@ -105,7 +202,7 @@ pub struct YCSBServerLoader {
 
 impl YCSBServerLoader {
     pub fn new(
-        value_size: usize,
+        value_size: YCSBValueSizeGenerator,
         num_values: usize,
         num_keys: usize,
         allocate_contiguously: bool,
@@ -193,7 +290,8 @@ impl ServerLoadGenerator for YCSBServerLoader {
     type RequestLine = YCSBLine;
 
     fn read_request(&self, line: &str) -> Result<Self::RequestLine> {
-        YCSBLine::new(line, self.num_keys, self.num_values, self.value_size)
+        let value_size = self.value_size.sample();
+        YCSBLine::new(line, self.num_keys, self.num_values, value_size)
     }
 
     fn modify_server_state_ref_kv(
@@ -333,22 +431,40 @@ pub struct YCSBClient {
     cur_client_id: usize,
     lines: Lines<BufReader<File>>,
     line_id: usize,
-    value_size: usize,
+    value_size: YCSBValueSizeGenerator,
     num_values: usize,
     num_keys: usize,
 }
 
 impl YCSBClient {
-    pub fn set_num_keys(&mut self, num: usize) {
-        self.num_keys = num;
-    }
-
-    pub fn set_value_size(&mut self, val: usize) {
-        self.value_size = val;
-    }
-
-    pub fn set_num_values(&mut self, num: usize) {
-        self.num_values = num;
+    pub fn new_ycsb_client(
+        request_file: &str,
+        client_id: usize,
+        thread_id: usize,
+        max_clients: usize,
+        max_threads: usize,
+        value_size_generator: YCSBValueSizeGenerator,
+        num_keys: usize,
+        num_values: usize,
+    ) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let file = File::open(request_file)?;
+        let reader = BufReader::new(file);
+        Ok(YCSBClient {
+            client_id: client_id,
+            thread_id: thread_id,
+            total_num_clients: max_clients,
+            total_num_threads: max_threads,
+            cur_thread_id: 0,
+            cur_client_id: 0,
+            lines: reader.lines(),
+            line_id: 0,
+            value_size: value_size_generator,
+            num_keys: num_keys,
+            num_values: num_values,
+        })
     }
 
     fn increment(&mut self) {
@@ -440,16 +556,7 @@ impl YCSBClient {
                     )
                 );
             }
-            None => {
-                ensure!(
-                    value.len() == self.value_size,
-                    format!(
-                        "Expected value of length {}, received {}",
-                        self.value_size,
-                        value.len()
-                    )
-                );
-            }
+            None => {}
         }
         Ok(())
     }
@@ -480,16 +587,7 @@ impl YCSBClient {
                         )
                     );
                 }
-                None => {
-                    ensure!(
-                        received_value.len() == self.value_size,
-                        format!(
-                            "Expected value of length {}, received {}",
-                            self.value_size,
-                            received_value.len()
-                        )
-                    );
-                }
+                None => {}
             }
         }
         Ok(())
@@ -533,24 +631,18 @@ impl YCSBClient {
                         values.len()
                     )
                 );
-                for (i, received_value) in values.iter().enumerate() {
-                    ensure!(
-                        received_value.len() == self.value_size,
-                        format!(
-                            "List item {}, Expected value of length {}, received {}",
-                            i,
-                            self.value_size,
-                            received_value.len()
-                        )
-                    );
-                }
             }
         }
         Ok(())
     }
 
     fn get_request(&self, line: &str) -> Result<<Self as RequestGenerator>::RequestLine> {
-        YCSBLine::new(line, self.num_keys, self.num_values, self.value_size)
+        YCSBLine::new(
+            line,
+            self.num_keys,
+            self.num_values,
+            self.value_size.sample(),
+        )
     }
 }
 
@@ -578,7 +670,7 @@ impl RequestGenerator for YCSBClient {
             cur_client_id: 0,
             lines: reader.lines(),
             line_id: 0,
-            value_size: DEFAULT_VALUE_SIZE,
+            value_size: YCSBValueSizeGenerator::SingleValue(DEFAULT_VALUE_SIZE),
             num_keys: DEFAULT_NUM_KEYS,
             num_values: DEFAULT_NUM_VALUES,
         })

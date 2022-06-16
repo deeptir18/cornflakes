@@ -434,6 +434,8 @@ where
                         .queue_arena_ordered_rcsga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
                 }
                 MsgType::AddUser => {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Handle add user");
                     let mut add_user = AddUser::<D>::new();
                     add_user.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
 
@@ -509,9 +511,12 @@ where
                     }
                 }
                 MsgType::FollowUnfollow => {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Handle follow unfollow");
                     let mut follow_unfollow = FollowUnfollow::<D>::new();
                     follow_unfollow.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
 
+                    tracing::debug!("Deserialized follow unfollow: {:?}", follow_unfollow);
                     let mut follow_unfollow_response = FollowUnfollowResponse::<D>::new();
                     follow_unfollow_response.init_original_values(2);
                     let response_vals = follow_unfollow_response.get_mut_original_values();
@@ -599,12 +604,14 @@ where
                     }
                 }
                 MsgType::PostTweet => {
-                    let mut post_tweet = FollowUnfollow::<D>::new();
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Handle post tweet");
+                    let mut post_tweet = PostTweet::<D>::new();
                     post_tweet.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
 
-                    let mut post_tweet_response = FollowUnfollowResponse::<D>::new();
-                    post_tweet_response.init_original_values(3);
-                    let response_vals = post_tweet_response.get_mut_original_values();
+                    let mut post_tweet_response = PostTweetResponse::<D>::new();
+                    post_tweet_response.init_values(3);
+                    let response_vals = post_tweet_response.get_mut_values();
                     match self.serializer.zero_copy_puts() {
                         true => {
                             let mut old_values: [D::DatapathMetadata; 3] = [
@@ -725,12 +732,14 @@ where
                     }
                 }
                 MsgType::GetTimeline(_) => {
-                    let mut get_timeline = FollowUnfollow::<D>::new();
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("Handle get timeline");
+                    let mut get_timeline = GetTimeline::<D>::new();
                     get_timeline.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
 
-                    let mut get_timeline_response = FollowUnfollowResponse::<D>::new();
-                    get_timeline_response.init_original_values(get_timeline.get_keys().len());
-                    let response_vals = get_timeline_response.get_mut_original_values();
+                    let mut get_timeline_response = GetTimelineResponse::<D>::new();
+                    get_timeline_response.init_values(get_timeline.get_keys().len());
+                    let response_vals = get_timeline_response.get_mut_values();
                     for (_i, key) in get_timeline.get_keys().iter().enumerate() {
                         let cf_bytes = match self.serializer.zero_copy_puts() {
                             true => {

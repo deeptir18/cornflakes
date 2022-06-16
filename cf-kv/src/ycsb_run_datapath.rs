@@ -1,3 +1,4 @@
+use super::ycsb::YCSBValueSizeGenerator;
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
     datapath::{InlineMode, PushBufType},
@@ -21,7 +22,7 @@ macro_rules! run_server(
         tracing::info!(threshold = $opt.copying_threshold, "Setting zero-copy copying threshold");
 
         // init ycsb load generator
-        let load_generator = YCSBServerLoader::new($opt.value_size, $opt.num_values, $opt.num_keys, $opt.allocate_contiguously);
+        let load_generator = YCSBServerLoader::new($opt.value_size_generator, $opt.num_values, $opt.num_keys, $opt.allocate_contiguously);
         let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type, false)?;
         kv_server.init(&mut connection)?;
         kv_server.run_state_machine(&mut connection)?;
@@ -83,15 +84,12 @@ macro_rules! run_client(
 
                 connection.set_copying_threshold(std::usize::MAX);
 
-                let mut ycsb_client = YCSBClient::new(&opt_clone.queries.as_str(),opt_clone.client_id, i, opt_clone.num_clients, opt_clone.num_threads)?;
-                ycsb_client.set_num_keys(opt_clone.num_keys);
-                ycsb_client.set_value_size(opt_clone.value_size);
-                ycsb_client.set_num_values(opt_clone.num_values);
+                let mut ycsb_client = YCSBClient::new_ycsb_client(&opt_clone.queries.as_str(),opt_clone.client_id, i, opt_clone.num_clients, opt_clone.num_threads, opt_clone.value_size_generator.clone(), opt_clone.num_keys, opt_clone.num_values)?;
 
                 let mut server_trace: Option<(&str, YCSBServerLoader)> = None;
                 if cfg!(debug_assertions) {
                     if opt_clone.trace_file != "" {
-                        let server_loader = YCSBServerLoader::new(opt_clone.value_size, opt_clone.num_values, opt_clone.num_keys, false);
+                        let server_loader = YCSBServerLoader::new(opt_clone.value_size_generator.clone(), opt_clone.num_values, opt_clone.num_keys, false);
                         server_trace = Some((&opt_clone.trace_file.as_str(), server_loader));
                     }
                 }
@@ -99,7 +97,8 @@ macro_rules! run_client(
 
                 kv_client.init(&mut connection)?;
 
-                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, (opt_clone.num_values * opt_clone.value_size) as _, &schedule)
+                let avg_size = opt_clone.value_size_generator.avg_size();
+                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, (opt_clone.num_values * avg_size) as _, &schedule)
             }));
         }
 
@@ -166,10 +165,10 @@ pub struct YCSBOpt {
     pub mode: AppMode,
     #[structopt(
         long = "value_size",
-        help = "size of values in kv store",
-        default_value = "1024"
+        help = "Value size distribution",
+        default_value = "UniformOverSizes-1024"
     )]
-    pub value_size: usize,
+    pub value_size_generator: YCSBValueSizeGenerator,
     #[structopt(
         long = "num_values",
         help = "number of batched puts and gets per line in trace",

@@ -298,6 +298,9 @@ impl Default for RteMbufMetadata {
 
 impl Drop for RteMbufMetadata {
     fn drop(&mut self) {
+        if self.mbuf == ptr::null_mut() {
+            return;
+        }
         unsafe {
             // TODO: doesn't make sense to have this flag. should remove
             if USING_REF_COUNTING {
@@ -841,7 +844,7 @@ impl DpdkConnection {
                     true => {
                         match self
                             .allocator
-                            .allocate_buffer(data_segment_length)
+                            .allocate_tx_buffer(data_segment_length)
                             .wrap_err("Could not allocate dpdk buffer to copy into")?
                         {
                             Some(x) => (0, x),
@@ -939,7 +942,7 @@ impl DpdkConnection {
                     true => {
                         match self
                             .allocator
-                            .allocate_buffer(data_segment_length)
+                            .allocate_tx_buffer(data_segment_length)
                             .wrap_err("Could not allocate dpdk buffer to copy into")?
                         {
                             Some(x) => (0, x),
@@ -1355,7 +1358,7 @@ impl Datapath for DpdkConnection {
             // allocate buffer to copy data into
             let mut dpdk_buffer = match self
                 .allocator
-                .allocate_buffer(buf.len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE)
+                .allocate_tx_buffer(buf.len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE)
                 .wrap_err(format!(
                     "Could not allocate buf to copy into for buf size {}",
                     buf.len()

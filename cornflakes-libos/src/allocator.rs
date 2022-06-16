@@ -116,6 +116,7 @@ where
     #[inline]
     pub fn add_mempool(&mut self, size: usize, handle: M) -> Result<MempoolID> {
         let aligned_size = align_to_pow2(size);
+        tracing::info!("Adding mempool of size {}", aligned_size);
         match self.mempool_ids.get_mut(&aligned_size) {
             Some(mempool_ids_list) => {
                 mempool_ids_list.insert(self.next_id_to_allocate);
@@ -141,6 +142,7 @@ where
 
     #[inline]
     pub fn add_tx_mempool(&mut self, item_len: usize, mempool: M) {
+        tracing::info!("Adding mempool of size {}", item_len);
         if self.tx_mempools.contains_key(&item_len) {
             let list = self.tx_mempools.get_mut(&item_len).unwrap();
             list.push((self.next_id_to_allocate, mempool));
@@ -204,25 +206,29 @@ where
                     }
                 }
             }
-            None => {
-                for (_size, mempools) in self
-                    .tx_mempools
-                    .iter()
-                    .filter(|(size, _list)| *size > &align_size)
-                {
-                    tracing::debug!("Looking for tx buffer to allocate {}", buf_size);
-                    for (mempool_id, mempool) in mempools.iter() {
-                        match mempool.alloc_data_buf(*mempool_id)? {
-                            Some(x) => {
-                                return Ok(Some(x));
-                            }
-                            None => {}
-                        }
+            None => {}
+        }
+        for (_size, mempools) in self
+            .tx_mempools
+            .iter()
+            .filter(|(size, _list)| *size >= &buf_size)
+        {
+            tracing::debug!("Looking for tx buffer to allocate {}", buf_size);
+            for (mempool_id, mempool) in mempools.iter() {
+                match mempool.alloc_data_buf(*mempool_id)? {
+                    Some(x) => {
+                        return Ok(Some(x));
                     }
+                    None => {}
                 }
             }
         }
-        tracing::debug!("Returning none");
+        tracing::warn!(
+            "Returning none: tx mempools :{:?}, align_size: {}, actual size: {}",
+            self.tx_mempools,
+            align_size,
+            buf_size,
+        );
         return Ok(None);
     }
 

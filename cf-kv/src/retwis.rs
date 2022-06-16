@@ -21,16 +21,14 @@ pub const POST_TWEET_PUTS: usize = 5;
 pub const FOLLOW_UNFOLLOW_GETS: usize = 2;
 pub const FOLLOW_UNFOLLOW_PUTS: usize = 2;
 
-pub const TIMELINE_MAX: usize = 8;
-
 const RETWIS_DEFAULT_VALUE_SIZE: usize = 64;
 const RETWIS_DEFAULT_NUM_KEYS: usize = 1_000_000;
 const RETWIS_DEFAULT_KEY_SIZE: usize = 64;
 const RETWIS_DEFAULT_ZIPF: f64 = 0.75;
-const ADD_USER_WEIGHT: usize = 0;
-const FOLLOW_UNFOLLOW_WEIGHT: usize = 0;
-const POST_TWEET_WEIGHT: usize = 0;
-const GET_TIMELINE_WEIGHT: usize = 100;
+const ADD_USER_WEIGHT: usize = 5;
+const FOLLOW_UNFOLLOW_WEIGHT: usize = 15;
+const POST_TWEET_WEIGHT: usize = 30;
+const GET_TIMELINE_WEIGHT: usize = 50;
 const GET_TIMELINE_MAX_SIZE: usize = 8;
 const POSSIBLE_MESSAGE_TYPES: [MsgType; 4] = [
     MsgType::AddUser,
@@ -38,6 +36,36 @@ const POSSIBLE_MESSAGE_TYPES: [MsgType; 4] = [
     MsgType::PostTweet,
     MsgType::GetTimeline(0),
 ];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetwisRequestDistribution([usize; 4]);
+
+impl RetwisRequestDistribution {
+    fn to_weighted_distribution(&self) -> WeightedIndex<usize> {
+        WeightedIndex::<usize>::new(self.0).unwrap()
+    }
+}
+
+impl std::str::FromStr for RetwisRequestDistribution {
+    type Err = color_eyre::eyre::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        let split: Vec<&str> = s.split("-").collect();
+        let items_result: Result<Vec<usize>> = s
+            .split("-")
+            .map(|x| match x.parse::<usize>() {
+                Ok(s) => Ok(s),
+                Err(e) => {
+                    bail!("Failed to parse {}", x);
+                }
+            })
+            .collect();
+        let items = items_result?;
+        ensure!(items.len() == 4, "Request distribution must have 4 items");
+        Ok(RetwisRequestDistribution(
+            ([items[0], items[1], items[2], items[3]]),
+        ))
+    }
+}
 
 fn get_key(idx: usize, key_length: usize) -> String {
     let key_name = format!("key_{}", idx);
@@ -294,10 +322,17 @@ pub struct RetwisClient {
 
 impl Default for RetwisClient {
     fn default() -> Self {
+        let weights = [
+            ADD_USER_WEIGHT,
+            FOLLOW_UNFOLLOW_WEIGHT,
+            POST_TWEET_WEIGHT,
+            GET_TIMELINE_WEIGHT,
+        ];
         RetwisClient::new(
             retwis_keys(RETWIS_DEFAULT_NUM_KEYS, RETWIS_DEFAULT_KEY_SIZE),
             RETWIS_DEFAULT_ZIPF,
             RetwisValueSizeGenerator::default(),
+            RetwisRequestDistribution(weights),
         )
         .unwrap()
     }
@@ -317,20 +352,15 @@ impl RetwisClient {
         keys: Vec<String>,
         zipf_coefficient: f64,
         value_generator: RetwisValueSizeGenerator,
+        retwis_weights: RetwisRequestDistribution,
     ) -> Result<Self> {
         let zipf = ZipfDistribution::new(keys.len(), zipf_coefficient).unwrap();
         tracing::info!("Finished initializing zipf");
-        let weights = [
-            ADD_USER_WEIGHT,
-            FOLLOW_UNFOLLOW_WEIGHT,
-            POST_TWEET_WEIGHT,
-            GET_TIMELINE_WEIGHT,
-        ];
         Ok(RetwisClient {
             zipf_distribution: zipf,
             value_generator: value_generator,
             keys: keys,
-            request_generator: WeightedIndex::new(&weights).unwrap(),
+            request_generator: retwis_weights.to_weighted_distribution(),
             get_timeline_size_generator: Uniform::from(0..GET_TIMELINE_MAX_SIZE),
         })
     }
@@ -409,23 +439,24 @@ impl RequestGenerator for RetwisClient {
         let mut rng = thread_rng();
         let req = match POSSIBLE_MESSAGE_TYPES[self.request_generator.sample(&mut rng)] {
             MsgType::AddUser => {
-                let keys: Vec<usize> = (0..ADD_USER_GETS)
+                let keys: Vec<usize> = (0..std::cmp::max(ADD_USER_GETS, ADD_USER_PUTS))
                     .map(|_i| self.zipf_distribution.sample(&mut rng) - 1)
                     .collect();
                 let values: Vec<String> = (0..ADD_USER_PUTS).map(|_i| self.get_value()).collect();
                 RetwisRequest::new(MsgType::AddUser, keys, values)
             }
             MsgType::FollowUnfollow => {
-                let keys: Vec<usize> = (0..FOLLOW_UNFOLLOW_GETS)
-                    .map(|_i| self.zipf_distribution.sample(&mut rng) - 1)
-                    .collect();
+                let keys: Vec<usize> =
+                    (0..std::cmp::max(FOLLOW_UNFOLLOW_GETS, FOLLOW_UNFOLLOW_PUTS))
+                        .map(|_i| self.zipf_distribution.sample(&mut rng) - 1)
+                        .collect();
                 let values: Vec<String> = (0..FOLLOW_UNFOLLOW_PUTS)
                     .map(|_i| self.get_value())
                     .collect();
                 RetwisRequest::new(MsgType::FollowUnfollow, keys, values)
             }
             MsgType::PostTweet => {
-                let keys: Vec<usize> = (0..POST_TWEET_GETS)
+                let keys: Vec<usize> = (0..std::cmp::max(POST_TWEET_GETS, POST_TWEET_PUTS))
                     .map(|_i| self.zipf_distribution.sample(&mut rng) - 1)
                     .collect();
                 let values: Vec<String> = (0..POST_TWEET_PUTS).map(|_i| self.get_value()).collect();
@@ -516,12 +547,38 @@ impl RequestGenerator for RetwisClient {
         D: Datapath,
     {
         match request.msg_type() {
-            MsgType::AddUser => Ok(serializer.check_add_user_num_values(buf)? == ADD_USER_GETS),
+            MsgType::AddUser => {
+                let num_values = serializer.check_add_user_num_values(buf)?;
+                if num_values != ADD_USER_GETS {
+                    tracing::warn!(
+                        "Received add user with {} gets instead of {}",
+                        num_values,
+                        ADD_USER_GETS
+                    );
+                }
+                Ok(num_values == ADD_USER_GETS)
+            }
             MsgType::FollowUnfollow => {
-                Ok(serializer.check_follow_unfollow_num_values(buf)? == FOLLOW_UNFOLLOW_GETS)
+                let num_values = serializer.check_follow_unfollow_num_values(buf)?;
+                if num_values != FOLLOW_UNFOLLOW_GETS {
+                    tracing::warn!(
+                        "Received follow unfollow with {} gets instead of {}",
+                        num_values,
+                        FOLLOW_UNFOLLOW_GETS
+                    );
+                }
+                Ok(num_values == FOLLOW_UNFOLLOW_GETS)
             }
             MsgType::PostTweet => {
-                Ok(serializer.check_post_tweet_num_values(buf)? == FOLLOW_UNFOLLOW_GETS)
+                let num_values = serializer.check_follow_unfollow_num_values(buf)?;
+                if num_values != POST_TWEET_GETS {
+                    tracing::warn!(
+                        "Received post tweet with {} gets instead of {}",
+                        num_values,
+                        POST_TWEET_GETS
+                    );
+                }
+                Ok(num_values == POST_TWEET_GETS)
             }
             MsgType::GetTimeline(size) => {
                 tracing::debug!(

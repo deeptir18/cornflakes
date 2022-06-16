@@ -1,4 +1,4 @@
-use super::retwis::RetwisValueSizeGenerator;
+use super::retwis::{RetwisRequestDistribution, RetwisValueSizeGenerator};
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
     datapath::{InlineMode, PushBufType},
@@ -23,7 +23,7 @@ macro_rules! run_server_retwis(
 
         // init retwis load generator
         let load_generator = RetwisServerLoader::new($opt.num_keys, $opt.key_size, $opt.value_size_generator);
-        let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, false)?;
+        let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, $opt.zero_copy_puts)?;
         kv_server.init(&mut connection)?;
         kv_server.run_state_machine(&mut connection)?;
     }
@@ -88,7 +88,7 @@ macro_rules! run_client_retwis(
 
                 tracing::info!("Finished initializing datapath connection for thread {}", i);
                 let size = opt_clone.value_size_generator.avg_size();
-                let mut retwis_client = RetwisClient::new(thread_keys, opt_clone.zipf, opt_clone.value_size_generator)?;
+                let mut retwis_client = RetwisClient::new(thread_keys, opt_clone.zipf, opt_clone.value_size_generator, opt_clone.retwis_distribution)?;
                 tracing::info!("Finished initializing retwis client");
 
                 let mut server_load_generator_opt: Option<(&str, RetwisServerLoader)> = None;
@@ -243,4 +243,15 @@ pub struct RetwisOpt {
         help = "Zipf distribution to  choose keys from"
     )]
     pub zipf: f64,
+    #[structopt(
+        long = "zero_copy_puts",
+        help = "Enable zero-copy puts for those serialization libraries amenable to it."
+    )]
+    pub zero_copy_puts: bool,
+    #[structopt(
+        long = "retwis_distribution",
+        help = "Request Distribution for Retwis",
+        default_value = "5-15-30-50"
+    )]
+    pub retwis_distribution: RetwisRequestDistribution,
 }

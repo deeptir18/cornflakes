@@ -181,16 +181,18 @@ where
         mempool_ids: &mut Vec<MempoolID>,
         use_zero_copy: bool,
     ) -> Result<()> {
-        if use_zero_copy {
-            if let Some(datapath_buffer) = pkt.contiguous_datapath_metadata_from_buf(value)? {
-                let key = key.to_string();
-                self.map.insert(key, datapath_buffer);
-                return Ok(());
-            } else {
-                bail!(
-                    "Could not recover contiguous metadata from buffer {:?}",
-                    value.as_ptr()
-                );
+        if value.len() >= 512 {
+            if use_zero_copy {
+                if let Some(datapath_buffer) = pkt.contiguous_datapath_metadata_from_buf(value)? {
+                    let key = key.to_string();
+                    self.map.insert(key, datapath_buffer);
+                    return Ok(());
+                } else {
+                    bail!(
+                        "Could not recover contiguous metadata from buffer {:?}",
+                        value.as_ptr()
+                    );
+                }
             }
         }
         let key = key.to_string();
@@ -797,7 +799,7 @@ where
     }
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
-        connection.add_memory_pool(8192, 8192)?;
+        connection.add_tx_mempool(8192, 8192)?;
         Ok(())
     }
 

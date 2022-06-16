@@ -130,9 +130,10 @@ where
         let buf_ptr = buf.as_ptr() as usize;
         let buf_end = buf.as_ptr() as usize + buf.len();
         for pkt in self.pkts.iter() {
+            tracing::debug!(buf_ptr =? buf.as_ptr(), buf_len = buf.len(), pkt_ptr =? pkt.as_ref().as_ptr(), pkt_data_len = pkt.data_len(), "Recovering contiguous metadata from buf");
             let ref_buf = pkt.as_ref().as_ptr() as usize;
             let ref_buf_end = pkt.as_ref().as_ptr() as usize + pkt.data_len();
-            if buf_ptr >= ref_buf && buf_end < ref_buf_end {
+            if buf_ptr >= ref_buf && buf_end <= ref_buf_end {
                 let mut cloned_metadata = pkt.clone();
                 cloned_metadata.set_data_len_and_offset(
                     buf.len(),

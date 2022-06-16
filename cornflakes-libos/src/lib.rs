@@ -2078,7 +2078,8 @@ where
         if with_copy {
             return Ok(());
         }
-        let copying_threshold = datapath.get_copying_threshold();
+        let mut copying_threshold = datapath.get_copying_threshold();
+        let max_segs = datapath.get_max_segments();
         if self.length == 1 {
             // check if segment is zero-copy or not
             if !self.is_zero_copy_seg(0, copying_threshold) {
@@ -2153,6 +2154,16 @@ where
                 }
             }
         }
+
+        // induce some extra swapping
+        /*forward_index = 0;
+        end_index = self.length - 1;
+        while (forward_index < end_index) {
+            self.entries.swap(forward_index, end_index);
+            self.offsets.swap(forward_index, end_index);
+            forward_index += 1;
+            end_index -= 1;
+        }*/
         self.num_copy_entries = num_copy_segs;
         tracing::debug!(
             num_copy_segs = self.num_copy_entries,
