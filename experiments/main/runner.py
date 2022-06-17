@@ -164,6 +164,19 @@ class Experiment(metaclass=abc.ABCMeta):
         return
 
     @abc.abstractmethod
+    def skip_iteration(self, total_args, iteration):
+        """
+        Checks if we can skip the iterations based on the throughouts achieved
+        so far
+        """
+        return
+
+    @abc.abstractmethod
+    def append_to_skip_info(self, total_args, iteration, higher_level_folder):
+        """Updates skip info with this iteration"""
+        return
+
+    @abc.abstractmethod
     def graph_results(self, total_args, folder, logfile):
         return
 
@@ -199,6 +212,8 @@ class Experiment(metaclass=abc.ABCMeta):
             # check if the folder has "analysis.log"
             analysis_path = iteration.get_folder_name(folder_path) /\
                 "analysis.log"
+            skipped = iteration.get_folder_name(folder_path) /\
+                "skipped.log"
             ret = ""
             if (os.path.exists(analysis_path)):
                 try:
@@ -209,7 +224,7 @@ class Experiment(metaclass=abc.ABCMeta):
                 except:
                     # otherwise, try to parse again
                     ret = ""
-            if (ret == ""):
+            if (ret == "") and not(os.path.exists(skipped)):
                 ret = self.run_analysis_individual_trial(folder_path,
                                                          program_metadata,
                                                          iteration, print_stats)
@@ -227,24 +242,48 @@ class Experiment(metaclass=abc.ABCMeta):
         folder_path = Path(total_args.folder)
         program_metadata = self.get_exp_config()["programs"]
         ct = 0
+        skipped = 0
+        already_ran = 0
         total = len(iterations)
         start = time.time()
         expected_time = 20 * total / 3600.0
         utils.warn("Expected time to finish: {} hours".format(expected_time))
         for iteration in iterations:
             ct += 1
+            if iteration.get_folder_name(folder_path).exists():
+                utils.info("Iteration already exists, skipping {}; already ran {}".format(
+                    iteration, already_ran))
+                self.append_to_skip_info(total_args, iteration, folder_path)
+                if os.path.exists(iteration.get_folder_name(folder_path) / "skipped.log"):
+                    skipped += 1
+                else:
+                    already_ran += 1
+
+                continue
+            if self.skip_iteration(total_args, iteration):
+                utils.info("Skipping iteration  # {} out of {}; already_ran {},"
+                           "skipped {}".format(ct - 1,
+                                               total,
+                                               already_ran,
+                                               skipped))
+                # append a folder to say this iteration was skipped
+                if not total_args.pprint:
+                    iteration.create_folder(folder_path)
+                skipped = iteration.get_folder_name(folder_path) /\
+                    "skipped.log"
+                with open(skipped, 'w') as f:
+                    pass
+                continue
             if (ct > 1):
                 rate_so_far = (ct - 1)/(time.time() - start)
                 left = (total - (ct - 1))
                 expected_time_to_finish = (
                     float(left) / (float(rate_so_far))) / 3600.0
-                utils.info("Running iteration  # {} out of {}, {} % done with iterations expected time to finish: {} hours".format(
-                    ct - 1, total, (float(ct - 1)/float(total) * 100.0),
-                    expected_time_to_finish))
-            if iteration.get_folder_name(folder_path).exists():
-                utils.info("Iteration already exists, skipping:"
-                           "{}".format(iteration))
-                continue
+                utils.info("Running iteration  # {} out of {}, {} % done with iterations expected time to finish: {} hours; already_ran {}, skipped {}".format(
+                    ct - 1, total, (float(ct - 1) /
+                                    float(total) * 100.0),
+                    expected_time_to_finish, already_ran, skipped))
+
             if not total_args.pprint:
                 iteration.create_folder(folder_path)
             utils.debug("Running iteration: ", iteration)
@@ -283,6 +322,7 @@ class Experiment(metaclass=abc.ABCMeta):
                 if f is not None:
                     f.write(ret + os.linesep)
                     f.close()
+                self.append_to_skip_info(total_args, iteration, folder_path)
             # because we've tried to do analysis, ok to sleep for less
             time.sleep(2)
 

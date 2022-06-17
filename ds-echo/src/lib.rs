@@ -1,5 +1,9 @@
+pub mod capnproto;
 pub mod cornflakes_dynamic;
+pub mod flatbuffers;
+pub mod protobuf;
 pub mod run_datapath;
+
 use byteorder::{BigEndian, ByteOrder};
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{

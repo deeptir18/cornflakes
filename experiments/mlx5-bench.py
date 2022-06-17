@@ -9,6 +9,8 @@ from pathlib import Path
 import os
 import parse
 import subprocess as sh
+import hashlib
+import json
 STRIP_THRESHOLD = 0.03
 
 # used for array size experiment
@@ -26,12 +28,12 @@ COMPLETE_TOTAL_SIZES_TO_LOOP = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
 
 
 # used for other experiments, which total sizes to check
-# TOTAL_SIZES_TO_LOOP = [256, 4096]
-TOTAL_SIZES_TO_LOOP = [4096]
+TOTAL_SIZES_TO_LOOP = [256, 4096]
+# TOTAL_SIZES_TO_LOOP = [4096]
 
 # used for segment size experiment
-# COMPLETE_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16, 32]
-COMPLETE_SEGMENTS_TO_LOOP = [1, 2]
+COMPLETE_SEGMENTS_TO_LOOP = [1, 2, 4, 8, 16, 32]
+# COMPLETE_SEGMENTS_TO_LOOP = [1, 2]
 
 # used for other experiment, which segment amounts to check
 SEGMENTS_TO_LOOP = [2, 8]
@@ -42,11 +44,24 @@ NUM_CLIENTS = 3
 rates = [5000, 10000, 50000, 100000, 200000,
          300000, 400000, 410000, 420000, 431000]
 # max rates to get "knee" (for smallest working set size, 0 extra busy work)
-max_rates = {32: 750000, 64: 600000, 128: 500000, 256: 425000, 512: 400000, 1024: 375000, 2048: 350000, 4096: 225000,
-             8192: 150000}
-sample_percentages = [10, 30, 40, 45, 50, 53, 55, 57,
-                      60, 63, 66, 69, 72, 75, 78, 81, 83, 85, 88, 91, 93, 95, 100]
-# sample_percentages = [50, 60, 70, 75, 80, 85, 90, 95, 100]
+# below is for without batching, 4 threads per client
+max_rates = {32: 750000, 64: 600000, 128: 500000, 256: 425000,
+             512: 400000, 1024: 375000, 2048: 350000, 4096: 225000, 8192: 150000}
+# below is for with batching (16 packets), and 8 threads per client
+#max_rates = {512: 350000, 1024: 300000, 2048: 175000}
+
+sample_percentages = [10, 30, 40, 45, 50, 53, 55, 57, 60,
+                      63, 66, 69, 72, 75, 78, 81, 83, 85, 88, 91, 93, 95, 100]
+
+
+def json_dumps(thing):
+    return json.dumps(
+        thing,
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=None,
+        separators=(',', ':'),
+    )
 
 
 def parse_client_time_and_pkts(line):
@@ -106,6 +121,12 @@ class ScatterGatherIteration(runner.Iteration):
         self.busy_cycles = busy_cycles
         self.recv_pkt_size = recv_pkt_size
         self.echo_mode = echo_mode
+
+    def hash(self):
+        args = [self.segment_size, self.num_segments, self.with_copy,
+                self.num_threads, self.trial, self.as_one, self.array_size,
+                self.busy_cycles, self.recv_pkt_size, self.echo_mode]
+        return hashlib.md5(json_dumps(args).encode('utf-8')).hexdigest()
 
     def get_echo_mode(self):
         return self.echo_mode
@@ -373,6 +394,27 @@ class ScatterGather(runner.Experiment):
         self.exp = "ScatterGather"
         self.config_yaml = yaml.load(Path(config_yaml).read_text())
         self.exp_yaml = yaml.load(Path(exp_yaml).read_text())
+        # map from (iteration with rate set to 0, (throughput, percent achieved, stop))
+        self.iteration_skipping_information = {}
+
+    def read_throughput(self, iteration, higher_level_folder):
+        folder_path = iteration.get_folder_name(higher_level_folder)
+        analysis_path = folder_path / "analysis.log"
+        try:
+            with open(analysis_path) as analysis_file:
+                lines = analysis_file.readlines()
+                lines = [line.strip() for line in lines]
+                ret = lines[0]
+                split_ret = ret.split(",")
+                throughput = float(split_ret[12])
+                percent = float(split_ret[13])
+                utils.info("Iteration {} had tput: {} Gbps, percent achieved: {}".format(
+                    str(iteration), throughput, percent))
+                return (throughput, percent)
+        except:
+            utils.warn("Could not read throughput of trial from path {}",
+                       analysis_path)
+            return (0, 0)
 
     def experiment_name(self):
         return self.exp
@@ -380,6 +422,44 @@ class ScatterGather(runner.Experiment):
     def get_git_directories(self):
         directory = self.config_yaml["cornflakes_dir"]
         return [directory]
+
+    def append_to_skip_info(self, total_args, iteration, higher_level_folder):
+        if total_args.exp_type == "individual":
+            return
+        if total_args.looping_variable != "total_segment_cross":
+            return
+        else:
+            iteration_hash = iteration.hash()
+            throughput, percent_achieved = self.read_throughput(iteration,
+                                                                higher_level_folder)
+            if iteration_hash not in self.iteration_skipping_information:
+                self.iteration_skipping_information[iteration_hash] = (
+                    throughput, percent_achieved, False)
+                if (throughput == 0 and percent_achieved == 0):
+                    return
+            else:
+                current_highest_throughput, current_percent_achieved, current_stop = self.iteration_skipping_information[
+                    iteration_hash]
+                # if previous iteration does not meet percent achieved cutoff
+                if current_percent_achieved < utils.PERCENT_ACHIEVED_CUTOFF:
+                    self.iteration_skipping_information[iteration_hash] = (
+                        throughput, percent_achieved, False)
+                elif current_highest_throughput > throughput:
+                    self.iteration_skipping_information[iteration_hash] = (
+                        throughput, percent_achieved, True)
+
+    def skip_iteration(self, total_args, iteration):
+        if total_args.exp_type == "individual":
+            return False
+        if total_args.looping_variable != "total_segment_cross":
+            return False
+        iteration_hash = iteration.hash()
+        if iteration_hash not in self.iteration_skipping_information:
+            return False
+        else:
+            throughput, percent_achieved, skip = self.iteration_skipping_information[
+                iteration_hash]
+            return skip
 
     def get_iterations(self, total_args):
         if total_args.exp_type == "individual":
@@ -410,14 +490,15 @@ class ScatterGather(runner.Experiment):
                     array_size = 65536
                     for total_size in COMPLETE_TOTAL_SIZES_TO_LOOP:
                         max_rate = max_rates[total_size]
-                        for sampling in sample_percentages:
-                            rate = int(float(sampling/100) *
-                                       max_rate)
-                            for num_segments in COMPLETE_SEGMENTS_TO_LOOP:
-                                for with_copy in [False, True]:
+                        for num_segments in COMPLETE_SEGMENTS_TO_LOOP:
+                            for with_copy in [False, True]:
+                                for sampling in reversed(sample_percentages):
+                                    rate = int(float(sampling/100) *
+                                               max_rate)
                                     segment_size = int(
                                         total_size / num_segments)
                                     as_one = False
+
                                     it = ScatterGatherIteration([(rate,
                                                                   NUM_CLIENTS)],
                                                                 segment_size,

@@ -1,56 +1,43 @@
-//use capnpc;
+use capnpc;
 use cornflakes_codegen::{compile, CompileOptions, HeaderType, Language};
-//use cxx_build;
-//use protoc_rust;
 use std::{
     env,
-    fs::canonicalize,
-    //io::{BufWriter, Write},
+    fs::{canonicalize, read_to_string, File},
+    io::{BufWriter, Write},
     path::Path,
-    //process::Command,
+    process::Command,
 };
 
 fn main() {
     // rerun-if-changed
     // cereal cc bridge files
-    //println!("cargo:rerun-if-changed=src/cereal/cereal_classes.cc");
-    //println!("cargo:rerun-if-changed=src/cereal/include/cereal_headers.hh");
     // protobuf, cornflakes, flatbuffers, capnproto schema files
-    //println!("cargo:rerun-if-changed=src/protobuf/echo_proto.proto");
+    println!("cargo:rerun-if-changed=src/protobuf/echo_proto.proto");
     println!("cargo:rerun-if-changed=src/cornflakes_dynamic/echo_dynamic_sga.proto");
     println!("cargo:rerun-if-changed=src/cornflakes_dynamic/echo_dynamic_rcsga.proto");
-    //println!("cargo:rerun-if-changed=src/cornflakes_fixed/echo_cf_fixed.proto");
-    //println!("cargo:rerun-if-changed=src/capnproto/echo.capnp");
-    //println!("cargo:rerun-if-changed=src/flatbuffers/echo_fb.fbs");
+    println!("cargo:rerun-if-changed=src/capnproto/echo.capnp");
+    println!("cargo:rerun-if-changed=src/flatbuffers/echo_fb.fbs");
 
     // store all compiled proto files in out_dir
     let out_dir = env::var("OUT_DIR").unwrap();
-    //let out_dir_path = Path::new(&out_dir);
+    let out_dir_path = Path::new(&out_dir);
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let cargo_dir = Path::new(&cargo_manifest_dir);
     let echo_src_path = canonicalize(cargo_dir.clone().join("src")).unwrap();
-    //let include_path = canonicalize(cargo_dir.parent().unwrap())
-    //   .unwrap()
-    //  .join("include");
-
-    // compile c++ bridge to cereal
-    /*cxx_build::bridge("src/cereal/mod.rs")
-        .file("src/cereal/cereal_classes.cc")
-        .flag_if_supported("-std=c++14")
-        .includes(vec![include_path])
-        .compile("cxxbridge-cereal-api");
+    let include_path = canonicalize(cargo_dir.parent().unwrap())
+        .unwrap()
+        .join("include");
 
     // compile protobuf echo
     let input_proto_path = echo_src_path.clone().join("protobuf");
     let input_proto_file = input_proto_path.clone().join("echo_proto.proto");
-    protoc_rust::Codegen::new()
+    let mut customize = protobuf_codegen::Customize::default();
+    customize = customize.gen_mod_rs(true);
+    protobuf_codegen::Codegen::new()
         .out_dir(&out_dir)
         .inputs(&[input_proto_file.as_path()])
         .includes(&[input_proto_path.as_path()])
-        .customize(protoc_rust::Customize {
-            gen_mod_rs: Some(true),
-            ..Default::default()
-        })
+        .customize(customize)
         .run()
         .expect(&format!(
             "Protoc compilation failed on {:?}.",
@@ -98,7 +85,7 @@ fn main() {
         .expect(&format!(
             "Failed to run flatc compiler on {:?}.",
             input_fb_file
-        ));*/
+        ));
 
     // compile cornflakes dynamic
     let input_cf_path = echo_src_path.clone().join("cornflakes_dynamic");

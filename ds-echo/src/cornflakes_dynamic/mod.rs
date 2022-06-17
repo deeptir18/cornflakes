@@ -55,7 +55,6 @@ where
 impl<D> ServerSM for CornflakesSerializer<D>
 where
     D: Datapath,
-    D:,
 {
     type Datapath = D;
     fn push_buf_type(&self) -> PushBufType {

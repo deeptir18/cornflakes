@@ -2075,11 +2075,7 @@ where
         datapath: &D,
         with_copy: bool,
     ) -> Result<()> {
-        if with_copy {
-            return Ok(());
-        }
-        let mut copying_threshold = datapath.get_copying_threshold();
-        let max_segs = datapath.get_max_segments();
+        let copying_threshold = datapath.get_copying_threshold();
         if self.length == 1 {
             // check if segment is zero-copy or not
             if !self.is_zero_copy_seg(0, copying_threshold) {

@@ -75,144 +75,146 @@ where
         Ok(())
     }
 
-    /*fn handle_put<'arena>(
+    fn handle_put(
         &self,
         kv_server: &mut KVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedSga<'arena>> {
-        let mut put_req = PutReq::new();
-        put_req.deserialize(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-        let key = put_req.get_key().to_string();
-        // allocate space in kv for value
-        let mut datapath_buffer =
-            allocate_datapath_buffer(datapath, put_req.get_val().len(), mempool_ids)?;
-        let _ = datapath_buffer.write(put_req.get_val().get_ptr())?;
-        kv_server.insert(key, datapath_buffer);
-
-        let mut put_resp = PutResp::new();
-        put_resp.set_id(put_req.get_id());
-        let mut arena_sga =
-            ArenaOrderedSga::allocate(put_resp.num_scatter_gather_entries(), &arena);
-        put_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
-        Ok(arena_sga)
+        builder: &mut FlatBufferBuilder,
+    ) -> Result<()> {
+        let put_req = get_root::<cf_kv_fbs::PutReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+        kv_server.insert_with_copies(
+            put_req.key().unwrap(),
+            put_req.val().unwrap(),
+            datapath,
+            mempool_ids,
+        )?;
+        let args = cf_kv_fbs::PutRespArgs { id: put_req.id() };
+        let get_resp = cf_kv_fbs::PutResp::create(builder, &args);
+        builder.finish(get_resp, None);
+        Ok(())
     }
 
-    fn handle_getm<'kv, 'arena>(
+    fn handle_getm(
         &self,
-        kv_server: &'kv KVServer<D>,
+        kv_server: &KVServer<D>,
         pkt: &ReceivedPkt<D>,
-        _datapath: &D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedSga<'arena>>
-    where
-        'kv: 'arena,
-    {
-        let mut getm_req = GetMReq::new();
-        {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("Deserialize pkt");
-            getm_req.deserialize(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-        }
-        let mut getm_resp = GetMResp::new();
-        getm_resp.init_vals(getm_req.get_keys().len());
-        let vals = getm_resp.get_mut_vals();
-        for key in getm_req.get_keys().iter() {
-            let value = {
-                #[cfg(feature = "profiler")]
-                perftools::timer!("got value");
-                match kv_server.get(key.as_str()) {
+        builder: &mut FlatBufferBuilder,
+    ) -> Result<()> {
+        let getm_request = get_root::<cf_kv_fbs::GetMReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+        let keys = getm_request.keys().unwrap();
+        let args_vec_res: Result<Vec<cf_kv_fbs::ValueArgs>> = keys
+            .iter()
+            .map(|key| {
+                let v = match kv_server.get(key) {
                     Some(v) => v,
                     None => {
-                        bail!("Could not find value for key: {:?}", key);
+                        bail!("Cannot find value for key in KV store: {:?}", key);
                     }
-                }
-            };
-            tracing::debug!(
-                "For given key {:?}, found value {:?} with length {}",
-                key.as_str(),
-                value.as_ref().as_ptr(),
-                value.as_ref().len()
-            );
-            {
-                #[cfg(feature = "profiler")]
-                perftools::timer!("append value");
-                vals.append(CFBytes::new(value.as_ref()));
-            }
-        }
-        getm_resp.set_id(getm_req.get_id());
-
-        let mut arena_sga = {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("allocate sga");
-            ArenaOrderedSga::allocate(getm_resp.num_scatter_gather_entries(), &arena)
+                };
+                Ok(cf_kv_fbs::ValueArgs {
+                    data: Some(builder.create_vector_direct::<u8>(v.as_ref())),
+                })
+            })
+            .collect();
+        let args_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = args_vec_res?
+            .iter()
+            .map(|args| cf_kv_fbs::Value::create(builder, args))
+            .collect();
+        let getm_resp_args = cf_kv_fbs::GetMRespArgs {
+            id: getm_request.id(),
+            vals: Some(builder.create_vector(args_vec.as_slice())),
         };
-        {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("serialize sga");
-            getm_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
-        }
-        Ok(arena_sga)
+        let getm_resp = cf_kv_fbs::GetMResp::create(builder, &getm_resp_args);
+        builder.finish(getm_resp, None);
+        Ok(())
     }
 
-    fn handle_putm<'arena>(
+    fn handle_putm(
         &self,
         kv_server: &mut KVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedSga<'arena>> {
-        let mut putm_req = PutMReq::new();
-        putm_req.deserialize(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-        for (key, value) in putm_req.get_keys().iter().zip(putm_req.get_vals().iter()) {
-            // allocate space in kv for value
-            let mut datapath_buffer = allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
-            let _ = datapath_buffer.write(value.get_ptr())?;
-            kv_server.insert(key.to_string(), datapath_buffer);
+        builder: &mut FlatBufferBuilder,
+    ) -> Result<()> {
+        let putm_request = get_root::<cf_kv_fbs::PutMReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+        let keys = putm_request.keys().unwrap();
+        let vals = putm_request.vals().unwrap();
+        for (key, value) in keys.iter().zip(vals.iter()) {
+            let val = value.data().unwrap();
+            kv_server.insert_with_copies(key, val, datapath, mempool_ids)?;
         }
-
-        let mut put_resp = PutResp::new();
-        put_resp.set_id(putm_req.get_id());
-        let mut arena_sga =
-            ArenaOrderedSga::allocate(put_resp.num_scatter_gather_entries(), &arena);
-        put_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
-        Ok(arena_sga)
-    }
-    fn handle_getlist<'kv, 'arena>(
-        &self,
-        list_kv_server: &'kv ListKVServer<D>,
-        pkt: &ReceivedPkt<D>,
-        _datapath: &D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedSga<'arena>>
-    where
-        'kv: 'arena,
-    {
-        let mut getlist_req = GetListReq::new();
-        getlist_req.deserialize(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-        let value_list = match list_kv_server.get(getlist_req.get_key().as_str()) {
-            Some(v) => v,
-            None => {
-                bail!("Could not find value for key: {:?}", getlist_req.get_key());
-            }
+        let args = cf_kv_fbs::PutRespArgs {
+            id: putm_request.id(),
         };
 
-        let mut getlist_resp = GetListResp::new();
-        getlist_resp.set_id(getlist_req.get_id());
-        getlist_resp.init_val_list(value_list.len());
-        let list = getlist_resp.get_mut_val_list();
-        for value in value_list.iter() {
-            list.append(CFBytes::new(value.as_ref()));
-        }
+        let put_resp = cf_kv_fbs::PutResp::create(builder, &args);
+        builder.finish(put_resp, None);
+        Ok(())
+    }
 
-        let mut arena_sga =
-            ArenaOrderedSga::allocate(getlist_resp.num_scatter_gather_entries(), &arena);
-        getlist_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
-        Ok(arena_sga)
-    }*/
+    fn handle_getlist(
+        &self,
+        list_kv_server: &ListKVServer<D>,
+        pkt: &ReceivedPkt<D>,
+        builder: &mut FlatBufferBuilder,
+    ) -> Result<()> {
+        let getlist_request =
+            get_root::<cf_kv_fbs::GetListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+        let key = getlist_request.key().unwrap();
+        let vals = match list_kv_server.get(key) {
+            Some(v) => v,
+            None => {
+                bail!("Cannot find value for key in KV store: {:?}", key);
+            }
+        };
+        let args_vec: Vec<cf_kv_fbs::ValueArgs> = vals
+            .iter()
+            .map(|v| cf_kv_fbs::ValueArgs {
+                data: Some(builder.create_vector_direct::<u8>(v.as_ref())),
+            })
+            .collect();
+        let args_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = args_vec
+            .iter()
+            .map(|args| cf_kv_fbs::Value::create(builder, args))
+            .collect();
+        let getlist_resp_args = cf_kv_fbs::GetListRespArgs {
+            id: getlist_request.id(),
+            vals: Some(builder.create_vector(args_vec.as_slice())),
+        };
+        let getlist_resp = cf_kv_fbs::GetListResp::create(builder, &getlist_resp_args);
+        builder.finish(getlist_resp, None);
+        Ok(())
+    }
+
+    fn handle_putlist(
+        &self,
+        list_kv_server: &mut ListKVServer<D>,
+        mempool_ids: &mut Vec<MempoolID>,
+        pkt: &ReceivedPkt<D>,
+        datapath: &mut D,
+        builder: &mut FlatBufferBuilder,
+    ) -> Result<()> {
+        let putlist_request =
+            get_root::<cf_kv_fbs::PutListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+        let key = putlist_request.key().unwrap();
+        let vals = putlist_request.vals().unwrap();
+        let values = putlist_request
+            .vals()
+            .unwrap()
+            .iter()
+            .map(|value| value.data().unwrap());
+        list_kv_server.insert_with_copies(key, values, datapath, mempool_ids)?;
+        let args = cf_kv_fbs::PutRespArgs {
+            id: putlist_request.id(),
+        };
+
+        let put_resp = cf_kv_fbs::PutResp::create(builder, &args);
+        builder.finish(put_resp, None);
+        Ok(())
+    }
 }
 
 pub struct FlatbuffersKVServer<'fbb, D>
@@ -282,22 +284,178 @@ where
                         .handle_get(&self.kv_server, &pkt, &mut self.builder)?;
                 }
                 MsgType::GetM(size) => {
-                    unimplemented!();
+                    self.serializer
+                        .handle_getm(&self.kv_server, &pkt, &mut self.builder)?;
                 }
                 MsgType::GetList(size) => {
-                    unimplemented!();
+                    self.serializer.handle_getlist(
+                        &self.list_kv_server,
+                        &pkt,
+                        &mut self.builder,
+                    )?;
                 }
                 MsgType::Put => {
-                    unimplemented!();
+                    self.serializer.handle_put(
+                        &mut self.kv_server,
+                        &mut self.mempool_ids,
+                        &pkt,
+                        datapath,
+                        &mut self.builder,
+                    )?;
                 }
                 MsgType::PutM(size) => {
-                    unimplemented!();
+                    self.serializer.handle_putm(
+                        &mut self.kv_server,
+                        &mut self.mempool_ids,
+                        &pkt,
+                        datapath,
+                        &mut self.builder,
+                    )?;
                 }
                 MsgType::PutList(size) => {
-                    unimplemented!();
+                    self.serializer.handle_putlist(
+                        &mut self.list_kv_server,
+                        &mut self.mempool_ids,
+                        &pkt,
+                        datapath,
+                        &mut self.builder,
+                    )?;
                 }
-                MsgType::AppendToList(size) => {
-                    unimplemented!();
+                MsgType::AddUser => {
+                    let add_user =
+                        get_root::<cf_kv_fbs::AddUser>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+                    let keys = add_user.keys().unwrap();
+                    let vals = add_user.vals().unwrap();
+                    let value = self.kv_server.remove(keys.get(0)).unwrap();
+                    let args = cf_kv_fbs::AddUserResponseArgs {
+                        first_value: Some(self.builder.create_vector_direct::<u8>(value.as_ref())),
+                    };
+                    for (key, val) in keys.iter().zip(vals.iter()) {
+                        self.kv_server.insert_with_copies(
+                            key,
+                            val.data().unwrap(),
+                            datapath,
+                            &mut self.mempool_ids,
+                        )?;
+                    }
+
+                    let add_user_response =
+                        cf_kv_fbs::AddUserResponse::create(&mut self.builder, &args);
+                    self.builder.finish(add_user_response, None);
+                }
+                MsgType::FollowUnfollow => {
+                    let follow_unfollow = get_root::<cf_kv_fbs::FollowUnfollow>(
+                        &pkt.seg(0).as_ref()[REQ_TYPE_SIZE..],
+                    );
+                    let keys = follow_unfollow.keys().unwrap();
+                    let args_vec_res: Result<Vec<cf_kv_fbs::ValueArgs>> = keys
+                        .iter()
+                        .map(|key| {
+                            let v = match self.kv_server.remove(key) {
+                                Some(v) => v,
+                                None => {
+                                    bail!("Cannot find value for key in KV store: {:?}", key);
+                                }
+                            };
+                            Ok(cf_kv_fbs::ValueArgs {
+                                data: Some(self.builder.create_vector_direct::<u8>(v.as_ref())),
+                            })
+                        })
+                        .collect();
+                    let args_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = args_vec_res?
+                        .iter()
+                        .map(|args| cf_kv_fbs::Value::create(&mut self.builder, args))
+                        .collect();
+
+                    let args = cf_kv_fbs::FollowUnfollowResponseArgs {
+                        original_vals: Some(self.builder.create_vector(args_vec.as_slice())),
+                    };
+                    let vals = follow_unfollow.vals().unwrap();
+                    for (key, val) in keys.iter().zip(vals.iter()) {
+                        self.kv_server.insert_with_copies(
+                            key,
+                            val.data().unwrap(),
+                            datapath,
+                            &mut self.mempool_ids,
+                        )?;
+                    }
+
+                    let follow_unfollow_response =
+                        cf_kv_fbs::FollowUnfollowResponse::create(&mut self.builder, &args);
+                    self.builder.finish(follow_unfollow_response, None);
+                }
+                MsgType::PostTweet => {
+                    // 3 gets, 5 puts
+                    let post_tweet =
+                        get_root::<cf_kv_fbs::PostTweet>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+                    let keys = post_tweet.keys().unwrap();
+                    let args_vec_res: Result<Vec<cf_kv_fbs::ValueArgs>> = keys
+                        .iter()
+                        .take(3)
+                        .map(|key| {
+                            let v = match self.kv_server.remove(key) {
+                                Some(v) => v,
+                                None => {
+                                    bail!("Cannot find value for key in KV store: {:?}", key);
+                                }
+                            };
+                            Ok(cf_kv_fbs::ValueArgs {
+                                data: Some(self.builder.create_vector_direct::<u8>(v.as_ref())),
+                            })
+                        })
+                        .collect();
+                    let args_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = args_vec_res?
+                        .iter()
+                        .map(|args| cf_kv_fbs::Value::create(&mut self.builder, args))
+                        .collect();
+
+                    let args = cf_kv_fbs::PostTweetResponseArgs {
+                        vals: Some(self.builder.create_vector(args_vec.as_slice())),
+                    };
+                    let vals = post_tweet.vals().unwrap();
+                    for (key, val) in keys.iter().zip(vals.iter()) {
+                        self.kv_server.insert_with_copies(
+                            key,
+                            val.data().unwrap(),
+                            datapath,
+                            &mut self.mempool_ids,
+                        )?;
+                    }
+
+                    let post_tweet_response =
+                        cf_kv_fbs::PostTweetResponse::create(&mut self.builder, &args);
+                    self.builder.finish(post_tweet_response, None);
+                }
+                MsgType::GetTimeline(_) => {
+                    let get_timeline_request =
+                        get_root::<cf_kv_fbs::GetTimeline>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+                    let keys = get_timeline_request.keys().unwrap();
+                    let args_vec_res: Result<Vec<cf_kv_fbs::ValueArgs>> = keys
+                        .iter()
+                        .map(|key| {
+                            let v = match self.kv_server.get(key) {
+                                Some(v) => v,
+                                None => {
+                                    bail!("Cannot find value for key in KV store: {:?}", key);
+                                }
+                            };
+                            Ok(cf_kv_fbs::ValueArgs {
+                                data: Some(self.builder.create_vector_direct::<u8>(v.as_ref())),
+                            })
+                        })
+                        .collect();
+                    let args_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = args_vec_res?
+                        .iter()
+                        .map(|args| cf_kv_fbs::Value::create(&mut self.builder, args))
+                        .collect();
+                    let get_timeline_resp_args = cf_kv_fbs::GetTimelineResponseArgs {
+                        vals: Some(self.builder.create_vector(args_vec.as_slice())),
+                    };
+                    let get_timeline_resp = cf_kv_fbs::GetTimelineResponse::create(
+                        &mut self.builder,
+                        &get_timeline_resp_args,
+                    );
+                    self.builder.finish(get_timeline_resp, None);
                 }
                 _ => {
                     unimplemented!();
@@ -346,34 +504,72 @@ where
     }
 
     fn deserialize_getm_response(&self, buf: &[u8]) -> Result<Vec<Vec<u8>>> {
-        unimplemented!();
+        let getm_resp = get_root::<cf_kv_fbs::GetMResp>(buf);
+        match getm_resp.vals() {
+            Some(x) => {
+                return Ok(x
+                    .iter()
+                    .map(|val| val.data().unwrap().to_vec())
+                    .collect::<Vec<Vec<u8>>>());
+            }
+            None => {
+                return Ok(vec![]);
+            }
+        };
     }
 
     fn deserialize_getlist_response(&self, buf: &[u8]) -> Result<Vec<Vec<u8>>> {
-        unimplemented!();
+        let getlist_resp = get_root::<cf_kv_fbs::GetListResp>(buf);
+        match getlist_resp.vals() {
+            Some(x) => {
+                return Ok(x
+                    .iter()
+                    .map(|val| val.data().unwrap().to_vec())
+                    .collect::<Vec<Vec<u8>>>());
+            }
+            None => {
+                return Ok(vec![]);
+            }
+        };
     }
 
     fn check_add_user_num_values(&self, buf: &[u8]) -> Result<usize> {
-        unimplemented!();
+        let add_user_resp = get_root::<cf_kv_fbs::AddUserResponse>(buf);
+        match add_user_resp.first_value() {
+            Some(_) => return Ok(1),
+            None => return Ok(0),
+        }
     }
 
     fn check_follow_unfollow_num_values(&self, buf: &[u8]) -> Result<usize> {
-        unimplemented!();
+        let follow_unfollow_resp = get_root::<cf_kv_fbs::FollowUnfollowResponse>(buf);
+        match follow_unfollow_resp.original_vals() {
+            Some(x) => return Ok(x.len()),
+            None => return Ok(0),
+        }
     }
 
     fn check_post_tweet_num_values(&self, buf: &[u8]) -> Result<usize> {
-        unimplemented!();
+        let post_tweet_resp = get_root::<cf_kv_fbs::PostTweetResponse>(buf);
+        match post_tweet_resp.vals() {
+            Some(x) => return Ok(x.len()),
+            None => return Ok(0),
+        }
     }
 
     fn check_get_timeline_num_values(&self, buf: &[u8]) -> Result<usize> {
-        unimplemented!();
+        let get_timeline_resp = get_root::<cf_kv_fbs::GetTimelineResponse>(buf);
+        match get_timeline_resp.vals() {
+            Some(x) => return Ok(x.len()),
+            None => return Ok(0),
+        }
     }
 
     fn check_retwis_response_num_values(&self, buf: &[u8]) -> Result<usize> {
         unimplemented!();
     }
 
-    fn serialize_get(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize> {
+    fn serialize_get(&self, buf: &mut [u8], key: &str, _datapath: &D) -> Result<usize> {
         let mut builder = FlatBufferBuilder::new();
         let args = cf_kv_fbs::GetReqArgs {
             // TODO: actually add in ID
@@ -385,12 +581,37 @@ where
         Ok(copy_into_buf(buf, &builder))
     }
 
-    fn serialize_put(&self, buf: &mut [u8], key: &str, value: &str, datapath: &D) -> Result<usize> {
-        Ok(0)
+    fn serialize_put(
+        &self,
+        buf: &mut [u8],
+        key: &str,
+        value: &str,
+        _datapath: &D,
+    ) -> Result<usize> {
+        let mut builder = FlatBufferBuilder::new();
+        let args = cf_kv_fbs::PutReqArgs {
+            id: 0,
+            key: Some(builder.create_string(key.as_ref())),
+            val: Some(builder.create_vector_direct::<u8>(value.as_bytes())),
+        };
+        let put_req = cf_kv_fbs::PutReq::create(&mut builder, &args);
+        builder.finish(put_req, None);
+        Ok(copy_into_buf(buf, &builder))
     }
 
-    fn serialize_getm(&self, buf: &mut [u8], keys: &Vec<String>, datapath: &D) -> Result<usize> {
-        Ok(0)
+    fn serialize_getm(&self, buf: &mut [u8], keys: &Vec<String>, _datapath: &D) -> Result<usize> {
+        let mut builder = FlatBufferBuilder::new();
+        let args_vec: Vec<WIPOffset<&str>> = keys
+            .iter()
+            .map(|key| builder.create_string(key.as_str()))
+            .collect();
+        let getm_req_args = cf_kv_fbs::GetMReqArgs {
+            id: 0,
+            keys: Some(builder.create_vector(args_vec.as_slice())),
+        };
+        let getm_req = cf_kv_fbs::GetMReq::create(&mut builder, &getm_req_args);
+        builder.finish(getm_req, None);
+        Ok(copy_into_buf(buf, &builder))
     }
 
     fn serialize_putm(
@@ -398,13 +619,44 @@ where
         buf: &mut [u8],
         keys: &Vec<String>,
         values: &Vec<String>,
-        datapath: &D,
+        _datapath: &D,
     ) -> Result<usize> {
-        Ok(0)
+        let mut builder = FlatBufferBuilder::new();
+        let keys_vec: Vec<WIPOffset<&str>> = keys
+            .iter()
+            .map(|key| builder.create_string(key.as_str()))
+            .collect();
+
+        let val_vec_data: Vec<cf_kv_fbs::ValueArgs> = values
+            .iter()
+            .map(|val| cf_kv_fbs::ValueArgs {
+                data: Some(builder.create_vector_direct::<u8>(&val.as_str().as_bytes())),
+            })
+            .collect();
+        let val_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = val_vec_data
+            .iter()
+            .map(|args| cf_kv_fbs::Value::create(&mut builder, args))
+            .collect();
+        let putm_req_args = cf_kv_fbs::PutMReqArgs {
+            id: 0,
+            keys: Some(builder.create_vector(keys_vec.as_slice())),
+            vals: Some(builder.create_vector(val_vec.as_slice())),
+        };
+        let putm_req = cf_kv_fbs::PutMReq::create(&mut builder, &putm_req_args);
+        builder.finish(putm_req, None);
+        Ok(copy_into_buf(buf, &builder))
     }
 
-    fn serialize_get_list(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize> {
-        Ok(0)
+    fn serialize_get_list(&self, buf: &mut [u8], key: &str, _datapath: &D) -> Result<usize> {
+        let mut builder = FlatBufferBuilder::new();
+        let args = cf_kv_fbs::GetListReqArgs {
+            // TODO: actually add in ID
+            id: 0,
+            key: Some(builder.create_string(key.as_ref())),
+        };
+        let get_list = cf_kv_fbs::GetListReq::create(&mut builder, &args);
+        builder.finish(get_list, None);
+        Ok(copy_into_buf(buf, &builder))
     }
 
     fn serialize_put_list(
@@ -412,19 +664,147 @@ where
         buf: &mut [u8],
         key: &str,
         values: &Vec<String>,
-        datapath: &D,
+        _datapath: &D,
     ) -> Result<usize> {
-        Ok(0)
+        let mut builder = FlatBufferBuilder::new();
+        let val_vec_data: Vec<cf_kv_fbs::ValueArgs> = values
+            .iter()
+            .map(|val| cf_kv_fbs::ValueArgs {
+                data: Some(builder.create_vector_direct::<u8>(&val.as_str().as_bytes())),
+            })
+            .collect();
+        let val_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = val_vec_data
+            .iter()
+            .map(|args| cf_kv_fbs::Value::create(&mut builder, args))
+            .collect();
+        let putlist_req_args = cf_kv_fbs::PutListReqArgs {
+            id: 0,
+            key: Some(builder.create_string(key.as_ref())),
+            vals: Some(builder.create_vector(val_vec.as_slice())),
+        };
+        let putlist_req = cf_kv_fbs::PutListReq::create(&mut builder, &putlist_req_args);
+        builder.finish(putlist_req, None);
+        Ok(copy_into_buf(buf, &builder))
     }
 
     fn serialize_append(
         &self,
-        buf: &mut [u8],
-        key: &str,
-        value: &str,
-        datapath: &D,
+        _buf: &mut [u8],
+        _key: &str,
+        _value: &str,
+        _datapath: &D,
     ) -> Result<usize> {
-        Ok(0)
+        unimplemented!();
+    }
+
+    fn serialize_add_user(
+        &self,
+        buf: &mut [u8],
+        keys: &Vec<&str>,
+        values: &Vec<String>,
+        _datapath: &D,
+    ) -> Result<usize> {
+        let mut builder = FlatBufferBuilder::new();
+        let keys_vec: Vec<WIPOffset<&str>> =
+            keys.iter().map(|key| builder.create_string(key)).collect();
+
+        let val_vec_data: Vec<cf_kv_fbs::ValueArgs> = values
+            .iter()
+            .map(|val| cf_kv_fbs::ValueArgs {
+                data: Some(builder.create_vector_direct::<u8>(&val.as_str().as_bytes())),
+            })
+            .collect();
+        let val_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = val_vec_data
+            .iter()
+            .map(|args| cf_kv_fbs::Value::create(&mut builder, args))
+            .collect();
+        let add_user_args = cf_kv_fbs::AddUserArgs {
+            keys: Some(builder.create_vector(keys_vec.as_slice())),
+            vals: Some(builder.create_vector(val_vec.as_slice())),
+        };
+        let add_user = cf_kv_fbs::AddUser::create(&mut builder, &add_user_args);
+        builder.finish(add_user, None);
+        Ok(copy_into_buf(buf, &builder))
+    }
+
+    fn serialize_add_follow_unfollow(
+        &self,
+        buf: &mut [u8],
+        keys: &Vec<&str>,
+        values: &Vec<String>,
+        _datapath: &D,
+    ) -> Result<usize> {
+        let mut builder = FlatBufferBuilder::new();
+        let keys_vec: Vec<WIPOffset<&str>> =
+            keys.iter().map(|key| builder.create_string(key)).collect();
+
+        let val_vec_data: Vec<cf_kv_fbs::ValueArgs> = values
+            .iter()
+            .map(|val| cf_kv_fbs::ValueArgs {
+                data: Some(builder.create_vector_direct::<u8>(&val.as_str().as_bytes())),
+            })
+            .collect();
+        let val_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = val_vec_data
+            .iter()
+            .map(|args| cf_kv_fbs::Value::create(&mut builder, args))
+            .collect();
+        let follow_unfollow_args = cf_kv_fbs::FollowUnfollowArgs {
+            keys: Some(builder.create_vector(keys_vec.as_slice())),
+            vals: Some(builder.create_vector(val_vec.as_slice())),
+        };
+        let follow_unfollow =
+            cf_kv_fbs::FollowUnfollow::create(&mut builder, &follow_unfollow_args);
+        builder.finish(follow_unfollow, None);
+        Ok(copy_into_buf(buf, &builder))
+    }
+
+    fn serialize_post_tweet(
+        &self,
+        buf: &mut [u8],
+        keys: &Vec<&str>,
+        values: &Vec<String>,
+        _datapath: &D,
+    ) -> Result<usize> {
+        let mut builder = FlatBufferBuilder::new();
+        let keys_vec: Vec<WIPOffset<&str>> =
+            keys.iter().map(|key| builder.create_string(key)).collect();
+
+        let val_vec_data: Vec<cf_kv_fbs::ValueArgs> = values
+            .iter()
+            .map(|val| cf_kv_fbs::ValueArgs {
+                data: Some(builder.create_vector_direct::<u8>(&val.as_str().as_bytes())),
+            })
+            .collect();
+        let val_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = val_vec_data
+            .iter()
+            .map(|args| cf_kv_fbs::Value::create(&mut builder, args))
+            .collect();
+        let post_tweet_args = cf_kv_fbs::PostTweetArgs {
+            keys: Some(builder.create_vector(keys_vec.as_slice())),
+            vals: Some(builder.create_vector(val_vec.as_slice())),
+        };
+        let post_tweet = cf_kv_fbs::PostTweet::create(&mut builder, &post_tweet_args);
+        builder.finish(post_tweet, None);
+        Ok(copy_into_buf(buf, &builder))
+    }
+
+    fn serialize_get_timeline(
+        &self,
+        buf: &mut [u8],
+        keys: &Vec<&str>,
+        values: &Vec<String>,
+        _datapath: &D,
+    ) -> Result<usize> {
+        let mut builder = FlatBufferBuilder::new();
+        let keys_vec: Vec<WIPOffset<&str>> =
+            keys.iter().map(|key| builder.create_string(key)).collect();
+
+        let get_timeline_args = cf_kv_fbs::GetTimelineArgs {
+            keys: Some(builder.create_vector(keys_vec.as_slice())),
+        };
+        let get_timeline = cf_kv_fbs::GetTimeline::create(&mut builder, &get_timeline_args);
+        builder.finish(get_timeline, None);
+        Ok(copy_into_buf(buf, &builder))
     }
 }
 

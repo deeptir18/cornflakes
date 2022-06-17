@@ -11,8 +11,10 @@ import json
 import numpy as np
 import torch
 
-NUM_TRIALS = 3
+NUM_TRIALS = 1
 NUM_RETRIES = 0
+
+PERCENT_ACHIEVED_CUTOFF = 0.98
 
 
 def read_threads_json(json_file, thread_id):

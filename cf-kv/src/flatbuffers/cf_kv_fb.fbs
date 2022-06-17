@@ -57,8 +57,8 @@ table PutResp {
 }
 
 table AddUser {
-    keys:[Value];
-    values:[Value];
+    keys:[string];
+    vals:[Value];
 }
 
 table AddUserResponse {
@@ -66,36 +66,27 @@ table AddUserResponse {
 }
 
 table FollowUnfollow {
-    keys:[Value];
-    values:[Value];
+    keys:[string];
+    vals:[Value];
 }
 
 table FollowUnfollowResponse {
-    original_values:[Value];
+    original_vals:[Value];
 }
 
 table PostTweet {
-    keys:[Value];
-    values:[Value];
+    keys:[string];
+    vals:[Value];
 }
 
 table PostTweetResponse {
-    values:[Value];
+    vals:[Value];
 }
 
 table GetTimeline {
-    keys:[Value];
+    keys:[string];
 }
 
 table GetTimelineResponse {
-    values:[Value];
-}
-
-table RetwisMessage {
-    get_requests:[GetReq]
-    put_requests:[PutReq]
-}
-
-table RetwisResponse {
-    get_responses:[GetResp]
+    vals:[Value];
 }
