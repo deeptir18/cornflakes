@@ -91,144 +91,157 @@ where
         Ok(())
     }
 
-    /*fn handle_put<'arena>(
+    fn handle_put<T>(
         &self,
         kv_server: &mut KVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedSga<'arena>> {
-        let mut put_req = PutReq::new();
-        put_req.deserialize(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-        let key = put_req.get_key().to_string();
-        // allocate space in kv for value
-        let mut datapath_buffer =
-            allocate_datapath_buffer(datapath, put_req.get_val().len(), mempool_ids)?;
-        let _ = datapath_buffer.write(put_req.get_val().get_ptr())?;
-        kv_server.insert(key, datapath_buffer);
+        builder: &mut Builder<T>,
+    ) -> Result<()>
+    where
+        T: Allocator,
+    {
+        let segment_array_vec = read_context(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+        let message_reader = Reader::new(segment_array, ReaderOptions::default());
+        let put_request = message_reader
+            .get_root::<kv_capnp::put_req::Reader>()
+            .wrap_err("Failed to deserialize PutReq.")?;
+        let key = put_request.get_key()?;
+        let value = put_request.get_val()?;
+        kv_server.insert_with_copies(key, value, datapath, mempool_ids)?;
 
-        let mut put_resp = PutResp::new();
-        put_resp.set_id(put_req.get_id());
-        let mut arena_sga =
-            ArenaOrderedSga::allocate(put_resp.num_scatter_gather_entries(), &arena);
-        put_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
-        Ok(arena_sga)
+        // construct response
+        let mut response = builder.init_root::<kv_capnp::put_resp::Builder>();
+        response.set_id(put_request.get_id());
+        Ok(())
     }
 
-    fn handle_getm<'kv, 'arena>(
+    fn handle_getm<T>(
         &self,
-        kv_server: &'kv KVServer<D>,
+        kv_server: &KVServer<D>,
         pkt: &ReceivedPkt<D>,
-        _datapath: &D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedSga<'arena>>
+        builder: &mut Builder<T>,
+    ) -> Result<()>
     where
-        'kv: 'arena,
+        T: Allocator,
     {
-        let mut getm_req = GetMReq::new();
-        {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("Deserialize pkt");
-            getm_req.deserialize(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-        }
-        let mut getm_resp = GetMResp::new();
-        getm_resp.init_vals(getm_req.get_keys().len());
-        let vals = getm_resp.get_mut_vals();
-        for key in getm_req.get_keys().iter() {
-            let value = {
-                #[cfg(feature = "profiler")]
-                perftools::timer!("got value");
-                match kv_server.get(key.as_str()) {
-                    Some(v) => v,
-                    None => {
-                        bail!("Could not find value for key: {:?}", key);
-                    }
+        let segment_array_vec = read_context(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+        let message_reader = Reader::new(segment_array, ReaderOptions::default());
+        let getm_request = message_reader
+            .get_root::<kv_capnp::get_m_req::Reader>()
+            .wrap_err("Failed to deserialize GetMReq.")?;
+        let keys = getm_request.get_keys()?;
+
+        let mut response = builder.init_root::<kv_capnp::get_m_resp::Builder>();
+        let mut list = response.init_vals(keys.len());
+        for (i, key_res) in keys.iter().enumerate() {
+            let key = key_res?;
+            let value = match kv_server.get(key) {
+                Some(v) => v,
+                None => {
+                    bail!("Cannot find value for key in KV store: {:?}", key);
                 }
             };
-            tracing::debug!(
-                "For given key {:?}, found value {:?} with length {}",
-                key.as_str(),
-                value.as_ref().as_ptr(),
-                value.as_ref().len()
-            );
-            {
-                #[cfg(feature = "profiler")]
-                perftools::timer!("append value");
-                vals.append(CFBytes::new(value.as_ref()));
-            }
+            tracing::debug!("Value len: {:?}", value.as_ref().len());
+            list.set(i as u32, value.as_ref());
         }
-        getm_resp.set_id(getm_req.get_id());
-
-        let mut arena_sga = {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("allocate sga");
-            ArenaOrderedSga::allocate(getm_resp.num_scatter_gather_entries(), &arena)
-        };
-        {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("serialize sga");
-            getm_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
-        }
-        Ok(arena_sga)
+        Ok(())
     }
 
-    fn handle_putm<'arena>(
+    fn handle_putm<T>(
         &self,
         kv_server: &mut KVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedSga<'arena>> {
-        let mut putm_req = PutMReq::new();
-        putm_req.deserialize(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-        for (key, value) in putm_req.get_keys().iter().zip(putm_req.get_vals().iter()) {
-            // allocate space in kv for value
-            let mut datapath_buffer = allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
-            let _ = datapath_buffer.write(value.get_ptr())?;
-            kv_server.insert(key.to_string(), datapath_buffer);
+        builder: &mut Builder<T>,
+    ) -> Result<()>
+    where
+        T: Allocator,
+    {
+        let segment_array_vec = read_context(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+        let message_reader = Reader::new(segment_array, ReaderOptions::default());
+        let putm_request = message_reader
+            .get_root::<kv_capnp::put_m_req::Reader>()
+            .wrap_err("Failed to deserialize PutReq.")?;
+        let keys = putm_request.get_keys()?;
+        let values = putm_request.get_vals()?;
+        for (key, value) in keys.iter().zip(values.iter()) {
+            kv_server.insert_with_copies(key?, value?, datapath, mempool_ids)?;
         }
 
-        let mut put_resp = PutResp::new();
-        put_resp.set_id(putm_req.get_id());
-        let mut arena_sga =
-            ArenaOrderedSga::allocate(put_resp.num_scatter_gather_entries(), &arena);
-        put_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
-        Ok(arena_sga)
+        // construct response
+        let mut response = builder.init_root::<kv_capnp::put_resp::Builder>();
+        response.set_id(putm_request.get_id());
+        Ok(())
     }
-    fn handle_getlist<'kv, 'arena>(
+
+    fn handle_getlist<T>(
         &self,
-        list_kv_server: &'kv ListKVServer<D>,
+        list_kv_server: &ListKVServer<D>,
         pkt: &ReceivedPkt<D>,
-        _datapath: &D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedSga<'arena>>
+        builder: &mut Builder<T>,
+    ) -> Result<()>
     where
-        'kv: 'arena,
+        T: Allocator,
     {
-        let mut getlist_req = GetListReq::new();
-        getlist_req.deserialize(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-        let value_list = match list_kv_server.get(getlist_req.get_key().as_str()) {
+        let segment_array_vec = read_context(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+        let message_reader = Reader::new(segment_array, ReaderOptions::default());
+        let getlist_request = message_reader
+            .get_root::<kv_capnp::get_list_req::Reader>()
+            .wrap_err("Failed to deserialize GetList.")?;
+        tracing::debug!(
+            "Received get list request for key: {:?}",
+            getlist_request.get_key()
+        );
+        let key = getlist_request.get_key()?;
+        let values = match list_kv_server.get(key) {
             Some(v) => v,
             None => {
-                bail!("Could not find value for key: {:?}", getlist_req.get_key());
+                bail!("Cannot find value for key in KV store: {:?}", key);
             }
         };
+        tracing::debug!("Values len: {:?}", values.len());
 
-        let mut getlist_resp = GetListResp::new();
-        getlist_resp.set_id(getlist_req.get_id());
-        getlist_resp.init_val_list(value_list.len());
-        let list = getlist_resp.get_mut_val_list();
-        for value in value_list.iter() {
-            list.append(CFBytes::new(value.as_ref()));
+        let mut response = builder.init_root::<kv_capnp::get_list_resp::Builder>();
+        let mut list = response.init_vals(values.len() as _);
+        for (i, val) in values.iter().enumerate() {
+            list.set(i as u32, val.as_ref());
         }
+        Ok(())
+    }
 
-        let mut arena_sga =
-            ArenaOrderedSga::allocate(getlist_resp.num_scatter_gather_entries(), &arena);
-        getlist_resp.partially_serialize_into_arena_sga(&mut arena_sga, arena)?;
-        Ok(arena_sga)
-    }*/
+    fn handle_putlist<T>(
+        &self,
+        list_kv_server: &mut ListKVServer<D>,
+        mempool_ids: &mut Vec<MempoolID>,
+        pkt: &ReceivedPkt<D>,
+        datapath: &mut D,
+        builder: &mut Builder<T>,
+    ) -> Result<()>
+    where
+        T: Allocator,
+    {
+        let segment_array_vec = read_context(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+        let message_reader = Reader::new(segment_array, ReaderOptions::default());
+        let putlist_request = message_reader
+            .get_root::<kv_capnp::put_list_req::Reader>()
+            .wrap_err("Failed to deserialize PutReq.")?;
+        let key = putlist_request.get_key()?;
+        let values = putlist_request.get_vals()?.iter().map(|val| val.unwrap());
+        list_kv_server.insert_with_copies(key, values, datapath, mempool_ids)?;
+
+        // construct response
+        let mut response = builder.init_root::<kv_capnp::put_resp::Builder>();
+        response.set_id(putlist_request.get_id());
+        Ok(())
+    }
 }
 
 pub struct CapnprotoKVServer<D>
@@ -298,32 +311,181 @@ where
         for (i, pkt) in sga.into_iter().enumerate() {
             let mut builder = Builder::new_default();
             let message_type = MsgType::from_packet(&pkt)?;
-            let framing_vec = match message_type {
-                MsgType::Get => self
-                    .serializer
-                    .handle_get(&self.kv_server, &pkt, &mut builder),
+            match message_type {
+                MsgType::Get => {
+                    self.serializer
+                        .handle_get(&self.kv_server, &pkt, &mut builder)?;
+                }
                 MsgType::GetM(size) => {
-                    unimplemented!();
+                    self.serializer
+                        .handle_getm(&self.kv_server, &pkt, &mut builder)?;
                 }
                 MsgType::GetList(size) => {
-                    unimplemented!();
+                    self.serializer
+                        .handle_getlist(&self.list_kv_server, &pkt, &mut builder)?;
                 }
                 MsgType::Put => {
-                    unimplemented!();
+                    self.serializer.handle_put(
+                        &mut self.kv_server,
+                        &mut self.mempool_ids,
+                        &pkt,
+                        datapath,
+                        &mut builder,
+                    )?;
                 }
                 MsgType::PutM(size) => {
-                    unimplemented!();
+                    self.serializer.handle_putm(
+                        &mut self.kv_server,
+                        &mut self.mempool_ids,
+                        &pkt,
+                        datapath,
+                        &mut builder,
+                    )?;
                 }
                 MsgType::PutList(size) => {
-                    unimplemented!();
+                    self.serializer.handle_putlist(
+                        &mut self.list_kv_server,
+                        &mut self.mempool_ids,
+                        &pkt,
+                        datapath,
+                        &mut builder,
+                    )?;
                 }
-                MsgType::AppendToList(size) => {
-                    unimplemented!();
+                MsgType::AddUser => {
+                    let segment_array_vec = read_context(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+                    let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+                    let message_reader = Reader::new(segment_array, ReaderOptions::default());
+                    let add_user_request = message_reader
+                        .get_root::<kv_capnp::add_user::Reader>()
+                        .wrap_err("Failed to deserialize AddUser.")?;
+                    let keys = add_user_request.get_keys()?;
+                    let values = add_user_request.get_vals()?;
+
+                    let mut response = builder.init_root::<kv_capnp::add_user_response::Builder>();
+                    let first_value = match self.kv_server.get(keys.get(0)?) {
+                        Some(v) => v,
+                        None => {
+                            bail!("Cannot find value for key in KV store: {:?}", keys.get(0)?);
+                        }
+                    };
+                    response.set_first_val(first_value.as_ref());
+                    for (key_res, val_res) in keys.iter().zip(values.iter()) {
+                        let key = key_res?;
+                        let val = val_res?;
+                        self.kv_server.insert_with_copies(
+                            key,
+                            val,
+                            datapath,
+                            &mut self.mempool_ids,
+                        )?;
+                    }
+                }
+                MsgType::FollowUnfollow => {
+                    let segment_array_vec = read_context(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+                    let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+                    let message_reader = Reader::new(segment_array, ReaderOptions::default());
+                    let follow_unfollow_request = message_reader
+                        .get_root::<kv_capnp::follow_unfollow::Reader>()
+                        .wrap_err("Failed to deserialize FollowUnfollow.")?;
+                    let keys = follow_unfollow_request.get_keys()?;
+                    let values = follow_unfollow_request.get_vals()?;
+
+                    let mut response =
+                        builder.init_root::<kv_capnp::follow_unfollow_response::Builder>();
+                    let mut list = response.init_original_vals(2);
+
+                    for (i, (key_res, new_val_res)) in
+                        keys.iter().zip(values.iter()).enumerate().take(2)
+                    {
+                        let key = key_res?;
+                        let new_val = new_val_res?;
+                        let old_val = match self.kv_server.get(key) {
+                            Some(v) => v,
+                            None => {
+                                bail!("Cannot find value for key in KV store: {:?}", keys.get(0)?);
+                            }
+                        };
+                        list.set(i as u32, old_val.as_ref());
+                        self.kv_server.insert_with_copies(
+                            key,
+                            new_val,
+                            datapath,
+                            &mut self.mempool_ids,
+                        )?;
+                    }
+                }
+                MsgType::PostTweet => {
+                    let segment_array_vec = read_context(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+                    let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+                    let message_reader = Reader::new(segment_array, ReaderOptions::default());
+                    let post_tweet_request = message_reader
+                        .get_root::<kv_capnp::post_tweet::Reader>()
+                        .wrap_err("Failed to deserialize Post Tweet.")?;
+                    let keys = post_tweet_request.get_keys()?;
+                    let values = post_tweet_request.get_vals()?;
+
+                    let mut response =
+                        builder.init_root::<kv_capnp::post_tweet_response::Builder>();
+                    let mut list = response.init_vals(3);
+
+                    for (i, (key_res, new_val_res)) in
+                        keys.iter().zip(values.iter()).enumerate().take(3)
+                    {
+                        let key = key_res?;
+                        let new_val = new_val_res?;
+                        let old_val = match self.kv_server.get(key) {
+                            Some(v) => v,
+                            None => {
+                                bail!("Cannot find value for key in KV store: {:?}", keys.get(0)?);
+                            }
+                        };
+                        list.set(i as u32, old_val.as_ref());
+                        self.kv_server.insert_with_copies(
+                            key,
+                            new_val,
+                            datapath,
+                            &mut self.mempool_ids,
+                        )?;
+                    }
+                    for (key_res, new_val_res) in keys.iter().zip(values.iter()).skip(3).take(2) {
+                        let key = key_res?;
+                        let new_val = new_val_res?;
+                        self.kv_server.insert_with_copies(
+                            key,
+                            new_val,
+                            datapath,
+                            &mut self.mempool_ids,
+                        )?;
+                    }
+                }
+                MsgType::GetTimeline(_) => {
+                    let segment_array_vec = read_context(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+                    let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+                    let message_reader = Reader::new(segment_array, ReaderOptions::default());
+                    let get_timeline_request = message_reader
+                        .get_root::<kv_capnp::get_timeline::Reader>()
+                        .wrap_err("Failed to deserialize Get Timeline.")?;
+                    let keys = get_timeline_request.get_keys()?;
+
+                    let mut response =
+                        builder.init_root::<kv_capnp::get_timeline_response::Builder>();
+                    let mut list = response.init_vals(keys.len());
+
+                    for (i, key_res) in keys.iter().enumerate() {
+                        let key = key_res?;
+                        let old_val = match self.kv_server.get(key) {
+                            Some(v) => v,
+                            None => {
+                                bail!("Cannot find value for key in KV store: {:?}", keys.get(0)?);
+                            }
+                        };
+                        list.set(i as u32, old_val.as_ref());
+                    }
                 }
                 _ => {
                     unimplemented!();
                 }
-            }?;
+            }
 
             let mut framing_vec = bumpalo::collections::Vec::with_capacity_zeroed_in(
                 FRAMING_ENTRY_SIZE * (1 + builder.get_segments_for_output().len()),
@@ -440,27 +602,97 @@ where
     }
 
     fn deserialize_getm_response(&self, buf: &[u8]) -> Result<Vec<Vec<u8>>> {
-        unimplemented!();
+        let segment_array_vec = read_context(buf)?;
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+        let message_reader = Reader::new(segment_array, ReaderOptions::default());
+        let getm_resp = message_reader
+            .get_root::<kv_capnp::get_m_resp::Reader>()
+            .wrap_err("Failed to deserialize GetMResp.")?;
+        if getm_resp.has_vals() {
+            let vals = getm_resp
+                .get_vals()
+                .wrap_err("deserialized get response does not have value")?;
+            vals.iter()
+                .map(|val| Ok(val?.to_vec()))
+                .collect::<Result<Vec<Vec<u8>>>>()
+        } else {
+            return Ok(vec![]);
+        }
     }
 
     fn deserialize_getlist_response(&self, buf: &[u8]) -> Result<Vec<Vec<u8>>> {
-        unimplemented!();
+        let segment_array_vec = read_context(buf)?;
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+        let message_reader = Reader::new(segment_array, ReaderOptions::default());
+        let getlist_resp = message_reader
+            .get_root::<kv_capnp::get_list_resp::Reader>()
+            .wrap_err("Failed to deserialize GetListResp.")?;
+        if getlist_resp.has_vals() {
+            let vals = getlist_resp
+                .get_vals()
+                .wrap_err("deserialized get response does not have value")?;
+            vals.iter()
+                .map(|val| Ok(val?.to_vec()))
+                .collect::<Result<Vec<Vec<u8>>>>()
+        } else {
+            return Ok(vec![]);
+        }
     }
 
     fn check_add_user_num_values(&self, buf: &[u8]) -> Result<usize> {
-        unimplemented!();
+        let segment_array_vec = read_context(buf)?;
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+        let message_reader = Reader::new(segment_array, ReaderOptions::default());
+        let add_user_resp = message_reader
+            .get_root::<kv_capnp::add_user_response::Reader>()
+            .wrap_err("Failed to deserialize AddUser Response.")?;
+        if add_user_resp.has_first_val() {
+            return Ok(1);
+        } else {
+            return Ok(0);
+        }
     }
 
     fn check_follow_unfollow_num_values(&self, buf: &[u8]) -> Result<usize> {
-        unimplemented!();
+        let segment_array_vec = read_context(buf)?;
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+        let message_reader = Reader::new(segment_array, ReaderOptions::default());
+        let follow_unfollow_resp = message_reader
+            .get_root::<kv_capnp::follow_unfollow_response::Reader>()
+            .wrap_err("Failed to deserialize FollowUnfollow Response.")?;
+        if follow_unfollow_resp.has_original_vals() {
+            return Ok(follow_unfollow_resp.get_original_vals()?.len() as _);
+        } else {
+            return Ok(0);
+        }
     }
 
     fn check_post_tweet_num_values(&self, buf: &[u8]) -> Result<usize> {
-        unimplemented!();
+        let segment_array_vec = read_context(buf)?;
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+        let message_reader = Reader::new(segment_array, ReaderOptions::default());
+        let post_tweet_resp = message_reader
+            .get_root::<kv_capnp::post_tweet_response::Reader>()
+            .wrap_err("Failed to deserialize PostTweet Response.")?;
+        if post_tweet_resp.has_vals() {
+            return Ok(post_tweet_resp.get_vals()?.len() as _);
+        } else {
+            return Ok(0);
+        }
     }
 
     fn check_get_timeline_num_values(&self, buf: &[u8]) -> Result<usize> {
-        unimplemented!();
+        let segment_array_vec = read_context(buf)?;
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+        let message_reader = Reader::new(segment_array, ReaderOptions::default());
+        let get_timeline_resp = message_reader
+            .get_root::<kv_capnp::get_timeline_response::Reader>()
+            .wrap_err("Failed to deserialize GetTimeline Response.")?;
+        if get_timeline_resp.has_vals() {
+            return Ok(get_timeline_resp.get_vals()?.len() as _);
+        } else {
+            return Ok(0);
+        }
     }
 
     fn check_retwis_response_num_values(&self, buf: &[u8]) -> Result<usize> {
@@ -482,11 +714,45 @@ where
     }
 
     fn serialize_put(&self, buf: &mut [u8], key: &str, value: &str, datapath: &D) -> Result<usize> {
-        Ok(0)
+        let mut builder = Builder::new_default();
+        let mut put_req = builder.init_root::<kv_capnp::put_req::Builder>();
+        put_req.set_key(&key);
+        put_req.set_val(&value.as_bytes());
+        let framing_size = fill_in_context_without_arena(&builder, buf)?;
+        let full_size = copy_into_buf(buf, framing_size, &builder)?;
+        tracing::debug!(
+            "Full buffer: {:?}, full buffer length: {}",
+            &buf[0..full_size],
+            full_size
+        );
+        return Ok(full_size);
+    }
+
+    fn serialize_append(
+        &self,
+        _buf: &mut [u8],
+        _key: &str,
+        _value: &str,
+        _datapath: &D,
+    ) -> Result<usize> {
+        unimplemented!();
     }
 
     fn serialize_getm(&self, buf: &mut [u8], keys: &Vec<String>, datapath: &D) -> Result<usize> {
-        Ok(0)
+        let mut builder = Builder::new_default();
+        let mut getm_req = builder.init_root::<kv_capnp::get_m_req::Builder>();
+        let mut keys_list = getm_req.init_keys(keys.len() as _);
+        for (i, key) in keys.iter().enumerate() {
+            keys_list.set(i as u32, key);
+        }
+        let framing_size = fill_in_context_without_arena(&builder, buf)?;
+        let full_size = copy_into_buf(buf, framing_size, &builder)?;
+        tracing::debug!(
+            "Full buffer: {:?}, full buffer length: {}",
+            &buf[0..full_size],
+            full_size
+        );
+        return Ok(full_size);
     }
 
     fn serialize_putm(
@@ -496,11 +762,40 @@ where
         values: &Vec<String>,
         datapath: &D,
     ) -> Result<usize> {
-        Ok(0)
+        let mut builder = Builder::new_default();
+        let mut putm_req = builder.init_root::<kv_capnp::put_m_req::Builder>();
+        {
+            let mut keys_list = putm_req.reborrow().init_keys(keys.len() as _);
+            for (i, key) in keys.iter().enumerate() {
+                keys_list.set(i as u32, key);
+            }
+        }
+        let mut vals_list = putm_req.init_vals(values.len() as _);
+        for (i, val) in values.iter().enumerate() {
+            vals_list.set(i as u32, val.as_ref());
+        }
+        let framing_size = fill_in_context_without_arena(&builder, buf)?;
+        let full_size = copy_into_buf(buf, framing_size, &builder)?;
+        tracing::debug!(
+            "Full buffer: {:?}, full buffer length: {}",
+            &buf[0..full_size],
+            full_size
+        );
+        return Ok(full_size);
     }
 
     fn serialize_get_list(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize> {
-        Ok(0)
+        let mut builder = Builder::new_default();
+        let mut getlist_req = builder.init_root::<kv_capnp::get_list_req::Builder>();
+        getlist_req.set_key(&key);
+        let framing_size = fill_in_context_without_arena(&builder, buf)?;
+        let full_size = copy_into_buf(buf, framing_size, &builder)?;
+        tracing::debug!(
+            "Full buffer: {:?}, full buffer length: {}",
+            &buf[0..full_size],
+            full_size
+        );
+        return Ok(full_size);
     }
 
     fn serialize_put_list(
@@ -510,17 +805,131 @@ where
         values: &Vec<String>,
         datapath: &D,
     ) -> Result<usize> {
-        Ok(0)
+        let mut builder = Builder::new_default();
+        let mut putlist_req = builder.init_root::<kv_capnp::put_list_req::Builder>();
+        putlist_req.set_key(&key);
+        let mut vals_list = putlist_req.init_vals(values.len() as _);
+        for (i, val) in values.iter().enumerate() {
+            vals_list.set(i as u32, val.as_ref());
+        }
+        let framing_size = fill_in_context_without_arena(&builder, buf)?;
+        let full_size = copy_into_buf(buf, framing_size, &builder)?;
+        tracing::debug!(
+            "Full buffer: {:?}, full buffer length: {}",
+            &buf[0..full_size],
+            full_size
+        );
+        return Ok(full_size);
     }
 
-    fn serialize_append(
+    fn serialize_add_user(
         &self,
         buf: &mut [u8],
-        key: &str,
-        value: &str,
-        datapath: &D,
+        keys: &Vec<&str>,
+        values: &Vec<String>,
+        _datapath: &D,
     ) -> Result<usize> {
-        Ok(0)
+        let mut builder = Builder::new_default();
+        let mut add_user = builder.init_root::<kv_capnp::add_user::Builder>();
+        {
+            let mut keys_list = add_user.reborrow().init_keys(keys.len() as _);
+            for (i, key) in keys.iter().enumerate() {
+                keys_list.set(i as u32, key);
+            }
+        }
+        let mut vals_list = add_user.init_vals(values.len() as _);
+        for (i, val) in values.iter().enumerate() {
+            vals_list.set(i as u32, val.as_str().as_bytes());
+        }
+        let framing_size = fill_in_context_without_arena(&builder, buf)?;
+        let full_size = copy_into_buf(buf, framing_size, &builder)?;
+        tracing::debug!(
+            "Full buffer: {:?}, full buffer length: {}",
+            &buf[0..full_size],
+            full_size
+        );
+        return Ok(full_size);
+    }
+
+    fn serialize_add_follow_unfollow(
+        &self,
+        buf: &mut [u8],
+        keys: &Vec<&str>,
+        values: &Vec<String>,
+        _datapath: &D,
+    ) -> Result<usize> {
+        let mut builder = Builder::new_default();
+        let mut follow_unfollow = builder.init_root::<kv_capnp::follow_unfollow::Builder>();
+        {
+            let mut keys_list = follow_unfollow.reborrow().init_keys(keys.len() as _);
+            for (i, key) in keys.iter().enumerate() {
+                keys_list.set(i as u32, key);
+            }
+        }
+        let mut vals_list = follow_unfollow.init_vals(values.len() as _);
+        for (i, val) in values.iter().enumerate() {
+            vals_list.set(i as u32, val.as_str().as_bytes());
+        }
+        let framing_size = fill_in_context_without_arena(&builder, buf)?;
+        let full_size = copy_into_buf(buf, framing_size, &builder)?;
+        tracing::debug!(
+            "Full buffer: {:?}, full buffer length: {}",
+            &buf[0..full_size],
+            full_size
+        );
+        return Ok(full_size);
+    }
+
+    fn serialize_post_tweet(
+        &self,
+        buf: &mut [u8],
+        keys: &Vec<&str>,
+        values: &Vec<String>,
+        _datapath: &D,
+    ) -> Result<usize> {
+        let mut builder = Builder::new_default();
+        let mut post_tweet = builder.init_root::<kv_capnp::post_tweet::Builder>();
+        {
+            let mut keys_list = post_tweet.reborrow().init_keys(keys.len() as _);
+            for (i, key) in keys.iter().enumerate() {
+                keys_list.set(i as u32, key);
+            }
+        }
+        let mut vals_list = post_tweet.init_vals(values.len() as _);
+        for (i, val) in values.iter().enumerate() {
+            vals_list.set(i as u32, val.as_str().as_bytes());
+        }
+        let framing_size = fill_in_context_without_arena(&builder, buf)?;
+        let full_size = copy_into_buf(buf, framing_size, &builder)?;
+        tracing::debug!(
+            "Full buffer: {:?}, full buffer length: {}",
+            &buf[0..full_size],
+            full_size
+        );
+        return Ok(full_size);
+    }
+
+    fn serialize_get_timeline(
+        &self,
+        buf: &mut [u8],
+        keys: &Vec<&str>,
+        _values: &Vec<String>,
+        _datapath: &D,
+    ) -> Result<usize> {
+        let mut builder = Builder::new_default();
+        let mut get_timeline_req = builder.init_root::<kv_capnp::get_timeline::Builder>();
+        let mut keys_list = get_timeline_req.init_keys(keys.len() as _);
+        for (i, key) in keys.iter().enumerate() {
+            keys_list.set(i as u32, key);
+        }
+        let framing_size = fill_in_context_without_arena(&builder, buf)?;
+        let full_size = copy_into_buf(buf, framing_size, &builder)?;
+        tracing::debug!(
+            "Full buffer: {:?}, full buffer length: {}",
+            &buf[0..full_size],
+            full_size
+        );
+        return Ok(full_size);
     }
 }
 

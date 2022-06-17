@@ -9,10 +9,10 @@ use std::{
 };
 
 fn main() {
-    //println!("cargo:rerun-if-changed=src/cornflakes_dynamic/kv.proto");
-    //println!("cargo:rerun-if-changed=src/flatbuffers/cf_kv_fb.fbs");
-    //println!("cargo:rerun-if-changed=src/capnproto/cf_kv.capnp");
-    //println!("cargo:rerun-if-changed=src/protobuf/kv.proto");
+    println!("cargo:rerun-if-changed=src/cornflakes_dynamic/kv.proto");
+    println!("cargo:rerun-if-changed=src/flatbuffers/cf_kv_fb.fbs");
+    println!("cargo:rerun-if-changed=src/capnproto/cf_kv.capnp");
+    println!("cargo:rerun-if-changed=src/protobuf/kv.proto");
     // store all compiled proto files in out_dir
     //let out_dir = env::var("OUT_DIR").unwrap();
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();

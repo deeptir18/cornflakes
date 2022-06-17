@@ -2075,6 +2075,10 @@ where
         datapath: &D,
         with_copy: bool,
     ) -> Result<()> {
+        if with_copy {
+            self.num_copy_entries = self.length;
+            return Ok(());
+        }
         let copying_threshold = datapath.get_copying_threshold();
         if self.length == 1 {
             // check if segment is zero-copy or not
@@ -2084,7 +2088,6 @@ where
             tracing::debug!("Setting num copy entries as {}/1", self.num_copy_entries);
             return Ok(());
         }
-
         let mut forward_index = 0;
         let mut end_index = self.length - 1;
         let mut switch_forward = self.is_zero_copy_seg(forward_index, copying_threshold);

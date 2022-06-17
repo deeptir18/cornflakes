@@ -792,7 +792,7 @@ where
         &self,
         buf: &mut [u8],
         keys: &Vec<&str>,
-        values: &Vec<String>,
+        _values: &Vec<String>,
         _datapath: &D,
     ) -> Result<usize> {
         let mut builder = FlatBufferBuilder::new();

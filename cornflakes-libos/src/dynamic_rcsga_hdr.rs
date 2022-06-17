@@ -1,5 +1,5 @@
 use super::{
-    datapath::{Datapath, MetadataOps, ReceivedPkt},
+    datapath::{Datapath, ReceivedPkt},
     ArenaOrderedRcSga, OrderedRcSga, RcSge,
 };
 use bitmaps::Bitmap;

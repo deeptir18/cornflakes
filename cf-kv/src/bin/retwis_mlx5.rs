@@ -5,7 +5,7 @@ use cf_kv::{
     protobuf::{ProtobufClient, ProtobufKVServer},
     retwis::{retwis_keys, RetwisClient, RetwisServerLoader},
     retwis_run_datapath::*,
-    run_client_retwis, run_server_retwis, KVClient, RequestGenerator,
+    run_client_retwis, run_server_retwis, KVClient,
 };
 use color_eyre::eyre::Result;
 use cornflakes_libos::{
