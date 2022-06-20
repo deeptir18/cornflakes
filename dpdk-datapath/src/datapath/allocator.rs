@@ -211,15 +211,6 @@ pub struct MempoolInfo {
     headroom: usize,         // headroom at front of mbuf
 }
 
-impl Default for MempoolInfo {
-    fn default() -> Self {
-        MempoolInfo {
-            handle: std::ptr::null_mut(),
-            ..Default::default()
-        }
-    }
-}
-
 impl DatapathMemoryPool for MempoolInfo {
     type DatapathImpl = DpdkConnection;
 

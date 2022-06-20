@@ -1,15 +1,10 @@
 use super::echo_capnp;
 use super::{read_message_type, ClientCerealizeMessage, REQ_TYPE_SIZE};
-use bumpalo::Bump;
 use byteorder::{ByteOrder, LittleEndian};
-use capnp::message::{
-    Allocator, Builder, HeapAllocator, Reader, ReaderOptions, ReaderSegments, SegmentArray,
-};
-use color_eyre::eyre::{bail, ensure, Result, WrapErr};
+use capnp::message::{Allocator, Builder, Reader, ReaderOptions, ReaderSegments, SegmentArray};
+use color_eyre::eyre::{ensure, Result, WrapErr};
 use cornflakes_libos::{
     datapath::{Datapath, PushBufType, ReceivedPkt},
-    dynamic_sga_hdr,
-    dynamic_sga_hdr::SgaHeaderRepr,
     state_machine::server::ServerSM,
     ArenaOrderedSga, Sge,
 };
@@ -27,7 +22,6 @@ fn read_context(buf: &[u8]) -> Result<Vec<&[u8]>> {
         buf_len = buf.len(),
         "read_context"
     );
-    let mut size_so_far = FRAMING_ENTRY_SIZE + num_segments * FRAMING_ENTRY_SIZE;
     let mut segments: Vec<&[u8]> = Vec::default();
     for i in 0..num_segments {
         let cur_idx = FRAMING_ENTRY_SIZE + i * FRAMING_ENTRY_SIZE;
@@ -35,7 +29,6 @@ fn read_context(buf: &[u8]) -> Result<Vec<&[u8]>> {
         let size = LittleEndian::read_u32(&buf[(cur_idx + 4)..cur_idx + 8]) as usize;
         tracing::debug!("Segment {} size: {}", i, size);
         segments.push(&buf[data_offset..(data_offset + size)]);
-        size_so_far += size;
     }
     Ok(segments)
 }
@@ -376,7 +369,7 @@ where
     fn get_serialized_bytes(
         ty: SimpleMessageType,
         payloads: &Vec<Vec<u8>>,
-        datapath: &D,
+        _datapath: &D,
     ) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         match ty {

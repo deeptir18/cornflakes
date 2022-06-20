@@ -49,21 +49,20 @@ impl RetwisRequestDistribution {
 impl std::str::FromStr for RetwisRequestDistribution {
     type Err = color_eyre::eyre::Error;
     fn from_str(s: &str) -> Result<Self> {
-        let split: Vec<&str> = s.split("-").collect();
         let items_result: Result<Vec<usize>> = s
             .split("-")
             .map(|x| match x.parse::<usize>() {
                 Ok(s) => Ok(s),
                 Err(e) => {
-                    bail!("Failed to parse {}", x);
+                    bail!("Failed to parse {}, {:?}", x, e);
                 }
             })
             .collect();
         let items = items_result?;
         ensure!(items.len() == 4, "Request distribution must have 4 items");
-        Ok(RetwisRequestDistribution(
-            ([items[0], items[1], items[2], items[3]]),
-        ))
+        Ok(RetwisRequestDistribution([
+            items[0], items[1], items[2], items[3],
+        ]))
     }
 }
 
@@ -98,7 +97,7 @@ impl std::str::FromStr for RetwisValueSizeGenerator {
             .map(|x| match x.parse::<usize>() {
                 Ok(s) => Ok(s),
                 Err(e) => {
-                    bail!("Failed to parse {}", x);
+                    bail!("Failed to parse {}: {:?}", x, e);
                 }
             })
             .collect();

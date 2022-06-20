@@ -12,10 +12,7 @@ use super::{read_message_type, ClientCerealizeMessage, REQ_TYPE_SIZE};
 use color_eyre::eyre::{ensure, Result};
 use cornflakes_libos::{
     datapath::{Datapath, PushBufType, ReceivedPkt},
-    dynamic_sga_hdr,
-    dynamic_sga_hdr::SgaHeaderRepr,
     state_machine::server::ServerSM,
-    ArenaOrderedSga, OrderedSga,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use echo_api::*;
@@ -31,7 +28,7 @@ where
 {
     push_buf_type: PushBufType,
     _phantom_data: PhantomData<D>,
-    with_copy: bool,
+    _with_copy: bool,
     builder: FlatBufferBuilder<'fbb>,
 }
 
@@ -43,7 +40,7 @@ where
         FlatbuffersSerializer {
             push_buf_type: push_buf_type,
             _phantom_data: PhantomData::default(),
-            with_copy: false,
+            _with_copy: false,
             builder: FlatBufferBuilder::new(),
         }
     }
@@ -254,7 +251,7 @@ where
     fn get_serialized_bytes(
         ty: SimpleMessageType,
         payloads: &Vec<Vec<u8>>,
-        datapath: &D,
+        _datapath: &D,
     ) -> Result<Vec<u8>> {
         let mut ctx = FlatBufferBuilder::new();
         match ty {

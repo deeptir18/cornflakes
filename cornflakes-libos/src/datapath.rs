@@ -374,6 +374,17 @@ pub trait Datapath {
         unimplemented!();
     }
 
+    fn queue_protobuf_message<O>(
+        &mut self,
+        _message: (MsgID, ConnID, &O),
+        _end_batch: bool,
+    ) -> Result<()>
+    where
+        O: protobuf::Message,
+    {
+        unimplemented!();
+    }
+
     fn queue_arena_ordered_sga(
         &mut self,
         _arena_ordered_sga: (MsgID, ConnID, ArenaOrderedSga),

@@ -336,7 +336,6 @@ where
     ) -> Result<()> {
         let datapath_buffers: Result<Vec<D::DatapathBuffer>> = values
             .map(|value| {
-                let key = key.to_string();
                 let mut datapath_buffer =
                     allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
                 let _ = datapath_buffer.write(value)?;
@@ -486,11 +485,11 @@ pub trait ServerLoadGenerator {
 pub trait RequestGenerator {
     type RequestLine: Clone + std::fmt::Debug + PartialEq + Eq;
     fn new(
-        file: &str,
-        client_id: usize,
-        thread_id: usize,
-        total_num_clients: usize,
-        total_num_threads: usize,
+        _file: &str,
+        _client_id: usize,
+        _thread_id: usize,
+        _total_num_clients: usize,
+        _total_num_threads: usize,
     ) -> Result<Self>
     where
         Self: Sized,
@@ -587,40 +586,31 @@ where
         buf: &mut [u8],
         keys: &Vec<&str>,
         values: &Vec<String>,
-        datapath: &D,
-    ) -> Result<usize> {
-        unimplemented!();
-    }
-
+        _datapath: &D,
+    ) -> Result<usize>;
     fn serialize_add_follow_unfollow(
         &self,
         buf: &mut [u8],
         keys: &Vec<&str>,
         values: &Vec<String>,
-        datapath: &D,
-    ) -> Result<usize> {
-        unimplemented!();
-    }
+        _datapath: &D,
+    ) -> Result<usize>;
 
     fn serialize_post_tweet(
         &self,
         buf: &mut [u8],
         keys: &Vec<&str>,
         values: &Vec<String>,
-        datapath: &D,
-    ) -> Result<usize> {
-        unimplemented!();
-    }
+        _datapath: &D,
+    ) -> Result<usize>;
 
     fn serialize_get_timeline(
         &self,
         buf: &mut [u8],
         keys: &Vec<&str>,
-        values: &Vec<String>,
-        datapath: &D,
-    ) -> Result<usize> {
-        unimplemented!();
-    }
+        _values: &Vec<String>,
+        _datapath: &D,
+    ) -> Result<usize>;
 }
 
 pub struct KVClient<R, C, D>
@@ -773,7 +763,7 @@ where
     fn process_received_msg(
         &mut self,
         sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
-        datapath: &<Self as ClientSM>::Datapath,
+        _datapath: &<Self as ClientSM>::Datapath,
     ) -> Result<bool> {
         // if in debug mode, check whether the bytes are what they should be
         tracing::debug!(id = sga.msg_id(), size = sga.data_len(), "Received sga");

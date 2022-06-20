@@ -8,30 +8,27 @@ pub mod kv_api {
     include!(concat!(env!("OUT_DIR"), "/cf_kv_fb_generated.rs"));
 }
 use super::{
-    allocate_datapath_buffer, ClientSerializer, KVServer, ListKVServer, MsgType, RequestGenerator,
-    ServerLoadGenerator, ZeroCopyPutKVServer, REQ_TYPE_SIZE,
+    ClientSerializer, KVServer, ListKVServer, MsgType, ServerLoadGenerator, ZeroCopyPutKVServer,
+    REQ_TYPE_SIZE,
 };
-use color_eyre::eyre::{bail, ensure, Result};
+use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, PushBufType, ReceivedPkt},
-    dynamic_sga_hdr::SgaHeaderRepr,
-    dynamic_sga_hdr::*,
     state_machine::server::ServerSM,
 };
 use flatbuffers::{get_root, FlatBufferBuilder, WIPOffset};
-use hashbrown::HashMap;
 use kv_api::cf_kv_fbs;
 #[cfg(feature = "profiler")]
 use perftools;
-use std::{io::Write, marker::PhantomData};
+use std::marker::PhantomData;
 
 pub struct FlatbuffersSerializer<D>
 where
     D: Datapath,
 {
     _phantom: PhantomData<D>,
-    zero_copy_puts: bool,
+    _zero_copy_puts: bool,
 }
 
 impl<D> FlatbuffersSerializer<D>
@@ -41,7 +38,7 @@ where
     pub fn new(zero_copy_puts: bool) -> Self {
         FlatbuffersSerializer {
             _phantom: PhantomData::default(),
-            zero_copy_puts: zero_copy_puts,
+            _zero_copy_puts: zero_copy_puts,
         }
     }
 
@@ -200,7 +197,6 @@ where
         let putlist_request =
             get_root::<cf_kv_fbs::PutListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
         let key = putlist_request.key().unwrap();
-        let vals = putlist_request.vals().unwrap();
         let values = putlist_request
             .vals()
             .unwrap()
@@ -223,7 +219,7 @@ where
 {
     kv_server: KVServer<D>,
     list_kv_server: ListKVServer<D>,
-    zero_copy_put_kv_server: ZeroCopyPutKVServer<D>,
+    _zero_copy_put_kv_server: ZeroCopyPutKVServer<D>,
     mempool_ids: Vec<MempoolID>,
     serializer: FlatbuffersSerializer<D>,
     push_buf_type: PushBufType,
@@ -249,7 +245,7 @@ where
         Ok(FlatbuffersKVServer {
             kv_server: kv,
             list_kv_server: list_kv,
-            zero_copy_put_kv_server: zero_copy_put_kv,
+            _zero_copy_put_kv_server: zero_copy_put_kv,
             mempool_ids: mempool_ids,
             push_buf_type: push_buf_type,
             serializer: FlatbuffersSerializer::new(zero_copy_puts),
@@ -283,11 +279,11 @@ where
                     self.serializer
                         .handle_get(&self.kv_server, &pkt, &mut self.builder)?;
                 }
-                MsgType::GetM(size) => {
+                MsgType::GetM(_size) => {
                     self.serializer
                         .handle_getm(&self.kv_server, &pkt, &mut self.builder)?;
                 }
-                MsgType::GetList(size) => {
+                MsgType::GetList(_size) => {
                     self.serializer.handle_getlist(
                         &self.list_kv_server,
                         &pkt,
@@ -303,7 +299,7 @@ where
                         &mut self.builder,
                     )?;
                 }
-                MsgType::PutM(size) => {
+                MsgType::PutM(_size) => {
                     self.serializer.handle_putm(
                         &mut self.kv_server,
                         &mut self.mempool_ids,
@@ -312,7 +308,7 @@ where
                         &mut self.builder,
                     )?;
                 }
-                MsgType::PutList(size) => {
+                MsgType::PutList(_size) => {
                     self.serializer.handle_putlist(
                         &mut self.list_kv_server,
                         &mut self.mempool_ids,
@@ -565,7 +561,7 @@ where
         }
     }
 
-    fn check_retwis_response_num_values(&self, buf: &[u8]) -> Result<usize> {
+    fn check_retwis_response_num_values(&self, _buf: &[u8]) -> Result<usize> {
         unimplemented!();
     }
 
@@ -810,7 +806,7 @@ where
 
 fn copy_into_buf<'fbb>(buf: &mut [u8], builder: &FlatBufferBuilder<'fbb>) -> usize {
     let data = builder.finished_data();
-    let mut buf_to_copy = &mut buf[0..data.len()];
+    let buf_to_copy = &mut buf[0..data.len()];
     buf_to_copy.copy_from_slice(data);
     data.len()
 }

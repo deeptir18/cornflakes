@@ -13,18 +13,16 @@ use cornflakes_libos::{
     state_machine::server::ServerSM,
     ArenaOrderedRcSga,
 };
-use hashbrown::HashMap;
 use kv_serializer::*;
 
 use super::{
-    allocate_and_copy_into_datapath_buffer, allocate_datapath_buffer, ClientSerializer, KVServer,
-    ListKVServer, MsgType, RequestGenerator, ServerLoadGenerator, ZeroCopyPutKVServer,
+    ClientSerializer, KVServer, ListKVServer, MsgType, ServerLoadGenerator, ZeroCopyPutKVServer,
     REQ_TYPE_SIZE,
 };
-use color_eyre::eyre::{bail, ensure, Result};
+use color_eyre::eyre::{bail, Result};
 #[cfg(feature = "profiler")]
 use perftools;
-use std::{io::Write, marker::PhantomData};
+use std::marker::PhantomData;
 
 pub struct CornflakesSerializer<D>
 where
@@ -102,7 +100,6 @@ where
     ) -> Result<ArenaOrderedRcSga<'arena, D>> {
         let mut put_req = PutReq::new();
         put_req.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
-        let key = put_req.get_key().to_string();
         kv_server.insert_with_copies(
             put_req.get_key().to_str()?,
             put_req.get_val().as_bytes(),
@@ -254,53 +251,6 @@ where
             ArenaOrderedRcSga::allocate(put_resp.num_scatter_gather_entries(), &arena);
         put_resp.serialize_into_arena_sga(&mut arena_sga, arena, datapath, self.with_copies)?;
         Ok(arena_sga)
-    }
-
-    fn add_user<'arena>(
-        &self,
-        kv_server: &'arena mut KVServer<D>,
-        zero_copy_puts_kv: &'arena mut ZeroCopyPutKVServer<D>,
-        mempool_ids: &mut Vec<MempoolID>,
-        pkt: &ReceivedPkt<D>,
-        datapath: &mut D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedRcSga<'arena, D>> {
-        unimplemented!();
-    }
-
-    fn follow_unfollow<'arena>(
-        &self,
-        kv_server: &mut KVServer<D>,
-        zero_copy_puts_kv: &mut ZeroCopyPutKVServer<D>,
-        mempool_ids: &mut Vec<MempoolID>,
-        pkt: &ReceivedPkt<D>,
-        datapath: &mut D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedRcSga<'arena, D>> {
-        unimplemented!();
-    }
-
-    fn post_tweet<'arena>(
-        &self,
-        kv_server: &mut KVServer<D>,
-        zero_copy_puts_kv: &mut ZeroCopyPutKVServer<D>,
-        mempool_ids: &mut Vec<MempoolID>,
-        pkt: &ReceivedPkt<D>,
-        datapath: &mut D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedRcSga<'arena, D>> {
-        unimplemented!();
-    }
-
-    fn get_timeline<'arena>(
-        &self,
-        kv_server: &KVServer<D>,
-        zero_copy_puts_kv: &ZeroCopyPutKVServer<D>,
-        pkt: &ReceivedPkt<D>,
-        datapath: &mut D,
-        arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedRcSga<'arena, D>> {
-        unimplemented!();
     }
 }
 
@@ -1057,7 +1007,7 @@ where
         &self,
         buf: &mut [u8],
         keys: &Vec<&str>,
-        values: &Vec<String>,
+        _values: &Vec<String>,
         datapath: &D,
     ) -> Result<usize> {
         tracing::debug!(keys_len = keys.len(), "Serializing get timeline");

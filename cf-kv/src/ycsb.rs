@@ -14,8 +14,8 @@ const DEFAULT_VALUE_SIZE: usize = 4096;
 const DEFAULT_NUM_KEYS: usize = 1;
 const DEFAULT_NUM_VALUES: usize = 1;
 use rand::{
-    distributions::{Alphanumeric, Distribution, Uniform, WeightedIndex},
-    thread_rng, Rng,
+    distributions::{Distribution, Uniform},
+    thread_rng,
 };
 
 #[derive(Debug, Clone)]
@@ -42,7 +42,7 @@ impl std::str::FromStr for YCSBValueSizeGenerator {
             .map(|x| match x.parse::<usize>() {
                 Ok(s) => Ok(s),
                 Err(e) => {
-                    bail!("Failed to parse {}", x);
+                    bail!("Failed to parse {}: err {:?}", x, e);
                 }
             })
             .collect();

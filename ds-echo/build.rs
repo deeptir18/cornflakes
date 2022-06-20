@@ -24,10 +24,6 @@ fn main() {
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let cargo_dir = Path::new(&cargo_manifest_dir);
     let echo_src_path = canonicalize(cargo_dir.clone().join("src")).unwrap();
-    let include_path = canonicalize(cargo_dir.parent().unwrap())
-        .unwrap()
-        .join("include");
-
     // compile protobuf echo
     let input_proto_path = echo_src_path.clone().join("protobuf");
     let input_proto_file = input_proto_path.clone().join("echo_proto.proto");

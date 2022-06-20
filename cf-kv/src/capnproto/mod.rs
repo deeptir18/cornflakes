@@ -1,25 +1,19 @@
 use super::{
-    allocate_datapath_buffer, kv_capnp, ClientSerializer, KVServer, ListKVServer, MsgType,
-    RequestGenerator, ServerLoadGenerator, ZeroCopyPutKVServer, REQ_TYPE_SIZE,
+    kv_capnp, ClientSerializer, KVServer, ListKVServer, MsgType, ServerLoadGenerator,
+    ZeroCopyPutKVServer, REQ_TYPE_SIZE,
 };
-use bumpalo::Bump;
 use byteorder::{ByteOrder, LittleEndian};
-use capnp::message::{
-    Allocator, Builder, HeapAllocator, Reader, ReaderOptions, ReaderSegments, SegmentArray,
-};
-use color_eyre::eyre::{bail, ensure, Result, WrapErr};
+use capnp::message::{Allocator, Builder, Reader, ReaderOptions, ReaderSegments, SegmentArray};
+use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, PushBufType, ReceivedPkt},
-    dynamic_sga_hdr::SgaHeaderRepr,
-    dynamic_sga_hdr::*,
     state_machine::server::ServerSM,
     ArenaOrderedSga, Sge,
 };
-use hashbrown::HashMap;
 #[cfg(feature = "profiler")]
 use perftools;
-use std::{io::Write, marker::PhantomData};
+use std::marker::PhantomData;
 const FRAMING_ENTRY_SIZE: usize = 8;
 
 fn read_context(buf: &[u8]) -> Result<Vec<&[u8]>> {
@@ -29,7 +23,6 @@ fn read_context(buf: &[u8]) -> Result<Vec<&[u8]>> {
         buf_len = buf.len(),
         "read_context"
     );
-    let mut size_so_far = FRAMING_ENTRY_SIZE + num_segments * FRAMING_ENTRY_SIZE;
     let mut segments: Vec<&[u8]> = Vec::default();
     for i in 0..num_segments {
         let cur_idx = FRAMING_ENTRY_SIZE + i * FRAMING_ENTRY_SIZE;
@@ -37,7 +30,6 @@ fn read_context(buf: &[u8]) -> Result<Vec<&[u8]>> {
         let size = LittleEndian::read_u32(&buf[(cur_idx + 4)..cur_idx + 8]) as usize;
         tracing::debug!("Segment {} size: {}", i, size);
         segments.push(&buf[data_offset..(data_offset + size)]);
-        size_so_far += size;
     }
     Ok(segments)
 }
@@ -46,7 +38,7 @@ where
     D: Datapath,
 {
     _phantom: PhantomData<D>,
-    zero_copy_puts: bool,
+    _zero_copy_puts: bool,
 }
 
 impl<D> CapnprotoSerializer<D>
@@ -56,7 +48,7 @@ where
     pub fn new(zero_copy_puts: bool) -> Self {
         CapnprotoSerializer {
             _phantom: PhantomData::default(),
-            zero_copy_puts: zero_copy_puts,
+            _zero_copy_puts: zero_copy_puts,
         }
     }
 
@@ -135,7 +127,7 @@ where
             .wrap_err("Failed to deserialize GetMReq.")?;
         let keys = getm_request.get_keys()?;
 
-        let mut response = builder.init_root::<kv_capnp::get_m_resp::Builder>();
+        let response = builder.init_root::<kv_capnp::get_m_resp::Builder>();
         let mut list = response.init_vals(keys.len());
         for (i, key_res) in keys.iter().enumerate() {
             let key = key_res?;
@@ -208,7 +200,7 @@ where
         };
         tracing::debug!("Values len: {:?}", values.len());
 
-        let mut response = builder.init_root::<kv_capnp::get_list_resp::Builder>();
+        let response = builder.init_root::<kv_capnp::get_list_resp::Builder>();
         let mut list = response.init_vals(values.len() as _);
         for (i, val) in values.iter().enumerate() {
             list.set(i as u32, val.as_ref());
@@ -250,7 +242,7 @@ where
 {
     kv_server: KVServer<D>,
     list_kv_server: ListKVServer<D>,
-    zero_copy_put_kv_server: ZeroCopyPutKVServer<D>,
+    _zero_copy_put_kv_server: ZeroCopyPutKVServer<D>,
     mempool_ids: Vec<MempoolID>,
     serializer: CapnprotoSerializer<D>,
     push_buf_type: PushBufType,
@@ -276,7 +268,7 @@ where
         Ok(CapnprotoKVServer {
             kv_server: kv,
             list_kv_server: list_kv,
-            zero_copy_put_kv_server: zero_copy_put_kv,
+            _zero_copy_put_kv_server: zero_copy_put_kv,
             mempool_ids: mempool_ids,
             push_buf_type: push_buf_type,
             serializer: CapnprotoSerializer::new(zero_copy_puts),
@@ -316,11 +308,11 @@ where
                     self.serializer
                         .handle_get(&self.kv_server, &pkt, &mut builder)?;
                 }
-                MsgType::GetM(size) => {
+                MsgType::GetM(_size) => {
                     self.serializer
                         .handle_getm(&self.kv_server, &pkt, &mut builder)?;
                 }
-                MsgType::GetList(size) => {
+                MsgType::GetList(_size) => {
                     self.serializer
                         .handle_getlist(&self.list_kv_server, &pkt, &mut builder)?;
                 }
@@ -333,7 +325,7 @@ where
                         &mut builder,
                     )?;
                 }
-                MsgType::PutM(size) => {
+                MsgType::PutM(_size) => {
                     self.serializer.handle_putm(
                         &mut self.kv_server,
                         &mut self.mempool_ids,
@@ -342,7 +334,7 @@ where
                         &mut builder,
                     )?;
                 }
-                MsgType::PutList(size) => {
+                MsgType::PutList(_size) => {
                     self.serializer.handle_putlist(
                         &mut self.list_kv_server,
                         &mut self.mempool_ids,
@@ -390,7 +382,7 @@ where
                     let keys = follow_unfollow_request.get_keys()?;
                     let values = follow_unfollow_request.get_vals()?;
 
-                    let mut response =
+                    let response =
                         builder.init_root::<kv_capnp::follow_unfollow_response::Builder>();
                     let mut list = response.init_original_vals(2);
 
@@ -424,8 +416,7 @@ where
                     let keys = post_tweet_request.get_keys()?;
                     let values = post_tweet_request.get_vals()?;
 
-                    let mut response =
-                        builder.init_root::<kv_capnp::post_tweet_response::Builder>();
+                    let response = builder.init_root::<kv_capnp::post_tweet_response::Builder>();
                     let mut list = response.init_vals(3);
 
                     for (i, (key_res, new_val_res)) in
@@ -467,8 +458,7 @@ where
                         .wrap_err("Failed to deserialize Get Timeline.")?;
                     let keys = get_timeline_request.get_keys()?;
 
-                    let mut response =
-                        builder.init_root::<kv_capnp::get_timeline_response::Builder>();
+                    let response = builder.init_root::<kv_capnp::get_timeline_response::Builder>();
                     let mut list = response.init_vals(keys.len());
 
                     for (i, key_res) in keys.iter().enumerate() {
@@ -695,11 +685,11 @@ where
         }
     }
 
-    fn check_retwis_response_num_values(&self, buf: &[u8]) -> Result<usize> {
+    fn check_retwis_response_num_values(&self, _buf: &[u8]) -> Result<usize> {
         unimplemented!();
     }
 
-    fn serialize_get(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize> {
+    fn serialize_get(&self, buf: &mut [u8], key: &str, _datapath: &D) -> Result<usize> {
         let mut builder = Builder::new_default();
         let mut get_req = builder.init_root::<kv_capnp::get_req::Builder>();
         get_req.set_key(&key);
@@ -713,7 +703,13 @@ where
         return Ok(full_size);
     }
 
-    fn serialize_put(&self, buf: &mut [u8], key: &str, value: &str, datapath: &D) -> Result<usize> {
+    fn serialize_put(
+        &self,
+        buf: &mut [u8],
+        key: &str,
+        value: &str,
+        _datapath: &D,
+    ) -> Result<usize> {
         let mut builder = Builder::new_default();
         let mut put_req = builder.init_root::<kv_capnp::put_req::Builder>();
         put_req.set_key(&key);
@@ -738,9 +734,9 @@ where
         unimplemented!();
     }
 
-    fn serialize_getm(&self, buf: &mut [u8], keys: &Vec<String>, datapath: &D) -> Result<usize> {
+    fn serialize_getm(&self, buf: &mut [u8], keys: &Vec<String>, _datapath: &D) -> Result<usize> {
         let mut builder = Builder::new_default();
-        let mut getm_req = builder.init_root::<kv_capnp::get_m_req::Builder>();
+        let getm_req = builder.init_root::<kv_capnp::get_m_req::Builder>();
         let mut keys_list = getm_req.init_keys(keys.len() as _);
         for (i, key) in keys.iter().enumerate() {
             keys_list.set(i as u32, key);
@@ -760,7 +756,7 @@ where
         buf: &mut [u8],
         keys: &Vec<String>,
         values: &Vec<String>,
-        datapath: &D,
+        _datapath: &D,
     ) -> Result<usize> {
         let mut builder = Builder::new_default();
         let mut putm_req = builder.init_root::<kv_capnp::put_m_req::Builder>();
@@ -784,7 +780,7 @@ where
         return Ok(full_size);
     }
 
-    fn serialize_get_list(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize> {
+    fn serialize_get_list(&self, buf: &mut [u8], key: &str, _datapath: &D) -> Result<usize> {
         let mut builder = Builder::new_default();
         let mut getlist_req = builder.init_root::<kv_capnp::get_list_req::Builder>();
         getlist_req.set_key(&key);
@@ -803,7 +799,7 @@ where
         buf: &mut [u8],
         key: &str,
         values: &Vec<String>,
-        datapath: &D,
+        _datapath: &D,
     ) -> Result<usize> {
         let mut builder = Builder::new_default();
         let mut putlist_req = builder.init_root::<kv_capnp::put_list_req::Builder>();
@@ -917,7 +913,7 @@ where
         _datapath: &D,
     ) -> Result<usize> {
         let mut builder = Builder::new_default();
-        let mut get_timeline_req = builder.init_root::<kv_capnp::get_timeline::Builder>();
+        let get_timeline_req = builder.init_root::<kv_capnp::get_timeline::Builder>();
         let mut keys_list = get_timeline_req.init_keys(keys.len() as _);
         for (i, key) in keys.iter().enumerate() {
             keys_list.set(i as u32, key);
