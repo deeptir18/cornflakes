@@ -117,6 +117,7 @@ where
         &self,
         recved_msg: &ReceivedPkt<D>,
         bytes_to_check: (SimpleMessageType, &Vec<Vec<u8>>),
+        datapath: &D,
     ) -> Result<bool>;
 
     fn get_serialized_bytes(
@@ -255,15 +256,16 @@ where
     fn process_received_msg(
         &mut self,
         sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
-        _datapath: &<Self as ClientSM>::Datapath,
+        datapath: &<Self as ClientSM>::Datapath,
     ) -> Result<bool> {
         // if in debug mode, check whether the bytes are what they should be
         tracing::debug!(id = sga.msg_id(), size = sga.data_len(), "Received sga");
         if cfg!(debug_assertions) {
-            if !self
-                .cerealizer
-                .check_echoed_payload(&sga, self.get_bytes_to_check(sga.msg_id()))?
-            {
+            if !self.cerealizer.check_echoed_payload(
+                &sga,
+                self.get_bytes_to_check(sga.msg_id()),
+                datapath,
+            )? {
                 tracing::warn!(id = sga.msg_id(), "Payloads not equal");
                 bail!("Payloads not equal");
             } else {

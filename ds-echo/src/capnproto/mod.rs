@@ -281,6 +281,7 @@ where
         &self,
         pkt: &ReceivedPkt<D>,
         bytes_to_check: (SimpleMessageType, &Vec<Vec<u8>>),
+        _datapath: &D,
     ) -> Result<bool> {
         let (ty, our_payloads) = bytes_to_check;
         let recved_msg = pkt.seg(0).as_ref();

@@ -569,7 +569,7 @@ impl RequestGenerator for RetwisClient {
                 Ok(num_values == FOLLOW_UNFOLLOW_GETS)
             }
             MsgType::PostTweet => {
-                let num_values = serializer.check_follow_unfollow_num_values(buf)?;
+                let num_values = serializer.check_post_tweet_num_values(buf)?;
                 if num_values != POST_TWEET_GETS {
                     tracing::warn!(
                         "Received post tweet with {} gets instead of {}",

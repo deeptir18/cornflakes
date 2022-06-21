@@ -322,7 +322,7 @@ where
                         get_root::<cf_kv_fbs::AddUser>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
                     let keys = add_user.keys().unwrap();
                     let vals = add_user.vals().unwrap();
-                    let value = self.kv_server.remove(keys.get(0)).unwrap();
+                    let value = self.kv_server.get(keys.get(0)).unwrap();
                     let args = cf_kv_fbs::AddUserResponseArgs {
                         first_value: Some(self.builder.create_vector_direct::<u8>(value.as_ref())),
                     };
@@ -347,7 +347,7 @@ where
                     let args_vec_res: Result<Vec<cf_kv_fbs::ValueArgs>> = keys
                         .iter()
                         .map(|key| {
-                            let v = match self.kv_server.remove(key) {
+                            let v = match self.kv_server.get(key) {
                                 Some(v) => v,
                                 None => {
                                     bail!("Cannot find value for key in KV store: {:?}", key);
@@ -389,10 +389,14 @@ where
                         .iter()
                         .take(3)
                         .map(|key| {
-                            let v = match self.kv_server.remove(key) {
+                            let v = match self.kv_server.get(key) {
                                 Some(v) => v,
                                 None => {
-                                    bail!("Cannot find value for key in KV store: {:?}", key);
+                                    bail!(
+                                        "Cannot find value for key in KV store: {:?}; len: {}; keys: {:?}",
+                                        key,
+                                        self.kv_server.len(),keys
+                                    );
                                 }
                             };
                             Ok(cf_kv_fbs::ValueArgs {

@@ -342,7 +342,7 @@ where
                         &pkt.seg(0).as_ref()[REQ_TYPE_SIZE..],
                     )
                     .wrap_err("Failed to deserialize proto PutMReq")?;
-                    let mut response = kv_messages::PostTweet::new();
+                    let mut response = kv_messages::PostTweetResponse::new();
                     let mut list: Vec<Vec<u8>> = Vec::with_capacity(2);
                     for (key, value) in request.keys.iter().zip(request.vals.iter()).take(3) {
                         let old_value = self.kv_server.remove(&key.as_str()).unwrap();

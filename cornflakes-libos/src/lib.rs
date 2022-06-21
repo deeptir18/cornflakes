@@ -774,6 +774,14 @@ where
         }
     }
 
+    pub fn data_len(&self) -> usize {
+        self.sga.data_len() + self.hdr.len()
+    }
+
+    pub fn iter(&self) -> Iter<RcSge<'a, D>> {
+        self.sga.iter()
+    }
+
     pub fn capacity(&self) -> usize {
         self.sga.capacity()
     }

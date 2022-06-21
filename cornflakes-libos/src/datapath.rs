@@ -1,6 +1,6 @@
 use super::{
     allocator::MempoolID, dynamic_sga_hdr::SgaHeaderRepr, utils::AddressInfo, ArenaOrderedRcSga,
-    ArenaOrderedSga, ConnID, MsgID, OrderedSga, RcSga, Sga,
+    ArenaOrderedSga, ConnID, MsgID, OrderedRcSga, OrderedSga, RcSga, Sga,
 };
 use color_eyre::eyre::{bail, Result};
 use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
@@ -388,6 +388,17 @@ pub trait Datapath {
     fn queue_arena_ordered_sga(
         &mut self,
         _arena_ordered_sga: (MsgID, ConnID, ArenaOrderedSga),
+        _end_batch: bool,
+    ) -> Result<()>
+    where
+        Self: Sized,
+    {
+        unimplemented!();
+    }
+
+    fn queue_ordered_rcsga(
+        &mut self,
+        _ordered_rcsga: (MsgID, ConnID, OrderedRcSga<Self>),
         _end_batch: bool,
     ) -> Result<()>
     where
