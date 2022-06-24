@@ -136,7 +136,7 @@ pub trait ServerSM {
     /// By default, adds tx mempools
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
         let mut buf_size = 256;
-        let max_size = 8192;
+        let max_size = 16384;
         let min_elts = 8192;
         loop {
             // add a tx pool with buf size

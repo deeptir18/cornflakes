@@ -129,6 +129,61 @@ impl DatapathMemoryPool for DataMempool {
     type RegistrationContext = *mut custom_mlx5_per_thread_context;
 
     #[inline]
+    fn get_2mb_pages(&self) -> Vec<usize> {
+        let mempool = self.mempool();
+        let data_pool = unsafe { get_data_mempool(mempool) };
+        let pgsize = unsafe { access!(data_pool, pgsize, usize) };
+        if pgsize != cornflakes_libos::mem::PGSIZE_2MB {
+            return vec![];
+        }
+        let num_pages = unsafe { access!(data_pool, num_pages, usize) };
+        let mempool_start = unsafe { access!(data_pool, buf, usize) };
+        (0..num_pages)
+            .map(|i| mempool_start + pgsize * i)
+            .collect::<Vec<usize>>()
+    }
+
+    #[inline]
+    fn get_4k_pages(&self) -> Vec<usize> {
+        let mempool = self.mempool();
+        let data_pool = unsafe { get_data_mempool(mempool) };
+        let pgsize = unsafe { access!(data_pool, pgsize, usize) };
+        if pgsize != cornflakes_libos::mem::PGSIZE_4KB {
+            return vec![];
+        }
+        let num_pages = unsafe { access!(data_pool, num_pages, usize) };
+        let mempool_start = unsafe { access!(data_pool, buf, usize) };
+        (0..num_pages)
+            .map(|i| mempool_start + pgsize * i)
+            .collect::<Vec<usize>>()
+    }
+
+    #[inline]
+    fn get_1g_pages(&self) -> Vec<usize> {
+        let mempool = self.mempool();
+        let data_pool = unsafe { get_data_mempool(mempool) };
+        let pgsize = unsafe { access!(data_pool, pgsize, usize) };
+        if pgsize != cornflakes_libos::mem::PGSIZE_1GB {
+            return vec![];
+        }
+        let num_pages = unsafe { access!(data_pool, num_pages, usize) };
+        let mempool_start = unsafe { access!(data_pool, buf, usize) };
+        (0..num_pages)
+            .map(|i| mempool_start + pgsize * i)
+            .collect::<Vec<usize>>()
+    }
+
+    #[inline]
+    fn turn_to_metadata(metadata: usize, buf_addr: &[u8]) -> Result<MbufMetadata> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Access metadata");
+        let mbuf = unsafe { metadata as *mut custom_mlx5_mbuf };
+        let base_ptr = unsafe { access!(mbuf, buf_addr, usize) };
+        let offset = buf_addr.as_ptr() as usize - base_ptr;
+        return MbufMetadata::new(mbuf, offset, Some(buf_addr.len()));
+    }
+
+    #[inline]
     fn register(&mut self, registration_context: Self::RegistrationContext) -> Result<()> {
         unsafe {
             if custom_mlx5_register_memory_pool_from_thread(

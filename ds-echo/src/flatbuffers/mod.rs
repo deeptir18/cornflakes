@@ -66,6 +66,7 @@ where
     ) -> Result<()> {
         let pkts_len = sga.len();
         for (i, pkt) in sga.into_iter().enumerate() {
+            self.builder.reset();
             let msg_type = read_message_type(&pkt)?;
             match msg_type {
                 SimpleMessageType::Single => {
@@ -146,7 +147,7 @@ where
             }
             datapath.queue_single_buffer_with_copy(
                 (pkt.msg_id(), pkt.conn_id(), &self.builder.finished_data()),
-                i == pkts_len,
+                i == pkts_len - 1,
             )?;
         }
         Ok(())

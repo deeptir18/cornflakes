@@ -26,7 +26,7 @@ flatbuffers = "0.7.0"
 protobuf = "3.0.3"
 affinity = "0.1.1"
 cxx = "1.0"
-perftools = {git = "https://github.com/demikernel/perftools", rev = "94031ae", optional = true}
+perftools = {git = "https://github.com/demikernel/perftools", rev = "3f3f11b", optional = true}
 bitmaps = "3.2.0"
 bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }
 

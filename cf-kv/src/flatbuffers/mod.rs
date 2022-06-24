@@ -104,15 +104,23 @@ where
         let args_vec_res: Result<Vec<cf_kv_fbs::ValueArgs>> = keys
             .iter()
             .map(|key| {
-                let v = match kv_server.get(key) {
-                    Some(v) => v,
-                    None => {
-                        bail!("Cannot find value for key in KV store: {:?}", key);
+                let v = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("got value");
+                    match kv_server.get(key) {
+                        Some(v) => v,
+                        None => {
+                            bail!("Cannot find value for key in KV store: {:?}", key);
+                        }
                     }
                 };
-                Ok(cf_kv_fbs::ValueArgs {
-                    data: Some(builder.create_vector_direct::<u8>(v.as_ref())),
-                })
+                {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("append value");
+                    Ok(cf_kv_fbs::ValueArgs {
+                        data: Some(builder.create_vector_direct::<u8>(v.as_ref())),
+                    })
+                }
             })
             .collect();
         let args_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = args_vec_res?
@@ -236,6 +244,7 @@ where
         datapath: &mut D,
         push_buf_type: PushBufType,
         zero_copy_puts: bool,
+        _non_refcounted: bool,
     ) -> Result<Self>
     where
         L: ServerLoadGenerator,

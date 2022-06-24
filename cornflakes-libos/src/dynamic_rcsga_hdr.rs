@@ -737,6 +737,7 @@ where
         }
     }
 
+    #[inline]
     pub fn new(ptr: &'obj [u8], datapath: &D) -> Result<Self> {
         let rc_sge = match datapath.recover_metadata(ptr)? {
             Some(m) => RcSge::RefCounted(m),
@@ -745,10 +746,12 @@ where
         Ok(CFBytes { ptr: rc_sge })
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.ptr.len()
     }
 
+    #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         self.ptr.as_ref()
     }
@@ -810,6 +813,7 @@ where
         Ok(())
     }
 
+    #[inline]
     fn inner_deserialize<'buf>(
         &mut self,
         buffer: &RcSge<'buf, D>,

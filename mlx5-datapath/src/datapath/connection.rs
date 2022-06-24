@@ -5,7 +5,7 @@ use super::{
 };
 use cornflakes_libos::{
     allocator::{MemoryPoolAllocator, MempoolID},
-    datapath::{Datapath, ExposeMempoolID, InlineMode, MetadataOps, ReceivedPkt},
+    datapath::{Datapath, DatapathBufferOps, InlineMode, MetadataOps, ReceivedPkt},
     dynamic_sga_hdr::SgaHeaderRepr,
     mem::{PGSIZE_2MB, PGSIZE_4KB},
     utils::AddressInfo,
@@ -123,10 +123,6 @@ impl Mlx5Buffer {
             item_len = unsafe { access!(get_data_mempool(self.mempool), item_len, usize) },
             "Getting mutable slice from buffer"
         );
-        let item_len = unsafe { access!(get_data_mempool(self.mempool), item_len, usize) };
-        if start > item_len || end > item_len {
-            bail!("Invalid bounnds for buf of len {}", item_len);
-        }
         let buf = unsafe {
             std::slice::from_raw_parts_mut(
                 (self.data as *mut u8).offset(start as isize),
@@ -141,13 +137,17 @@ impl Mlx5Buffer {
     }
 }
 
-impl ExposeMempoolID for Mlx5Buffer {
+impl DatapathBufferOps for Mlx5Buffer {
     fn set_mempool_id(&mut self, id: MempoolID) {
         self.mempool_id = id;
     }
 
     fn get_mempool_id(&self) -> MempoolID {
         self.mempool_id
+    }
+
+    fn get_metadata_pointer(&self) -> *const u8 {
+        self.metadata as *const u8
     }
 }
 
@@ -162,19 +162,18 @@ impl AsRef<[u8]> for Mlx5Buffer {
     }
 }
 
-impl Write for Mlx5Buffer {
+impl std::io::Write for Mlx5Buffer {
     #[inline]
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // only write the maximum amount
-        let data_mempool = unsafe { get_data_mempool(self.mempool) };
-        let written = std::cmp::min(unsafe { access!(data_mempool, item_len, usize) }, buf.len());
-        unsafe {
-            mlx5_rte_memcpy(self.data as *mut u8 as _, buf.as_ptr() as _, written);
-        }
-        self.data_len = written;
-        Ok(written)
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let item_len = unsafe { access!(get_data_mempool(self.mempool), item_len, usize) };
+        let bytes_to_write = std::cmp::min(bytes.len(), item_len - self.data_len);
+        let buf_addr = (self.data as usize + self.data_len) as *mut u8;
+        let mut buf = unsafe { std::slice::from_raw_parts_mut(buf_addr, bytes_to_write) };
+        self.data_len += bytes_to_write;
+        buf.write(&bytes[0..bytes_to_write])
     }
 
+    #[inline]
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
@@ -2534,6 +2533,8 @@ impl Datapath for Mlx5Connection {
     where
         T: protobuf::Message,
     {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Queue protobuf message");
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
@@ -2639,6 +2640,8 @@ impl Datapath for Mlx5Connection {
             }
             if !inlined_obj_hdr {
                 // copy protobuf object into datapath buffer
+                #[cfg(feature = "profiler")]
+                perftools::timer!("Copying protobuf data into packet");
                 let mutable_slice = data_buffer.mutable_slice(offset, offset + data_len)?;
                 let mut coded_output_stream = protobuf::CodedOutputStream::bytes(mutable_slice);
                 object.write_to(&mut coded_output_stream)?;
@@ -2834,6 +2837,8 @@ impl Datapath for Mlx5Connection {
         sga: (MsgID, ConnID, &[u8]),
         end_batch: bool,
     ) -> Result<()> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Queue single buffer with copy");
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
@@ -2863,7 +2868,7 @@ impl Datapath for Mlx5Connection {
         }
         let (inline_len, _num_segs, num_wqes_required) = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Ordered sga and filling in ctrl and ether seg");
+            perftools::timer!("ordered sga and filling in ctrl and ether seg");
 
             let (inline_len, num_segs) = self.single_buffer_shape(buf);
             let num_octowords =
@@ -2929,8 +2934,12 @@ impl Datapath for Mlx5Connection {
                 offset += cornflakes_libos::utils::TOTAL_HEADER_SIZE;
             }
             if !inlined_obj_hdr {
-                let data_slice = data_buffer.mutable_slice(offset, offset + buf.len())?;
-                data_slice.copy_from_slice(buf);
+                #[cfg(feature = "profiler")]
+                perftools::timer!("Copying buffer");
+                ensure!(
+                    data_buffer.write(buf)? == buf.len(),
+                    "Could not copy whole buffer into allocated buffer"
+                );
             }
             let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
                 Some(m) => m,
@@ -3285,27 +3294,24 @@ impl Datapath for Mlx5Connection {
                     }
                 }
             };
-            let mut offset = 0;
             if !header_written {
                 self.copy_hdr(&mut data_buffer, conn_id, msg_id, data_len)?;
-                offset += cornflakes_libos::utils::TOTAL_HEADER_SIZE;
             }
             if !inlined_obj_hdr {
-                let data_slice =
-                    data_buffer.mutable_slice(offset, offset + ordered_sga.get_hdr().len())?;
-                data_slice.copy_from_slice(ordered_sga.get_hdr());
-                offset += ordered_sga.get_hdr().len();
+                let hdr = ordered_sga.get_hdr();
+                ensure!(
+                    data_buffer.write(hdr)? == hdr.len(),
+                    "Failed to copy full object header into data buffer"
+                );
             }
             {
                 #[cfg(feature = "profiler")]
                 perftools::timer!("Copying copy buffers");
                 for seg in ordered_sga.iter().take(first_zero_copy_seg) {
-                    tracing::debug!("Writing into slice [{}, {}]", offset, offset + seg.len());
-                    let dst = data_buffer.mutable_slice(offset, offset + seg.len())?;
-                    unsafe {
-                        mlx5_rte_memcpy(dst.as_mut_ptr() as _, seg.addr().as_ptr() as _, seg.len());
-                    }
-                    offset += seg.len();
+                    ensure!(
+                        data_buffer.write(seg.addr())? == seg.len(),
+                        "Failed to copy segment into data buffer"
+                    );
                 }
             }
             let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
@@ -4171,7 +4177,7 @@ impl Datapath for Mlx5Connection {
 
     #[inline]
     fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>> {
-        self.allocator.recover_metadata(buf)
+        self.allocator.recover_buffer(buf)
     }
 
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {

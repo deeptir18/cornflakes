@@ -38,6 +38,19 @@ fn main() {
     ) {
         Ok(_) => {}
         Err(e) => {
+            panic!("Cornflakes dynamic rc sga failed: {:?}", e);
+        }
+    }
+
+    let input_cf_file_sga = input_cf_path.clone().join("kv_nonrefcounted.proto");
+    // with ref counting
+    match compile(
+        input_cf_file_sga.as_path().to_str().unwrap(),
+        &out_dir,
+        CompileOptions::new(HeaderType::Sga, Language::Rust),
+    ) {
+        Ok(_) => {}
+        Err(e) => {
             panic!("Cornflakes dynamic sga failed: {:?}", e);
         }
     }

@@ -216,6 +216,32 @@ impl DatapathMemoryPool for MempoolInfo {
 
     type RegistrationContext = ();
 
+    #[inline]
+    fn get_2mb_pages(&self) -> Vec<usize> {
+        // TODO: implement
+        vec![]
+    }
+
+    #[inline]
+    fn get_4k_pages(&self) -> Vec<usize> {
+        // TODO: implement
+        vec![]
+    }
+
+    #[inline]
+    fn get_1g_pages(&self) -> Vec<usize> {
+        // TODO: implement
+        vec![]
+    }
+
+    #[inline]
+    fn turn_to_metadata(metadata: usize, buf_addr: &[u8]) -> Result<RteMbufMetadata> {
+        let mbuf = unsafe { metadata as *mut rte_mbuf };
+        let base_ptr = unsafe { access!(mbuf, buf_addr, usize) };
+        let offset = buf_addr.as_ptr() as usize - base_ptr;
+        return RteMbufMetadata::new(mbuf, offset, Some(buf_addr.len()));
+    }
+
     fn register(&mut self, _registration_context: Self::RegistrationContext) -> Result<()> {
         Ok(())
     }

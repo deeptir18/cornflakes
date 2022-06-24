@@ -23,7 +23,7 @@ macro_rules! run_server(
 
         // init ycsb load generator
         let load_generator = YCSBServerLoader::new($opt.value_size_generator, $opt.num_values, $opt.num_keys, $opt.allocate_contiguously);
-        let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type, false)?;
+        let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type, false, $opt.non_refcounted)?;
         kv_server.init(&mut connection)?;
         kv_server.run_state_machine(&mut connection)?;
     }
@@ -265,4 +265,6 @@ pub struct YCSBOpt {
         help = "Allocate YCSB multiple values contiguously."
     )]
     pub allocate_contiguously: bool,
+    #[structopt(long = "non_refcounted", help = "Non refcounted version of cornflakes")]
+    pub non_refcounted: bool,
 }

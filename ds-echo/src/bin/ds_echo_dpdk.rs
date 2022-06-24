@@ -5,8 +5,12 @@ use cornflakes_libos::{
 use cornflakes_utils::{global_debug_init, AppMode, SerializationType};
 use dpdk_datapath::datapath::connection::DpdkConnection;
 use ds_echo::{
+    capnproto::{CapnprotoEchoClient, CapnprotoSerializer},
     cornflakes_dynamic::{CornflakesEchoClient, CornflakesSerializer},
-    get_equal_fields, run_client,
+    flatbuffers::{FlatbuffersEchoClient, FlatbuffersSerializer},
+    get_equal_fields,
+    protobuf::{ProtobufEchoClient, ProtobufSerializer},
+    run_client,
     run_datapath::*,
     run_server, EchoClient,
 };
@@ -22,6 +26,15 @@ fn main() -> Result<()> {
             SerializationType::CornflakesDynamic | SerializationType::CornflakesOneCopyDynamic => {
                 run_server!(CornflakesSerializer<DpdkConnection>, DpdkConnection, opt);
             }
+            SerializationType::Flatbuffers => {
+                run_server!(FlatbuffersSerializer<DpdkConnection>, DpdkConnection, opt);
+            }
+            SerializationType::Capnproto => {
+                run_server!(CapnprotoSerializer<DpdkConnection>, DpdkConnection, opt);
+            }
+            SerializationType::Protobuf => {
+                run_server!(ProtobufSerializer<DpdkConnection>, DpdkConnection, opt);
+            }
             _ => {
                 unimplemented!();
             }
@@ -29,6 +42,15 @@ fn main() -> Result<()> {
         AppMode::Client => match opt.serialization {
             SerializationType::CornflakesDynamic | SerializationType::CornflakesOneCopyDynamic => {
                 run_client!(CornflakesEchoClient, DpdkConnection, opt);
+            }
+            SerializationType::Flatbuffers => {
+                run_client!(FlatbuffersEchoClient, DpdkConnection, opt);
+            }
+            SerializationType::Capnproto => {
+                run_client!(CapnprotoEchoClient, DpdkConnection, opt);
+            }
+            SerializationType::Protobuf => {
+                run_client!(ProtobufEchoClient, DpdkConnection, opt);
             }
             _ => {
                 unimplemented!();

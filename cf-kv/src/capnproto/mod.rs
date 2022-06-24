@@ -259,6 +259,7 @@ where
         datapath: &mut D,
         push_buf_type: PushBufType,
         zero_copy_puts: bool,
+        _non_refcounted: bool,
     ) -> Result<Self>
     where
         L: ServerLoadGenerator,

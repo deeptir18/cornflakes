@@ -5,6 +5,13 @@ pub mod kv_serializer {
     #![allow(non_snake_case)]
     include!(concat!(env!("OUT_DIR"), "/kv_rcsga_cornflakes.rs"));
 }
+pub mod kv_serializer_sga {
+    #![allow(unused_variables)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_upper_case_globals)]
+    #![allow(non_snake_case)]
+    include!(concat!(env!("OUT_DIR"), "/kv_sga_cornflakes.rs"));
+}
 use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, PushBufType, ReceivedPkt},
@@ -31,17 +38,19 @@ where
     _phantom: PhantomData<D>,
     zero_copy_puts: bool,
     with_copies: bool,
+    non_refcounted: bool,
 }
 
 impl<D> CornflakesSerializer<D>
 where
     D: Datapath,
 {
-    pub fn new(zero_copy_puts: bool) -> Self {
+    pub fn new(zero_copy_puts: bool, non_refcounted: bool) -> Self {
         CornflakesSerializer {
             _phantom: PhantomData::default(),
             zero_copy_puts: zero_copy_puts,
             with_copies: false,
+            non_refcounted: non_refcounted,
         }
     }
 
@@ -264,6 +273,7 @@ where
     mempool_ids: Vec<MempoolID>,
     serializer: CornflakesSerializer<D>,
     push_buf_type: PushBufType,
+    non_refcounted: bool,
 }
 
 impl<D> CornflakesKVServer<D>
@@ -276,13 +286,14 @@ where
         datapath: &mut D,
         push_buf_type: PushBufType,
         zero_copy_puts: bool,
+        non_refcounted: bool,
     ) -> Result<Self>
     where
         L: ServerLoadGenerator,
     {
         let (kv, list_kv, zero_copy_put_kv, mempool_ids) =
             load_generator.new_kv_state(file, datapath, zero_copy_puts)?;
-        let mut serializer = CornflakesSerializer::<D>::new(zero_copy_puts);
+        let mut serializer = CornflakesSerializer::<D>::new(zero_copy_puts, non_refcounted);
         if datapath.get_copying_threshold() == usize::MAX {
             tracing::info!("For serialization cornflakes 1c, setting with copies");
             serializer.set_with_copies();
@@ -294,6 +305,7 @@ where
             mempool_ids: mempool_ids,
             push_buf_type: push_buf_type,
             serializer: serializer,
+            non_refcounted: non_refcounted,
         })
     }
 }

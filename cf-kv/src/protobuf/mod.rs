@@ -91,18 +91,29 @@ where
         kv_server: &KVServer<D>,
         pkt: &ReceivedPkt<D>,
     ) -> Result<kv_messages::GetMResp> {
-        let getm_request =
+        let getm_request = {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Deserialize pkt");
             kv_messages::GetMReq::parse_from_bytes(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
-                .wrap_err("Failed to deserialize proto GetMReq")?;
+                .wrap_err("Failed to deserialize proto GetMReq")?
+        };
         let mut vals: Vec<Vec<u8>> = Vec::with_capacity(getm_request.keys.len());
         for key in getm_request.keys.iter() {
-            let value = match kv_server.get(&key.as_str()) {
-                Some(v) => v,
-                None => {
-                    bail!("Cannot find value for key in KV store: {:?}", &key.as_str(),);
+            let value = {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("Get value");
+                match kv_server.get(&key.as_str()) {
+                    Some(v) => v,
+                    None => {
+                        bail!("Cannot find value for key in KV store: {:?}", &key.as_str(),);
+                    }
                 }
             };
-            vals.push(value.as_ref().to_vec());
+            {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("append value");
+                vals.push(value.as_ref().to_vec());
+            }
         }
         let mut getm_resp = kv_messages::GetMResp::new();
         getm_resp.vals = vals;
@@ -199,6 +210,7 @@ where
         datapath: &mut D,
         push_buf_type: PushBufType,
         zero_copy_puts: bool,
+        _non_refcounted: bool,
     ) -> Result<Self>
     where
         L: ServerLoadGenerator,

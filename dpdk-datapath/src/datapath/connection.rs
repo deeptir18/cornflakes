@@ -3,7 +3,7 @@ use super::{
 };
 use cornflakes_libos::{
     allocator::{align_up, MemoryPoolAllocator, MempoolID},
-    datapath::{Datapath, ExposeMempoolID, InlineMode, MetadataOps, ReceivedPkt},
+    datapath::{Datapath, DatapathBufferOps, InlineMode, MetadataOps, ReceivedPkt},
     utils::AddressInfo,
     ConnID, MsgID, OrderedSga, RcSga, RcSge, Sga, Sge, USING_REF_COUNTING,
 };
@@ -63,13 +63,17 @@ impl Default for DpdkBuffer {
     }
 }
 
-impl ExposeMempoolID for DpdkBuffer {
+impl DatapathBufferOps for DpdkBuffer {
     fn set_mempool_id(&mut self, id: MempoolID) {
         self.mempool_id = id;
     }
 
     fn get_mempool_id(&self) -> MempoolID {
         self.mempool_id
+    }
+
+    fn get_metadata_pointer(&self) -> *const u8 {
+        self.mbuf as *const u8
     }
 }
 
@@ -1589,7 +1593,7 @@ impl Datapath for DpdkConnection {
     }
 
     fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>> {
-        self.allocator.recover_metadata(buf)
+        self.allocator.recover_buffer(buf)
     }
 
     fn add_tx_mempool(&mut self, value_size: usize, min_elts: usize) -> Result<()> {

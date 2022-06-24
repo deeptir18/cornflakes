@@ -217,10 +217,12 @@ pub trait MetadataOps {
     fn set_data_len_and_offset(&mut self, data_len: usize, offset: usize) -> Result<()>;
 }
 
-pub trait ExposeMempoolID {
+pub trait DatapathBufferOps {
     fn set_mempool_id(&mut self, id: MempoolID);
 
     fn get_mempool_id(&self) -> MempoolID;
+
+    fn get_metadata_pointer(&self) -> *const u8;
 }
 
 pub trait Datapath {
@@ -230,7 +232,7 @@ pub trait Datapath {
         + PartialEq
         + Eq
         + std::fmt::Debug
-        + ExposeMempoolID
+        + DatapathBufferOps
         + Default;
 
     /// Metadata that wraps around a datapath buffer.

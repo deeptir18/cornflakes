@@ -2,7 +2,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use color_eyre::eyre::{bail, ensure, Result};
 use cornflakes_libos::{
     allocator::MempoolID,
-    datapath::{Datapath, ExposeMempoolID, InlineMode, MetadataOps, ReceivedPkt},
+    datapath::{Datapath, DatapathBufferOps, InlineMode, MetadataOps, ReceivedPkt},
     utils::AddressInfo,
     ConnID, MsgID, OrderedSga, RcSga, Sga,
 };
@@ -13,11 +13,15 @@ pub struct MutableByteBuffer {
     buf: BytesMut,
 }
 
-impl ExposeMempoolID for MutableByteBuffer {
+impl DatapathBufferOps for MutableByteBuffer {
     fn set_mempool_id(&mut self, _id: MempoolID) {}
 
     fn get_mempool_id(&self) -> MempoolID {
         0
+    }
+
+    fn get_metadata_pointer(&self) -> *const u8 {
+        std::ptr::null_mut()
     }
 }
 
