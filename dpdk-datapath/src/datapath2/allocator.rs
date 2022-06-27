@@ -166,7 +166,7 @@ impl MempoolAllocator {
     // given size
     // There could be multiple of the same size: for now, just iterate until we find one which has
     // available space
-    pub fn allocate(&self, alloc_size: usize, _alignment: usize) -> Result<*mut rte_mbuf> {
+    pub fn allocate(&self, alloc_size: usize, _alignment: usize) -> Result<*mut rte_mbuf, MempoolID> {
         let mut min_size = std::f64::INFINITY;
         for size in self.mempools.keys() {
             if alloc_size <= *size {
@@ -190,7 +190,7 @@ impl MempoolAllocator {
                     alloc_size,
                     min_size
                 );*/
-                return Ok(mbuf);
+                return Ok(mbuf, self.get_mempool_id());
             }
         }
 

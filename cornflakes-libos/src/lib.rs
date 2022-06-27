@@ -102,6 +102,7 @@ pub enum CornType {
 pub trait PtrAttributes {
     fn buf_type(&self) -> CornType;
     fn buf_size(&self) -> usize;
+    fn get_id(&self) -> MempoolID;
 }
 
 /// Represents either a borrowed piece of memory.
@@ -143,6 +144,10 @@ impl<'registered, 'normal> PtrAttributes for CornPtr<'registered, 'normal> {
             CornPtr::Registered(buf) => buf.len(),
             CornPtr::Normal(buf) => buf.len(),
         }
+    }
+
+    fn get_id(&self) -> MempoolID {
+        0
     }
 }
 
@@ -535,6 +540,10 @@ where
             RcCornPtr::RawRef(buf) => buf.len(),
         }
     }
+
+    fn get_id(&self) -> MempoolID {
+        0
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -718,7 +727,7 @@ where
             len: buf.buf_size(),
             buf: buf,
             offset: 0,
-            mempool_id: 0,
+            mempool_id: buf.get_id(),
         }
     }
 
@@ -744,7 +753,7 @@ where
             len: len,
             offset: offset,
             buf: owned_buf,
-            mempool_id: 0,
+            mempool_id: buf.get_id(),
         }
     }
 
@@ -795,7 +804,7 @@ where
             len: buf.buf_size(),
             buf: buf,
             offset: 0,
-            mempool_id: 0,
+            mempool_id: buf.get_id(),
         })
     }
 

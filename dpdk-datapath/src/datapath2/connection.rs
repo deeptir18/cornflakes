@@ -72,6 +72,7 @@ impl Default for DPDKBuffer {
             // TODO: might be safest to NOT have this function
             mbuf: ptr::null_mut(),
             offset: 0,
+            id: 0,
         }
     }
 }
@@ -99,6 +100,7 @@ impl Clone for DPDKBuffer {
         DPDKBuffer {
             mbuf: self.mbuf,
             offset: self.offset,
+            mempool_id: self.id
         }
     }
 }
@@ -163,6 +165,11 @@ impl PtrAttributes for DPDKBuffer {
 
     fn buf_type(&self) -> CornType {
         CornType::Registered
+    }
+
+    fn get_id(&self) -> MempoolID {
+        tracing::debug!("Using the correct MempoolID: {}", self.id);
+        (self.id).clone()
     }
 }
 
@@ -943,6 +950,7 @@ impl Datapath for DPDKConnection {
                     mbuf,
                     utils::TOTAL_HEADER_SIZE,
                     Some(unsafe { (*mbuf).data_len as usize }),
+                    0
                 )];
 
                 let received_pkt = ReceivedPkt::new(received_buffer, *msg_id, addr_info.clone());
@@ -1063,18 +1071,18 @@ impl Datapath for DPDKConnection {
     fn allocate_tx(&self, len: usize) -> Result<Self::DatapathPkt> {
         let mbuf = wrapper::alloc_mbuf(self.default_mempool)
             .wrap_err("Not able to allocate tx mbuf from default mempool")?;
-        return Ok(DPDKBuffer::new(mbuf, 0, Some(len)));
+        return Ok(DPDKBuffer::new(mbuf, 0, Some(len), 0));
     }
 
     fn allocate(&self, size: usize, align: usize) -> Result<Self::DatapathPkt> {
-        let mbuf = self
+        let (mbuf, mempool_id) = self
             .mempool_allocator
             .allocate(size, align)
             .wrap_err(format!(
                 "Not able to allocate packet of size {:?} and alignment {:?} from allocator",
                 size, align
             ))?;
-        return Ok(DPDKBuffer::new(mbuf, 0, None));
+        return Ok(DPDKBuffer::new(mbuf, 0, 0, mempool_id));
     }
 }
 

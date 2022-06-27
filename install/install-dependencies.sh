@@ -1,7 +1,8 @@
-/bin/bash
+#!/bin/bash
 
 # currently works on debian systems (with access to apt-get)
 sudo apt-get update
+sudo apt-get upgrade
 
 # Required for DPDK
 sudo apt-get install libbsd-dev libelf-dev libpcap-dev
@@ -20,13 +21,20 @@ sudo apt-get install libnuma-dev
 # Required for RDMA core (for mellanox datapath)
 sudo apt-get install build-essential cmake gcc libudev-dev libnl-3-dev libnl-route-3-dev ninja-build pkg-config valgrind python3-dev cython3 python3-docutils pandoc
 
+# Required for libraries
+sudo apt install protobuf-compiler
+
 # Via pip
 sudo pip3 install meson # when I tried installing meson without sudo, I can't find it in the path
 pip3 install colorama
 pip3 install gitpython
+pip3 install pandas
+pip3 install torch
 pip3 install tqdm
 pip3 install parse
 pip3 install fabric # for some reason this fails
+sudo apt install python-pip # ensure that you have pip installed
+pip install --upgrade pip # upgrade pip
 pip3 install setuptools_rust # and then you need to install this
 pip3 install fabric # and try this again
 
