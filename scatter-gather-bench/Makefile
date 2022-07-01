@@ -4,6 +4,7 @@
 #export PKG_CONFIG_PATH=/proj/demeter-PG0/deeptir/cornflakes/cornflakes-libos/3rdparty/dpdk/install/lib/x86_64-linux-gnu/pkgconfig
 
 # binary name
+print-%  : ; @echo $* = $($*)
 APP = netperf
 CXX = g++
 

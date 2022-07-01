@@ -1,3 +1,6 @@
+mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
+mkfile_dir := $(dir $(mkfile_path))
+
 all: build
 
 # TODO: make it so that if mlx5 drivers are not present on this machine, it only
@@ -12,7 +15,11 @@ endif
 build: mlx5-datapath
 	cargo b $(CARGOFLAGS)
 
-.PHONY: mlx5-datapath mlx5-netperf
+.PHONY: mlx5-datapath mlx5-netperf scatter-gather-bench
+
+# scatter-gather bench microbenchmark
+scatter-gather-bench:
+	PKG_CONFIG_PATH=$(mkfile_dir)dpdk-datapath/3rdparty/dpdk/build/lib/x86_64-linux-gnu/pkgconfig make -C scatter-gather-bench CONFIG_MLX5=$(CONFIG_MLX5) DEBUG=$(DEBUG) GDB=$(GDB)
 
 mlx5-datapath:
 	$(MAKE) -C mlx5-datapath/mlx5-wrapper CONFIG_MLX5=$(CONFIG_MLX5) DEBUG=$(DEBUG) GDB=$(GDB)
@@ -25,7 +32,10 @@ mlx5-netperf:
 clean:
 	rm -rf mlx5-datapath/mlx5-wrapper/rdma-core/build
 	$(MAKE) -C mlx5-datapath/mlx5-wrapper clean
+	$(MAKE) -C mlx5-netperf clean
+	$(MAKE) -C scatter-gather-bench clean
 	rm -rf dpdk-datapath/3rdparty/dpdk/build
+	rm -rf dpdk-datapath/3rdparty/dpdk/install
 	cargo clean
 
 # initialize all of the submodules
