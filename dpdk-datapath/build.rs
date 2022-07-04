@@ -21,7 +21,7 @@ fn main() {
     let dpdk_path = canonicalize(cargo_dir.clone().join("3rdparty").join("dpdk")).unwrap();
     let dpdk_dir = dpdk_path.as_path();
 
-    let dpdk_install = dpdk_dir.clone().join("install");
+    let dpdk_install = dpdk_dir.clone().join("build");
     let pkg_config_path = dpdk_install.join("lib/x86_64-linux-gnu/pkgconfig");
 
     let cflags_bytes = Command::new("pkg-config")
