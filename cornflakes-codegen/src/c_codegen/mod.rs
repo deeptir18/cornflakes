@@ -97,6 +97,7 @@ fn gen_cargo_toml(repr: &ProtoReprInfo, package_folder: &Path) -> Result<()> {
 
 fn gen_rust_code(repr: &ProtoReprInfo, src_folder: &Path, options: &CompileOptions) -> Result<()> {
     rust_codegen::compile(repr, src_folder.to_str().unwrap(), CompileOptions {
+        needs_datapath_param: false,
         header_type: options.header_type,
         language: Language::Rust,
     })?;

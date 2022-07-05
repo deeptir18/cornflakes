@@ -101,7 +101,6 @@ fn main() {
         ));
 
     // compile protobuf baseline
-    /*
     let input_proto_path = kv_src_path.clone().join("protobuf");
     let input_proto_file = input_proto_path.clone().join("kv_protobuf.proto");
     let mut customize = protobuf_codegen::Customize::default();
@@ -130,5 +129,4 @@ fn main() {
             writer.write_all(&[b'\n']).unwrap();
         }
     }
-    */
 }
