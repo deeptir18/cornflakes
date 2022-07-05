@@ -28,6 +28,7 @@ pub struct ProtoReprInfo {
     datapath_trait_key: String,
     datapath_trait: String,
     ref_counted_mode: bool,
+    needs_datapath_param: bool,
 }
 
 impl ProtoReprInfo {
@@ -43,7 +44,20 @@ impl ProtoReprInfo {
             datapath_trait_key: DATAPATH_TRAIT_KEY.to_string(),
             datapath_trait: DATAPATH_TRAIT.to_string(),
             ref_counted_mode: false,
+            needs_datapath_param: false,
         }
+    }
+
+    pub fn set_needs_datapath_param(&mut self) {
+        self.needs_datapath_param = true;
+    }
+
+    pub fn always_requires_datapath_param(&self) -> bool {
+        self.needs_datapath_param
+    }
+
+    pub fn needs_datapath_param(&self) -> bool {
+        self.needs_datapath_param
     }
 
     pub fn set_lifetime_name(&mut self, name: &str) {
@@ -305,7 +319,10 @@ impl MessageInfo {
     ) -> Result<Vec<String>> {
         let mut ret: Vec<String> = Vec::default();
         ret.push(fd.get_lifetime());
-        if self.requires_datapath_type_param(is_ref_counted, &fd.get_message_map())? {
+        if is_ref_counted
+            && (self.requires_datapath_type_param(is_ref_counted, &fd.get_message_map())?
+                || fd.needs_datapath_param())
+        {
             ret.push(fd.get_datapath_trait_key());
         }
 
@@ -324,7 +341,7 @@ impl MessageInfo {
         Ok(ret)
     }
 
-    pub fn get_where_clause_with_more_traits(
+    /*pub fn get_where_clause_with_more_traits(
         &self,
         is_ref_counted: bool,
         fd: &ProtoReprInfo,
@@ -340,14 +357,17 @@ impl MessageInfo {
         } else {
             return Ok(WhereClause::default());
         }
-    }
+    }*/
 
     pub fn get_where_clause(
         &self,
         is_ref_counted: bool,
         fd: &ProtoReprInfo,
     ) -> Result<WhereClause> {
-        if self.requires_datapath_type_param(is_ref_counted, &fd.get_message_map())? {
+        if is_ref_counted
+            && (self.requires_datapath_type_param(is_ref_counted, &fd.get_message_map())?
+                || fd.needs_datapath_param())
+        {
             return Ok(WhereClause::new(vec![WherePair::new(
                 &fd.get_datapath_trait_key(),
                 &fd.get_datapath_trait(),

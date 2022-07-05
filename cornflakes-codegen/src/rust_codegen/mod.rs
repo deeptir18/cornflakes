@@ -346,6 +346,7 @@ pub struct StructContext {
     derives_copy: bool,
     where_clause: WhereClause,
     started: bool,
+    no_derives: bool,
 }
 
 impl StructContext {
@@ -355,7 +356,12 @@ impl StructContext {
             derives_copy: derives_copy,
             where_clause: where_clause,
             started: false,
+            no_derives: false,
         }
+    }
+
+    pub fn set_no_derives(&mut self) {
+        self.no_derives = true;
     }
 }
 
@@ -367,10 +373,14 @@ impl ContextPop for StructContext {
                 true => "Debug, Clone, PartialEq, Eq, Copy",
                 false => "Debug, Clone, PartialEq, Eq",
             };
+            let derive_string = match self.no_derives {
+                true => "".to_string(),
+                false => format!("#[derive({})]\n", derives),
+            };
             return Ok((
                 format!(
-                    "#[derive({})]\n pub struct {} {} {{",
-                    derives,
+                    "{} pub struct {} {} {{",
+                    derive_string,
                     self.struct_name.to_string(),
                     self.where_clause.to_string(),
                 ),

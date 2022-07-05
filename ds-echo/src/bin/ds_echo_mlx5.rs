@@ -4,8 +4,12 @@ use cornflakes_libos::{
 };
 use cornflakes_utils::{global_debug_init, AppMode, SerializationType};
 use ds_echo::{
+    capnproto::{CapnprotoEchoClient, CapnprotoSerializer},
     cornflakes_dynamic::{CornflakesEchoClient, CornflakesSerializer},
-    get_equal_fields, run_client,
+    flatbuffers::{FlatbuffersEchoClient, FlatbuffersSerializer},
+    get_equal_fields,
+    protobuf::{ProtobufEchoClient, ProtobufSerializer},
+    run_client,
     run_datapath::*,
     run_server, EchoClient,
 };
@@ -22,6 +26,15 @@ fn main() -> Result<()> {
             SerializationType::CornflakesDynamic | SerializationType::CornflakesOneCopyDynamic => {
                 run_server!(CornflakesSerializer<Mlx5Connection>, Mlx5Connection, opt);
             }
+            SerializationType::Flatbuffers => {
+                run_server!(FlatbuffersSerializer<Mlx5Connection>, Mlx5Connection, opt);
+            }
+            SerializationType::Capnproto => {
+                run_server!(CapnprotoSerializer<Mlx5Connection>, Mlx5Connection, opt);
+            }
+            SerializationType::Protobuf => {
+                run_server!(ProtobufSerializer<Mlx5Connection>, Mlx5Connection, opt);
+            }
             _ => {
                 unimplemented!();
             }
@@ -29,6 +42,15 @@ fn main() -> Result<()> {
         AppMode::Client => match opt.serialization {
             SerializationType::CornflakesDynamic | SerializationType::CornflakesOneCopyDynamic => {
                 run_client!(CornflakesEchoClient, Mlx5Connection, opt);
+            }
+            SerializationType::Flatbuffers => {
+                run_client!(FlatbuffersEchoClient, Mlx5Connection, opt);
+            }
+            SerializationType::Capnproto => {
+                run_client!(CapnprotoEchoClient, Mlx5Connection, opt);
+            }
+            SerializationType::Protobuf => {
+                run_client!(ProtobufEchoClient, Mlx5Connection, opt);
             }
             _ => {
                 unimplemented!();

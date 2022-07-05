@@ -7,7 +7,7 @@ use cf_kv::{
     run_client, run_server,
     ycsb::{YCSBClient, YCSBServerLoader},
     ycsb_run_datapath::*,
-    KVClient, RequestGenerator,
+    KVClient,
 };
 use color_eyre::eyre::Result;
 use cornflakes_libos::{

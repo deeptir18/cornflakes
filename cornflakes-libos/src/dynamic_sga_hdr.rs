@@ -141,7 +141,7 @@ pub trait SgaHeaderRepr<'obj> {
                 Bitmap::<32>::from_value(num)
             }),
         );
-        bitmap_size as usize
+        bitmap_size as usize * 4
     }
 
     fn check_deep_equality(&self, other: &Self) -> bool;
@@ -149,7 +149,7 @@ pub trait SgaHeaderRepr<'obj> {
     /// Dynamic part of the header (actual bytes pointed to, lists, nested objects).
     fn dynamic_header_size(&self) -> usize;
 
-    /// Total header size including the bitmap.
+    /// Total header size.
     #[inline]
     fn total_header_size(&self, with_ref: bool, _with_bitmap: bool) -> usize {
         //(BITMAP_LENGTH_FIELD + Self::bitmap_length()) * (with_bitmap as usize)
@@ -368,6 +368,7 @@ pub trait SgaHeaderRepr<'obj> {
         ordered_sga.set_header_offsets(self.total_header_size(false, false));
         Ok(())
     }
+
     #[inline]
     fn serialize_into_arena_sga_with_hdr<'sge, D>(
         &self,

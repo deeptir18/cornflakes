@@ -10,7 +10,7 @@ use std::{
 
 fn main() {
     println!("cargo:rerun-if-changed=src/cornflakes_dynamic/kv.proto");
-    println!("cargo:rerun-if-changed=src/flatbuffers/kv_fb.fbs");
+    println!("cargo:rerun-if-changed=src/flatbuffers/cf_kv_fb.fbs");
     println!("cargo:rerun-if-changed=src/capnproto/cf_kv.capnp");
     println!("cargo:rerun-if-changed=src/protobuf/kv.proto");
     // store all compiled proto files in out_dir
@@ -32,6 +32,19 @@ fn main() {
     let input_cf_file_sga = input_cf_path.clone().join("kv.proto");
     // with ref counting
     println!("{:?}", out_dir);
+    match compile(
+        input_cf_file_sga.as_path().to_str().unwrap(),
+        &out_dir,
+        CompileOptions::new_with_datapath_param(HeaderType::RcSga, Language::Rust),
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("Cornflakes dynamic rc sga failed: {:?}", e);
+        }
+    }
+
+    let input_cf_file_sga = input_cf_path.clone().join("kv_nonrefcounted.proto");
+    // with ref counting
     match compile(
         input_cf_file_sga.as_path().to_str().unwrap(),
         &out_dir,

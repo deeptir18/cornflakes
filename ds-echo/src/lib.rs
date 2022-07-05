@@ -1,5 +1,17 @@
+pub mod capnproto;
 pub mod cornflakes_dynamic;
+pub mod flatbuffers;
+pub mod protobuf;
 pub mod run_datapath;
+mod echo_capnp {
+    #![allow(non_upper_case_globals)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_snake_case)]
+    #![allow(dead_code)]
+    #![allow(improper_ctypes)]
+    include!(concat!(env!("OUT_DIR"), "/echo_capnp.rs"));
+}
+
 use byteorder::{BigEndian, ByteOrder};
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
@@ -105,6 +117,7 @@ where
         &self,
         recved_msg: &ReceivedPkt<D>,
         bytes_to_check: (SimpleMessageType, &Vec<Vec<u8>>),
+        datapath: &D,
     ) -> Result<bool>;
 
     fn get_serialized_bytes(
@@ -243,27 +256,28 @@ where
     fn process_received_msg(
         &mut self,
         sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
-        _datapath: &<Self as ClientSM>::Datapath,
-    ) -> Result<()> {
+        datapath: &<Self as ClientSM>::Datapath,
+    ) -> Result<bool> {
         // if in debug mode, check whether the bytes are what they should be
         tracing::debug!(id = sga.msg_id(), size = sga.data_len(), "Received sga");
         if cfg!(debug_assertions) {
-            if !self
-                .cerealizer
-                .check_echoed_payload(&sga, self.get_bytes_to_check(sga.msg_id()))?
-            {
+            if !self.cerealizer.check_echoed_payload(
+                &sga,
+                self.get_bytes_to_check(sga.msg_id()),
+                datapath,
+            )? {
                 tracing::warn!(id = sga.msg_id(), "Payloads not equal");
                 bail!("Payloads not equal");
             } else {
                 tracing::info!(id = sga.msg_id(), "Passed test");
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
         tracing::info!(size = self.bytes_to_transmit.len(), "Bytes to transmit");
-        connection.add_memory_pool(8192, 8192)?;
+        connection.add_tx_mempool(8192, 8192)?;
         Ok(())
     }
 

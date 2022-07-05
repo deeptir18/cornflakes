@@ -1,4 +1,4 @@
-@0x81c88560bad9aacd;
+@0x81c88560bad9aace;
 
 struct GetReq {
     id @0 :UInt32;
@@ -46,9 +46,43 @@ struct GetListResp {
     vals @1 :List(Data);
 }
 
-struct PutMList {
+struct PutListReq {
     id @0 :UInt32;
     key @1 :Text;
     vals @2 :List(Data);
 }
 
+struct AddUser {
+    keys @0 :List(Text);
+    vals @1 :List(Data);
+}
+
+struct AddUserResponse {
+    firstVal @0:Data;
+}
+
+struct FollowUnfollow {
+    keys @0 :List(Text);
+    vals @1 :List(Data);
+}
+
+struct FollowUnfollowResponse {
+    originalVals @0 :List(Data);
+}
+
+struct PostTweet {
+    keys @0 :List(Text);
+    vals @1 :List(Data);
+}
+
+struct PostTweetResponse {
+    vals @0 :List(Data);
+}
+
+struct GetTimeline {
+    keys @0 :List(Text);
+}
+
+struct GetTimelineResponse {
+    vals @0 :List(Data);
+}

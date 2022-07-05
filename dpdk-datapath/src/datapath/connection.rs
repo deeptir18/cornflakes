@@ -3,7 +3,7 @@ use super::{
 };
 use cornflakes_libos::{
     allocator::{align_up, MemoryPoolAllocator, MempoolID},
-    datapath::{Datapath, ExposeMempoolID, InlineMode, MetadataOps, ReceivedPkt},
+    datapath::{Datapath, DatapathBufferOps, InlineMode, MetadataOps, ReceivedPkt},
     utils::AddressInfo,
     ConnID, MsgID, OrderedSga, RcSga, RcSge, Sga, Sge, USING_REF_COUNTING,
 };
@@ -54,13 +54,26 @@ pub struct DpdkBuffer {
     mempool_id: MempoolID,
 }
 
-impl ExposeMempoolID for DpdkBuffer {
+impl Default for DpdkBuffer {
+    fn default() -> Self {
+        DpdkBuffer {
+            mbuf: ptr::null_mut(),
+            mempool_id: 0,
+        }
+    }
+}
+
+impl DatapathBufferOps for DpdkBuffer {
     fn set_mempool_id(&mut self, id: MempoolID) {
         self.mempool_id = id;
     }
 
     fn get_mempool_id(&self) -> MempoolID {
         self.mempool_id
+    }
+
+    fn get_metadata_pointer(&self) -> *const u8 {
+        self.mbuf as *const u8
     }
 }
 
@@ -289,6 +302,9 @@ impl Default for RteMbufMetadata {
 
 impl Drop for RteMbufMetadata {
     fn drop(&mut self) {
+        if self.mbuf == ptr::null_mut() {
+            return;
+        }
         unsafe {
             // TODO: doesn't make sense to have this flag. should remove
             if USING_REF_COUNTING {
@@ -832,7 +848,7 @@ impl DpdkConnection {
                     true => {
                         match self
                             .allocator
-                            .allocate_buffer(data_segment_length)
+                            .allocate_tx_buffer(data_segment_length)
                             .wrap_err("Could not allocate dpdk buffer to copy into")?
                         {
                             Some(x) => (0, x),
@@ -930,7 +946,7 @@ impl DpdkConnection {
                     true => {
                         match self
                             .allocator
-                            .allocate_buffer(data_segment_length)
+                            .allocate_tx_buffer(data_segment_length)
                             .wrap_err("Could not allocate dpdk buffer to copy into")?
                         {
                             Some(x) => (0, x),
@@ -1346,7 +1362,7 @@ impl Datapath for DpdkConnection {
             // allocate buffer to copy data into
             let mut dpdk_buffer = match self
                 .allocator
-                .allocate_buffer(buf.len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE)
+                .allocate_tx_buffer(buf.len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE)
                 .wrap_err(format!(
                     "Could not allocate buf to copy into for buf size {}",
                     buf.len()
@@ -1576,6 +1592,10 @@ impl Datapath for DpdkConnection {
         Ok(Some(RteMbufMetadata::from_dpdk_buf(buf)))
     }
 
+    fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>> {
+        self.allocator.recover_buffer(buf)
+    }
+
     fn add_tx_mempool(&mut self, value_size: usize, min_elts: usize) -> Result<()> {
         let name = format!(
             "thread_{}_mempool_id_{}",
@@ -1682,6 +1702,11 @@ impl Datapath for DpdkConnection {
             ret.push(id);
         }
         Ok(ret)
+    }
+
+    #[inline]
+    fn has_mempool(&self, size: usize) -> bool {
+        self.allocator.has_mempool(size)
     }
 
     fn register_mempool(&mut self, id: MempoolID) -> Result<()> {

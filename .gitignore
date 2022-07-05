@@ -1,5 +1,6 @@
 /target/
 Cargo.lock
+cf-kv/target
 **/*.rs.bk
 **/*.swp
 **/.nfs*

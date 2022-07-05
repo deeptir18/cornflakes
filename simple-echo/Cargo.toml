@@ -17,7 +17,7 @@ cornflakes-utils = { path = "../cornflakes-utils" }
 linux-datapath = { path = "../linux-datapath" }
 mlx5-datapath = { path = "../mlx5-datapath", optional = true }
 dpdk-datapath = { path = "../dpdk-datapath", optional = true }
-perftools = {git = "https://github.com/demikernel/perftools", rev = "94031ae", optional = true}
+perftools = {git = "https://github.com/demikernel/perftools", rev = "3f3f11b", optional = true}
 yaml-rust = "0.4.3"
 hashbrown = "0.11.*"
 bytes = "1.1.0"

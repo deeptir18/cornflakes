@@ -1,6 +1,6 @@
 use super::{
-    allocator::MempoolID, dynamic_sga_hdr::SgaHeaderRepr, utils::AddressInfo, ArenaOrderedSga,
-    ConnID, MsgID, OrderedSga, RcSga, Sga,
+    allocator::MempoolID, dynamic_sga_hdr::SgaHeaderRepr, utils::AddressInfo, ArenaOrderedRcSga,
+    ArenaOrderedSga, ConnID, MsgID, OrderedRcSga, OrderedSga, RcSga, Sga,
 };
 use color_eyre::eyre::{bail, Result};
 use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
@@ -123,6 +123,28 @@ where
         self.pkts.iter_mut()
     }
 
+    pub fn contiguous_datapath_metadata_from_buf(
+        &self,
+        buf: &[u8],
+    ) -> Result<Option<D::DatapathMetadata>> {
+        let buf_ptr = buf.as_ptr() as usize;
+        let buf_end = buf.as_ptr() as usize + buf.len();
+        for pkt in self.pkts.iter() {
+            tracing::debug!(buf_ptr =? buf.as_ptr(), buf_len = buf.len(), pkt_ptr =? pkt.as_ref().as_ptr(), pkt_data_len = pkt.data_len(), "Recovering contiguous metadata from buf");
+            let ref_buf = pkt.as_ref().as_ptr() as usize;
+            let ref_buf_end = pkt.as_ref().as_ptr() as usize + pkt.data_len();
+            if buf_ptr >= ref_buf && buf_end <= ref_buf_end {
+                let mut cloned_metadata = pkt.clone();
+                cloned_metadata.set_data_len_and_offset(
+                    buf.len(),
+                    cloned_metadata.offset() + (buf_ptr - ref_buf),
+                )?;
+                return Ok(Some(cloned_metadata));
+            }
+        }
+        return Ok(None);
+    }
+
     /// Given a start index and length, return a datapath metadata object referring to the given
     /// contiguous slice within the packet if it exists.
     /// Arguments:
@@ -195,18 +217,32 @@ pub trait MetadataOps {
     fn set_data_len_and_offset(&mut self, data_len: usize, offset: usize) -> Result<()>;
 }
 
-pub trait ExposeMempoolID {
+pub trait DatapathBufferOps {
     fn set_mempool_id(&mut self, id: MempoolID);
 
     fn get_mempool_id(&self) -> MempoolID;
+
+    fn get_metadata_pointer(&self) -> *const u8;
 }
 
 pub trait Datapath {
     /// Mutable buffer type that can be written into.
-    type DatapathBuffer: AsRef<[u8]> + Write + PartialEq + Eq + std::fmt::Debug + ExposeMempoolID;
+    type DatapathBuffer: AsRef<[u8]>
+        + Write
+        + PartialEq
+        + Eq
+        + std::fmt::Debug
+        + DatapathBufferOps
+        + Default;
 
     /// Metadata that wraps around a datapath buffer.
-    type DatapathMetadata: AsRef<[u8]> + PartialEq + Eq + Clone + std::fmt::Debug + MetadataOps;
+    type DatapathMetadata: AsRef<[u8]>
+        + PartialEq
+        + Eq
+        + Clone
+        + std::fmt::Debug
+        + MetadataOps
+        + Default;
 
     /// Any per thread context required by the datapath per thread.
     type PerThreadContext: Send + Clone;
@@ -340,11 +376,47 @@ pub trait Datapath {
         unimplemented!();
     }
 
+    fn queue_protobuf_message<O>(
+        &mut self,
+        _message: (MsgID, ConnID, &O),
+        _end_batch: bool,
+    ) -> Result<()>
+    where
+        O: protobuf::Message,
+    {
+        unimplemented!();
+    }
+
     fn queue_arena_ordered_sga(
         &mut self,
         _arena_ordered_sga: (MsgID, ConnID, ArenaOrderedSga),
         _end_batch: bool,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        Self: Sized,
+    {
+        unimplemented!();
+    }
+
+    fn queue_ordered_rcsga(
+        &mut self,
+        _ordered_rcsga: (MsgID, ConnID, OrderedRcSga<Self>),
+        _end_batch: bool,
+    ) -> Result<()>
+    where
+        Self: Sized,
+    {
+        unimplemented!();
+    }
+
+    fn queue_arena_ordered_rcsga(
+        &mut self,
+        _arena_ordered_rcsga: (MsgID, ConnID, ArenaOrderedRcSga<Self>),
+        _end_batch: bool,
+    ) -> Result<()>
+    where
+        Self: Sized,
+    {
         unimplemented!();
     }
 
@@ -389,6 +461,11 @@ pub trait Datapath {
     /// @buf: Datapath buffer object.
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>>;
 
+    /// Takes a buffer and recovers underlying metadata if it is refcounted.
+    /// Args:
+    /// @buf: Buffer.
+    fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>>;
+
     /// Elastically add a memory pool with a particular size.
     /// Will add a new region of memory registered with the NIC.
     /// Args:
@@ -401,6 +478,9 @@ pub trait Datapath {
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>>;
 
     fn add_tx_mempool(&mut self, size: usize, min_elts: usize) -> Result<()>;
+
+    /// Checks whether datapath has mempool of size size given (must be power of 2).
+    fn has_mempool(&self, size: usize) -> bool;
 
     /// Register given mempool ID
     fn register_mempool(&mut self, id: MempoolID) -> Result<()>;

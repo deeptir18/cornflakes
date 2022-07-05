@@ -2,8 +2,8 @@ use bytes::{BufMut, Bytes, BytesMut};
 use color_eyre::eyre::{bail, ensure, Result};
 use cornflakes_libos::{
     allocator::MempoolID,
-    datapath::{Datapath, ExposeMempoolID, InlineMode, MetadataOps, ReceivedPkt},
     utils::{AddressInfo, HEADER_ID_SIZE},
+    datapath::{Datapath, DatapathBufferOps, InlineMode, MetadataOps, ReceivedPkt},
     ConnID, MsgID, OrderedSga, RcSga, Sga,
 };
 use byteorder::{ByteOrder, NetworkEndian};
@@ -23,16 +23,20 @@ const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 const RECEIVE_BUFFER_SIZE: usize = 2048;
 const RECEIVE_BURST_SIZE: usize = 32;
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone, Default)]
 pub struct MutableByteBuffer {
     buf: BytesMut,
 }
 
-impl ExposeMempoolID for MutableByteBuffer {
+impl DatapathBufferOps for MutableByteBuffer {
     fn set_mempool_id(&mut self, _id: MempoolID) {}
 
     fn get_mempool_id(&self) -> MempoolID {
         0
+    }
+
+    fn get_metadata_pointer(&self) -> *const u8 {
+        std::ptr::null_mut()
     }
 }
 
@@ -83,7 +87,7 @@ impl Write for MutableByteBuffer {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug, Default)]
 pub struct ByteBuffer {
     /// Actual data: not write-able.
     pub bytes: Bytes,
@@ -101,6 +105,17 @@ impl ByteBuffer {
             bytes: buf,
             offset: 0,
             len: len,
+        }
+    }
+
+    pub fn from_raw_buf(buffer: &[u8]) -> Self {
+        let mut bytes = BytesMut::with_capacity(buffer.len());
+        bytes.copy_from_slice(buffer);
+        let buf = bytes.freeze();
+        ByteBuffer {
+            bytes: buf,
+            offset: 0,
+            len: buffer.len(),
         }
     }
 
@@ -506,6 +521,10 @@ impl Datapath for LinuxConnection {
         Ok(Some(ByteBuffer::from_buf(buf)))
     }
 
+    fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>> {
+        Ok(Some(ByteBuffer::from_raw_buf(buf)))
+    }
+
     fn add_tx_mempool(&mut self, _size: usize, _min_elts: usize) -> Result<()> {
         unimplemented!();
     }
@@ -554,6 +573,11 @@ impl Datapath for LinuxConnection {
 
     fn get_max_segments(&self) -> usize {
         std::usize::MAX
+    }
+
+    #[inline]
+    fn has_mempool(&self, _size: usize) -> bool {
+        true
     }
 
     fn set_inline_mode(&mut self, _mode: InlineMode) {}

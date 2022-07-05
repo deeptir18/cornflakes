@@ -14,25 +14,24 @@ const PGMASK_4KB: usize = PGSIZE_4KB - 1;
 const PGMASK_2MB: usize = PGSIZE_2MB - 1;
 const PGMASK_1GB: usize = PGSIZE_1GB - 1;
 
+#[inline]
 fn pgn4kb(off: usize) -> usize {
     off >> PGSHIFT_4KB
 }
 
+#[inline]
 fn pgoff4kb(addr: *const u8) -> usize {
     (addr as usize) & PGMASK_4KB
 }
 
+#[inline]
 pub fn pgn2mb(off: usize) -> usize {
     off >> PGSHIFT_2MB
 }
 
+#[inline]
 fn pgoff2mb(addr: *const u8) -> usize {
     (addr as usize) & PGMASK_2MB
-}
-
-pub fn closest_2mb_page(addr: *const u8) -> usize {
-    let off = pgoff2mb(addr);
-    addr as usize - off
 }
 
 fn pgn1gb(off: usize) -> usize {
@@ -41,6 +40,24 @@ fn pgn1gb(off: usize) -> usize {
 
 fn pgoff1gb(addr: *const u8) -> usize {
     (addr as usize) & PGMASK_1GB
+}
+
+#[inline]
+pub fn closest_1g_page(addr: *const u8) -> usize {
+    let off = pgoff1gb(addr);
+    addr as usize - off
+}
+
+#[inline]
+pub fn closest_4k_page(addr: *const u8) -> usize {
+    let off = pgoff4kb(addr);
+    addr as usize - off
+}
+
+#[inline]
+pub fn closest_2mb_page(addr: *const u8) -> usize {
+    let off = pgoff2mb(addr);
+    addr as usize - off
 }
 
 #[derive(Eq, PartialEq, Hash, Debug, Clone)]

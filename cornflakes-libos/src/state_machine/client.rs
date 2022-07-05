@@ -41,7 +41,7 @@ pub trait ClientSM {
         &mut self,
         sga: ReceivedPkt<<Self as ClientSM>::Datapath>,
         datapath: &<Self as ClientSM>::Datapath,
-    ) -> Result<()>;
+    ) -> Result<bool>;
 
     /// What to do when a particular message times out.
     fn msg_timeout_cb(
@@ -148,11 +148,12 @@ pub trait ClientSM {
             for (pkt, rtt) in recved_pkts.into_iter() {
                 self.record_rtt(rtt);
                 let msg_id = pkt.msg_id();
-                self.process_received_msg(pkt, &datapath).wrap_err(format!(
+                if self.process_received_msg(pkt, &datapath).wrap_err(format!(
                     "Error in processing received response for pkt {}.",
                     msg_id
-                ))?;
-                self.increment_uniq_received();
+                ))? {
+                    self.increment_uniq_received();
+                }
                 recved += 1;
             }
         }
@@ -198,11 +199,12 @@ pub trait ClientSM {
                 for (pkt, rtt) in recved_pkts.into_iter() {
                     self.record_rtt(rtt);
                     let msg_id = pkt.msg_id();
-                    self.process_received_msg(pkt, &datapath).wrap_err(format!(
+                    if self.process_received_msg(pkt, &datapath).wrap_err(format!(
                         "Error in processing received response for pkt {}.",
                         msg_id
-                    ))?;
-                    self.increment_uniq_received();
+                    ))? {
+                        self.increment_uniq_received();
+                    }
                 }
 
                 if !no_retries {

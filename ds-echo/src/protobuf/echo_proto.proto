@@ -1,0 +1,35 @@
+syntax = "proto3";
+package echo_proto;
+
+message SingleBufferProto {
+    bytes message = 1;
+}
+
+message ListProto {
+    repeated bytes messages = 1;
+}
+
+message Tree1LProto {
+    SingleBufferProto left = 1;
+    SingleBufferProto right = 2;
+}
+
+message Tree2LProto {
+    Tree1LProto left = 1;
+    Tree1LProto right = 2;
+}
+
+message Tree3LProto {
+    Tree2LProto left = 1;
+    Tree2LProto right = 2;
+}
+
+message Tree4LProto {
+    Tree3LProto left = 1;
+    Tree3LProto right = 2;
+}
+
+message Tree5LProto {
+    Tree4LProto left = 1;
+    Tree4LProto right = 2;
+}

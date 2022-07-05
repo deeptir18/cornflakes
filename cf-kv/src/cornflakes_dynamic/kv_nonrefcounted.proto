@@ -1,0 +1,97 @@
+syntax = "proto3";
+package kv_sga_cornflakes;
+
+message GetReq {
+    uint32 id = 1;
+    string key = 2;
+}
+
+message GetMReq {
+    uint32 id = 1;
+    repeated string keys = 2;
+}
+
+message GetListReq {
+    uint32 id = 1;
+    string key = 2;
+}
+
+message GetResp {
+    uint32 id = 1;
+    bytes val = 2;
+}
+
+message GetMResp {
+    uint32 id = 1;
+    repeated bytes vals = 2;
+}
+
+message GetListResp {
+    uint32 id = 1;
+    repeated bytes val_list = 2;
+}
+
+message PutReq {
+    uint32 id = 1;
+    string key = 2;
+    bytes val = 3;
+}
+
+message PutMReq {
+    uint32 id = 1;
+    repeated string keys = 2;
+    repeated bytes vals = 3;
+}
+
+message PutListReq {
+    uint32 id = 1;
+    string key = 2;
+    repeated bytes vals = 3;
+}
+
+message PutResp {
+    uint32 id = 1;
+}
+
+message AddUser {
+    repeated string keys = 1;
+    repeated bytes values = 2;
+}
+
+message AddUserResponse {
+    bytes first_value = 1;
+}
+
+message FollowUnfollow {
+    repeated string keys = 1;
+    repeated bytes values = 2;
+}
+
+message FollowUnfollowResponse {
+    repeated bytes original_values = 1;
+}
+
+message PostTweet {
+    repeated string keys = 1;
+    repeated bytes values = 2;
+}
+message PostTweetResponse {
+    repeated bytes values = 1;
+}
+
+message GetTimeline {
+    repeated string keys = 1;
+}
+
+message GetTimelineResponse {
+    repeated bytes values = 1;
+}
+
+message RetwisMessage {
+    repeated GetReq get_requests = 1;
+    repeated PutReq put_requests = 2;
+}
+
+message RetwisResponse {
+    repeated GetResp get_responses = 1;
+}

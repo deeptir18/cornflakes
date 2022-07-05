@@ -414,7 +414,7 @@ static void calculate_latencies(Packet_Map_t *map, Latency_Dist_t *dist, size_t 
 #define PAGE_SIZE 4096
 /******************************************/
 /******************************************/
-#define MAX_THREADS 8
+#define MAX_THREADS 20
 /*Static Variables*/
 enum {
     MODE_UDP_CLIENT = 0,
@@ -467,8 +467,8 @@ size_t array_size = 10000; // default array size
 static struct ClientRequest *client_requests[MAX_THREADS];
 static struct OutgoingHeader outgoing_headers[MAX_THREADS];
 static struct Summary_Statistics_t summary_statistics[MAX_THREADS];
-static char *tx_pool_names[MAX_THREADS] = {"tx_pool_0", "tx_pool_1", "tx_pool_2", "tx_pool_3", "tx_pool_4", "tx_pool_5", "tx_pool_6", "tx_pool_7"};
-static char *rx_pool_names[MAX_THREADS] = {"rx_pool_0", "rx_pool_1", "rx_pool_2", "rx_pool_3", "rx_pool_4", "rx_pool_5", "rx_pool_6", "rx_pool_7"};
+static char *tx_pool_names[MAX_THREADS] = {"tx_pool_0", "tx_pool_1", "tx_pool_2", "tx_pool_3", "tx_pool_4", "tx_pool_5", "tx_pool_6", "tx_pool_7", "tx_pool_8", "tx_pool_9", "tx_pool_10", "tx_pool_11", "tx_pool_12", "tx_pool_13", "tx_pool_14", "tx_pool_15"};
+static char *rx_pool_names[MAX_THREADS] = {"rx_pool_0", "rx_pool_1", "rx_pool_2", "rx_pool_3", "rx_pool_4", "rx_pool_5", "rx_pool_6", "rx_pool_7", "rx_pool_8", "rx_pool_9", "rx_pool_10", "rx_pool_11", "rx_pool_12", "rx_pool_13", "rx_pool_14", "rx_pool_15"};
 static char *server_payload_regions[MAX_THREADS];
 
 #ifdef __TIMERS__
@@ -1092,9 +1092,8 @@ static int global_init(size_t num_queues) {
     // for each "queue", initialize a tx and rx pool.
     // attach rx pool to the queue.
     // create a pool of memory for ring buffers
-    fprintf(stderr, "In global_init\n");
     for (size_t i = 0; i < num_queues; i++) {
-        NETPERF_INFO("Initializing tx pool %s", tx_pool_names[i]);
+        NETPERF_DEBUG("Initializing tx pool %s", tx_pool_names[i]);
         struct rte_mempool *tx_mbuf_pool = rte_pktmbuf_pool_create(
                         tx_pool_names[i],
                         NUM_MBUFS * dpdk_nbports,
@@ -1103,7 +1102,8 @@ static int global_init(size_t num_queues) {
                         MBUF_BUF_SIZE,
                         rte_socket_id());
         if (tx_mbuf_pool == NULL) {
-            printf("Failed to initialize tx mempool\n");
+            NETPERF_WARN("Failed to initialize tx mempool %lu, rte_errno: %s", i, rte_strerror(rte_errno));
+            return -ENOMEM;
         }
         fprintf(stderr, "Initialized tx pool\n");
         if (rte_mempool_obj_iter(
@@ -1131,26 +1131,28 @@ static int global_init(size_t num_queues) {
                         MBUF_BUF_SIZE * 2,
                         rte_socket_id());
         if (rx_mbuf_pool == NULL) {
+            NETPERF_WARN("Failed to init rx mbuf pool %lu", i);
             return 1;
-            printf("Failed to initialize rx mempool\n");
         }
         fprintf(stderr, "allocated rx pool\n");
         if (rte_mempool_obj_iter(
             rx_mbuf_pool,
             &custom_init_priv,
             NULL) != (NUM_MBUFS * dpdk_nbports)) {
+                NETPERF_INFO("Custom init priv not working");
                 return 1;
         }
-        fprintf(stderr, "ran custom init prov on rx pool\n");
+        fprintf(stderr, "ran custom init priv on rx pool\n");
         if (rte_mempool_obj_iter(
             rx_mbuf_pool,
             &custom_pkt_init_with_header,
             NULL) != (NUM_MBUFS * dpdk_nbports)) {
+                NETPERF_INFO("Obj iter for custom pkt init with header is not correct");
                 return 1;
         }
         rx_mbuf_pools[i] = rx_mbuf_pool;
+        NETPERF_INFO("Finished processing for rx mbuf pool %lu", i);
     } 
-    fprintf(stderr, "about to do port init\n");
     // initialize all ports
     uint16_t i = 0;
     uint16_t port_id = 0;
@@ -1173,6 +1175,7 @@ static int global_init(size_t num_queues) {
     if (rte_lcore_count() > 1) {
         printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
     }
+    NETPERF_INFO("Finished global init, exiting");
     return 0;
 }
 
@@ -2097,6 +2100,7 @@ main(int argc, char **argv)
     ret = global_init(num_client_threads);
     if (ret != 0) {
         NETPERF_WARN("Something wrong with dpdk global thread init: %s", strerror(ret));
+        return -1;
     }
 
     if (mode == MODE_MEMCPY_BENCH) {

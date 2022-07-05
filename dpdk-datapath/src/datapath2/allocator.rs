@@ -14,15 +14,6 @@ pub struct MempoolInfo {
     headroom: usize,         // headroom at front of mbuf
 }
 
-impl Default for MempoolInfo {
-    fn default() -> Self {
-        MempoolInfo {
-            handle: std::ptr::null_mut(),
-            ..Default::default()
-        }
-    }
-}
-
 impl MempoolInfo {
     pub fn new(handle: *mut rte_mempool) -> Result<Self> {
         let (start, size, object_size, beginning_offset, page_offset, headroom) =

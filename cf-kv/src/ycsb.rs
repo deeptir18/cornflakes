@@ -1,8 +1,8 @@
 use super::{
-    allocate_datapath_buffer, KVServer, ListKVServer, MsgType, RequestGenerator,
-    ServerLoadGenerator,
+    allocate_datapath_buffer, ClientSerializer, KVServer, ListKVServer, MsgType, RequestGenerator,
+    ServerLoadGenerator, ZeroCopyPutKVServer, REQ_TYPE_SIZE,
 };
-use color_eyre::eyre::{bail, ensure, Result};
+use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_libos::{allocator::MempoolID, datapath::Datapath};
 use hashbrown::HashMap;
 use std::{
@@ -13,6 +13,103 @@ const MAX_BATCHES: usize = 8;
 const DEFAULT_VALUE_SIZE: usize = 4096;
 const DEFAULT_NUM_KEYS: usize = 1;
 const DEFAULT_NUM_VALUES: usize = 1;
+use rand::{
+    distributions::{Distribution, Uniform},
+    thread_rng,
+};
+
+#[derive(Debug, Clone)]
+pub enum YCSBValueSizeGenerator {
+    UniformOverSizes(Vec<usize>, Uniform<usize>, usize),
+    UniformOverRange(Uniform<usize>, usize),
+    SingleValue(usize),
+}
+
+impl std::str::FromStr for YCSBValueSizeGenerator {
+    type Err = color_eyre::eyre::Error;
+    fn from_str(s: &str) -> Result<YCSBValueSizeGenerator> {
+        tracing::info!("Parsing from {}", s);
+        let split: Vec<&str> = s.split("-").collect();
+        if split.len() < 2 {
+            bail!(
+                "Request shape pattern needs atleast 2 items, got: {:?}",
+                split
+            );
+        }
+        let numbers_result: Result<Vec<usize>> = split
+            .iter()
+            .skip(1)
+            .map(|x| match x.parse::<usize>() {
+                Ok(s) => Ok(s),
+                Err(e) => {
+                    bail!("Failed to parse {}: err {:?}", x, e);
+                }
+            })
+            .collect();
+        let numbers = numbers_result.wrap_err("Not able to parse numbers result")?;
+        if split[0] == "UniformOverRange" {
+            if numbers.len() != 2 {
+                bail!(
+                    "UniformOverRange must provide a start and end range; got: {:?}",
+                    numbers
+                );
+            }
+
+            Ok(YCSBValueSizeGenerator::from_range(numbers[0], numbers[1]))
+        } else if split[0] == "UniformOverSizes" {
+            Ok(YCSBValueSizeGenerator::from_sizes(numbers))
+        } else if split[0] == "SingleValue" {
+            if numbers.len() != 1 {
+                bail!(
+                    "Single value must provide a single size, got: {:?}",
+                    numbers
+                );
+            }
+            Ok(YCSBValueSizeGenerator::from_single_size(numbers[0]))
+        } else {
+            bail!("First part of value generator must be one of [UniformOverSizes, UniformOverRange, SingleValue], got: {:?}", split[0]);
+        }
+    }
+}
+
+impl YCSBValueSizeGenerator {
+    pub fn from_sizes(sizes: Vec<usize>) -> Self {
+        let uniform = Uniform::from(0..sizes.len());
+        let average = sizes.iter().sum::<usize>() / sizes.len();
+        YCSBValueSizeGenerator::UniformOverSizes(sizes, uniform, average)
+    }
+
+    pub fn from_range(a: usize, b: usize) -> Self {
+        YCSBValueSizeGenerator::UniformOverRange(Uniform::from(a..b), (a + b) / 2)
+    }
+
+    pub fn from_single_size(a: usize) -> Self {
+        YCSBValueSizeGenerator::SingleValue(a)
+    }
+
+    fn sample(&self) -> usize {
+        match self {
+            YCSBValueSizeGenerator::UniformOverSizes(sizes, uniform, _) => {
+                let mut rng = thread_rng();
+                let index = uniform.sample(&mut rng);
+                sizes[index]
+            }
+            YCSBValueSizeGenerator::UniformOverRange(uniform, _) => {
+                let mut rng = thread_rng();
+                uniform.sample(&mut rng)
+            }
+            YCSBValueSizeGenerator::SingleValue(value_size) => *value_size,
+        }
+    }
+
+    pub fn avg_size(&self) -> usize {
+        match self {
+            YCSBValueSizeGenerator::UniformOverSizes(_, _, x) => *x,
+            YCSBValueSizeGenerator::UniformOverRange(_, x) => *x,
+            YCSBValueSizeGenerator::SingleValue(value_size) => *value_size,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YCSBLine {
@@ -102,7 +199,7 @@ impl YCSBLine {
 }
 
 pub struct YCSBServerLoader {
-    value_size: usize,
+    value_size: YCSBValueSizeGenerator,
     num_values: usize,
     num_keys: usize,
     allocate_contiguously: bool,
@@ -110,7 +207,7 @@ pub struct YCSBServerLoader {
 
 impl YCSBServerLoader {
     pub fn new(
-        value_size: usize,
+        value_size: YCSBValueSizeGenerator,
         num_values: usize,
         num_keys: usize,
         allocate_contiguously: bool,
@@ -198,7 +295,8 @@ impl ServerLoadGenerator for YCSBServerLoader {
     type RequestLine = YCSBLine;
 
     fn read_request(&self, line: &str) -> Result<Self::RequestLine> {
-        YCSBLine::new(line, self.num_keys, self.num_values, self.value_size)
+        let value_size = self.value_size.sample();
+        YCSBLine::new(line, self.num_keys, self.num_values, value_size)
     }
 
     fn modify_server_state_ref_kv(
@@ -257,8 +355,10 @@ impl ServerLoadGenerator for YCSBServerLoader {
         request_file: &str,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
+        _zero_copy_server: &mut ZeroCopyPutKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
+        _use_zero_copy_puts: bool,
     ) -> Result<()>
     where
         D: Datapath,
@@ -305,8 +405,10 @@ impl ServerLoadGenerator for YCSBServerLoader {
         request: &Self::RequestLine,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
+        _zero_copy_server: &mut ZeroCopyPutKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
+        _use_zero_copy_puts: bool,
     ) -> Result<()>
     where
         D: Datapath,
@@ -334,22 +436,40 @@ pub struct YCSBClient {
     cur_client_id: usize,
     lines: Lines<BufReader<File>>,
     line_id: usize,
-    value_size: usize,
+    value_size: YCSBValueSizeGenerator,
     num_values: usize,
     num_keys: usize,
 }
 
 impl YCSBClient {
-    pub fn set_num_keys(&mut self, num: usize) {
-        self.num_keys = num;
-    }
-
-    pub fn set_value_size(&mut self, val: usize) {
-        self.value_size = val;
-    }
-
-    pub fn set_num_values(&mut self, num: usize) {
-        self.num_values = num;
+    pub fn new_ycsb_client(
+        request_file: &str,
+        client_id: usize,
+        thread_id: usize,
+        max_clients: usize,
+        max_threads: usize,
+        value_size_generator: YCSBValueSizeGenerator,
+        num_keys: usize,
+        num_values: usize,
+    ) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let file = File::open(request_file)?;
+        let reader = BufReader::new(file);
+        Ok(YCSBClient {
+            client_id: client_id,
+            thread_id: thread_id,
+            total_num_clients: max_clients,
+            total_num_threads: max_threads,
+            cur_thread_id: 0,
+            cur_client_id: 0,
+            lines: reader.lines(),
+            line_id: 0,
+            value_size: value_size_generator,
+            num_keys: num_keys,
+            num_values: num_values,
+        })
     }
 
     fn increment(&mut self) {
@@ -367,6 +487,167 @@ impl YCSBClient {
 
     fn increment_thread_id_counter(&mut self) {
         self.cur_thread_id = (self.cur_thread_id + 1) % self.total_num_threads;
+    }
+
+    fn emit_get_data<'a>(
+        &self,
+        req: &'a <Self as RequestGenerator>::RequestLine,
+    ) -> Result<&'a str> {
+        Ok(req.get_keys()[0].as_str())
+    }
+
+    fn emit_put_data<'a>(
+        &self,
+        req: &'a <Self as RequestGenerator>::RequestLine,
+    ) -> Result<(&'a str, &'a str)> {
+        Ok((req.get_keys()[0].as_str(), req.get_values()[0].as_str()))
+    }
+
+    fn emit_getm_data<'a>(
+        &self,
+        req: &'a <Self as RequestGenerator>::RequestLine,
+        _size: u16,
+    ) -> Result<&'a Vec<String>> {
+        Ok(&req.get_keys())
+    }
+
+    fn emit_putm_data<'a>(
+        &self,
+        req: &'a <Self as RequestGenerator>::RequestLine,
+        _size: u16,
+    ) -> Result<(&'a Vec<String>, &'a Vec<String>)> {
+        Ok((&req.get_keys(), &req.get_values()))
+    }
+
+    fn emit_get_list_data<'a>(
+        &self,
+        req: &'a <Self as RequestGenerator>::RequestLine,
+        _size: u16,
+    ) -> Result<&'a str> {
+        Ok(req.get_keys()[0].as_str())
+    }
+
+    fn emit_put_list_data<'a>(
+        &self,
+        req: &'a <Self as RequestGenerator>::RequestLine,
+        _size: u16,
+    ) -> Result<(&'a str, &'a Vec<String>)> {
+        Ok((req.get_keys()[0].as_str(), &req.get_values()))
+    }
+
+    fn emit_append_data<'a>(
+        &self,
+        req: &'a <Self as RequestGenerator>::RequestLine,
+        _size: u16,
+    ) -> Result<(&'a str, &'a str)> {
+        Ok((req.get_keys()[0].as_str(), req.get_values()[0].as_str()))
+    }
+
+    fn check_get(
+        &self,
+        request: &<Self as RequestGenerator>::RequestLine,
+        value: Vec<u8>,
+        kv: &HashMap<String, String>,
+    ) -> Result<()> {
+        let key = request.get_keys()[0].as_str();
+        match kv.get(key) {
+            Some(val) => {
+                ensure!(
+                    val.as_str().as_bytes() == value.as_slice(),
+                    format!(
+                        "Check get failed. Expected: {:?}, Recved: {:?}",
+                        val.as_str().as_bytes(),
+                        value
+                    )
+                );
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    fn check_getm(
+        &self,
+        request: &<Self as RequestGenerator>::RequestLine,
+        values: Vec<Vec<u8>>,
+        kv: &HashMap<String, String>,
+    ) -> Result<()> {
+        ensure!(
+            values.len() == self.num_values,
+            format!(
+                "received values of length {}, expected {}",
+                values.len(),
+                self.num_values
+            )
+        );
+        for (key, received_value) in request.get_keys().iter().zip(values.iter()) {
+            match kv.get(key) {
+                Some(expected_value) => {
+                    ensure!(
+                        &expected_value.as_str().as_bytes() == &received_value.as_slice(),
+                        format!(
+                            "Check get failed. Expected: {:?}, Recved: {:?}",
+                            expected_value.as_str().as_bytes(),
+                            received_value,
+                        )
+                    );
+                }
+                None => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn check_get_list(
+        &self,
+        request: &<Self as RequestGenerator>::RequestLine,
+        values: Vec<Vec<u8>>,
+        list_kv: &HashMap<String, Vec<String>>,
+    ) -> Result<()> {
+        let key = request.get_keys()[0].as_str();
+        match list_kv.get(key) {
+            Some(val_list) => {
+                ensure!(
+                    values.len() == val_list.len(),
+                    format!(
+                        "expected values of length {}, received {}",
+                        val_list.len(),
+                        values.len(),
+                    )
+                );
+
+                for (expected_value, received_value) in val_list.iter().zip(values.iter()) {
+                    ensure!(
+                        &expected_value.as_str().as_bytes() == &received_value.as_slice(),
+                        format!(
+                            "Check get failed. Expected: {:?}, Recved: {:?}",
+                            expected_value.as_str().as_bytes(),
+                            received_value,
+                        )
+                    );
+                }
+            }
+            None => {
+                ensure!(
+                    values.len() == self.num_values,
+                    format!(
+                        "Expected value list of length {}, received {}",
+                        self.num_values,
+                        values.len()
+                    )
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn get_request(&self, line: &str) -> Result<<Self as RequestGenerator>::RequestLine> {
+        YCSBLine::new(
+            line,
+            self.num_keys,
+            self.num_values,
+            self.value_size.sample(),
+        )
     }
 }
 
@@ -394,13 +675,13 @@ impl RequestGenerator for YCSBClient {
             cur_client_id: 0,
             lines: reader.lines(),
             line_id: 0,
-            value_size: DEFAULT_VALUE_SIZE,
+            value_size: YCSBValueSizeGenerator::SingleValue(DEFAULT_VALUE_SIZE),
             num_keys: DEFAULT_NUM_KEYS,
             num_values: DEFAULT_NUM_VALUES,
         })
     }
 
-    fn next_line(&mut self) -> Result<Option<String>> {
+    fn next_request(&mut self) -> Result<Option<Self::RequestLine>> {
         loop {
             // find the next request with our client and thread id
             if self.cur_client_id == self.client_id && self.cur_thread_id == self.thread_id {
@@ -414,7 +695,7 @@ impl RequestGenerator for YCSBClient {
                                 self.line_id
                             );
                             self.increment();
-                            return Ok(Some(s));
+                            return Ok(Some(self.get_request(&s)?));
                         }
                         Err(e) => {
                             bail!("Could not get next line in iterator: {:?}", e);
@@ -433,182 +714,117 @@ impl RequestGenerator for YCSBClient {
         }
     }
 
-    fn get_request(&self, line: &str) -> Result<Self::RequestLine> {
-        YCSBLine::new(line, self.num_keys, self.num_values, self.value_size)
-    }
-
-    fn message_type(&self, req: &Self::RequestLine) -> Result<MsgType> {
+    fn message_type(&self, req: &<Self as RequestGenerator>::RequestLine) -> Result<MsgType> {
         Ok(req.msg_type())
     }
 
-    fn check_get(
+    fn serialize_request<S, D>(
         &self,
-        request: &Self::RequestLine,
-        value: &[u8],
-        kv: &HashMap<String, String>,
-    ) -> Result<()> {
-        let key = request.get_keys()[0].as_str();
-        match kv.get(key) {
-            Some(val) => {
-                ensure!(
-                    val.as_str().as_bytes() == value,
-                    format!(
-                        "Check get failed. Expected: {:?}, Recved: {:?}",
-                        val.as_str().as_bytes(),
-                        value
-                    )
+        request: &<Self as RequestGenerator>::RequestLine,
+        buf: &mut [u8],
+        serializer: &S,
+        datapath: &D,
+    ) -> Result<usize>
+    where
+        S: ClientSerializer<D>,
+        D: Datapath,
+    {
+        request.msg_type().to_buf(buf);
+        let bufsize = match request.msg_type() {
+            MsgType::Get => serializer.serialize_get(
+                &mut buf[REQ_TYPE_SIZE..],
+                self.emit_get_data(&request)?,
+                datapath,
+            )?,
+            MsgType::Put => {
+                let put_data = self.emit_put_data(&request)?;
+                serializer.serialize_put(&mut buf[2..], put_data.0, put_data.1, datapath)?
+            }
+            MsgType::GetM(size) => serializer.serialize_getm(
+                &mut buf[REQ_TYPE_SIZE..],
+                self.emit_getm_data(&request, size)?,
+                datapath,
+            )?,
+            MsgType::PutM(size) => {
+                let put_data = self.emit_putm_data(&request, size)?;
+                serializer.serialize_putm(
+                    &mut buf[REQ_TYPE_SIZE..],
+                    put_data.0,
+                    put_data.1,
+                    datapath,
+                )?
+            }
+            MsgType::GetList(size) => serializer.serialize_get_list(
+                &mut buf[REQ_TYPE_SIZE..],
+                self.emit_get_list_data(&request, size)?,
+                datapath,
+            )?,
+            MsgType::PutList(size) => {
+                let put_data = self.emit_put_list_data(&request, size)?;
+                serializer.serialize_put_list(
+                    &mut buf[REQ_TYPE_SIZE..],
+                    put_data.0,
+                    put_data.1,
+                    datapath,
+                )?
+            }
+            MsgType::AppendToList(size) => {
+                let append_data = self.emit_append_data(&request, size)?;
+                serializer.serialize_append(
+                    &mut buf[REQ_TYPE_SIZE..],
+                    append_data.0,
+                    append_data.1,
+                    datapath,
+                )?
+            }
+            _ => {
+                bail!(
+                    "YCSB client does not handle request type: {:?}",
+                    request.msg_type()
                 );
             }
-            None => {
-                ensure!(
-                    value.len() == self.value_size,
-                    format!(
-                        "Expected value of length {}, received {}",
-                        self.value_size,
-                        value.len()
-                    )
-                );
-            }
-        }
-        Ok(())
+        };
+        Ok(bufsize + REQ_TYPE_SIZE)
     }
-
-    fn check_getm(
+    fn check_response<S, D>(
         &self,
-        request: &Self::RequestLine,
-        values: Vec<&[u8]>,
+        request: &<Self as RequestGenerator>::RequestLine,
+        buf: &[u8],
+        serializer: &S,
         kv: &HashMap<String, String>,
-    ) -> Result<()> {
-        ensure!(
-            values.len() == self.num_values,
-            format!(
-                "received values of length {}, expected {}",
-                values.len(),
-                self.num_values
-            )
-        );
-        for (key, received_value) in request.get_keys().iter().zip(values.iter()) {
-            match kv.get(key) {
-                Some(expected_value) => {
-                    ensure!(
-                        &expected_value.as_str().as_bytes() == received_value,
-                        format!(
-                            "Check get failed. Expected: {:?}, Recved: {:?}",
-                            expected_value.as_str().as_bytes(),
-                            received_value,
-                        )
-                    );
-                }
-                None => {
-                    ensure!(
-                        received_value.len() == self.value_size,
-                        format!(
-                            "Expected value of length {}, received {}",
-                            self.value_size,
-                            received_value.len()
-                        )
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn check_get_list(
-        &self,
-        request: &Self::RequestLine,
-        values: Vec<&[u8]>,
         list_kv: &HashMap<String, Vec<String>>,
-    ) -> Result<()> {
-        let key = request.get_keys()[0].as_str();
-        match list_kv.get(key) {
-            Some(val_list) => {
-                ensure!(
-                    values.len() == val_list.len(),
-                    format!(
-                        "expected values of length {}, received {}",
-                        val_list.len(),
-                        values.len(),
-                    )
-                );
-
-                for (expected_value, received_value) in val_list.iter().zip(values.iter()) {
-                    ensure!(
-                        &expected_value.as_str().as_bytes() == received_value,
-                        format!(
-                            "Check get failed. Expected: {:?}, Recved: {:?}",
-                            expected_value.as_str().as_bytes(),
-                            received_value,
-                        )
-                    );
+    ) -> Result<bool>
+    where
+        S: ClientSerializer<D>,
+        D: Datapath,
+    {
+        match request.msg_type() {
+            MsgType::Get => {
+                if cfg!(debug_assertions) {
+                    let val = serializer.deserialize_get_response(buf)?;
+                    self.check_get(&request, val, &kv)?;
                 }
             }
-            None => {
-                ensure!(
-                    values.len() == self.num_values,
-                    format!(
-                        "Expected value list of length {}, received {}",
-                        self.num_values,
-                        values.len()
-                    )
-                );
-                for (i, received_value) in values.iter().enumerate() {
-                    ensure!(
-                        received_value.len() == self.value_size,
-                        format!(
-                            "List item {}, Expected value of length {}, received {}",
-                            i,
-                            self.value_size,
-                            received_value.len()
-                        )
-                    );
+            MsgType::GetM(_size) => {
+                if cfg!(debug_assertions) {
+                    let vals = serializer.deserialize_getm_response(buf)?;
+                    self.check_getm(&request, vals, &kv)?;
                 }
+            }
+            MsgType::GetList(_size) => {
+                if cfg!(debug_assertions) {
+                    let vals = serializer.deserialize_getlist_response(buf)?;
+                    self.check_get_list(&request, vals, &list_kv)?;
+                }
+            }
+            MsgType::Put => {}
+            MsgType::PutM(_size) => {}
+            MsgType::PutList(_size) => {}
+            _ => {
+                bail!("YCSB Generator does not check requests other than get & put");
             }
         }
-        Ok(())
-    }
 
-    fn emit_get_data<'a>(&self, req: &'a Self::RequestLine) -> Result<&'a str> {
-        Ok(req.get_keys()[0].as_str())
-    }
-
-    fn emit_put_data<'a>(&self, req: &'a Self::RequestLine) -> Result<(&'a str, &'a str)> {
-        Ok((req.get_keys()[0].as_str(), req.get_values()[0].as_str()))
-    }
-
-    fn emit_getm_data<'a>(
-        &self,
-        req: &'a Self::RequestLine,
-        _size: u16,
-    ) -> Result<&'a Vec<String>> {
-        Ok(&req.get_keys())
-    }
-
-    fn emit_putm_data<'a>(
-        &self,
-        req: &'a Self::RequestLine,
-        _size: u16,
-    ) -> Result<(&'a Vec<String>, &'a Vec<String>)> {
-        Ok((&req.get_keys(), &req.get_values()))
-    }
-
-    fn emit_get_list_data<'a>(&self, req: &'a Self::RequestLine, _size: u16) -> Result<&'a str> {
-        Ok(req.get_keys()[0].as_str())
-    }
-
-    fn emit_put_list_data<'a>(
-        &self,
-        req: &'a Self::RequestLine,
-        _size: u16,
-    ) -> Result<(&'a str, &'a Vec<String>)> {
-        Ok((req.get_keys()[0].as_str(), &req.get_values()))
-    }
-
-    fn emit_append_data<'a>(
-        &self,
-        req: &'a Self::RequestLine,
-        _size: u16,
-    ) -> Result<(&'a str, &'a str)> {
-        Ok((req.get_keys()[0].as_str(), req.get_values()[0].as_str()))
+        return Ok(true);
     }
 }
