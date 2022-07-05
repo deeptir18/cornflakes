@@ -606,7 +606,7 @@ static void initialize_client_requests_common(size_t num_total_clients) {
         size_t client_thread_id = (machine_id * num_client_threads) + client_id;
         size_t start_offset = (num_segments_within_region / (num_client_threads * num_total_machines)) * client_thread_id;
         uint64_t cur_region_idx = indices[0]; // TODO: start them all at an offset from each other?
-        NETPERF_INFO("For client %lu, start_idx is %lu/%lu", client_id, start_offset, num_segments_within_region);
+        NETPERF_INFO("For machine %lu client %lu, start_idx is %lu/%lu", machine_id, client_id, start_offset, num_segments_within_region);
         for (size_t cur_offset = 0; cur_offset < start_offset; cur_offset++) {
             cur_region_idx = get_next_ptr(indices, cur_region_idx);
         }
@@ -1015,9 +1015,9 @@ static int wait_for_link_status_up(uint16_t port_id) {
 
 }
 
-static int init_dpdk_port(uint16_t port_id, struct rte_mempool **rx_mbuf_pools, size_t num_queues) {
+static int init_dpdk_port(uint16_t port_id, struct rte_mempool *rx_mempools[MAX_THREADS], size_t num_queues) {
     static __thread int thread_id;
-    printf("Initializing port %u\n", (unsigned)(port_id));
+    printf("Initializing port %u with %lu tx rings and rx rings\n", (unsigned)(port_id), num_queues);
   	NETPERF_IS_ONE(rte_eth_dev_is_valid_port(port_id), "Invalid port num");
     const uint16_t rx_rings = num_queues;
     const uint16_t tx_rings = num_queues;
@@ -1053,27 +1053,44 @@ static int init_dpdk_port(uint16_t port_id, struct rte_mempool **rx_mbuf_pools, 
     tx_conf.tx_thresh.wthresh = TX_WTHRESH;
 
     // configure the ethernet device.
-    rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);
+    int ret = rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);
+    if (ret != 0) {
+        NETPERF_WARN("Rte eth dev configure failed; rte_error: %s", rte_strerror(rte_errno));
+        return rte_errno;
+    }
+    NETPERF_INFO("Finished rte_eth_dev_configure");
 
     // todo: this call fails and i don't understand why.
     int socket_id = rte_eth_dev_socket_id(port_id);
 
     // allocate and set up num_queues RX queue per Ethernet port.
     for (uint16_t i = 0; i < rx_rings; ++i) {
-        rte_eth_rx_queue_setup(port_id, i, nb_rxd, socket_id, &rx_conf, rx_mbuf_pools[i]);
+        int ret = rte_eth_rx_queue_setup(port_id, i, nb_rxd, socket_id, &rx_conf, rx_mbuf_pools[i]);
+        if (ret != 0) {
+            NETPERF_WARN("Failed to do rx queue setup for queue %u out of %u; rte_errno: %s", i, rx_rings, rte_strerror(rte_errno));
+            return rte_errno;
+        }
     }
+    NETPERF_INFO("Finished rx queue setup");
 
     // allocate and set up num_queues TX queue per Ethernet port.
     for (uint16_t i = 0; i < tx_rings; ++i) {
         NETPERF_DEBUG("Initializing tx queue %u", i);
-        rte_eth_tx_queue_setup(port_id, i, nb_txd, socket_id, &tx_conf);
+        int ret = rte_eth_tx_queue_setup(port_id, i, nb_txd, socket_id, &tx_conf);
+        if (ret != 0) {
+            NETPERF_WARN("Failed to do tx queue setup for queue %u out of %u; rte_errno: %s", i, tx_rings, rte_strerror(rte_errno));
+            return rte_errno;
+        }
     }
-
+    NETPERF_INFO("Finished tx queue setup");
     // start the ethernet port.
     int dev_start_ret = rte_eth_dev_start(port_id);
     if (dev_start_ret != 0) {
-        printf("Failed to start ethernet for prot %u\n", (unsigned)port_id);
+        NETPERF_WARN("Failed to start ethernet for port %u; rte_errno: %s", (unsigned)port_id, rte_strerror(rte_errno));
+        return rte_errno;
     }
+    rte_eth_promiscuous_enable(port_id);
+    NETPERF_INFO("Finished dev start");
 
     // disable the rx/tx flow control
     struct rte_eth_fc_conf fc_conf = {};
@@ -1081,7 +1098,7 @@ static int init_dpdk_port(uint16_t port_id, struct rte_mempool **rx_mbuf_pools, 
     fc_conf.mode = RTE_FC_NONE;
     rte_eth_dev_flow_ctrl_set(port_id, &fc_conf);
     wait_for_link_status_up(port_id);
-
+    NETPERF_INFO("Finished wait for link status up");
    return 0;
 }
 
@@ -1152,7 +1169,8 @@ static int global_init(size_t num_queues) {
         }
         rx_mbuf_pools[i] = rx_mbuf_pool;
         NETPERF_INFO("Finished processing for rx mbuf pool %lu", i);
-    } 
+    }
+    NETPERF_INFO("Finished initializing all memory pools.");
     // initialize all ports
     uint16_t i = 0;
     uint16_t port_id = 0;
@@ -2103,6 +2121,9 @@ main(int argc, char **argv)
         return -1;
     }
 
+    ret = rte_eal_cleanup();
+    NETPERF_INFO("Rte_eal_cleanup returned %d", rte_eal_cleanup());
+    exit(0);
     if (mode == MODE_MEMCPY_BENCH) {
         return do_memcpy_bench();
     }
