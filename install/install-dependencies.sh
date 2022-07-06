@@ -1,10 +1,10 @@
-/bin/bash
+#!/bin/bash
 
 # currently works on debian systems (with access to apt-get)
 sudo apt-get update
 
 # Required for DPDK
-sudo apt-get install libbsd-dev libelf-dev libpcap-dev
+sudo apt-get install -y libbsd-dev libelf-dev libpcap-dev
 
 
 sudo apt-get install -y quilt chrpath graphviz swig libnl-route-3-200 libnl-route-3-dev dpatch libnl-3-dev
