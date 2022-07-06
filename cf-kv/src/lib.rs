@@ -2,6 +2,7 @@ pub mod capnproto;
 pub mod cornflakes_dynamic;
 pub mod flatbuffers;
 pub mod protobuf;
+pub mod redis;
 pub mod retwis;
 pub mod retwis_run_datapath;
 pub mod ycsb;

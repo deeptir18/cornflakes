@@ -1,0 +1,19 @@
+[package]
+name = "echo-dynamic-sga-c"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "echo_dynamic_sga_c"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+color-eyre = "0.5"
+cornflakes-libos = { path = "../cornflakes-libos" }
+cornflakes-codegen = { path = "../cornflakes-codegen" }
+linux-datapath = { path = "../linux-datapath" }
+
+[build-dependencies]
+cbindgen = "0.23.0"
+cornflakes-codegen = { path = "../cornflakes-codegen" }

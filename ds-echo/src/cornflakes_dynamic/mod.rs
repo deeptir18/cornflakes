@@ -248,6 +248,31 @@ where
         arena.reset();
         Ok(())
     }
+
+    fn process_requests_sga(
+        &mut self,
+        sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        datapath: &mut Self::Datapath,
+    ) -> Result<()> {
+        // TODO(ygina): is it ok to wrap this?
+        self.process_requests_ordered_sga(sga, datapath)
+    }
+
+    fn process_requests_rc_sga(
+        &mut self,
+        _sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn process_requests_single_buf(
+        &mut self,
+        _sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 fn deserialize_from_pkt_tree5l_sga<'obj, D>(

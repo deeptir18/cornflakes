@@ -98,6 +98,55 @@ impl ArgInfo {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CArgInfo {
+    is_ret: bool,
+    name: String,
+    ty: String,
+}
+
+impl CArgInfo {
+    pub fn len_arg(name: &str) -> CArgInfo {
+        CArgInfo {
+            is_ret: false,
+            name: format!("{}_len", name),
+            ty: String::from("usize"),
+        }
+    }
+
+    pub fn arg(name: &str, ty: &str) -> CArgInfo {
+        CArgInfo {
+            is_ret: false,
+            name: String::from(name),
+            ty: String::from(ty),
+        }
+    }
+
+    pub fn ret_len_arg() -> CArgInfo {
+        CArgInfo {
+            is_ret: true,
+            name: "return_len_ptr".to_string(),
+            ty: String::from("usize"),
+        }
+    }
+
+    pub fn ret_arg(ty: &str) -> CArgInfo {
+        CArgInfo {
+            is_ret: true,
+            name: "return_ptr".to_string(),
+            ty: String::from(ty),
+        }
+    }
+
+    pub fn get_string(&self) -> String {
+        if self.is_ret {
+            format!("{}: *mut {}", self.name, self.ty)
+        } else {
+            format!("{}: {}", self.name, self.ty)
+        }
+    }
+}
+
 pub trait ContextPop {
     /// Pops the next thing from this context and writes it as a line.
     /// Returns whether the context should be added back to the context list.
@@ -109,6 +158,8 @@ pub enum FunctionArg {
     SelfArg,
     MutSelfArg,
     Arg(String, ArgInfo),
+    CSelfArg,
+    CArg(CArgInfo),
 }
 
 impl FunctionArg {
@@ -117,8 +168,11 @@ impl FunctionArg {
             FunctionArg::SelfArg => "&self".to_string(),
             FunctionArg::MutSelfArg => "&mut self".to_string(),
             FunctionArg::Arg(name, info) => format!("{}: {}", name, info.get_type_string()),
+            FunctionArg::CSelfArg => "self_: *mut ::std::os::raw::c_void".to_string(),
+            FunctionArg::CArg(info) => info.get_string(),
         }
     }
+
     pub fn new_arg(name: &str, info: ArgInfo) -> Self {
         FunctionArg::Arg(name.to_string(), info)
     }
@@ -130,6 +184,7 @@ pub struct FunctionContext {
     pub is_pub: bool,
     pub args: Vec<FunctionArg>,
     ret_type: Option<String>,
+    is_extern_c: bool,
     started: bool,
     func_lifetime: Option<String>,
     where_clause: Option<String>,
@@ -145,11 +200,24 @@ impl FunctionContext {
             name: name.to_string(),
             is_pub: is_pub,
             args: args,
+            is_extern_c: false,
             started: false,
             ret_type: ret_type,
             func_lifetime: None,
             where_clause: None,
         }
+    }
+
+    pub fn new_extern_c(
+        name: &str,
+        is_pub: bool,
+        args: Vec<FunctionArg>,
+        err_code: bool,
+    ) -> Self {
+        let ret = if err_code { "u32" } else { "" };
+        let mut func_context = Self::new(name, is_pub, args, ret);
+        func_context.is_extern_c = true;
+        func_context
     }
 
     pub fn new_with_lifetime(
@@ -171,6 +239,7 @@ impl FunctionContext {
             name: name.to_string(),
             is_pub: is_pub,
             args: args,
+            is_extern_c: false,
             started: false,
             ret_type: ret_type,
             func_lifetime: lifetime,
@@ -187,6 +256,10 @@ impl ContextPop for FunctionContext {
             let is_pub_str = match self.is_pub {
                 true => "pub ".to_string(),
                 false => "".to_string(),
+            };
+            let (no_mangle_str, extern_c_str) = match self.is_extern_c {
+                true => ("\n#[no_mangle]".to_string(), "extern \"C\" ".to_string()),
+                false => ("".to_string(), "".to_string()),
             };
             let lifetime_str = match &self.func_lifetime {
                 Some(x) => format!("<{}>", x),
@@ -206,9 +279,11 @@ impl ContextPop for FunctionContext {
             };
             Ok((
                 format!(
-                    "{}\n{}fn {}{}({}) {} {} {{",
+                    "{}{}\n{}{}fn {}{}({}) {} {} {{",
                     inline_str,
+                    no_mangle_str,
                     is_pub_str,
+                    extern_c_str,
                     self.name,
                     lifetime_str,
                     args_string,
@@ -655,6 +730,18 @@ impl SerializationCompiler {
         }
     }
 
+    pub fn add_extern_crate(&mut self, crate_name: &str) -> Result<()> {
+        self.current_string.push_str(&format!("extern crate {};", crate_name));
+        self.add_newline()?;
+        Ok(())
+    }
+
+    pub fn add_mod_declaration(&mut self, mod_name: &str) -> Result<()> {
+        self.current_string.push_str(&format!("mod {};", mod_name));
+        self.add_newline()?;
+        Ok(())
+    }
+
     pub fn add_dependency(&mut self, dependency: &str) -> Result<()> {
         self.current_string
             .push_str(&format!("use {};", dependency));
@@ -710,7 +797,7 @@ impl SerializationCompiler {
         right: &str,
     ) -> Result<()> {
         let mut_str = match is_mut {
-            true => "mut",
+            true => "mut ",
             false => "",
         };
         let type_str = match typ {
@@ -718,7 +805,7 @@ impl SerializationCompiler {
             None => "".to_string(),
         };
         let line = format!(
-            "let {} {}{} = unsafe {{ {} }};",
+            "let {}{}{} = unsafe {{ {} }};",
             mut_str, left, type_str, right
         );
         self.add_line(&line)?;
@@ -768,6 +855,12 @@ impl SerializationCompiler {
         Ok(())
     }
 
+    pub fn add_unsafe_set(&mut self, left: &str, right: &str) -> Result<()> {
+        let line = format!("unsafe {{ *{} = {} }};", left, right);
+        self.add_line(&line)?;
+        Ok(())
+    }
+
     pub fn add_plus_equals(&mut self, left: &str, right: &str) -> Result<()> {
         let line = format!("{} += {};", left, right);
         self.add_line(&line)?;
@@ -803,6 +896,29 @@ impl SerializationCompiler {
         };
 
         let line = format!("{}{}({}){};", caller_str, func, args.join(", "), res);
+        self.add_line(&line)?;
+        Ok(())
+    }
+
+    pub fn add_func_call_with_let(
+        &mut self,
+        left: &str,
+        caller: Option<String>,
+        func: &str,
+        args: Vec<String>,
+        add_res: bool,
+    ) -> Result<()> {
+        let caller_str = match caller {
+            Some(x) => format!("{}.", x),
+            None => "".to_string(),
+        };
+
+        let res = match add_res {
+            true => "?",
+            false => "",
+        };
+
+        let line = format!("let {} = {}{}({}){};", left, caller_str, func, args.join(", "), res);
         self.add_line(&line)?;
         Ok(())
     }

@@ -109,6 +109,15 @@ impl ProtoReprInfo {
         return false;
     }
 
+    pub fn get_c_package_name(&self, folder: &str) -> PathBuf {
+        let mut pathbuf = PathBuf::new();
+        if folder != "" {
+            pathbuf.push(folder);
+        }
+        pathbuf.push(&format!("{}-c", str::replace(&self.repr.package, "_", "-")));
+        pathbuf
+    }
+
     pub fn get_output_file(&self, folder: &str) -> PathBuf {
         let mut pathbuf = PathBuf::new();
         if folder != "" {
@@ -136,6 +145,26 @@ impl ProtoReprInfo {
             }
         };
         Ok(default_val)
+    }
+
+    pub fn get_c_type(&self, field: FieldInfo) -> Result<String> {
+        let base_type = match &field.0.typ {
+            FieldType::Int32 => "i32".to_string(),
+            FieldType::Int64 => "i64".to_string(),
+            FieldType::Uint32 => "u32".to_string(),
+            FieldType::Uint64 => "u64".to_string(),
+            FieldType::Float => "f64".to_string(),
+            FieldType::Bytes | FieldType::RefCountedBytes => {
+                "*const ::std::os::raw::c_uchar".to_string()
+            }
+            FieldType::String | FieldType::RefCountedString => {
+                "*const ::std::os::raw::c_uchar".to_string()
+            }
+            _ => {
+                bail!("FieldType {:?} not supported by compiler", field.0.typ);
+            }
+        };
+        Ok(base_type)
     }
 
     pub fn get_rust_type(&self, field: FieldInfo) -> Result<String> {

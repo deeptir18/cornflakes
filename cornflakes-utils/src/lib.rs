@@ -241,6 +241,8 @@ pub enum SerializationType {
     Flatbuffers,
     /// Capnproto baseline.
     Capnproto,
+    /// Redis.
+    Redis,
     /// Normal, zero-copy cornflakes with a dynamically sized header.
     CornflakesDynamic,
     /// Cornflakes with a fixed size header.
@@ -266,6 +268,7 @@ impl std::str::FromStr for SerializationType {
             "protobuf" | "PROTOBUF" | "Protobuf" => SerializationType::Protobuf,
             "flatbuffers" | "FLATBUFFERS" | "Flatbuffers" => SerializationType::Flatbuffers,
             "capnproto" | "CAPNPROTO" | "Capnproto" => SerializationType::Capnproto,
+            "redis" => SerializationType::Redis,
             "cereal" | "CEREAL" | "Cereal" => SerializationType::Cereal,
             "cornflakes-dynamic" | "CORNFLAKES-DYNAMIC" | "Cornflakes-Dynamic"
             | "CornflakesDynamic" => SerializationType::CornflakesDynamic,

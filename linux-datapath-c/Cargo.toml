@@ -1,0 +1,19 @@
+[package]
+name = "linux-datapath-c"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "linux_datapath_c"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+tracing = "*"
+tracing-subscriber = "0.2.17"
+cornflakes-libos = { path = "../cornflakes-libos" }
+cornflakes-utils = { path = "../cornflakes-utils" }
+linux-datapath = { path = "../linux-datapath" }
+
+[build-dependencies]
+cbindgen = "0.23.0"

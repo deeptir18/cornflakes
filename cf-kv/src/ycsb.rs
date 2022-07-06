@@ -119,7 +119,7 @@ pub struct YCSBLine {
 }
 
 impl YCSBLine {
-    // derive YCSB request from line of the file
+    // derive YCSB request from line of the file
     pub fn new(
         line: &str,
         num_keys: usize,

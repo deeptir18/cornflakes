@@ -31,6 +31,7 @@ fn main() {
     let input_cf_path = kv_src_path.clone().join("cornflakes_dynamic");
     let input_cf_file_sga = input_cf_path.clone().join("kv.proto");
     // with ref counting
+    println!("{:?}", out_dir);
     match compile(
         input_cf_file_sga.as_path().to_str().unwrap(),
         &out_dir,
@@ -54,6 +55,19 @@ fn main() {
             panic!("Cornflakes dynamic sga failed: {:?}", e);
         }
     }
+
+    /*
+    match compile(
+        input_cf_file_sga.as_path().to_str().unwrap(),
+        &out_dir,
+        CompileOptions::new(HeaderType::Sga, Language::C),
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("Cornflakes dynamic sga failed: {:?}", e);
+        }
+    }
+    */
 
     // compile flatbuffers
     let input_fb_path = kv_src_path.clone().join("flatbuffers");

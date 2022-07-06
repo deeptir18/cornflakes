@@ -2,7 +2,8 @@ use cf_kv::{
     capnproto::{CapnprotoClient, CapnprotoKVServer},
     cornflakes_dynamic::{CornflakesClient, CornflakesKVServer},
     flatbuffers::{FlatbuffersClient, FlatbuffersKVServer},
-    protobuf::{ProtobufClient, ProtobufKVServer},
+    redis::{RedisClient},
+    //protobuf::{ProtobufClient, ProtobufKVServer},
     run_client, run_server,
     ycsb::{YCSBClient, YCSBServerLoader},
     ycsb_run_datapath::*,
@@ -32,9 +33,11 @@ fn main() -> Result<()> {
             SerializationType::Capnproto => {
                 run_server!(CapnprotoKVServer<Mlx5Connection>, Mlx5Connection, opt);
             }
+            /*
             SerializationType::Protobuf => {
                 run_server!(ProtobufKVServer<Mlx5Connection>, Mlx5Connection, opt);
             }
+            */
             _ => {
                 unimplemented!();
             }
@@ -49,9 +52,14 @@ fn main() -> Result<()> {
             SerializationType::Capnproto => {
                 run_client!(CapnprotoClient<Mlx5Connection>, Mlx5Connection, opt);
             }
+            SerializationType::Redis => {
+                run_client!(RedisClient<Mlx5Connection>, Mlx5Connection, opt);
+            }
+            /*
             SerializationType::Protobuf => {
                 run_client!(ProtobufClient<Mlx5Connection>, Mlx5Connection, opt);
             }
+            */
             _ => {
                 unimplemented!();
             }

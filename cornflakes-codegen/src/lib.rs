@@ -1,4 +1,5 @@
 mod header_utils;
+pub mod c_codegen;
 pub mod rust_codegen;
 pub mod utils;
 use color_eyre::eyre::{bail, Result, WrapErr};
@@ -128,7 +129,10 @@ pub fn compile(input_file: &str, output_folder: &str, options: CompileOptions) -
     }
     match options.language {
         Language::C => {
-            bail!("Code generation module for C not implemented yet.");
+            c_codegen::compile(&repr, output_folder, options).wrap_err(format!(
+                "Failed to run C Code gen module on input_file: {} with options: {:?}.",
+                input_file, options
+            ))?;
         }
         Language::Rust => {
             rust_codegen::compile(&repr, output_folder, options).wrap_err(format!(
