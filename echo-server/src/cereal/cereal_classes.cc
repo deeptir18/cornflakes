@@ -102,7 +102,7 @@ std::unique_ptr<SingleCereal> deserialize_single_cereal_from_array(rust::Slice<c
     try {
         cereal.load(iarchive);
     }
-    catch(std::runtime_error e) {
+    catch(std::runtime_error const& e) {
         printf("Failed to deserialize SingleCereal.\n");
         e.what();
     }
@@ -169,7 +169,7 @@ std::unique_ptr<ListCereal> deserialize_list_cereal_from_array(rust::Slice<const
     try {
         iarchive(cereal);
     }
-    catch(std::runtime_error e) {
+    catch(std::runtime_error const& e) {
         printf("Failed to deserialize ListCereal.\n");
         e.what();
     }
@@ -279,7 +279,7 @@ std::unique_ptr<Tree1Cereal> deserialize_tree1_cereal_from_array(rust::Slice<con
     try {
         cereal.load(iarchive);
     }
-    catch(std::runtime_error e) {
+    catch(std::runtime_error const& e) {
         printf("Failed to deserialize Tree1Cereal.\n");
         e.what();
     }
@@ -420,7 +420,7 @@ std::unique_ptr<Tree2Cereal> deserialize_tree2_cereal_from_array(rust::Slice<con
     try {
         cereal.load(iarchive);
     }
-    catch(std::runtime_error e) {
+    catch(std::runtime_error const& e) {
         printf("Failed to deserialize Tree2Cereal.\n");
         e.what();
     }
@@ -550,7 +550,7 @@ std::unique_ptr<Tree3Cereal> deserialize_tree3_cereal_from_array(rust::Slice<con
     try {
         cereal.load(iarchive);
     }
-    catch(std::runtime_error e) {
+    catch(std::runtime_error const& e) {
         printf("Failed to deserialize Tree3Cereal.\n");
         e.what();
     }
@@ -678,7 +678,7 @@ std::unique_ptr<Tree4Cereal> deserialize_tree4_cereal_from_array(rust::Slice<con
     try {
         iarchive(cereal);
     }
-    catch(std::runtime_error e) {
+    catch(std::runtime_error const& e) {
         printf("Failed to deserialize Tree4Cereal.\n");
         e.what();
     }
@@ -798,7 +798,7 @@ std::unique_ptr<Tree5Cereal> deserialize_tree5_cereal_from_array(rust::Slice<con
     try {
         cereal.load(iarchive);
     }
-    catch(std::runtime_error e) {
+    catch(std::runtime_error const& e) {
         printf("Failed to deserialize Tree5Cereal.\n");
         e.what();
     }
