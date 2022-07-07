@@ -2928,10 +2928,8 @@ impl Datapath for Mlx5Connection {
                     }
                 }
             };
-            let mut offset = 0;
             if !header_written {
                 self.copy_hdr(&mut data_buffer, conn_id, msg_id, buf.len())?;
-                offset += cornflakes_libos::utils::TOTAL_HEADER_SIZE;
             }
             if !inlined_obj_hdr {
                 #[cfg(feature = "profiler")]

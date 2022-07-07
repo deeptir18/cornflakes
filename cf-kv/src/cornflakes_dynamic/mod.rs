@@ -38,7 +38,7 @@ where
     _phantom: PhantomData<D>,
     zero_copy_puts: bool,
     with_copies: bool,
-    non_refcounted: bool,
+    _non_refcounted: bool,
 }
 
 impl<D> CornflakesSerializer<D>
@@ -50,7 +50,7 @@ where
             _phantom: PhantomData::default(),
             zero_copy_puts: zero_copy_puts,
             with_copies: false,
-            non_refcounted: non_refcounted,
+            _non_refcounted: non_refcounted,
         }
     }
 
@@ -273,7 +273,7 @@ where
     mempool_ids: Vec<MempoolID>,
     serializer: CornflakesSerializer<D>,
     push_buf_type: PushBufType,
-    non_refcounted: bool,
+    _non_refcounted: bool,
 }
 
 impl<D> CornflakesKVServer<D>
@@ -305,7 +305,7 @@ where
             mempool_ids: mempool_ids,
             push_buf_type: push_buf_type,
             serializer: serializer,
-            non_refcounted: non_refcounted,
+            _non_refcounted: non_refcounted,
         })
     }
 }
