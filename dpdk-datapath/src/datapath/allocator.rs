@@ -236,7 +236,7 @@ impl DatapathMemoryPool for MempoolInfo {
 
     #[inline]
     fn turn_to_metadata(metadata: usize, buf_addr: &[u8]) -> Result<RteMbufMetadata> {
-        let mbuf = unsafe { metadata as *mut rte_mbuf };
+        let mbuf = metadata as *mut rte_mbuf;
         let base_ptr = unsafe { access!(mbuf, buf_addr, usize) };
         let offset = buf_addr.as_ptr() as usize - base_ptr;
         return RteMbufMetadata::new(mbuf, offset, Some(buf_addr.len()));

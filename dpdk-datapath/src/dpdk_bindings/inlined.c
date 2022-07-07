@@ -330,14 +330,14 @@ uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf 
         }
         printf("[rte_eth_tx_burst_] Src MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
             " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-            eth_hdr->s_addr.addr_bytes[0], eth_hdr->s_addr.addr_bytes[1],
-            eth_hdr->s_addr.addr_bytes[2], eth_hdr->s_addr.addr_bytes[3],
-            eth_hdr->s_addr.addr_bytes[4], eth_hdr->s_addr.addr_bytes[5]);
+            eth_hdr->src_addr.addr_bytes[0], eth_hdr->src_addr.addr_bytes[1],
+            eth_hdr->src_addr.addr_bytes[2], eth_hdr->src_addr.addr_bytes[3],
+            eth_hdr->src_addr.addr_bytes[4], eth_hdr->src_addr.addr_bytes[5]);
         printf("[rte_eth_tx_burst_] Dst MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
             " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-            eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
-            eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
-            eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
+            eth_hdr->dst_addr.addr_bytes[0], eth_hdr->dst_addr.addr_bytes[1],
+            eth_hdr->dst_addr.addr_bytes[2], eth_hdr->dst_addr.addr_bytes[3],
+            eth_hdr->dst_addr.addr_bytes[4], eth_hdr->dst_addr.addr_bytes[5]);
         printf("[rte_eth_tx_burst_] Queue: %u, Scp IP: %u, dst IP: %u, checksum: %u, udp data len: %u, ID: %u\n", queue_id, ipv4->src_addr, ipv4->dst_addr, ipv4->hdr_checksum, ntohs(udp->dgram_len), *id_ptr);
     }*/
     return rte_eth_tx_burst(port_id, queue_id, tx_pkts, nb_pkts);
@@ -370,14 +370,26 @@ void rte_memcpy_(void *dst, const void *src, size_t n) {
     rte_memcpy(dst, src, n);
 }
 
-int rte_dev_dma_map_(uint16_t device_id, void * addr, uint64_t iova, size_t len) {
-    struct rte_eth_dev *dev = &rte_eth_devices[device_id];
-    return rte_dev_dma_map(dev->device, addr, iova, len);
+int rte_dev_dma_map_(uint16_t pid, void * addr, uint64_t iova, size_t len) {
+    struct rte_eth_dev_info dev_info;
+
+    int ret = rte_eth_dev_info_get(pid, &dev_info);
+    if (ret != 0) {
+        printf("unable to get device for port %d on addr 0x%p; mapping will not be performed\n", pid, addr);
+        return -1;
+    }
+    return rte_dev_dma_map(dev_info.device, addr, iova, len);
 }
 
-int rte_dev_dma_unmap_(uint16_t device_id, void *addr, uint64_t iova, size_t len) {
-    struct rte_eth_dev *dev = &rte_eth_devices[device_id];
-    return rte_dev_dma_unmap(dev->device, addr, iova, len);
+int rte_dev_dma_unmap_(uint16_t pid, void *addr, uint64_t iova, size_t len) {
+    struct rte_eth_dev_info dev_info;
+
+    int ret = rte_eth_dev_info_get(pid, &dev_info);
+    if (ret != 0) {
+        printf("unable to get device for port %d on addr 0x%p; unmapping will not be performed\n", pid, addr);
+        return -1;
+    }
+    return rte_dev_dma_unmap(dev_info.device, addr, iova, len);
 }
 
 void custom_init_(struct rte_mempool *mp, void *opaque_arg, void *m, unsigned i) {
@@ -421,8 +433,8 @@ size_t fill_in_packet_header_(struct rte_mbuf *mbuf, struct rte_ether_addr *my_e
     size_t header_size = 0;
     uint8_t *ptr = rte_pktmbuf_mtod(mbuf, uint8_t *);
     struct rte_ether_hdr *eth_hdr = (struct rte_ether_hdr *)ptr;
-    rte_ether_addr_copy(my_eth, &eth_hdr->s_addr);
-    rte_ether_addr_copy(dst_eth, &eth_hdr->d_addr);
+    rte_ether_addr_copy(my_eth, &eth_hdr->src_addr);
+    rte_ether_addr_copy(dst_eth, &eth_hdr->dst_addr);
     eth_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
 
     ptr += sizeof(*eth_hdr);
@@ -456,7 +468,6 @@ size_t fill_in_packet_header_(struct rte_mbuf *mbuf, struct rte_ether_addr *my_e
 
     mbuf->l2_len = RTE_ETHER_HDR_LEN;
     mbuf->l3_len = sizeof(struct rte_ipv4_hdr);
-    mbuf->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
     return header_size;
 }
 
@@ -481,12 +492,12 @@ bool parse_packet_(struct rte_mbuf *mbuf, size_t *payload_len, const struct rte_
     
 
     uint16_t eth_type = ntohs(eth_hdr->ether_type);
-    if (!rte_is_same_ether_addr(our_eth, &eth_hdr->d_addr) && !rte_is_same_ether_addr(&ether_broadcast, &eth_hdr->d_addr)) {
+    if (!rte_is_same_ether_addr(our_eth, &eth_hdr->dst_addr) && !rte_is_same_ether_addr(&ether_broadcast, &eth_hdr->dst_addr)) {
         printf("Bad MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-            eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
-			eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
-			eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
+            eth_hdr->dst_addr.addr_bytes[0], eth_hdr->dst_addr.addr_bytes[1],
+			eth_hdr->dst_addr.addr_bytes[2], eth_hdr->dst_addr.addr_bytes[3],
+			eth_hdr->dst_addr.addr_bytes[4], eth_hdr->dst_addr.addr_bytes[5]);
         return false;
     }
     if (RTE_ETHER_TYPE_IPV4 != eth_type) {
@@ -528,9 +539,9 @@ void flip_headers_(struct rte_mbuf *mbuf, uint32_t id) {
     
     /* swap src and dst ether addresses */
     ptr_mac_hdr = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
-    rte_ether_addr_copy(&ptr_mac_hdr->s_addr, &src_addr);
-	rte_ether_addr_copy(&ptr_mac_hdr->d_addr, &ptr_mac_hdr->s_addr);
-	rte_ether_addr_copy(&src_addr, &ptr_mac_hdr->d_addr);
+    rte_ether_addr_copy(&ptr_mac_hdr->src_addr, &src_addr);
+	rte_ether_addr_copy(&ptr_mac_hdr->dst_addr, &ptr_mac_hdr->src_addr);
+	rte_ether_addr_copy(&src_addr, &ptr_mac_hdr->dst_addr);
 
 
 	/* swap src and dst IP addresses */
@@ -550,7 +561,6 @@ void flip_headers_(struct rte_mbuf *mbuf, uint32_t id) {
     ptr_ipv4_hdr->hdr_checksum = 0;
     mbuf->l2_len = RTE_ETHER_HDR_LEN;
 	mbuf->l3_len = sizeof(struct rte_ipv4_hdr);
-    mbuf->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
 
     id_ptr = rte_pktmbuf_mtod_offset(mbuf, uint32_t *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
     *id_ptr = htonl(id);
@@ -561,8 +571,8 @@ void switch_headers_(struct rte_mbuf *rx_buf, struct rte_mbuf *tx_buf, size_t pa
     /* swap src and dst ether addresses */
     struct rte_ether_hdr *rx_ptr_mac_hdr = rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);
     struct rte_ether_hdr *tx_ptr_mac_hdr = rte_pktmbuf_mtod(tx_buf, struct rte_ether_hdr *);
-    rte_ether_addr_copy(&rx_ptr_mac_hdr->s_addr, &tx_ptr_mac_hdr->d_addr);
-	rte_ether_addr_copy(&rx_ptr_mac_hdr->d_addr, &tx_ptr_mac_hdr->s_addr);
+    rte_ether_addr_copy(&rx_ptr_mac_hdr->src_addr, &tx_ptr_mac_hdr->dst_addr);
+	rte_ether_addr_copy(&rx_ptr_mac_hdr->dst_addr, &tx_ptr_mac_hdr->src_addr);
     tx_ptr_mac_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
 
     /* swap src and dst ip addresses */
@@ -593,7 +603,6 @@ void switch_headers_(struct rte_mbuf *rx_buf, struct rte_mbuf *tx_buf, size_t pa
     /* Set packet metadata */
     tx_buf->l2_len = RTE_ETHER_HDR_LEN;
     tx_buf->l3_len = sizeof(struct rte_ipv4_hdr);
-    tx_buf->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
 }
 
 struct rte_mbuf_ext_shared_info *shinfo_init_(void *addr, uint16_t *buf_len) {
@@ -679,15 +688,15 @@ void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) 
     rte_eth_dev_get_mtu(port_id, &mtu);
     fprintf(stderr, "Dev info MTU:%u\n", mtu);
     struct rte_eth_conf port_conf = {};
-    port_conf.rxmode.max_rx_pkt_len = RX_PACKET_LEN;
+    port_conf.rxmode.max_lro_pkt_size = RX_PACKET_LEN;
 
-    port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_TIMESTAMP | DEV_RX_OFFLOAD_IPV4_CKSUM;
-    port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS | ETH_MQ_RX_RSS_FLAG;
+    port_conf.rxmode.offloads = RTE_ETH_RX_OFFLOAD_IPV4_CKSUM;
+    port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS | RTE_ETH_MQ_RX_RSS_FLAG;
     port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
     port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
-    port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_UDP | ETH_RSS_IP;
-    port_conf.txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS | DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM;
-    port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
+    port_conf.rx_adv_conf.rss_conf.rss_hf = RTE_ETH_RSS_UDP | RTE_ETH_RSS_IP;
+    port_conf.txmode.offloads = RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM;
+    port_conf.txmode.mq_mode = RTE_ETH_MQ_TX_NONE;
 
     printf("port_id: %u, rx_rings; %u, tx_rings: %u\n", port_id, rx_rings, tx_rings);
     rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);

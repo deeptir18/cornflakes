@@ -21,8 +21,8 @@ pub fn wait_for_link_status_up(port_id: u16) -> Result<()> {
     for _i in 0..retry_count {
         dpdk_check_not_errored!(rte_eth_link_get_nowait(port_id, link.as_mut_ptr()));
         let link = unsafe { link.assume_init() };
-        if ETH_LINK_UP == link.link_status() as u32 {
-            let duplex = if link.link_duplex() as u32 == ETH_LINK_FULL_DUPLEX {
+        if RTE_ETH_LINK_UP == link.link_status() as u32 {
+            let duplex = if link.link_duplex() as u32 == RTE_ETH_LINK_FULL_DUPLEX {
                 "full"
             } else {
                 "half"

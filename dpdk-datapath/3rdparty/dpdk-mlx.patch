@@ -128,6 +128,20 @@ index fbfdd9737b..4f75505c53 100644
  /**
   * Update mapping between rte_flow queue index (16 bits) and HW queue index (32
   * bits) for RxQs which is created outside the PMD.
+diff --git a/drivers/net/mlx5/version.map b/drivers/net/mlx5/version.map
+index c97dfe440a..3dcac9644b 100644
+--- a/drivers/net/mlx5/version.map
++++ b/drivers/net/mlx5/version.map
+@@ -5,6 +5,9 @@ DPDK_22 {
+ EXPERIMENTAL {
+ 	global:
+ 
++	# added for patch for manual reg and dereg
++	rte_pmd_mlx5_manual_reg_mr;
++	rte_pmd_mlx5_manual_dereg_mr;
+ 	# added in 20.02
+ 	rte_pmd_mlx5_get_dyn_flag_names;
+ 	# added in 20.11
 diff --git a/lib/mempool/rte_mempool.h b/lib/mempool/rte_mempool.h
 index 3ada37cb86..a9d209ca85 100644
 --- a/lib/mempool/rte_mempool.h

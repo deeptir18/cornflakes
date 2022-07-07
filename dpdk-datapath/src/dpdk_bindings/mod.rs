@@ -48,13 +48,13 @@ extern "C" {
     pub fn general_free_cb_(addr: *mut ::std::os::raw::c_void, opaque: *mut ::std::os::raw::c_void);
     fn rte_memcpy_(dst: *mut ::std::os::raw::c_void, src: *const ::std::os::raw::c_void, n: usize);
     fn rte_dev_dma_map_(
-        device_id: u16,
+        pid: u16,
         addr: *mut ::std::os::raw::c_void,
         iova: u64,
         len: size_t,
     ) -> ::std::os::raw::c_int;
     fn rte_dev_dma_unmap_(
-        device_id: u16,
+        pid: u16,
         addr: *mut ::std::os::raw::c_void,
         iova: u64,
         len: size_t,
@@ -311,22 +311,22 @@ pub unsafe fn rte_memcpy_wrapper(
 
 #[inline]
 pub unsafe fn rte_dev_dma_map_wrapper(
-    device_id: u16,
+    pid: u16,
     addr: *mut ::std::os::raw::c_void,
     iova: u64,
     len: size_t,
 ) -> ::std::os::raw::c_int {
-    rte_dev_dma_map_(device_id, addr, iova, len)
+    rte_dev_dma_map_(pid, addr, iova, len)
 }
 
 #[inline]
 pub unsafe fn rte_dev_dma_unmap_wrapper(
-    device_id: u16,
+    pid: u16,
     addr: *mut ::std::os::raw::c_void,
     iova: u64,
     len: size_t,
 ) -> ::std::os::raw::c_int {
-    rte_dev_dma_unmap_(device_id, addr, iova, len)
+    rte_dev_dma_unmap_(pid, addr, iova, len)
 }
 
 #[inline]

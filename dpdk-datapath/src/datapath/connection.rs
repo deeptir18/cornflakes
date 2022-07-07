@@ -1261,7 +1261,7 @@ impl Datapath for DpdkConnection {
             fc_conf.as_mut_ptr()
         ));
         unsafe {
-            (*fc_conf.as_mut_ptr()).mode = rte_eth_fc_mode_RTE_FC_NONE;
+            (*fc_conf.as_mut_ptr()).mode = rte_eth_fc_mode_RTE_ETH_FC_NONE;
         }
         dpdk_check_not_errored!(rte_eth_dev_flow_ctrl_set(
             datapath_params.get_physical_port()?,
