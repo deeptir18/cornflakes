@@ -72,18 +72,42 @@ where
         Ok(data.len())
     }
 
-    fn serialize_getm(&self, _buf: &mut [u8], _keys: &Vec<String>, _datapath: &D) -> Result<usize> {
-        unimplemented!()
+    fn serialize_getm(
+        &self,
+        buf: &mut [u8],
+        keys: &Vec<String>,
+        _datapath: &D,
+    ) -> Result<usize> {
+        let data = {
+            let mut cmd = redis::cmd("MGET");
+            let mut cmd_ref = &mut cmd;
+            for key in keys {
+                cmd_ref = cmd_ref.arg(key);
+            }
+            cmd.get_packed_command()
+        };
+        buf[0..data.len()].copy_from_slice(&data);
+        Ok(data.len())
     }
 
     fn serialize_putm(
         &self,
-        _buf: &mut [u8],
-        _keys: &Vec<String>,
-        _values: &Vec<String>,
+        buf: &mut [u8],
+        keys: &Vec<String>,
+        values: &Vec<String>,
         _datapath: &D,
     ) -> Result<usize> {
-        unimplemented!()
+        assert_eq!(keys.len(), values.len());
+        let data = {
+            let mut cmd = redis::cmd("MSET");
+            let mut cmd_ref = &mut cmd;
+            for i in 0..keys.len() {
+                cmd_ref = cmd_ref.arg(&keys[i]).arg(&values[i]);
+            }
+            cmd.get_packed_command()
+        };
+        buf[0..data.len()].copy_from_slice(&data);
+        Ok(data.len())
     }
 
     fn serialize_get_list(&self, _buf: &mut [u8], _key: &str, _datapath: &D) -> Result<usize> {
