@@ -309,8 +309,10 @@ class Experiment(metaclass=abc.ABCMeta):
                 utils.warn("Failed to execute program after {} retries.".format(
                     utils.NUM_RETRIES))
                 exit(1)
+            ret = ""
             # before next trial, run analysis
-            ret = self.run_analysis_individual_trial(folder_path,
+            if not total_args.pprint:
+                ret = self.run_analysis_individual_trial(folder_path,
                                                      program_metadata,
                                                      iteration, print_stats)
             if ret != "":
@@ -398,6 +400,7 @@ class Iteration(metaclass=abc.ABCMeta):
                          user=user,
                          port=22,
                          connect_kwargs={"key_filename": [key]})
+        utils.debug("Connection params: host={},user={},port=22,key={}".format(host_addr, user, key))
         return cxn
 
     def kill_remote_process(self, cmd, host, machine_config):
@@ -414,8 +417,8 @@ class Iteration(metaclass=abc.ABCMeta):
         res = None
         try:
             res = cxn.sudo(cmd, hide=False)
-            # utils.warn("Ran command: {}".format(cmd))
-            # res.stdout.strip()
+            utils.warn("Running command: {}".format(cmd))
+            res.stdout.strip()
             if return_dict is not None and proc_counter is not None:
                 return_dict[proc_counter] = True
             return
@@ -547,8 +550,8 @@ class Iteration(metaclass=abc.ABCMeta):
                 utils.debug("Starting program {} on host {}, args: {}".format(
                     program_name, host, program_args))
                 proc.start()
-                # if program_name == "start_server":
-                #    input('press enter to cont.')
+                #if program_name == "start_server":
+                    #input('press enter to cont.')
 
                 if kill_cmd == None:
                     programs_to_join_immediately[host] = program_counter

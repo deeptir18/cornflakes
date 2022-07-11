@@ -392,8 +392,10 @@ class ScatterGatherIteration(runner.Iteration):
 class ScatterGather(runner.Experiment):
     def __init__(self, exp_yaml, config_yaml):
         self.exp = "ScatterGather"
-        self.config_yaml = yaml.load(Path(config_yaml).read_text())
-        self.exp_yaml = yaml.load(Path(exp_yaml).read_text())
+        self.config_yaml = yaml.load(Path(config_yaml).read_text(),
+                Loader=yaml.FullLoader)
+        self.exp_yaml = yaml.load(Path(exp_yaml).read_text(),
+                Loader=yaml.FullLoader)
         # map from (iteration with rate set to 0, (throughput, percent achieved, stop))
         self.iteration_skipping_information = {}
 

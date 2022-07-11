@@ -98,7 +98,7 @@ def parse_command_line_args(log):
     if not (os.path.exists(log)):
         warn("Path {} does not exist".format(log))
         return {}
-    return yaml.load(Path(log).read_text())
+    return yaml.load(Path(log).read_text(), Loader=yaml.FullLoader)
 
 
 def parse_number_trials_done(exp_folder):

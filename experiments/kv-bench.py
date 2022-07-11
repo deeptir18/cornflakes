@@ -255,8 +255,10 @@ class KVIteration(runner.Iteration):
 class KVBench(runner.Experiment):
     def __init__(self, exp_yaml, config_yaml):
         self.exp = "KVBench"
-        self.exp_yaml = yaml.load(Path(exp_yaml).read_text())
-        self.config_yaml = yaml.load(Path(config_yaml).read_text())
+        self.exp_yaml = yaml.load(Path(exp_yaml).read_text(),
+                Loader=yaml.FullLoader)
+        self.config_yaml = yaml.load(Path(config_yaml).read_text(),
+                Loader=yaml.FullLoader)
 
     def experiment_name(self):
         return self.exp
