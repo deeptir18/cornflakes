@@ -146,15 +146,15 @@ pub trait ClientSM {
             };
 
             for (pkt, rtt) in recved_pkts.into_iter() {
-                self.record_rtt(rtt);
                 let msg_id = pkt.msg_id();
                 if self.process_received_msg(pkt, &datapath).wrap_err(format!(
                     "Error in processing received response for pkt {}.",
                     msg_id
                 ))? {
+                    self.record_rtt(rtt);
                     self.increment_uniq_received();
+                    recved += 1;
                 }
-                recved += 1;
             }
         }
         Ok(())
@@ -197,12 +197,12 @@ pub trait ClientSM {
             while datapath.current_cycles() <= next {
                 let recved_pkts = datapath.pop_with_durations()?;
                 for (pkt, rtt) in recved_pkts.into_iter() {
-                    self.record_rtt(rtt);
                     let msg_id = pkt.msg_id();
                     if self.process_received_msg(pkt, &datapath).wrap_err(format!(
                         "Error in processing received response for pkt {}.",
                         msg_id
                     ))? {
+                        self.record_rtt(rtt);
                         self.increment_uniq_received();
                     }
                 }
