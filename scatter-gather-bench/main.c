@@ -124,12 +124,12 @@ struct tx_pktmbuf_priv
     int32_t field2; // needs to be atleast 8 bytes large
 } __attribute__((packed));
 
-typedef struct OutgoingHeader
+struct OutgoingHeader
 {
     struct rte_ether_hdr eth;
     struct rte_ipv4_hdr ipv4;
     struct rte_udp_hdr udp;
-} __attribute__((packed)) OutgoingHeader;
+};
 
 
 typedef struct ClientRequest
@@ -531,7 +531,7 @@ static int initialize_pointer_chasing_at_client(uint64_t **pointer_segments,
     return 0;
 }
 
-static void initialize_outgoing_header(OutgoingHeader *header,
+static void initialize_outgoing_header(struct OutgoingHeader *header,
                                         struct rte_ether_addr *src_addr,
                                         struct rte_ether_addr *dst_addr,
                                         uint32_t src_ip,
@@ -545,8 +545,8 @@ static void initialize_outgoing_header(OutgoingHeader *header,
     struct rte_udp_hdr *udp_hdr = &header->udp;
 
     // fill in the header
-    rte_ether_addr_copy(src_addr, &eth_hdr->s_addr);
-    rte_ether_addr_copy(dst_addr, &eth_hdr->d_addr);
+    rte_ether_addr_copy(src_addr, &eth_hdr->src_addr);
+    rte_ether_addr_copy(dst_addr, &eth_hdr->dst_addr);
     eth_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
 
     /* add in ipv4 header*/
@@ -983,8 +983,8 @@ static int print_link_status(FILE *f, uint16_t port_id, const struct rte_eth_lin
         rte_eth_link_get_nowait(port_id, &link2);
         link = &link2;
     }
-    if (ETH_LINK_UP == link->link_status) {
-        const char * const duplex = ETH_LINK_FULL_DUPLEX == link->link_duplex ?  "full" : "half";
+    if (RTE_ETH_LINK_UP == link->link_status) {
+        const char * const duplex = RTE_ETH_LINK_FULL_DUPLEX == link->link_duplex ?  "full" : "half";
         fprintf(f, "Port %d Link Up - speed %u " "Mbps - %s-duplex\n", port_id, link->link_speed, duplex);
     } else {
         printf("Port %d Link Down\n", port_id);
@@ -1002,7 +1002,7 @@ static int wait_for_link_status_up(uint16_t port_id) {
     struct rte_eth_link link = {};
     for (size_t i = 0; i < retry_count; ++i) {
         rte_eth_link_get_nowait(port_id, &link);
-        if (ETH_LINK_UP == link.link_status) {
+        if (RTE_ETH_LINK_UP == link.link_status) {
             print_link_status(stderr, port_id, &link);
             return 0;
         }
@@ -1032,14 +1032,14 @@ static int init_dpdk_port(uint16_t port_id, struct rte_mempool *rx_mempools[MAX_
     fprintf(stderr, "Dev info MTU:%u\n", mtu);
     
     struct rte_eth_conf port_conf = {};
-    port_conf.rxmode.max_rx_pkt_len = RX_PACKET_LEN;
-    port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_TIMESTAMP;
-    port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS | ETH_MQ_RX_RSS_FLAG;
+    port_conf.rxmode.max_lro_pkt_size = RX_PACKET_LEN;
+    //port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_TIMESTAMP;
+    port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS | RTE_ETH_MQ_RX_RSS_FLAG;
     port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
     port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
-    port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_UDP | ETH_RSS_IP;
-    port_conf.txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS | DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM;
-    port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
+    port_conf.rx_adv_conf.rss_conf.rss_hf = RTE_ETH_RSS_UDP | RTE_ETH_RSS_IP;
+    port_conf.txmode.offloads = RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM;
+    port_conf.txmode.mq_mode = RTE_ETH_MQ_TX_NONE;
             
     struct rte_eth_rxconf rx_conf = {};
     rx_conf.rx_thresh.pthresh = RX_PTHRESH;
@@ -1095,7 +1095,7 @@ static int init_dpdk_port(uint16_t port_id, struct rte_mempool *rx_mempools[MAX_
     // disable the rx/tx flow control
     struct rte_eth_fc_conf fc_conf = {};
     rte_eth_dev_flow_ctrl_get(port_id, &fc_conf);
-    fc_conf.mode = RTE_FC_NONE;
+    fc_conf.mode = RTE_ETH_FC_NONE;
     rte_eth_dev_flow_ctrl_set(port_id, &fc_conf);
     wait_for_link_status_up(port_id);
     NETPERF_INFO("Finished wait for link status up");
@@ -1193,7 +1193,7 @@ static int global_init(size_t num_queues) {
     if (rte_lcore_count() > 1) {
         printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
     }
-    NETPERF_INFO("Finished global init, exiting");
+    NETPERF_INFO("Finished global init");
     return 0;
 }
 
@@ -1295,12 +1295,12 @@ static int parse_packet(uint32_t our_client_ip,
     struct rte_ether_addr mac_addr = {};
 
     rte_eth_macaddr_get(our_dpdk_port_id, &mac_addr);
-    if (!rte_is_same_ether_addr(&mac_addr, &eth_hdr->d_addr)) {
+    if (!rte_is_same_ether_addr(&mac_addr, &eth_hdr->dst_addr)) {
         printf("Bad MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-            eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
-			eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
-			eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
+            eth_hdr->dst_addr.addr_bytes[0], eth_hdr->dst_addr.addr_bytes[1],
+			eth_hdr->dst_addr.addr_bytes[2], eth_hdr->dst_addr.addr_bytes[3],
+			eth_hdr->dst_addr.addr_bytes[4], eth_hdr->dst_addr.addr_bytes[5]);
         return 1;
     }
 
@@ -1522,15 +1522,19 @@ static void * do_client(void *client) {
         }
         uint8_t *ptr = rte_pktmbuf_mtod(pkt, uint8_t *);
         current_request->timestamp = time_now(clock_offset);
-        rte_memcpy((char *)ptr, (char *)&outgoing_headers[client_id], sizeof(OutgoingHeader));
-        ptr += header_size;
+        rte_memcpy((char *)ptr, (char *)&(outgoing_headers[client_id].eth), sizeof(struct rte_ether_hdr));
+        ptr += sizeof(struct rte_ether_hdr);
+        rte_memcpy((char *)ptr, (char *)&(outgoing_headers[client_id].ipv4), sizeof(struct rte_ipv4_hdr));
+        ptr += sizeof(struct rte_ipv4_hdr);
+        rte_memcpy((char *)ptr, (char *)&(outgoing_headers[client_id].udp), sizeof(struct rte_udp_hdr));
+        ptr += sizeof(struct rte_udp_hdr);
         rte_memcpy((char *)ptr, (char *)current_request + sizeof(uint64_t), client_payload_size - sizeof(uint64_t));
         
         /* extra dpdk metadata */
 
         pkt->l2_len = RTE_ETHER_HDR_LEN;
         pkt->l3_len = sizeof(struct rte_ipv4_hdr);
-        pkt->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
+        //pkt->ol_flags = RTE_MBUF_F_TX_IP_CKSUM;
         if (has_send_packet_size) {
             NETPERF_DEBUG("Sending packet with data len %lu\n", header_size + send_packet_size);
             pkt->data_len = header_size + send_packet_size;
@@ -1640,8 +1644,8 @@ static void swap_headers(struct rte_mbuf *tx_buf, struct rte_mbuf *rx_buf, size_
    /* swap src and dst ether addresses */
    rx_ptr_mac_hdr = rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);
    tx_ptr_mac_hdr = rte_pktmbuf_mtod(tx_buf, struct rte_ether_hdr *);
-   rte_ether_addr_copy(&rx_ptr_mac_hdr->s_addr, &tx_ptr_mac_hdr->d_addr);
-   rte_ether_addr_copy(&rx_ptr_mac_hdr->d_addr, &tx_ptr_mac_hdr->s_addr);
+   rte_ether_addr_copy(&rx_ptr_mac_hdr->src_addr, &tx_ptr_mac_hdr->dst_addr);
+   rte_ether_addr_copy(&rx_ptr_mac_hdr->dst_addr, &tx_ptr_mac_hdr->src_addr);
    tx_ptr_mac_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
 
    /* swap src and dst ip addresses */
@@ -1693,8 +1697,8 @@ void swap_headers_into_static_payload(struct rte_mbuf *rx_buf, size_t payload_le
    /* swap src and dst ether addresses */
    rx_ptr_mac_hdr = rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);
    tx_ptr_mac_hdr = (struct rte_ether_hdr *)(payload_ptr);
-   rte_ether_addr_copy(&rx_ptr_mac_hdr->s_addr, &tx_ptr_mac_hdr->d_addr);
-   rte_ether_addr_copy(&rx_ptr_mac_hdr->d_addr, &tx_ptr_mac_hdr->s_addr);
+   rte_ether_addr_copy(&rx_ptr_mac_hdr->src_addr, &tx_ptr_mac_hdr->dst_addr);
+   rte_ether_addr_copy(&rx_ptr_mac_hdr->dst_addr, &tx_ptr_mac_hdr->src_addr);
    tx_ptr_mac_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
 
    /* swap src and dst ip addresses */
@@ -1821,7 +1825,7 @@ static int do_server(void) {
                                 tx_bufs[seg][pkt]->l2_len = RTE_ETHER_HDR_LEN;
                                 tx_bufs[seg][pkt]->l3_len = sizeof(struct rte_ipv4_hdr);
                                 tx_bufs[seg][pkt]->l4_len = sizeof(struct rte_udp_hdr);
-                                tx_bufs[seg][pkt]->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
+                                //tx_bufs[seg][pkt]->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
                             }
                             if (prev != NULL) {
                                prev->next = tx_bufs[seg][pkt];
@@ -1848,7 +1852,7 @@ static int do_server(void) {
                         tx_bufs[0][pkt]->l2_len = RTE_ETHER_HDR_LEN;
                         tx_bufs[0][pkt]->l3_len = sizeof(struct rte_ipv4_hdr);
                         tx_bufs[0][pkt]->l4_len = sizeof(struct rte_udp_hdr);
-                        tx_bufs[0][pkt]->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
+                        //tx_bufs[0][pkt]->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
                         char *payload_ptr = rte_pktmbuf_mtod_offset(tx_bufs[0][pkt], char *, header_size + 16);
                         size_t amt_to_copy_left = pkt_len;
                         for (int seg = 0; seg < (size_t)(nb_segs); seg++) {
@@ -2120,10 +2124,6 @@ main(int argc, char **argv)
         NETPERF_WARN("Something wrong with dpdk global thread init: %s", strerror(ret));
         return -1;
     }
-
-    ret = rte_eal_cleanup();
-    NETPERF_INFO("Rte_eal_cleanup returned %d", rte_eal_cleanup());
-    exit(0);
     if (mode == MODE_MEMCPY_BENCH) {
         return do_memcpy_bench();
     }
