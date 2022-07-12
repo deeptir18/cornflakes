@@ -40,18 +40,20 @@ enum ArgType {
 }
 
 impl ArgType {
-    fn is_array(&self) -> bool {
-        match self {
-            ArgType::Bytes | ArgType::String => true,
-            _ => false,
-        }
+    fn new(fd: &ProtoReprInfo, field: &FieldInfo) -> Result<Self> {
+        let field_type = match &field.0.typ {
+            FieldType::Bytes | FieldType::RefCountedBytes => ArgType::Bytes,
+            FieldType::String | FieldType::RefCountedString => ArgType::String,
+            _ => ArgType::Rust(fd.get_c_type(field.clone())?),
+        };
+        Ok(field_type)
     }
 
     fn to_string(&self) -> &str {
         match self {
             ArgType::Rust(string) => string,
-            ArgType::Bytes => "*const ::std::os::raw::c_uchar",
-            ArgType::String => "*const ::std::os::raw::c_uchar",
+            ArgType::Bytes => "*const ::std::os::raw::c_void",   // CFBytes
+            ArgType::String => "*const ::std::os::raw::c_void",  // CFString
             ArgType::VoidPtr(_) => "*mut ::std::os::raw::c_void",
         }
     }
@@ -73,15 +75,9 @@ fn add_extern_c_wrapper_function(
         }
         for (arg_name, arg_ty) in &raw_args {
             args.push(FunctionArg::CArg(CArgInfo::arg(arg_name, arg_ty.to_string())));
-            if arg_ty.is_array() {
-                args.push(FunctionArg::CArg(CArgInfo::len_arg(arg_name)));
-            }
         }
         if let Some(ret_ty) = &raw_ret {
             args.push(FunctionArg::CArg(CArgInfo::ret_arg(ret_ty.to_string())));
-            if ret_ty.is_array() {
-                args.push(FunctionArg::CArg(CArgInfo::ret_len_arg()));
-            }
         }
         args
     };
@@ -104,12 +100,12 @@ fn add_extern_c_wrapper_function(
         let right = match arg_ty {
             ArgType::Rust(_) => arg_name.to_string(),
             ArgType::Bytes => format!(
-                "CFBytes::new(unsafe {{ std::slice::from_raw_parts({}, {}_len) }})",
-                arg_name, arg_name,
+                "unsafe {{ *Box::from_raw({} as *mut CFBytes) }}",
+                arg_name,
             ),
             ArgType::String => format!(
-                "CFString::new_from_bytes(unsafe {{ std::slice::from_raw_parts({}, {}_len) }})",
-                arg_name, arg_name,
+                "unsafe {{ *Box::from_raw({} as *mut CFString) }}",
+                arg_name,
             ),
             ArgType::VoidPtr(inner_ty) => format!(
                 "unsafe {{ Box::from_raw({} as *mut {}) }}",
@@ -160,15 +156,7 @@ fn add_extern_c_wrapper_function(
             ArgType::Rust(_) => {
                 compiler.add_unsafe_set("return_ptr", "value")?;
             }
-            ArgType::Bytes => {
-                compiler.add_unsafe_set("return_ptr", "value.get_ptr().as_ptr()")?;
-                compiler.add_unsafe_set("return_len_ptr", "value.len()")?;
-            }
-            ArgType::String => {
-                compiler.add_unsafe_set("return_ptr", "value.bytes().as_ptr()")?;
-                compiler.add_unsafe_set("return_len_ptr", "value.len()")?;
-            }
-            ArgType::VoidPtr(_) => {
+            ArgType::VoidPtr(_) | ArgType::Bytes | ArgType::String => {
                 compiler.add_func_call_with_let("value", None, "Box::into_raw",
                    vec!["Box::new(value)".to_string()], false)?;
                 compiler.add_unsafe_set("return_ptr", "value as _")?;
@@ -274,11 +262,7 @@ fn add_get(
     msg_info: &MessageInfo,
     field: &FieldInfo,
 ) -> Result<()> {
-    let return_type = match &field.0.typ {
-        FieldType::Bytes | FieldType::RefCountedBytes => ArgType::Bytes,
-        FieldType::String | FieldType::RefCountedString => ArgType::String,
-        _ => ArgType::Rust(fd.get_c_type(field.clone())?),
-    };
+    let return_type = ArgType::new(fd, field)?;
     add_extern_c_wrapper_function(
         compiler,
         &msg_info.get_name(),
@@ -319,11 +303,7 @@ fn add_set(
     field: &FieldInfo,
 ) -> Result<()> {
     let field_name = field.get_name();
-    let field_type = match &field.0.typ {
-        FieldType::Bytes | FieldType::RefCountedBytes => ArgType::Bytes,
-        FieldType::String | FieldType::RefCountedString => ArgType::String,
-        _ => ArgType::Rust(fd.get_c_type(field.clone())?),
-    };
+    let field_type = ArgType::new(fd, field)?;
     add_extern_c_wrapper_function(
         compiler,
         &msg_info.get_name(),

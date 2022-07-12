@@ -50,11 +50,11 @@ void main() {
     size_t conn_ids[BUFFER_SIZE];
     void *ordered_sgas[BUFFER_SIZE];
     while(1) {
-        size_t i, n, message_len, num_entries;
+        size_t i, n, num_entries;
         void *single_deser;
         void *single_ser;
         void *ordered_sga;
-        const uint8_t *message;
+        const void *message;
         struct ReceivedPkt *pkts = LinuxConnection_pop(conn, &n);
         if (n == 0) continue;
         if (n > BUFFER_SIZE) {
@@ -78,8 +78,8 @@ void main() {
             }
             // generated echo_dynamic_sga.rs
             // should CFBytes be a zero-overhead wrapper around the ptr?
-            SingleBufferCF_get_message(single_deser, &message, &message_len);
-            SingleBufferCF_set_message(single_ser, message, message_len);
+            SingleBufferCF_get_message(single_deser, &message);
+            SingleBufferCF_set_message(single_ser, message);
             // cornflake-libos/src/lib.rs:allocate()
             SingleBufferCF_num_scatter_gather_entries(single_ser, &num_entries);
             OrderedSga_allocate(num_entries, &ordered_sga);
