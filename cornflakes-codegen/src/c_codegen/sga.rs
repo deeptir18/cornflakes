@@ -37,6 +37,7 @@ enum ArgType {
     Bytes,
     String,
     VoidPtr(String),
+    List(Box<ArgType>),
 }
 
 impl ArgType {
@@ -46,7 +47,11 @@ impl ArgType {
             FieldType::String | FieldType::RefCountedString => ArgType::String,
             _ => ArgType::Rust(fd.get_c_type(field.clone())?),
         };
-        Ok(field_type)
+        if field.is_list() {
+            Ok(ArgType::List(Box::new(field_type)))
+        } else {
+            Ok(field_type)
+        }
     }
 
     fn to_string(&self) -> &str {
@@ -55,6 +60,7 @@ impl ArgType {
             ArgType::Bytes => "*const ::std::os::raw::c_void",   // CFBytes
             ArgType::String => "*const ::std::os::raw::c_void",  // CFString
             ArgType::VoidPtr(_) => "*mut ::std::os::raw::c_void",
+            ArgType::List(_) => "*const ::std::os::raw::c_void", // VariableList
         }
     }
 }
@@ -111,6 +117,7 @@ fn add_extern_c_wrapper_function(
                 "unsafe {{ Box::from_raw({} as *mut {}) }}",
                 arg_name, inner_ty,
             ),
+            ArgType::List(_) => String::from("todo!()"),
         };
         compiler.add_def_with_let(false, None, &left, &right)?;
     }
@@ -135,6 +142,7 @@ fn add_extern_c_wrapper_function(
             ArgType::VoidPtr(_) => {
                 compiler.add_func_call(None, "Box::into_raw", vec![format!("arg{}", i)], false)?;
             },
+            ArgType::List(_) => { continue; },
         };
     }
 
@@ -156,7 +164,8 @@ fn add_extern_c_wrapper_function(
             ArgType::Rust(_) => {
                 compiler.add_unsafe_set("return_ptr", "value")?;
             }
-            ArgType::VoidPtr(_) | ArgType::Bytes | ArgType::String => {
+            ArgType::VoidPtr(_) | ArgType::Bytes | ArgType::String
+                    | ArgType::List(_) => {
                 compiler.add_func_call_with_let("value", None, "Box::into_raw",
                    vec!["Box::new(value)".to_string()], false)?;
                 compiler.add_unsafe_set("return_ptr", "value as _")?;
