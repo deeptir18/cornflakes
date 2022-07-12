@@ -5,11 +5,12 @@ CORNFLAKES_DIR = $(HOME)/cornflakes
 
 # To change DS_ECHO_OUT_DIR, also modify $(CORNFLAKES_DIR)/Cargo.toml so the
 # package is in the current workspace.
-DS_ECHO_OUT_DIR = $(CORNFLAKES_DIR)/target/release/build/ds-echo-bb1d115642fc3475/out
+DS_ECHO_OUT_DIR = $(CORNFLAKES_DIR)/ds-echo/c
 # DS_ECHO_OUT_DIR = $(CORNFLAKES_DIR)
 
 INCLUDE_FLAGS = -I$(DS_ECHO_OUT_DIR)/echo-dynamic-sga-c -I$(CORNFLAKES_DIR)/linux-datapath-c
-LINKING_FLAGS = -L$(CORNFLAKES_DIR)/target/release -lecho_dynamic_sga_c  -llinux_datapath_c
+LINKING_FLAGS = -L$(CORNFLAKES_DIR)/target/release -llinux_datapath_c \
+	-L$(DS_ECHO_OUT_DIR)/echo-dynamic-sga-c/target/release -lecho_dynamic_sga_c
 
 build: deps
 	$(CC) server.c $(INCLUDE_FLAGS) $(LINKING_FLAGS) -o $(BINARY)
