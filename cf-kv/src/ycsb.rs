@@ -165,12 +165,13 @@ impl YCSBLine {
                     msg_type = MsgType::PutList(num_values as u16);
                 }
                 let val = &split.next().unwrap();
-                let sized_value = std::str::from_utf8(&val.as_bytes()[0..value_size])?;
+                // get first char in val and repeat that char for value size
+                let sized_value = std::iter::repeat(val.chars().nth(0).unwrap())
+                    .take(value_size)
+                    .collect::<String>();
                 Ok(YCSBLine {
                     keys: keys,
-                    vals: std::iter::repeat(sized_value.to_string())
-                        .take(num_values)
-                        .collect(),
+                    vals: std::iter::repeat(sized_value).take(num_values).collect(),
                     req_type: msg_type,
                 })
             }

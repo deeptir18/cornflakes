@@ -36,7 +36,7 @@ use std::{
     marker::PhantomData,
 };
 
-const MIN_MEMPOOL_SIZE: usize = 262144 * 8;
+const MIN_MEMPOOL_SIZE: usize = 262144;
 
 // 8 bytes at front of message for framing
 pub const REQ_TYPE_SIZE: usize = 4;
