@@ -1,0 +1,7 @@
+syntax = "proto3";
+package kv_sga_cornflakes;
+
+message GetMReq {
+    uint32 id = 1;
+    repeated string keys = 2;
+}

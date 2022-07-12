@@ -309,7 +309,7 @@ fn add_get_mut(
     // compiler.add_context(Context::Function(func_context))?;
     // compiler.add_return_val(&format!("&mut self.{}", &field_name), false)?;
     // compiler.pop_context()?;
-    unimplemented!()
+    Ok(())
 }
 
 fn add_set(
@@ -388,7 +388,7 @@ fn add_list_init(
     //     false,
     // )?;
     // compiler.pop_context()?;
-    unimplemented!()
+    Ok(())
 }
 
 fn add_header_repr(

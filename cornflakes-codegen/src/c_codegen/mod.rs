@@ -82,14 +82,18 @@ fn gen_cargo_toml(repr: &ProtoReprInfo, package_folder: &Path) -> Result<()> {
     }
     compiler.add_line("bitmaps = \"3.2.0\"")?;
     compiler.add_line("color-eyre = \"0.5\"")?;
-    compiler.add_line("cornflakes-libos = { path = \"../../../../../../cornflakes-libos\" }")?;
-    compiler.add_line("cornflakes-codegen = { path = \"../../../../../../cornflakes-codegen\" }")?;
-    compiler.add_line("linux-datapath = { path = \"../../../../../../linux-datapath\" }")?;
+    compiler.add_line("cornflakes-libos = { path = \"../../../cornflakes-libos\" }")?;
+    compiler.add_line("cornflakes-codegen = { path = \"../../../cornflakes-codegen\" }")?;
+    compiler.add_line("linux-datapath = { path = \"../../../linux-datapath\" }")?;
     compiler.add_newline()?;
 
     // Build dependencies
     compiler.add_line("[build-dependencies]")?;
     compiler.add_line("cbindgen = \"0.23.0\"")?;
+    compiler.add_newline()?;
+
+    // Exclude the generated package from the workspace
+    compiler.add_line("[workspace]")?;
 
     compiler.flush(&package_folder.join("Cargo.toml"))?;
     Ok(())
