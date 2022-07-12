@@ -5,11 +5,40 @@ use super::{
         MatchContext,
     },
 };
+use std::collections::HashSet;
 use color_eyre::eyre::Result;
 use protobuf_parser::FieldType;
 
 pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
     add_dependencies(fd, compiler)?;
+    compiler.add_newline()?;
+
+    // Determine whether we need to add wrapper functions for CFString, CFBytes,
+    // or VariableList<T> parameterized by some type T. Then add them.
+    {
+        let mut added_cf_string = false;
+        let mut added_cf_bytes = false;
+        let mut added_variable_lists = HashSet::new();
+        for message in fd.get_repr().messages.iter() {
+            let msg_info = MessageInfo(message.clone());
+            if !added_cf_string && has_cf_string(&msg_info) {
+                add_cf_string(compiler)?;
+                added_cf_string = true;
+            }
+            if !added_cf_bytes && has_cf_bytes(&msg_info) {
+                add_cf_bytes(compiler)?;
+                added_cf_bytes = true;
+            }
+            for param_ty in has_variable_list(fd, &msg_info)? {
+                if added_variable_lists.insert(param_ty.clone()) {
+                    add_variable_list(compiler, param_ty)?;
+                }
+            }
+        }
+    }
+
+    // For each message type: add basic constructors, getters and setters, and
+    // header trait functions.
     for message in fd.get_repr().messages.iter() {
         compiler.add_newline()?;
         let msg_info = MessageInfo(message.clone());
@@ -32,6 +61,152 @@ fn add_dependencies(_repr: &ProtoReprInfo, compiler: &mut SerializationCompiler)
     Ok(())
 }
 
+/// Returns whether the message has a field of type CFString.
+fn has_cf_string(msg_info: &MessageInfo) -> bool {
+    for field in msg_info.get_fields().iter() {
+        match &field.typ {
+            FieldType::String | FieldType::RefCountedString => { return true; }
+            _ => {}
+        };
+    }
+    false
+}
+
+/// Returns whether the message has a field of type CFBytes.
+fn has_cf_bytes(msg_info: &MessageInfo) -> bool {
+    for field in msg_info.get_fields().iter() {
+        match &field.typ {
+            FieldType::Bytes | FieldType::RefCountedBytes => { return true; }
+            _ => {}
+        };
+    }
+    false
+}
+
+/// If the message has field(s) of type VariableList<T>, returns the type(s)
+/// that parameterize the VariableList.
+fn has_variable_list(
+    fd: &ProtoReprInfo,
+    msg_info: &MessageInfo,
+) -> Result<Vec<ArgType>> {
+    let mut param_tys = vec![];
+    for field in msg_info.get_fields().iter() {
+        let field_info = FieldInfo(field.clone());
+        let field_ty = ArgType::new(fd, &field_info)?;
+        match field_ty {
+            ArgType::List(param_ty) => { param_tys.push(*param_ty) }
+            _ => {}
+        }
+    }
+    Ok(param_tys)
+}
+
+fn add_cf_string(compiler: &mut SerializationCompiler) -> Result<()> {
+    ////////////////////////////////////////////////////////////////////////////
+    // CFString_new
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("buffer", "*const ::std::os::raw::c_uchar")),
+        FunctionArg::CArg(CArgInfo::arg("buffer_len", "usize")),
+        FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_void")),
+    ];
+    let func_context = FunctionContext::new_extern_c(
+        "CFString_new", true, args, false,
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_line("todo!()")?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // CFString_unpack
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("value", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_uchar")),
+        FunctionArg::CArg(CArgInfo::ret_len_arg()),
+    ];
+    let func_context = FunctionContext::new_extern_c(
+        "CFString_unpack", true, args, false,
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_line("todo!()")?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+    Ok(())
+}
+
+fn add_cf_bytes(compiler: &mut SerializationCompiler) -> Result<()> {
+    // todo!()
+    Ok(())
+}
+
+fn add_variable_list(
+    compiler: &mut SerializationCompiler,
+    param_ty: ArgType,
+) -> Result<()> {
+    ////////////////////////////////////////////////////////////////////////////
+    // VariableList_<param_ty>_init
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("num", "usize")),
+        FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_void")),
+    ];
+    let func_context = FunctionContext::new_extern_c(
+        &format!("VariableList_{}_init", param_ty.to_cf_string()),
+        true, args, false,
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_line("todo!()")?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // VariableList_<param_ty>_append
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("variable_list", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::arg("value", param_ty.to_string())),
+    ];
+    let func_context = FunctionContext::new_extern_c(
+        &format!("VariableList_{}_append", param_ty.to_cf_string()),
+        true, args, false,
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_line("todo!()")?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // VariableList_<param_ty>_len
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("variable_list", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::ret_arg("usize")),
+    ];
+    let func_context = FunctionContext::new_extern_c(
+        &format!("VariableList_{}_len", param_ty.to_cf_string()),
+        true, args, false,
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_line("todo!()")?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // VariableList_<param_ty>_index
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("variable_list", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::arg("idx", "usize")),
+        FunctionArg::CArg(CArgInfo::ret_arg(param_ty.to_string())),
+    ];
+    let func_context = FunctionContext::new_extern_c(
+        &format!("VariableList_{}_index", param_ty.to_cf_string()),
+        true, args, false,
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_line("todo!()")?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+    Ok(())
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum ArgType {
     Rust(String),
     Bytes,
