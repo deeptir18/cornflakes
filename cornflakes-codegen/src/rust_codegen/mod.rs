@@ -903,6 +903,7 @@ impl SerializationCompiler {
     pub fn add_func_call_with_let(
         &mut self,
         left: &str,
+        return_ty: Option<String>,
         caller: Option<String>,
         func: &str,
         args: Vec<String>,
@@ -918,7 +919,9 @@ impl SerializationCompiler {
             false => "",
         };
 
-        let line = format!("let {} = {}{}({}){};", left, caller_str, func, args.join(", "), res);
+        let line = format!("let {}{} = {}{}({}){};", left,
+            return_ty.map(|ty| format!(": {}", ty)).unwrap_or("".to_string()),
+            caller_str, func, args.join(", "), res);
         self.add_line(&line)?;
         Ok(())
     }

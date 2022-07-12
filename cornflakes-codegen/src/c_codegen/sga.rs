@@ -57,10 +57,28 @@ impl ArgType {
     fn to_string(&self) -> &str {
         match self {
             ArgType::Rust(string) => string,
-            ArgType::Bytes => "*const ::std::os::raw::c_void",   // CFBytes
-            ArgType::String => "*const ::std::os::raw::c_void",  // CFString
+            ArgType::Bytes => "*const ::std::os::raw::c_void",
+            ArgType::String => "*const ::std::os::raw::c_void",
             ArgType::VoidPtr(_) => "*mut ::std::os::raw::c_void",
-            ArgType::List(_) => "*const ::std::os::raw::c_void", // VariableList
+            ArgType::List(_) => "*const ::std::os::raw::c_void",
+        }
+    }
+
+    fn to_cf_string(&self) -> String {
+        match self {
+            ArgType::Rust(string) => string.to_string(),
+            ArgType::Bytes => "CFBytes".to_string(),
+            ArgType::String => "CFString".to_string(),
+            ArgType::List(param_ty) => format!(
+                "VariableList<{}>",
+                match &**param_ty {
+                    ArgType::Rust(string) => string,
+                    ArgType::Bytes => "CFBytes",
+                    ArgType::String => "CFString",
+                    _ => unimplemented!("unhandled VariableList type"),
+                },
+            ),
+            ArgType::VoidPtr(_) => unimplemented!("unknown struct probably"),
         }
     }
 }
@@ -105,29 +123,40 @@ fn add_extern_c_wrapper_function(
         let left = format!("arg{}", i);
         let right = match arg_ty {
             ArgType::Rust(_) => arg_name.to_string(),
-            ArgType::Bytes => format!(
-                "unsafe {{ *Box::from_raw({} as *mut CFBytes) }}",
-                arg_name,
-            ),
-            ArgType::String => format!(
-                "unsafe {{ *Box::from_raw({} as *mut CFString) }}",
-                arg_name,
+            ArgType::Bytes | ArgType::String | ArgType::List(_) => format!(
+                "unsafe {{ *Box::from_raw({} as *mut {}) }}",
+                arg_name, arg_ty.to_cf_string(),
             ),
             ArgType::VoidPtr(inner_ty) => format!(
                 "unsafe {{ Box::from_raw({} as *mut {}) }}",
                 arg_name, inner_ty,
             ),
-            ArgType::List(_) => String::from("todo!()"),
         };
         compiler.add_def_with_let(false, None, &left, &right)?;
     }
 
-    // Call function wrapper
+    // Generate function arguments and return type
     let args = (0..raw_args.len()).map(|i| format!("arg{}", i)).collect::<Vec<_>>();
-    if is_mut_self.is_some() {
-        compiler.add_func_call_with_let("value", Some("self_".to_string()), func_name, args, false)?;
+    let ret_ty = if let Some(ref ret_ty) = raw_ret {
+        match ret_ty {
+            ArgType::List(_) => {
+                // Need to cast VariableList to *const pointer because they are
+                // returned as a reference.
+                Some(format!("*const {}", ret_ty.to_cf_string()))
+            }
+            _ => None,
+        }
     } else {
-        compiler.add_func_call_with_let("value", None, &format!("{}::{}", struct_name, func_name), args, false)?;
+        None
+    };
+
+    // Call function wrapper
+    if is_mut_self.is_some() {
+        compiler.add_func_call_with_let("value", ret_ty,
+            Some("self_".to_string()), func_name, args, false)?;
+    } else {
+        compiler.add_func_call_with_let("value", ret_ty, None,
+            &format!("{}::{}", struct_name, func_name), args, false)?;
     }
 
     // Unformat arguments
@@ -166,8 +195,9 @@ fn add_extern_c_wrapper_function(
             }
             ArgType::VoidPtr(_) | ArgType::Bytes | ArgType::String
                     | ArgType::List(_) => {
-                compiler.add_func_call_with_let("value", None, "Box::into_raw",
-                   vec!["Box::new(value)".to_string()], false)?;
+                compiler.add_func_call_with_let("value", None, None,
+                   "Box::into_raw", vec!["Box::new(value)".to_string()],
+                   false)?;
                 compiler.add_unsafe_set("return_ptr", "value as _")?;
             }
         }
@@ -451,7 +481,7 @@ fn add_deserialize_function(
     compiler.add_unsafe_def_with_let(true, None, "self_", &format!(
         "Box::from_raw(self_ as *mut {})", struct_name))?;
     compiler.add_unsafe_def_with_let(false, None, "arg0", "std::slice::from_raw_parts(buffer, buffer_len)")?;
-    compiler.add_func_call_with_let("value", Some("self_".to_string()),
+    compiler.add_func_call_with_let("value", None, Some("self_".to_string()),
         "deserialize", vec!["arg0".to_string()], false)?;
     compiler.add_func_call(None, "Box::into_raw", vec!["self_".to_string()], false)?;
 
@@ -494,7 +524,7 @@ fn add_serialize_into_sga_function(
         (ordered_sga as *mut OrderedSga) }")?;
     compiler.add_def_with_let(false, None, "arg1", "unsafe { Box::from_raw
         (datapath as *mut LinuxConnection) }")?;
-    compiler.add_func_call_with_let("value", Some("self_".to_string()),
+    compiler.add_func_call_with_let("value", None, Some("self_".to_string()),
         "serialize_into_sga", vec!["&mut arg0".to_string(),
         "arg1.as_ref()".to_string()], false)?;
     compiler.add_func_call(None, "Box::into_raw", vec!["self_".to_string()],
