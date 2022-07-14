@@ -7,6 +7,7 @@ use color_eyre::eyre::{Result, WrapErr};
 use std::{str, fs, path::Path};
 
 mod common;
+mod rcsga;
 mod sga;
 
 /// package-name-c/
@@ -120,6 +121,9 @@ fn gen_c_code(repr: &ProtoReprInfo, src_folder: &Path, options: CompileOptions) 
     match options.header_type {
         HeaderType::Sga => {
             sga::compile(repr, &mut compiler).wrap_err("Sga codegen failed to generate code.")?;
+        }
+        HeaderType::RcSga => {
+            rcsga::compile(repr, &mut compiler).wrap_err("RcSga codegen failed to generate code.")?;
         }
         ty => unimplemented!("unimplemented header type: {:?}", ty)
     }

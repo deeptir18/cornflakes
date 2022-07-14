@@ -61,7 +61,7 @@ fn main() {
     match compile(
         input_cf_file_c.as_path().to_str().unwrap(),
         &out_dir_c_path.into_os_string().into_string().unwrap(),
-        CompileOptions::new(HeaderType::Sga, Language::C),
+        CompileOptions::new(HeaderType::RcSga, Language::C),
     ) {
         Ok(_) => {}
         Err(e) => {
