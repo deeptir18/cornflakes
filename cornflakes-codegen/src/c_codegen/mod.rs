@@ -6,6 +6,7 @@ use super::{
 use color_eyre::eyre::{Result, WrapErr};
 use std::{str, fs, path::Path};
 
+mod common;
 mod sga;
 
 /// package-name-c/
