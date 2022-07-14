@@ -53,6 +53,7 @@ fn add_sga_header_repr(
     // add dynamic header size function
     add_extern_c_wrapper_function(
         compiler,
+        &format!("{}_dynamic_header_size", &msg_info.get_name()),
         &msg_info.get_name(),
         "dynamic_header_size",
         Some(false),
@@ -64,6 +65,7 @@ fn add_sga_header_repr(
     // add dynamic header start function
     add_extern_c_wrapper_function(
         compiler,
+        &format!("{}_dynamic_header_start", &msg_info.get_name()),
         &msg_info.get_name(),
         "dynamic_header_start",
         Some(false),
@@ -75,6 +77,7 @@ fn add_sga_header_repr(
     // add num scatter_gather_entries function
     add_extern_c_wrapper_function(
         compiler,
+        &format!("{}_num_scatter_gather_entries", &msg_info.get_name()),
         &msg_info.get_name(),
         "num_scatter_gather_entries",
         Some(false),

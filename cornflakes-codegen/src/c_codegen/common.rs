@@ -269,6 +269,7 @@ pub fn add_variable_list(
 
 pub fn add_extern_c_wrapper_function(
     compiler: &mut SerializationCompiler,
+    extern_name: &str,
     struct_name: &str,
     func_name: &str,
     is_mut_self: Option<bool>,
@@ -291,8 +292,7 @@ pub fn add_extern_c_wrapper_function(
     };
 
     let func_context = FunctionContext::new_extern_c(
-        &format!("{}_{}", struct_name, func_name),
-        true, args, use_error_code,
+        extern_name, true, args, use_error_code,
     );
     compiler.add_context(Context::Function(func_context))?;
 
@@ -402,6 +402,7 @@ pub fn add_default_impl(
 ) -> Result<()> {
     add_extern_c_wrapper_function(
         compiler,
+        &format!("{}_default", msg_info.get_name()),
         &msg_info.get_name(),
         "default",
         None,
@@ -420,6 +421,7 @@ pub fn add_impl(
     compiler.add_newline()?;
     add_extern_c_wrapper_function(
         compiler,
+        &format!("{}_new", msg_info.get_name()),
         &msg_info.get_name(),
         "new",
         None,
@@ -467,10 +469,12 @@ pub fn add_has(
     msg_info: &MessageInfo,
     field: &FieldInfo,
 ) -> Result<()> {
+    let func_name = format!("has_{}", field.get_name());
     add_extern_c_wrapper_function(
         compiler,
+        &format!("{}_{}", msg_info.get_name(), &func_name),
         &msg_info.get_name(),
-        &format!("has_{}", field.get_name()),
+        &func_name,
         Some(false),
         vec![],
         Some(ArgType::Rust("bool".to_string())),
@@ -486,10 +490,12 @@ pub fn add_get(
     field: &FieldInfo,
 ) -> Result<()> {
     let return_type = ArgType::new(fd, field)?;
+    let func_name = format!("get_{}", field.get_name());
     add_extern_c_wrapper_function(
         compiler,
+        &format!("{}_{}", msg_info.get_name(), &func_name),
         &msg_info.get_name(),
-        &format!("get_{}", field.get_name()),
+        &func_name,
         Some(false),
         vec![],
         Some(return_type),
@@ -527,10 +533,12 @@ pub fn add_set(
 ) -> Result<()> {
     let field_name = field.get_name();
     let field_type = ArgType::new(fd, field)?;
+    let func_name = format!("set_{}", field.get_name());
     add_extern_c_wrapper_function(
         compiler,
+        &format!("{}_{}", msg_info.get_name(), &func_name),
         &msg_info.get_name(),
-        &format!("set_{}", field.get_name()),
+        &func_name,
         Some(true),
         vec![(&field_name, field_type)],
         None,
