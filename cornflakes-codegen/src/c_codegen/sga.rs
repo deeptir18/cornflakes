@@ -33,7 +33,7 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
 fn add_sga_dependencies(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
     compiler.add_dependency("cornflakes_libos::OrderedSga")?;
     compiler.add_dependency("cornflakes_libos::dynamic_sga_hdr::*")?;
-    compiler.add_dependency("linux_datapath::datapath::connection::LinuxConnection")?;
+    compiler.add_dependency("mlx5_datapath::datapath::connection::Mlx5Connection")?;
 
     // For VariableList_<param_ty>_index
     for message in fd.get_repr().messages.iter() {

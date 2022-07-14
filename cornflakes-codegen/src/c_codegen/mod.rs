@@ -85,7 +85,7 @@ fn gen_cargo_toml(repr: &ProtoReprInfo, package_folder: &Path) -> Result<()> {
     compiler.add_line("color-eyre = \"0.5\"")?;
     compiler.add_line("cornflakes-libos = { path = \"../../../cornflakes-libos\" }")?;
     compiler.add_line("cornflakes-codegen = { path = \"../../../cornflakes-codegen\" }")?;
-    compiler.add_line("linux-datapath = { path = \"../../../linux-datapath\" }")?;
+    compiler.add_line("mlx5-datapath = { path = \"../../../mlx5-datapath\" }")?;
     compiler.add_newline()?;
 
     // Build dependencies
