@@ -110,6 +110,7 @@ fn main() {
         }
     }
 
+    /*
     let out_dir_c_path = Path::new(&cargo_manifest_dir).join("c");
     match compile(
         input_cf_file_sga.as_path().to_str().unwrap(),
@@ -121,4 +122,5 @@ fn main() {
             panic!("Cornflakes dynamic sga failed: {:?}", e);
         }
     }
+    */
 }
