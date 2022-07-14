@@ -54,10 +54,19 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
     Ok(())
 }
 
-fn add_dependencies(_repr: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
+fn add_dependencies(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
     compiler.add_dependency("cornflakes_libos::OrderedSga")?;
     compiler.add_dependency("cornflakes_libos::dynamic_sga_hdr::*")?;
     compiler.add_dependency("linux_datapath::datapath::connection::LinuxConnection")?;
+
+    // For VariableList_<param_ty>_index
+    for message in fd.get_repr().messages.iter() {
+        let msg_info = MessageInfo(message.clone());
+        if !has_variable_list(fd, &msg_info)?.is_empty() {
+            compiler.add_dependency("std::ops::Index")?;
+            break;
+        }
+    }
     Ok(())
 }
 
@@ -113,7 +122,11 @@ fn add_cf_string(compiler: &mut SerializationCompiler) -> Result<()> {
         "CFString_new", true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
-    compiler.add_line("todo!()")?;
+    compiler.add_unsafe_def_with_let(false, None, "value",
+        "std::slice::from_raw_parts(buffer, buffer_len)")?;
+    compiler.add_def_with_let(false, None, "value",
+        "Box::into_raw(Box::new(CFString::new_from_bytes(value)))")?;
+    compiler.add_unsafe_set("return_ptr", "value as _")?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
 
@@ -128,7 +141,10 @@ fn add_cf_string(compiler: &mut SerializationCompiler) -> Result<()> {
         "CFString_unpack", true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
-    compiler.add_line("todo!()")?;
+    compiler.add_unsafe_def_with_let(false, None, "value",
+        "Box::from_raw(value as *mut CFString)")?;
+    compiler.add_unsafe_set("return_ptr", "value.bytes().as_ptr()")?;
+    compiler.add_unsafe_set("return_len_ptr", "value.len()")?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
     Ok(())
@@ -143,6 +159,9 @@ fn add_variable_list(
     compiler: &mut SerializationCompiler,
     param_ty: ArgType,
 ) -> Result<()> {
+    let struct_name = format!("VariableList_{}", param_ty.to_cf_string());
+    let struct_ty = format!("VariableList<{}>", param_ty.to_cf_string());
+
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_init
     let args = vec![
@@ -150,57 +169,80 @@ fn add_variable_list(
         FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_void")),
     ];
     let func_context = FunctionContext::new_extern_c(
-        &format!("VariableList_{}_init", param_ty.to_cf_string()),
+        &format!("{}_init", &struct_name),
         true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
-    compiler.add_line("todo!()")?;
+    compiler.add_def_with_let(false, Some(struct_ty.clone()), "list",
+        "VariableList::init(num)")?;
+    compiler.add_def_with_let(false, None, "list",
+        "Box::into_raw(Box::new(list))")?;
+    compiler.add_unsafe_set("return_ptr", "list as _")?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
 
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_append
     let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("variable_list", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::arg("list", "*const ::std::os::raw::c_void")),
         FunctionArg::CArg(CArgInfo::arg("value", param_ty.to_string())),
     ];
     let func_context = FunctionContext::new_extern_c(
-        &format!("VariableList_{}_append", param_ty.to_cf_string()),
+        &format!("{}_append", &struct_name),
         true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
-    compiler.add_line("todo!()")?;
+    compiler.add_unsafe_def_with_let(true, None, "list",
+        &format!("Box::from_raw(list as *mut {})", &struct_ty))?;
+    compiler.add_unsafe_def_with_let(false, None, "value",
+        &format!("Box::from_raw(value as *mut {})", param_ty.to_cf_string()))?;
+    compiler.add_func_call(Some("list".to_string()), "append",
+        vec!["*value".to_string()], false)?;
+    compiler.add_func_call(None, "Box::into_raw",
+        vec!["list".to_string()], false)?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
 
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_len
     let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("variable_list", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::arg("list", "*const ::std::os::raw::c_void")),
         FunctionArg::CArg(CArgInfo::ret_arg("usize")),
     ];
     let func_context = FunctionContext::new_extern_c(
-        &format!("VariableList_{}_len", param_ty.to_cf_string()),
+        &format!("{}_len", &struct_name),
         true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
-    compiler.add_line("todo!()")?;
+    compiler.add_unsafe_def_with_let(true, None, "list",
+        &format!("Box::from_raw(list as *mut {})", &struct_ty))?;
+    compiler.add_def_with_let(false, None, "value", "list.len()")?;
+    compiler.add_func_call(None, "Box::into_raw",
+        vec!["list".to_string()], false)?;
+    compiler.add_unsafe_set("return_ptr", "value as _")?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
 
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_index
     let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("variable_list", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::arg("list", "*const ::std::os::raw::c_void")),
         FunctionArg::CArg(CArgInfo::arg("idx", "usize")),
         FunctionArg::CArg(CArgInfo::ret_arg(param_ty.to_string())),
     ];
     let func_context = FunctionContext::new_extern_c(
-        &format!("VariableList_{}_index", param_ty.to_cf_string()),
+        &format!("{}_index", &struct_name),
         true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
-    compiler.add_line("todo!()")?;
+    compiler.add_unsafe_def_with_let(true, None, "list",
+        &format!("Box::from_raw(list as *mut {})", &struct_ty))?;
+    compiler.add_def_with_let(
+        false, Some(format!("*const {}", &param_ty.to_cf_string())),
+        "value", "list.index(idx)")?;
+    compiler.add_func_call(None, "Box::into_raw",
+        vec!["list".to_string()], false)?;
+    compiler.add_unsafe_set("return_ptr", "value as _")?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
     Ok(())
