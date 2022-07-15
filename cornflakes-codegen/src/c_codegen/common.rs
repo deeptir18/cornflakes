@@ -101,11 +101,11 @@ pub fn add_cornflakes_structs(
     for message in fd.get_repr().messages.iter() {
         let msg_info = MessageInfo(message.clone());
         if !added_cf_string && has_cf_string(&msg_info) {
-            add_cf_string(compiler, datapath)?;
+            add_cf_string_or_bytes(compiler, datapath, "CFString")?;
             added_cf_string = true;
         }
         if !added_cf_bytes && has_cf_bytes(&msg_info) {
-            add_cf_bytes(compiler, datapath)?;
+            add_cf_string_or_bytes(compiler, datapath, "CFBytes")?;
             added_cf_bytes = true;
         }
         for param_ty in has_variable_list(fd, &msg_info, datapath)? {
@@ -158,29 +158,33 @@ pub fn has_variable_list(
     Ok(param_tys)
 }
 
-pub fn add_cf_string(
+/// ty == "CFString" or "CFBytes"
+pub fn add_cf_string_or_bytes(
     compiler: &mut SerializationCompiler,
     datapath: Option<&str>,
+    ty: &str,
 ) -> Result<()> {
     ////////////////////////////////////////////////////////////////////////////
-    // CFString_new
+    // <ty>_new
     let args = vec![
         FunctionArg::CArg(CArgInfo::arg("buffer", "*const ::std::os::raw::c_uchar")),
         FunctionArg::CArg(CArgInfo::arg("buffer_len", "usize")),
-        FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_uchar")),
     ];
     let func_context = FunctionContext::new_extern_c(
-        "CFString_new", true, args, false,
+        &format!("{}_new", ty), true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
     compiler.add_unsafe_def_with_let(false, None, "value",
         "std::slice::from_raw_parts(buffer, buffer_len)")?;
     let new_from_bytes = match datapath {
         Some(datapath) => format!(
-            "Box::into_raw(Box::new(CFString::<{}>::new_from_bytes(value)))",
-            datapath,
+            "Box::into_raw(Box::new({}::<{}>::new_from_bytes(value)))",
+            ty, datapath,
         ),
-        None => "Box::into_raw(Box::new(CFString::new_from_bytes(value)))".to_string(),
+        None => format!(
+            "Box::into_raw(Box::new({}::new_from_bytes(value)))", ty,
+        ),
     };
     compiler.add_def_with_let(false, None, "value", &new_from_bytes)?;
     compiler.add_unsafe_set("return_ptr", "value as _")?;
@@ -188,19 +192,21 @@ pub fn add_cf_string(
     compiler.add_newline()?;
 
     ////////////////////////////////////////////////////////////////////////////
-    // CFString_unpack
+    // <ty>_unpack
     let args = vec![
         FunctionArg::CArg(CArgInfo::arg("self_", "*const ::std::os::raw::c_void")),
         FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_uchar")),
         FunctionArg::CArg(CArgInfo::ret_len_arg()),
     ];
     let func_context = FunctionContext::new_extern_c(
-        "CFString_unpack", true, args, false,
+        &format!("{}_unpack", ty), true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
     let box_from_raw = match datapath {
-        Some(datapath) => format!("Box::from_raw(self_ as *mut CFString<{}>)", datapath),
-        None => "Box::from_raw(self_ as *mut CFString)".to_string(),
+        Some(datapath) => format!(
+            "Box::from_raw(self_ as *mut {}<{}>)", ty, datapath,
+        ),
+        None => format!("Box::from_raw(self_ as *mut {})", ty),
     };
     compiler.add_unsafe_def_with_let(false, None, "self_", &box_from_raw)?;
     // Note: The two different header types just have a different function name
@@ -214,14 +220,6 @@ pub fn add_cf_string(
         vec!["self_".to_string()], false)?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
-    Ok(())
-}
-
-pub fn add_cf_bytes(
-    _compiler: &mut SerializationCompiler,
-    _datapath: Option<&str>,
-) -> Result<()> {
-    // todo!()
     Ok(())
 }
 
