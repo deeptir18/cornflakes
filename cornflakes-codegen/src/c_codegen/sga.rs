@@ -25,7 +25,6 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
         add_sga_header_repr(compiler, &msg_info)?;
         compiler.add_newline()?;
         add_shared_sga_header_repr(compiler, &msg_info)?;
-        break;
     }
     Ok(())
 }

@@ -26,7 +26,6 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
         // add_rcsga_header_repr(compiler, &msg_info)?;
         compiler.add_newline()?;
         add_shared_rcsga_header_repr(compiler, &msg_info, datapath)?;
-        break;
     }
     Ok(())
 }

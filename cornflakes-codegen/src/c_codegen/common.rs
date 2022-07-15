@@ -594,25 +594,31 @@ pub fn add_get(
     Ok(())
 }
 
+/// NOTE(GY): Is this FFI function necessary? I think the mutability of the
+/// pointer gets erased when it's cased to a C pointer anyway.
 pub fn add_get_mut(
-    _fd: &ProtoReprInfo,
-    _compiler: &mut SerializationCompiler,
-    _msg_info: &MessageInfo,
-    _field: &FieldInfo,
-    _datapath: Option<&str>,
+    fd: &ProtoReprInfo,
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+    field: &FieldInfo,
+    datapath: Option<&str>,
 ) -> Result<()> {
-    // let field_name = field.get_name();
-    // let rust_type = fd.get_rust_type(field.clone())?;
-    // let func_context = FunctionContext::new_extern_c(
-    //     &format!("{}_get_mut_{}", msg_info.get_name(), &field_name),
-    //     true,
-    //     vec![FunctionArg::MutSelfArg],
-    //     // &format!("&mut {}", rust_type)
-    //     false,
-    // );
-    // compiler.add_context(Context::Function(func_context))?;
-    // compiler.add_return_val(&format!("&mut self.{}", &field_name), false)?;
-    // compiler.pop_context()?;
+    let return_type = ArgType::new(fd, field, datapath)?;
+    let struct_name = match datapath {
+        Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
+        None => msg_info.get_name(),
+    };
+    let func_name = format!("get_mut_{}", field.get_name());
+    add_extern_c_wrapper_function(
+        compiler,
+        &format!("{}_{}", msg_info.get_name(), &func_name),
+        &struct_name,
+        &func_name,
+        Some(true),
+        vec![],
+        Some(return_type),
+        false,
+    )?;
     Ok(())
 }
 
@@ -644,57 +650,24 @@ pub fn add_set(
 }
 
 pub fn add_list_init(
-    _compiler: &mut SerializationCompiler,
-    _msg_info: &MessageInfo,
-    _field: &FieldInfo,
-    _datapath: Option<&str>,
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+    field: &FieldInfo,
+    datapath: Option<&str>,
 ) -> Result<()> {
-    // let func_context = FunctionContext::new_extern_c(
-    //     &format!("{}_init_{}", msg_info.get_name(), field.get_name()),
-    //     true,
-    //     vec![
-    //         FunctionArg::MutSelfArg,
-    //         FunctionArg::new_arg("num", ArgInfo::owned("usize")),
-    //     ],
-    //     false,
-    // );
-    // compiler.add_context(Context::Function(func_context))?;
-    // match &field.0.typ {
-    //     FieldType::Int32
-    //     | FieldType::Int64
-    //     | FieldType::Uint32
-    //     | FieldType::Uint64
-    //     | FieldType::Float => {
-    //         compiler.add_statement(
-    //             &format!("self.{}", field.get_name()),
-    //             &format!("List::init(num)"),
-    //         )?;
-    //     }
-    //     FieldType::String
-    //     | FieldType::Bytes
-    //     | FieldType::RefCountedString
-    //     | FieldType::RefCountedBytes => {
-    //         compiler.add_statement(
-    //             &format!("self.{}", field.get_name()),
-    //             &format!("VariableList::init(num)"),
-    //         )?;
-    //     }
-    //     FieldType::MessageOrEnum(_) => {
-    //         compiler.add_statement(
-    //             &format!("self.{}", field.get_name()),
-    //             &format!("VariableList::init(num)"),
-    //         )?;
-    //     }
-    //     x => {
-    //         bail!("Field type not supported: {:?}", x);
-    //     }
-    // }
-    // compiler.add_func_call(
-    //     Some("self".to_string()),
-    //     "set_bitmap_field",
-    //     vec![format!("{}", field.get_bitmap_idx_str(true))],
-    //     false,
-    // )?;
-    // compiler.pop_context()?;
+    let struct_name = match datapath {
+        Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
+        None => msg_info.get_name(),
+    };
+    add_extern_c_wrapper_function(
+        compiler,
+        &format!("{}_init_{}", msg_info.get_name(), field.get_name()),
+        &struct_name,
+        &format!("init_{}", field.get_name()),
+        Some(true),
+        vec![("num", ArgType::Rust { string: "usize".to_string() })],
+        None,
+        false,
+    )?;
     Ok(())
 }
