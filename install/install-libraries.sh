@@ -10,6 +10,9 @@ if [ "$PRIMARY" = "y" ]; then
 fi
 cd protobuf
 if [ "$PRIMARY" = "y" ]; then
+    git submodule --update --init --recursive
+    ./autogen.sh
+    ./configure
     make -j
     make check
 fi
