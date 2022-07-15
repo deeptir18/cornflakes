@@ -223,6 +223,12 @@ pub fn add_cf_bytes(
     Ok(())
 }
 
+/// Note that the value passed around as a VariableList is actually a reference
+/// &VariableList, so parsing the self_ argument would be a
+/// *mut *const VariableList instead of just a *mut VariableList. We
+/// additionally need to deref the Box<*const VariableList> as a
+/// Box<&VariableList>. But careful using VariableList_init which returns an
+/// actual VariableList... I think the C code could just pass a reference.
 pub fn add_variable_list(
     compiler: &mut SerializationCompiler,
     param_ty: ArgType,
@@ -261,7 +267,7 @@ pub fn add_variable_list(
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_append
     let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("self_", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::arg("self_", "*const *const ::std::os::raw::c_void")),
         FunctionArg::CArg(CArgInfo::arg("value", param_ty.to_string())),
     ];
     let func_context = FunctionContext::new_extern_c(
@@ -270,10 +276,11 @@ pub fn add_variable_list(
     );
     compiler.add_context(Context::Function(func_context))?;
     compiler.add_unsafe_def_with_let(true, None, "self_",
-        &format!("Box::from_raw(self_ as *mut {})", &struct_ty))?;
+        &format!("Box::from_raw(self_ as *mut *mut {})", &struct_ty))?;
+    compiler.add_unsafe_def_with_let(true, None, "self_ref", "&mut **self_")?;
     compiler.add_unsafe_def_with_let(false, None, "value",
         &format!("Box::from_raw(value as *mut {})", param_ty.to_cf_string()))?;
-    compiler.add_func_call(Some("self_".to_string()), "append",
+    compiler.add_func_call(Some("self_ref".to_string()), "append",
         vec!["*value".to_string()], false)?;
     compiler.add_func_call(None, "Box::into_raw",
         vec!["self_".to_string()], false)?;
@@ -283,7 +290,7 @@ pub fn add_variable_list(
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_len
     let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("self_", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::arg("self_", "*const *const ::std::os::raw::c_void")),
         FunctionArg::CArg(CArgInfo::ret_arg("usize")),
     ];
     let func_context = FunctionContext::new_extern_c(
@@ -291,9 +298,10 @@ pub fn add_variable_list(
         true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
-    compiler.add_unsafe_def_with_let(true, None, "self_",
-        &format!("Box::from_raw(self_ as *mut {})", &struct_ty))?;
-    compiler.add_def_with_let(false, None, "value", "self_.len()")?;
+    compiler.add_unsafe_def_with_let(false, None, "self_",
+        &format!("Box::from_raw(self_ as *mut *const {})", &struct_ty))?;
+    compiler.add_unsafe_def_with_let(false, None, "self_ref", "&**self_")?;
+    compiler.add_def_with_let(false, None, "value", "self_ref.len()")?;
     compiler.add_func_call(None, "Box::into_raw",
         vec!["self_".to_string()], false)?;
     compiler.add_unsafe_set("return_ptr", "value as _")?;
@@ -303,7 +311,7 @@ pub fn add_variable_list(
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_index
     let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("self_", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::arg("self_", "*const *const ::std::os::raw::c_void")),
         FunctionArg::CArg(CArgInfo::arg("idx", "usize")),
         FunctionArg::CArg(CArgInfo::ret_arg(param_ty.to_string())),
     ];
@@ -312,11 +320,12 @@ pub fn add_variable_list(
         true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
-    compiler.add_unsafe_def_with_let(true, None, "self_",
-        &format!("Box::from_raw(self_ as *mut {})", &struct_ty))?;
+    compiler.add_unsafe_def_with_let(false, None, "self_",
+        &format!("Box::from_raw(self_ as *mut *const {})", &struct_ty))?;
+    compiler.add_unsafe_def_with_let(false, None, "self_ref", "&**self_")?;
     compiler.add_def_with_let(
         false, Some(format!("*const {}", &param_ty.to_cf_string())),
-        "value", "self_.index(idx)")?;
+        "value", "self_ref.index(idx)")?;
     compiler.add_func_call(None, "Box::into_raw",
         vec!["self_".to_string()], false)?;
     compiler.add_unsafe_set("return_ptr", "value as _")?;
