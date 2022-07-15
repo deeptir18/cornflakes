@@ -6,11 +6,10 @@ PACKAGES=$1
 pushd $PACKAGES
 # clone protobuf
 if [ "$PRIMARY" = "y" ]; then
-    git clone https://github.com/protocolbuffers/protobuf.git
+    git clone https://github.com/protocolbuffers/protobuf.git --recursive
 fi
 cd protobuf
 if [ "$PRIMARY" = "y" ]; then
-    git submodule --update --init --recursive
     ./autogen.sh
     ./configure
     make -j
