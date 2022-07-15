@@ -24,8 +24,8 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
         add_impl(fd, compiler, &msg_info, Some(datapath))?;
         // compiler.add_newline()?;
         // add_rcsga_header_repr(compiler, &msg_info)?;
-        // compiler.add_newline()?;
-        // add_shared_rcsga_header_repr(compiler, &msg_info)?;
+        compiler.add_newline()?;
+        add_shared_rcsga_header_repr(compiler, &msg_info, datapath)?;
         break;
     }
     Ok(())
@@ -92,14 +92,17 @@ fn add_rcsga_header_repr(
 fn add_shared_rcsga_header_repr(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
+    datapath: &str,
 ) -> Result<()> {
-    // add_deserialize_function(compiler, &msg_info.get_name())?;
+    let struct_name = format!("{}<{}>", &msg_info.get_name(), datapath);
+    add_deserialize_from_buf_function(compiler, msg_info, &struct_name)?;
     // add_serialize_into_rcsga_function(compiler, &msg_info.get_name())?;
     Ok(())
 }
 
-fn add_deserialize_function(
+fn add_deserialize_from_buf_function(
     compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
     struct_name: &str,
 ) -> Result<()> {
     let args = {
@@ -111,7 +114,7 @@ fn add_deserialize_function(
     };
 
     let func_context = FunctionContext::new_extern_c(
-        &format!("{}_{}", struct_name, "deserialize"),
+        &format!("{}_{}", &msg_info.get_name(), "deserialize_from_buf"),
         true, args, true,
     );
     compiler.add_context(Context::Function(func_context))?;
@@ -119,7 +122,7 @@ fn add_deserialize_function(
         "Box::from_raw(self_ as *mut {})", struct_name))?;
     compiler.add_unsafe_def_with_let(false, None, "arg0", "std::slice::from_raw_parts(buffer, buffer_len)")?;
     compiler.add_func_call_with_let("value", None, Some("self_".to_string()),
-        "deserialize", vec!["arg0".to_string()], false)?;
+        "deserialize_from_buf", vec!["arg0".to_string()], false)?;
     compiler.add_func_call(None, "Box::into_raw", vec!["self_".to_string()], false)?;
 
     let match_context = MatchContext::new_with_def("value",
