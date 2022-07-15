@@ -47,9 +47,9 @@ fn add_rcsga_dependencies(fd: &ProtoReprInfo, compiler: &mut SerializationCompil
     Ok(())
 }
 
-fn add_rcsga_header_repr(
-    compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
+fn _add_rcsga_header_repr(
+    _compiler: &mut SerializationCompiler,
+    _msg_info: &MessageInfo,
 ) -> Result<()> {
     // // add dynamic header size function
     // add_extern_c_wrapper_function(
@@ -139,7 +139,7 @@ fn add_deserialize_from_buf_function(
     Ok(())
 }
 
-fn add_serialize_into_rcsga_function(
+fn _add_serialize_into_rcsga_function(
     compiler: &mut SerializationCompiler,
     struct_name: &str,
 ) -> Result<()> {

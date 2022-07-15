@@ -218,8 +218,8 @@ pub fn add_cf_string(
 }
 
 pub fn add_cf_bytes(
-    compiler: &mut SerializationCompiler,
-    datapath: Option<&str>,
+    _compiler: &mut SerializationCompiler,
+    _datapath: Option<&str>,
 ) -> Result<()> {
     // todo!()
     Ok(())
@@ -269,7 +269,7 @@ pub fn add_variable_list(
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_append
     let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("self_", "*const *const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::arg("self_", "*const ::std::os::raw::c_void")),
         FunctionArg::CArg(CArgInfo::arg("value", param_ty.to_string())),
     ];
     let func_context = FunctionContext::new_extern_c(
@@ -277,9 +277,9 @@ pub fn add_variable_list(
         true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
-    compiler.add_unsafe_def_with_let(true, None, "self_",
+    compiler.add_unsafe_def_with_let(false, None, "self_",
         &format!("Box::from_raw(self_ as *mut *mut {})", &struct_ty))?;
-    compiler.add_unsafe_def_with_let(true, None, "self_ref", "&mut **self_")?;
+    compiler.add_unsafe_def_with_let(false, None, "self_ref", "&mut **self_")?;
     compiler.add_unsafe_def_with_let(false, None, "value",
         &format!("Box::from_raw(value as *mut {})", param_ty.to_cf_string()))?;
     compiler.add_func_call(Some("self_ref".to_string()), "append",
@@ -292,7 +292,7 @@ pub fn add_variable_list(
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_len
     let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("self_", "*const *const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::arg("self_", "*const ::std::os::raw::c_void")),
         FunctionArg::CArg(CArgInfo::ret_arg("usize")),
     ];
     let func_context = FunctionContext::new_extern_c(
@@ -313,7 +313,7 @@ pub fn add_variable_list(
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_index
     let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("self_", "*const *const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::arg("self_", "*const ::std::os::raw::c_void")),
         FunctionArg::CArg(CArgInfo::arg("idx", "usize")),
         FunctionArg::CArg(CArgInfo::ret_arg(param_ty.to_string())),
     ];
