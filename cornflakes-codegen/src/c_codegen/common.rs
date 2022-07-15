@@ -210,6 +210,8 @@ pub fn add_cf_string(
         None => "self_.bytes().as_ptr()",
     })?;
     compiler.add_unsafe_set("return_len_ptr", "self_.len()")?;
+    compiler.add_func_call(None, "Box::into_raw",
+        vec!["self_".to_string()], false)?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
     Ok(())
