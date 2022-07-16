@@ -16,6 +16,7 @@ pub enum ArgType {
     String { datapath: Option<String> },
     VoidPtr { inner_ty: String },
     Ref { inner_ty: String },
+    RefMut { inner_ty: String },
     List { datapath: Option<String>, param_ty: Box<ArgType> },
 }
 
@@ -50,6 +51,7 @@ impl ArgType {
             ArgType::VoidPtr{..} => "*mut ::std::os::raw::c_void",
             ArgType::List{..} => "*const ::std::os::raw::c_void",
             ArgType::Ref{..} => "*mut ::std::os::raw::c_void",
+            ArgType::RefMut{..} => "*mut ::std::os::raw::c_void",
         }
     }
 
@@ -87,6 +89,8 @@ impl ArgType {
             },
             ArgType::VoidPtr{..} => unimplemented!("unknown struct probably"),
             ArgType::Ref{..} => unimplemented!("unknown struct ref probably"),
+            ArgType::RefMut{..} => unimplemented!("unknown struct ref mut
+                probably"),
         }
     }
 }
@@ -381,12 +385,17 @@ pub fn add_extern_c_wrapper_function(
                 "unsafe {{ *Box::from_raw({} as *mut {}) }}",
                 arg_name, arg_ty.to_cf_string(),
             ),
-            ArgType::VoidPtr { inner_ty } | ArgType::Ref { inner_ty } => format!(
+            ArgType::VoidPtr { inner_ty } | ArgType::Ref { inner_ty }
+                | ArgType::RefMut { inner_ty } => format!(
                 "unsafe {{ Box::from_raw({} as *mut {}) }}",
                 arg_name, inner_ty,
             ),
         };
-        compiler.add_def_with_let(false, None, &left, &right)?;
+        let mutable = match arg_ty {
+            ArgType::RefMut{..} => true,
+            _ => false,
+        };
+        compiler.add_def_with_let(mutable, None, &left, &right)?;
     }
 
     // Generate function arguments and return type
@@ -394,6 +403,7 @@ pub fn add_extern_c_wrapper_function(
         .enumerate()
         .map(|(i, (_, arg_ty))| match arg_ty {
             ArgType::Ref{..} => format!("&arg{}", i),
+            ArgType::RefMut{..} => format!("&mut arg{}", i),
             _ => format!("arg{}", i),
         })
         .collect::<Vec<_>>();
@@ -438,7 +448,8 @@ pub fn add_extern_c_wrapper_function(
                 compiler.add_unsafe_set("return_ptr", "value")?;
             }
             ArgType::VoidPtr{..} | ArgType::Bytes{..} | ArgType::String{..}
-                    | ArgType::List{..} | ArgType::Ref{..} => {
+                    | ArgType::Ref{..} | ArgType::RefMut{..}
+                    | ArgType::List{..} => {
                 compiler.add_func_call_with_let("value", None, None,
                    "Box::into_raw", vec!["Box::new(value)".to_string()],
                    false)?;
@@ -456,7 +467,7 @@ pub fn add_extern_c_wrapper_function(
             ArgType::Rust{..} => { continue; },
             ArgType::Bytes{..} => { continue; },
             ArgType::String{..} => { continue; },
-            ArgType::VoidPtr{..} | ArgType::Ref{..} => {
+            ArgType::VoidPtr{..} | ArgType::Ref{..} | ArgType::RefMut{..} => {
                 compiler.add_func_call(None, "Box::into_raw", vec![format!("arg{}", i)], false)?;
             },
             ArgType::List{..} => { continue; },
