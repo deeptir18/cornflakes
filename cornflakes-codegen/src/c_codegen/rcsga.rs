@@ -24,8 +24,8 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
         add_default_impl(compiler, &msg_info, Some(datapath))?;
         compiler.add_newline()?;
         add_impl(fd, compiler, &msg_info, Some(datapath))?;
-        // compiler.add_newline()?;
-        // add_rcsga_header_repr(compiler, &msg_info)?;
+        compiler.add_newline()?;
+        add_rcsga_header_repr(compiler, &msg_info, datapath)?;
         compiler.add_newline()?;
         add_shared_rcsga_header_repr(compiler, &msg_info, datapath)?;
     }
@@ -109,43 +109,22 @@ fn add_bump_initialization_function(
     Ok(())
 }
 
-fn _add_rcsga_header_repr(
-    _compiler: &mut SerializationCompiler,
-    _msg_info: &MessageInfo,
+fn add_rcsga_header_repr(
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+    datapath: &str,
 ) -> Result<()> {
-    // // add dynamic header size function
-    // add_extern_c_wrapper_function(
-    //     compiler,
-    //     &msg_info.get_name(),
-    //     "dynamic_header_size",
-    //     Some(false),
-    //     vec![],
-    //     Some(ArgType::Rust("usize".to_string())),
-    //     false,
-    // )?;
-
-    // // add dynamic header start function
-    // add_extern_c_wrapper_function(
-    //     compiler,
-    //     &msg_info.get_name(),
-    //     "dynamic_header_start",
-    //     Some(false),
-    //     vec![],
-    //     Some(ArgType::Rust("usize".to_string())),
-    //     false,
-    // )?;
-
-    // // add num scatter_gather_entries function
-    // add_extern_c_wrapper_function(
-    //     compiler,
-    //     &msg_info.get_name(),
-    //     "num_scatter_gather_entries",
-    //     Some(false),
-    //     vec![],
-    //     Some(ArgType::Rust("usize".to_string())),
-    //     false,
-    // )?;
-
+    // add num scatter_gather_entries function
+    add_extern_c_wrapper_function(
+        compiler,
+        &format!("{}_num_scatter_gather_entries", msg_info.get_name()),
+        &format!("{}<{}>", msg_info.get_name(), datapath),
+        "num_scatter_gather_entries",
+        Some(false),
+        vec![],
+        Some(ArgType::Rust { string: "usize".to_string() }),
+        false,
+    )?;
     Ok(())
 }
 
