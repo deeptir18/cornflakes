@@ -87,6 +87,8 @@ fn gen_cargo_toml(repr: &ProtoReprInfo, package_folder: &Path) -> Result<()> {
     compiler.add_line("cornflakes-libos = { path = \"../../../cornflakes-libos\" }")?;
     compiler.add_line("cornflakes-codegen = { path = \"../../../cornflakes-codegen\" }")?;
     compiler.add_line("mlx5-datapath = { path = \"../../../mlx5-datapath\" }")?;
+    // TODO: rcsga only
+    compiler.add_line("bumpalo = { git = \"https://github.com/deeptir18/bumpalo\", features = [\"collections\"] }")?;
     compiler.add_newline()?;
 
     // Build dependencies
