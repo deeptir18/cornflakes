@@ -14,6 +14,8 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
     compiler.add_newline()?;
     add_bumpalo_functions(compiler)?;
     compiler.add_newline()?;
+    add_arena_ordered_sga(compiler)?;
+    compiler.add_newline()?;
     add_cornflakes_structs(fd, compiler, Some(datapath))?;
 
     // For each message type: add basic constructors, getters and setters, and
@@ -34,7 +36,7 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
 
 fn add_rcsga_dependencies(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
     compiler.add_dependency("bumpalo")?;
-    compiler.add_dependency("cornflakes_libos::ArenaOrderedSga")?;
+    compiler.add_dependency("cornflakes_libos::{ArenaOrderedSga, ArenaOrderedRcSga}")?;
     compiler.add_dependency("cornflakes_libos::dynamic_rcsga_hdr::*")?;
     compiler.add_dependency("mlx5_datapath::datapath::connection::Mlx5Connection")?;
 
@@ -106,6 +108,25 @@ fn add_bump_initialization_function(
     compiler.add_unsafe_set("return_ptr", "arena as _")?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
+    Ok(())
+}
+
+/// cornflakes-libos/src/lib.rs
+fn add_arena_ordered_sga(compiler: &mut SerializationCompiler) -> Result<()> {
+    // add allocate function
+    add_extern_c_wrapper_function(
+        compiler,
+        "ArenaOrderedSga_allocate",
+        "ArenaOrderedSga",
+        "allocate",
+        None,
+        vec![
+            ("num_entries", ArgType::Rust { string: "usize".to_string() }),
+            ("arena", ArgType::Ref { inner_ty: "bumpalo::Bump".to_string() }),
+        ],
+        Some(ArgType::VoidPtr { inner_ty: "ArenaOrderedSga".to_string() }),
+        false,
+    )?;
     Ok(())
 }
 

@@ -15,6 +15,7 @@ pub enum ArgType {
     Bytes { datapath: Option<String> },
     String { datapath: Option<String> },
     VoidPtr { inner_ty: String },
+    Ref { inner_ty: String },
     List { datapath: Option<String>, param_ty: Box<ArgType> },
 }
 
@@ -48,6 +49,7 @@ impl ArgType {
             ArgType::String{..} => "*const ::std::os::raw::c_void",
             ArgType::VoidPtr{..} => "*mut ::std::os::raw::c_void",
             ArgType::List{..} => "*const ::std::os::raw::c_void",
+            ArgType::Ref{..} => "*mut ::std::os::raw::c_void",
         }
     }
 
@@ -84,6 +86,7 @@ impl ArgType {
                 ),
             },
             ArgType::VoidPtr{..} => unimplemented!("unknown struct probably"),
+            ArgType::Ref{..} => unimplemented!("unknown struct ref probably"),
         }
     }
 }
@@ -378,7 +381,7 @@ pub fn add_extern_c_wrapper_function(
                 "unsafe {{ *Box::from_raw({} as *mut {}) }}",
                 arg_name, arg_ty.to_cf_string(),
             ),
-            ArgType::VoidPtr { inner_ty } => format!(
+            ArgType::VoidPtr { inner_ty } | ArgType::Ref { inner_ty } => format!(
                 "unsafe {{ Box::from_raw({} as *mut {}) }}",
                 arg_name, inner_ty,
             ),
@@ -387,7 +390,13 @@ pub fn add_extern_c_wrapper_function(
     }
 
     // Generate function arguments and return type
-    let args = (0..raw_args.len()).map(|i| format!("arg{}", i)).collect::<Vec<_>>();
+    let args = raw_args.iter()
+        .enumerate()
+        .map(|(i, (_, arg_ty))| match arg_ty {
+            ArgType::Ref{..} => format!("&arg{}", i),
+            _ => format!("arg{}", i),
+        })
+        .collect::<Vec<_>>();
     let ret_ty = if let Some(ref ret_ty) = raw_ret {
         match ret_ty {
             ArgType::List{..} => {
@@ -410,22 +419,6 @@ pub fn add_extern_c_wrapper_function(
             &format!("{}::{}", struct_name, func_name), args, false)?;
     }
 
-    // Unformat arguments
-    if is_mut_self.is_some() {
-        compiler.add_func_call(None, "Box::into_raw", vec!["self_".to_string()], false)?;
-    }
-    for (i, (_, arg_ty)) in raw_args.iter().enumerate() {
-        match arg_ty {
-            ArgType::Rust{..} => { continue; },
-            ArgType::Bytes{..} => { continue; },
-            ArgType::String{..} => { continue; },
-            ArgType::VoidPtr{..} => {
-                compiler.add_func_call(None, "Box::into_raw", vec![format!("arg{}", i)], false)?;
-            },
-            ArgType::List{..} => { continue; },
-        };
-    }
-
     // Unwrap result if uses an error code
     if use_error_code {
         let match_context = MatchContext::new_with_def(
@@ -445,13 +438,29 @@ pub fn add_extern_c_wrapper_function(
                 compiler.add_unsafe_set("return_ptr", "value")?;
             }
             ArgType::VoidPtr{..} | ArgType::Bytes{..} | ArgType::String{..}
-                    | ArgType::List{..} => {
+                    | ArgType::List{..} | ArgType::Ref{..} => {
                 compiler.add_func_call_with_let("value", None, None,
                    "Box::into_raw", vec!["Box::new(value)".to_string()],
                    false)?;
                 compiler.add_unsafe_set("return_ptr", "value as _")?;
             }
         }
+    }
+
+    // Unformat arguments
+    if is_mut_self.is_some() {
+        compiler.add_func_call(None, "Box::into_raw", vec!["self_".to_string()], false)?;
+    }
+    for (i, (_, arg_ty)) in raw_args.iter().enumerate() {
+        match arg_ty {
+            ArgType::Rust{..} => { continue; },
+            ArgType::Bytes{..} => { continue; },
+            ArgType::String{..} => { continue; },
+            ArgType::VoidPtr{..} | ArgType::Ref{..} => {
+                compiler.add_func_call(None, "Box::into_raw", vec![format!("arg{}", i)], false)?;
+            },
+            ArgType::List{..} => { continue; },
+        };
     }
 
     if use_error_code {
