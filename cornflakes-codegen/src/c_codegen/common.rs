@@ -216,7 +216,7 @@ pub fn add_cf_string_or_bytes(
         "Box::from_raw(datapath as *mut Mlx5Connection)")?;
     let new_from_bytes = match datapath {
         Some(datapath) => format!(
-            "Box::into_raw(Box::new({}::<{}>::new(arg0, &arg1)))",
+            "Box::into_raw(Box::new({}::<{}>::new(arg0, &arg1).unwrap()))",
             ty, datapath,
         ),
         None => format!(
