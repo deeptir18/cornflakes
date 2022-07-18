@@ -172,29 +172,61 @@ pub fn add_cf_string_or_bytes(
     ty: &str,
 ) -> Result<()> {
     ////////////////////////////////////////////////////////////////////////////
-    // <ty>_new
+    // <ty>_new_from_bytes
     let args = vec![
         FunctionArg::CArg(CArgInfo::arg("buffer", "*const ::std::os::raw::c_uchar")),
         FunctionArg::CArg(CArgInfo::arg("buffer_len", "usize")),
         FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_uchar")),
     ];
     let func_context = FunctionContext::new_extern_c(
-        &format!("{}_new", ty), true, args, false,
+        &format!("{}_new_from_bytes", ty), true, args, false,
     );
     compiler.add_context(Context::Function(func_context))?;
-    compiler.add_unsafe_def_with_let(false, None, "value",
+    compiler.add_unsafe_def_with_let(false, None, "arg0",
         "std::slice::from_raw_parts(buffer, buffer_len)")?;
     let new_from_bytes = match datapath {
         Some(datapath) => format!(
-            "Box::into_raw(Box::new({}::<{}>::new_from_bytes(value)))",
+            "Box::into_raw(Box::new({}::<{}>::new_from_bytes(arg0)))",
             ty, datapath,
         ),
         None => format!(
-            "Box::into_raw(Box::new({}::new_from_bytes(value)))", ty,
+            "Box::into_raw(Box::new({}::new_from_bytes(arg0)))", ty,
         ),
     };
     compiler.add_def_with_let(false, None, "value", &new_from_bytes)?;
     compiler.add_unsafe_set("return_ptr", "value as _")?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // <ty>_new
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("buffer", "*const ::std::os::raw::c_uchar")),
+        FunctionArg::CArg(CArgInfo::arg("buffer_len", "usize")),
+        FunctionArg::CArg(CArgInfo::arg("datapath", "*mut ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_uchar")),
+    ];
+    let func_context = FunctionContext::new_extern_c(
+        &format!("{}_new", ty), true, args, false,
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_unsafe_def_with_let(false, None, "arg0",
+        "std::slice::from_raw_parts(buffer, buffer_len)")?;
+    compiler.add_unsafe_def_with_let(false, None, "arg1",
+        "Box::from_raw(datapath as *mut Mlx5Connection)")?;
+    let new_from_bytes = match datapath {
+        Some(datapath) => format!(
+            "Box::into_raw(Box::new({}::<{}>::new(arg0, &arg1)))",
+            ty, datapath,
+        ),
+        None => format!(
+            "Box::into_raw(Box::new({}::new(arg0, &arg1)))", ty,
+        ),
+    };
+    compiler.add_def_with_let(false, None, "value", &new_from_bytes)?;
+    compiler.add_unsafe_set("return_ptr", "value as _")?;
+    compiler.add_func_call(None, "Box::into_raw",
+        vec!["arg1".to_string()], false)?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
 
