@@ -1,4 +1,7 @@
-use cornflakes_libos::{datapath::{Datapath, InlineMode}, OrderedSga};
+use cornflakes_libos::{
+    datapath::{Datapath, InlineMode},
+    {ArenaOrderedRcSga, OrderedSga},
+};
 use cornflakes_utils::AppMode;
 use mlx5_datapath::datapath::connection::Mlx5Connection;
 use std::{ffi::CStr, net::Ipv4Addr, str::FromStr};
@@ -127,6 +130,17 @@ pub extern "C" fn Mlx5Connection_add_memory_pool(
 }
 
 #[no_mangle]
+pub extern "C" fn Mlx5Connection_add_tx_mempool(
+    conn: *mut ::std::os::raw::c_void,
+    size: usize,
+    min_elts: usize,
+) {
+    let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
+    conn_box.add_tx_mempool(size, min_elts).unwrap();
+    Box::into_raw(conn_box);
+}
+
+#[no_mangle]
 pub extern "C" fn Mlx5Connection_pop(
     conn: *mut ::std::os::raw::c_void,
     n: *mut usize,
@@ -178,4 +192,29 @@ pub extern "C" fn Mlx5Connection_push_ordered_sgas(
         .collect::<Vec<_>>();
     conn_box.push_ordered_sgas(&data[..]).unwrap();
     Box::into_raw(conn_box);
+}
+
+#[no_mangle]
+pub extern "C" fn Mlx5Connection_queue_arena_ordered_rcsga(
+    conn: *mut ::std::os::raw::c_void,
+    msg_id: u32,
+    conn_id: usize,
+    arena_ordered_rc_sga: *mut ::std::os::raw::c_void,
+    end_batch: bool,
+) -> u32 {
+    let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
+    let arg0 = msg_id;
+    let arg1 = conn_id;
+    let arg2 = unsafe { Box::from_raw(arena_ordered_rc_sga as *mut
+        ArenaOrderedRcSga<Mlx5Connection>) };
+    let arg3 = end_batch;
+    match conn_box.queue_arena_ordered_rcsga((arg0, arg1, *arg2), arg3) {
+        Ok(()) => {},
+        Err(e) => {
+            eprintln!("{:?}", e);
+            return 1;
+        }
+    };
+    Box::into_raw(conn_box);
+    0
 }
