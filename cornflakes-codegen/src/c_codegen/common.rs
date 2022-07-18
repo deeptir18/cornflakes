@@ -385,17 +385,16 @@ pub fn add_extern_c_wrapper_function(
                 "unsafe {{ *Box::from_raw({} as *mut {}) }}",
                 arg_name, arg_ty.to_cf_string(),
             ),
-            ArgType::VoidPtr { inner_ty } | ArgType::Ref { inner_ty }
-                | ArgType::RefMut { inner_ty } => format!(
+            ArgType::VoidPtr { inner_ty } | ArgType::Ref { inner_ty } => format!(
                 "unsafe {{ Box::from_raw({} as *mut {}) }}",
                 arg_name, inner_ty,
             ),
+            ArgType::RefMut { inner_ty } => format!(
+                "{} as *mut {}",
+                arg_name, inner_ty,
+            ),
         };
-        let mutable = match arg_ty {
-            ArgType::RefMut{..} => true,
-            _ => false,
-        };
-        compiler.add_def_with_let(mutable, None, &left, &right)?;
+        compiler.add_def_with_let(false, None, &left, &right)?;
     }
 
     // Generate function arguments and return type
@@ -403,7 +402,7 @@ pub fn add_extern_c_wrapper_function(
         .enumerate()
         .map(|(i, (_, arg_ty))| match arg_ty {
             ArgType::Ref{..} => format!("&arg{}", i),
-            ArgType::RefMut{..} => format!("&mut arg{}", i),
+            ArgType::RefMut{..} => format!("unsafe {{ &mut *arg{} }}", i),
             _ => format!("arg{}", i),
         })
         .collect::<Vec<_>>();
@@ -448,13 +447,13 @@ pub fn add_extern_c_wrapper_function(
                 compiler.add_unsafe_set("return_ptr", "value")?;
             }
             ArgType::VoidPtr{..} | ArgType::Bytes{..} | ArgType::String{..}
-                    | ArgType::Ref{..} | ArgType::RefMut{..}
-                    | ArgType::List{..} => {
+                    | ArgType::Ref{..} | ArgType::List{..} => {
                 compiler.add_func_call_with_let("value", None, None,
                    "Box::into_raw", vec!["Box::new(value)".to_string()],
                    false)?;
                 compiler.add_unsafe_set("return_ptr", "value as _")?;
             }
+            ArgType::RefMut{..} => unimplemented!(),
         }
     }
 
@@ -467,9 +466,10 @@ pub fn add_extern_c_wrapper_function(
             ArgType::Rust{..} => { continue; },
             ArgType::Bytes{..} => { continue; },
             ArgType::String{..} => { continue; },
-            ArgType::VoidPtr{..} | ArgType::Ref{..} | ArgType::RefMut{..} => {
+            ArgType::VoidPtr{..} | ArgType::Ref{..} => {
                 compiler.add_func_call(None, "Box::into_raw", vec![format!("arg{}", i)], false)?;
             },
+            ArgType::RefMut{..} => { continue; },
             ArgType::List{..} => { continue; },
         };
     }
