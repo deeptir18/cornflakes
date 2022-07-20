@@ -1,4 +1,7 @@
-use super::{loadgen::client_threads::ThreadLatencies, MsgID};
+use super::{
+    loadgen::client_threads::{SummaryHistogram, ThreadLatencies},
+    MsgID,
+};
 use color_eyre::eyre::{bail, ensure, Result};
 use hashbrown::HashMap;
 use hdrhistogram::Histogram;
@@ -174,6 +177,14 @@ impl ManualHistogram {
             avg_ns = ?self.mean()?,
         );
         Ok(())
+    }
+
+    pub fn summary_histogram(&self) -> SummaryHistogram {
+        let mut hist = SummaryHistogram::default();
+        for lat in self.latencies.iter().take(self.current_count) {
+            hist.record(*lat);
+        }
+        hist
     }
 
     pub fn thread_latencies(&self) -> Result<ThreadLatencies> {

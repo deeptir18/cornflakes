@@ -1,8 +1,11 @@
 use super::super::timing::ManualHistogram;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::to_writer;
-use std::{collections::HashMap, fs::File};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs::File,
+};
 
 const NANOS_IN_SEC: f64 = 1000000000.0;
 
@@ -12,6 +15,164 @@ pub fn pps_to_gbps(load: f64, size: usize) -> f64 {
 
 fn rolling_avg(avg: f64, val: f64, idx: usize) -> f64 {
     avg + (val - avg) / idx as f64
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct SummaryHistogram {
+    // Precision in terms of nanoseconds
+    pub precision: u64,
+    // Map from latency marker to count
+    pub map: BTreeMap<u64, u64>,
+    // Count of total latencies
+    pub count: usize,
+    // Number of client threads this histogram represents
+    pub num_client_threads: usize,
+}
+
+impl Default for SummaryHistogram {
+    fn default() -> Self {
+        SummaryHistogram {
+            precision: 100,
+            map: BTreeMap::default(),
+            count: 0,
+            num_client_threads: 1,
+        }
+    }
+}
+
+impl SummaryHistogram {
+    fn new(
+        precision: u64,
+        map: BTreeMap<u64, u64>,
+        count: usize,
+        num_client_threads: usize,
+    ) -> Self {
+        SummaryHistogram {
+            precision: precision,
+            map: map,
+            count: count,
+            num_client_threads: num_client_threads,
+        }
+    }
+
+    pub fn record(&mut self, latency: u64) {
+        let divisor = latency / self.precision;
+        let bucket = (divisor + 1) * self.precision;
+        *self.map.entry(bucket).or_insert(0) += 1;
+        self.count += 1;
+    }
+
+    fn count(&self) -> usize {
+        self.count
+    }
+
+    fn num_client_threads(&self) -> usize {
+        self.num_client_threads
+    }
+
+    fn precision(&self) -> u64 {
+        self.precision
+    }
+
+    fn map(&self) -> &BTreeMap<u64, u64> {
+        &self.map
+    }
+
+    fn value_at_quantile(&self, quantile: f64) -> Result<u64> {
+        let index = (self.count as f64 * quantile) as usize;
+        let mut ct = 0;
+        for (key, value) in self.map.iter() {
+            if *value == 0 {
+                continue;
+            }
+            for _ in 0..*value {
+                if ct == index {
+                    return Ok(*key);
+                }
+                ct += 1;
+            }
+        }
+        bail!(
+            "Could not find quantile {:?} for map with count {}",
+            quantile,
+            self.count
+        );
+    }
+
+    fn min(&self) -> Result<u64> {
+        if self.count == 0 {
+            bail!("Histogram empty");
+        }
+        return Ok(*self.map.keys().next().unwrap());
+    }
+
+    fn max(&self) -> Result<u64> {
+        if self.count == 0 {
+            bail!("Histogram empty");
+        }
+
+        return Ok(*self.map.keys().last().unwrap());
+    }
+
+    fn avg(&self) -> Result<f64> {
+        let mut avg = 0f64;
+        let mut idx = 0;
+        for (key, ct) in self.map.iter() {
+            for _ in 0..*ct {
+                idx += 1;
+                avg = rolling_avg(avg, *key as f64, idx);
+            }
+        }
+        Ok(avg)
+    }
+
+    fn get_summary_latencies(&self) -> Result<ThreadLatencies> {
+        // find p5, p25, p50, p75, p95, p99 and p999 latencies, as well as min or max
+        Ok(ThreadLatencies {
+            num_threads: 1,
+            avg: self.avg()? as _,
+            p5: self.value_at_quantile(0.05)? as _,
+            p25: self.value_at_quantile(0.25)? as _,
+            p50: self.value_at_quantile(0.50)? as _,
+            p75: self.value_at_quantile(0.75)? as _,
+            p95: self.value_at_quantile(0.95)? as _,
+            p99: self.value_at_quantile(0.99)? as _,
+            p999: self.value_at_quantile(0.999)? as _,
+            min: self.min()? as _,
+            max: self.max()? as _,
+        })
+    }
+}
+
+impl std::ops::Add for SummaryHistogram {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        let count = self.count() + other.count();
+        let num_threads = self.num_client_threads() + other.num_client_threads();
+        // if precision is the same, just combine the two hashmaps
+        if self.precision() == other.precision() {
+            let mut res = self.map().clone();
+            for (key, count) in other.map().iter() {
+                *res.entry(*key).or_insert(0) += *count;
+            }
+            return SummaryHistogram::new(self.precision(), res, count, num_threads);
+        } else if self.precision() > other.precision() {
+            let mut res = self.map().clone();
+            for (key, count) in other.map().iter() {
+                let bucket = (*key / self.precision() + 1) * self.precision();
+                *res.entry(bucket).or_insert(0) += *count;
+            }
+            return SummaryHistogram::new(self.precision(), res, count, num_threads);
+        } else {
+            let mut res = other.map().clone();
+            for (key, count) in self.map().iter() {
+                let bucket = (*key / other.precision() + 1) * other.precision();
+                *res.entry(bucket).or_insert(0) += *count;
+            }
+            return SummaryHistogram::new(other.precision(), res, count, num_threads);
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Copy)]
@@ -96,7 +257,7 @@ impl std::ops::Add for ThreadLatencies {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct ThreadStats {
     pub thread_id: usize,
     pub num_sent: usize,
@@ -107,7 +268,8 @@ pub struct ThreadStats {
     pub offered_load_gbps: f64,
     pub achieved_load_pps: f64,
     pub achieved_load_gbps: f64,
-    pub latencies: ThreadLatencies,
+    pub summary_histogram: SummaryHistogram,
+    pub summary_latencies: ThreadLatencies,
 }
 
 impl ThreadStats {
@@ -130,6 +292,9 @@ impl ThreadStats {
             hist.sort_and_truncate(cutoff_size)?;
         }
 
+        let summary_hist = hist.summary_histogram();
+        let summary_latencies = summary_hist.get_summary_latencies()?;
+
         Ok(ThreadStats {
             thread_id: id as usize,
             num_sent: sent,
@@ -140,7 +305,8 @@ impl ThreadStats {
             offered_load_gbps: offered_load_gbps,
             achieved_load_pps: achieved_load_pps,
             achieved_load_gbps: achieved_load_gbps,
-            latencies: hist.thread_latencies()?,
+            summary_histogram: summary_hist,
+            summary_latencies: summary_latencies,
         })
     }
 
@@ -157,7 +323,11 @@ impl ThreadStats {
             percent_achieved = ?(self.achieved_load_gbps / self.offered_load_gbps),
             "thread {} summary stats", self.thread_id
         );
-        self.latencies.dump(self.thread_id);
+        self.summary_latencies.dump(self.thread_id);
+    }
+
+    pub fn summary_histogram(&self) -> SummaryHistogram {
+        self.summary_histogram.clone()
     }
 }
 
@@ -165,6 +335,8 @@ impl std::ops::Add for ThreadStats {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
+        let histogram = self.summary_histogram() + other.summary_histogram();
+        let latencies = histogram.get_summary_latencies().unwrap();
         Self {
             thread_id: other.thread_id,
             num_sent: self.num_sent + other.num_sent,
@@ -175,7 +347,8 @@ impl std::ops::Add for ThreadStats {
             offered_load_gbps: self.offered_load_gbps + other.offered_load_gbps,
             achieved_load_pps: self.achieved_load_pps + other.achieved_load_pps,
             achieved_load_gbps: self.achieved_load_gbps + other.achieved_load_gbps,
-            latencies: self.latencies + other.latencies,
+            summary_histogram: histogram,
+            summary_latencies: latencies,
         }
     }
 }
@@ -208,7 +381,7 @@ pub fn dump_thread_stats(
         if dump_per_thread {
             stats.dump();
         }
-        mega_info = mega_info + *stats;
+        mega_info = mega_info + stats.clone();
     }
 
     tracing::warn!("About to print out stats for all threads");
