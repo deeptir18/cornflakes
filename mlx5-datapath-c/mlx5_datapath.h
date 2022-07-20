@@ -35,3 +35,10 @@ uint32_t Mlx5Connection_queue_arena_ordered_rcsga(void *conn,
                                                   uintptr_t conn_id,
                                                   void *arena_ordered_rc_sga,
                                                   bool end_batch);
+
+uint32_t Mlx5Connection_queue_single_buffer_with_copy(void *conn,
+                                                      uint32_t msg_id,
+                                                      uintptr_t conn_id,
+                                                      const unsigned char *buffer,
+                                                      uintptr_t buffer_len,
+                                                      bool end_batch);

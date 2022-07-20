@@ -218,3 +218,26 @@ pub extern "C" fn Mlx5Connection_queue_arena_ordered_rcsga(
     Box::into_raw(conn_box);
     0
 }
+
+#[no_mangle]
+pub extern "C" fn Mlx5Connection_queue_single_buffer_with_copy(
+    conn: *mut ::std::os::raw::c_void,
+    msg_id: u32,
+    conn_id: usize,
+    buffer: *const ::std::os::raw::c_uchar,
+    buffer_len: usize,
+    end_batch: bool,
+) -> u32 {
+    let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
+    let buffer = unsafe { std::slice::from_raw_parts(buffer, buffer_len) };
+    match conn_box.queue_single_buffer_with_copy(
+            (msg_id, conn_id, buffer), end_batch) {
+        Ok(()) => {},
+        Err(e) => {
+            eprintln!("{:?}", e);
+            return 1;
+        }
+    }
+    Box::into_raw(conn_box);
+    return 0;
+}
