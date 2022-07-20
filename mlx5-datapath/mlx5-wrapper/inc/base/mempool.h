@@ -9,6 +9,7 @@
 
 struct custom_mlx5_mempool {
     void **free_items; /* Array of pointers to free items. */
+    uint8_t *ref_counts; /* Array of reference counts for each item in the memory pool */
     size_t allocated; /* Number of allocated items. */
     size_t capacity; /* Total capacity of memory pool. */
     void *buf; /* Actual contiguous region of backing data. */
@@ -52,15 +53,8 @@ static inline void custom_mlx5_deregister_mempool(struct custom_mlx5_mempool *me
  *
  * Returns index of item; -1 if item not within bounds of pool.
  */
-static inline int custom_mlx5_mempool_find_index(struct custom_mlx5_mempool *m, void *item) {
-    // todo: MAKE THIS PANIC ON TRUE?
-    if ((char *)item < (char *)m->buf && (char *)item >= ((char *)m->buf + m->len)) {
-        return -1;
-    }
 
-    // TODO: check that item is aligned?
-    return (int)((char *)item - (char *)m->buf) / m->item_len;
-}
+int custom_mlx5_mempool_find_index(struct custom_mlx5_mempool *m, void *item);
 
 /**
  * mempool_alloc - allocates an item from the pool
@@ -68,15 +62,7 @@ static inline int custom_mlx5_mempool_find_index(struct custom_mlx5_mempool *m, 
  *
  * Returns an item, or NULL if the pool is empty.
  */
-static inline void *custom_mlx5_mempool_alloc(struct custom_mlx5_mempool *m)
-{
-	void *item;
-	if (unlikely(m->allocated >= m->capacity))
-		return NULL;
-	item = m->free_items[m->allocated++];
-	__custom_mlx5_mempool_alloc_debug_check(m, item);
-	return item;
-}
+void *custom_mlx5_mempool_alloc(struct custom_mlx5_mempool *m);
 
 static inline void *custom_mlx5_mempool_alloc_by_idx(struct custom_mlx5_mempool *m, size_t idx)
 {
@@ -99,15 +85,7 @@ static inline void *custom_mlx5_mempool_alloc_by_idx(struct custom_mlx5_mempool 
  * @m: the memory pool the item was allocated from
  * @item: the item to return
  * */
-static inline void custom_mlx5_mempool_free(struct custom_mlx5_mempool *m, void *item) {
-	__custom_mlx5_mempool_free_debug_check(m, item);
-    if (m->allocated == 0) {
-        NETPERF_WARN("Freeing item %p item back into mempool %p with mem allocated 0.\n", m, item);
-        return;
-    }
-    m->free_items[--m->allocated] = item;
-    NETPERF_ASSERT(m->allocated <= m->capacity, "Overflow in mempool"); /* ensure no overflow */
-}
+void custom_mlx5_mempool_free(struct custom_mlx5_mempool *m, void *item);
 
 static inline void custom_mlx5_mempool_free_by_idx(struct custom_mlx5_mempool *m, void *item, size_t idx) {
 	__custom_mlx5_mempool_free_debug_check(m, item);

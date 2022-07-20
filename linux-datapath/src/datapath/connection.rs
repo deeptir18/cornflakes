@@ -1,13 +1,13 @@
+use byteorder::{ByteOrder, NetworkEndian};
 use bytes::{BufMut, Bytes, BytesMut};
+use color_eyre::eyre::WrapErr;
 use color_eyre::eyre::{bail, ensure, Result};
 use cornflakes_libos::{
     allocator::MempoolID,
-    utils::{AddressInfo, HEADER_ID_SIZE},
     datapath::{Datapath, DatapathBufferOps, InlineMode, MetadataOps, ReceivedPkt},
+    utils::{AddressInfo, HEADER_ID_SIZE},
     ConnID, MsgID, OrderedSga, RcSga, Sga,
 };
-use byteorder::{ByteOrder, NetworkEndian};
-use color_eyre::eyre::WrapErr;
 use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
 use hashbrown::HashMap;
@@ -33,10 +33,6 @@ impl DatapathBufferOps for MutableByteBuffer {
 
     fn get_mempool_id(&self) -> MempoolID {
         0
-    }
-
-    fn get_metadata_pointer(&self) -> *const u8 {
-        std::ptr::null_mut()
     }
 }
 
@@ -228,14 +224,16 @@ impl LinuxConnection {
     fn check_received_pkt(&mut self) -> Result<Option<ReceivedPkt<Self>>> {
         let mut buf = [0; RECEIVE_BUFFER_SIZE];
         let addr = match self.socket.recv_from(&mut buf) {
-            Ok((n, addr)) => if n == 0 {
-                tracing::debug!("Received {} bytes from {:?}", n, addr);
-                return Ok(None);
-            } else {
-                assert!(n > HEADER_ID_SIZE);
-                tracing::debug!("Received {} bytes from {:?}", n, addr);
-                addr
-            },
+            Ok((n, addr)) => {
+                if n == 0 {
+                    tracing::debug!("Received {} bytes from {:?}", n, addr);
+                    return Ok(None);
+                } else {
+                    assert!(n > HEADER_ID_SIZE);
+                    tracing::debug!("Received {} bytes from {:?}", n, addr);
+                    addr
+                }
+            }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                 return Ok(None);
             }
@@ -245,10 +243,15 @@ impl LinuxConnection {
         let conn_id = {
             let ipv4 = match addr.ip() {
                 IpAddr::V4(ip) => ip,
-                _ => { panic!("expected ipv4 address") },
+                _ => {
+                    panic!("expected ipv4 address")
+                }
             };
             let src_addr = cornflakes_libos::utils::AddressInfo::new(
-                addr.port(), ipv4, MacAddress::parse_str(FILLER_MAC).unwrap());
+                addr.port(),
+                ipv4,
+                MacAddress::parse_str(FILLER_MAC).unwrap(),
+            );
             self.connect(src_addr)
                 .wrap_err("TOO MANY CONCURRENT CONNECTIONS")?
         };
@@ -273,7 +276,7 @@ impl Datapath for LinuxConnection {
     ) -> Result<Self::DatapathSpecificParams> {
         let (_ip_to_mac, _mac_to_ip, udp_port, client_port) =
             parse_yaml_map(config_file).wrap_err("Failed to parse yaml mapping")?;
-        Ok(LinuxDatapathSpecificParams{
+        Ok(LinuxDatapathSpecificParams {
             our_ip: our_ip.clone(),
             our_eth: MacAddress::parse_str(FILLER_MAC).unwrap(),
             client_port: client_port,
@@ -288,8 +291,10 @@ impl Datapath for LinuxConnection {
         app_mode: cornflakes_utils::AppMode,
     ) -> Result<Vec<AddressInfo>> {
         if num_queues > 1 {
-            bail!("Currently, linux datapath does not support more than one
-               queue");
+            bail!(
+                "Currently, linux datapath does not support more than one
+               queue"
+            );
         }
         match app_mode {
             AppMode::Client => Ok(vec![AddressInfo::new(
@@ -333,8 +338,7 @@ impl Datapath for LinuxConnection {
     {
         let addr = format!(
             "{}:{}",
-            context.address_info.ipv4_addr,
-            context.address_info.udp_port,
+            context.address_info.ipv4_addr, context.address_info.udp_port,
         );
         tracing::info!("Binding to {}", addr);
         let socket = UdpSocket::bind(addr).unwrap();
@@ -391,8 +395,11 @@ impl Datapath for LinuxConnection {
                 format!("{}:{}", address_info.ipv4_addr, address_info.udp_port)
             };
             tracing::debug!("Sending {} bytes to {}", buf.len(), addr);
-            let n = self.socket.send_to(&buf, &addr).expect(
-                &format!("Failed to send data (len {}) to {}", buf.len(), addr));
+            let n = self.socket.send_to(&buf, &addr).expect(&format!(
+                "Failed to send data (len {}) to {}",
+                buf.len(),
+                addr
+            ));
             assert_eq!(n, buf.len());
         }
         Ok(())
@@ -427,9 +434,7 @@ impl Datapath for LinuxConnection {
         let pkts = ordered_sgas
             .iter()
             .enumerate()
-            .map(|(i, (msg_id, conn_id, _))| {
-                (*msg_id, *conn_id, &bufs[i][..])
-            })
+            .map(|(i, (msg_id, conn_id, _))| (*msg_id, *conn_id, &bufs[i][..]))
             .collect::<Vec<_>>();
         self.push_buffers_with_copy(&pkts)
     }
@@ -448,9 +453,7 @@ impl Datapath for LinuxConnection {
         let pkts = sgas
             .iter()
             .enumerate()
-            .map(|(i, (msg_id, conn_id, _))| {
-                (*msg_id, *conn_id, &bufs[i][..])
-            })
+            .map(|(i, (msg_id, conn_id, _))| (*msg_id, *conn_id, &bufs[i][..]))
             .collect::<Vec<_>>();
         self.push_buffers_with_copy(&pkts)
     }
@@ -459,12 +462,13 @@ impl Datapath for LinuxConnection {
     where
         Self: Sized,
     {
-        let mut ret: Vec<(ReceivedPkt<Self>, Duration)> =
-            Vec::with_capacity(RECEIVE_BURST_SIZE);
+        let mut ret: Vec<(ReceivedPkt<Self>, Duration)> = Vec::with_capacity(RECEIVE_BURST_SIZE);
         for _ in 0..RECEIVE_BURST_SIZE {
             let received_pkt = match self.check_received_pkt()? {
-                Some(received_pkt) => { received_pkt },
-                None => { break; },
+                Some(received_pkt) => received_pkt,
+                None => {
+                    break;
+                }
             };
             let dur = match self
                 .outgoing_window
@@ -494,8 +498,10 @@ impl Datapath for LinuxConnection {
         let mut ret: Vec<ReceivedPkt<Self>> = Vec::with_capacity(RECEIVE_BURST_SIZE);
         for _ in 0..RECEIVE_BURST_SIZE {
             let received_pkt = match self.check_received_pkt()? {
-                Some(received_pkt) => { received_pkt },
-                None => { break; },
+                Some(received_pkt) => received_pkt,
+                None => {
+                    break;
+                }
             };
             ret.push(received_pkt);
         }

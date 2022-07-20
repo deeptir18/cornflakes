@@ -1,5 +1,5 @@
 use super::{
-    super::{access, check_ok, mbuf_slice, mlx5_bindings::*},
+    super::{access, check_ok, mlx5_bindings::*},
     allocator::DataMempool,
     check, sizes,
 };
@@ -38,18 +38,14 @@ const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 const COMPLETION_BUDGET: usize = 32;
 const RECEIVE_BURST_SIZE: usize = 32;
 
-pub fn hello_world() {
-    tracing::info!("Hello from this crate");
-}
-
 #[derive(PartialEq, Eq)]
 pub struct Mlx5Buffer {
     /// Underlying data pointer
     data: *mut ::std::os::raw::c_void,
     /// Pointer back to the data and metadata pool pair
     mempool: *mut registered_mempool,
-    /// Underlying metadata
-    metadata: *mut custom_mlx5_mbuf,
+    /// Refcnt index
+    refcnt_index: usize,
     /// Data len,
     data_len: usize,
     /// Mempool ID: which mempool was this allocated from?
@@ -61,7 +57,7 @@ impl Default for Mlx5Buffer {
         Mlx5Buffer {
             data: std::ptr::null_mut(),
             mempool: std::ptr::null_mut(),
-            metadata: std::ptr::null_mut(),
+            refcnt_index: 0,
             data_len: 0,
             mempool_id: 0,
         }
@@ -70,12 +66,17 @@ impl Default for Mlx5Buffer {
 
 impl Drop for Mlx5Buffer {
     fn drop(&mut self) {
-        if self.metadata == std::ptr::null_mut() || self.data == std::ptr::null_mut() {
+        if self.data == std::ptr::null_mut() || self.mempool == std::ptr::null_mut() {
             return;
         }
         // Decrements ref count on underlying metadata
         unsafe {
-            custom_mlx5_mbuf_refcnt_update_or_free(self.metadata, -1);
+            custom_mlx5_refcnt_update_or_free(
+                self.mempool,
+                self.data,
+                self.refcnt_index as _,
+                -1i8,
+            );
         }
     }
 }
@@ -84,21 +85,31 @@ impl Mlx5Buffer {
     pub fn new(
         data: *mut ::std::os::raw::c_void,
         mempool: *mut registered_mempool,
-        metadata: *mut custom_mlx5_mbuf,
+        index: usize,
         data_len: usize,
         mempool_id: MempoolID,
     ) -> Self {
+        unsafe {
+            custom_mlx5_refcnt_update_or_free(mempool, data, index as _, 1);
+        }
         Mlx5Buffer {
             data: data,
             mempool: mempool,
-            metadata: metadata,
+            refcnt_index: index,
             data_len: data_len,
             mempool_id: mempool_id,
         }
     }
 
-    pub fn get_metadata(&self) -> *mut custom_mlx5_mbuf {
-        self.metadata
+    pub fn update_refcnt(&mut self, change: i8) {
+        unsafe {
+            custom_mlx5_refcnt_update_or_free(
+                self.mempool,
+                self.data,
+                self.refcnt_index as _,
+                change,
+            );
+        }
     }
 
     pub fn get_inner(
@@ -106,10 +117,10 @@ impl Mlx5Buffer {
     ) -> (
         *mut ::std::os::raw::c_void,
         *mut registered_mempool,
-        *mut custom_mlx5_mbuf,
+        usize,
         usize,
     ) {
-        (self.data, self.mempool, self.metadata, self.data_len)
+        (self.data, self.mempool, self.refcnt_index, self.data_len)
     }
 
     pub fn get_mempool(&self) -> *mut registered_mempool {
@@ -144,10 +155,6 @@ impl DatapathBufferOps for Mlx5Buffer {
 
     fn get_mempool_id(&self) -> MempoolID {
         self.mempool_id
-    }
-
-    fn get_metadata_pointer(&self) -> *const u8 {
-        self.metadata as *const u8
     }
 }
 
@@ -185,8 +192,12 @@ impl std::io::Write for Mlx5Buffer {
 /// (b) Another mbuf metadata.
 #[derive(PartialEq, Eq)]
 pub struct MbufMetadata {
-    /// Pointer to allocated mbuf metadata.
-    pub mbuf: *mut custom_mlx5_mbuf,
+    /// Pointer to beginning of allocated data.
+    pub data: *mut ::std::os::raw::c_void,
+    /// Pointer to registered mempool.
+    pub mempool: *mut registered_mempool,
+    /// Reference count index.
+    pub refcnt_index: usize,
     /// Application data offset
     pub offset: usize,
     /// Application data length
@@ -194,78 +205,48 @@ pub struct MbufMetadata {
 }
 
 impl MbufMetadata {
-    pub fn from_buf(mlx5_buffer: Mlx5Buffer) -> Result<Option<Self>> {
-        let metadata_buf = mlx5_buffer.get_metadata();
+    pub fn new(
+        data: *mut ::std::os::raw::c_void,
+        mempool: *mut registered_mempool,
+        refcnt_index: usize,
+        offset: usize,
+        len: usize,
+    ) -> Self {
         unsafe {
-            custom_mlx5_mbuf_refcnt_update_or_free(metadata_buf, 1);
+            custom_mlx5_refcnt_update_or_free(mempool, data, refcnt_index as _, 1i8);
         }
-
-        let (buf, registered_mempool, _metadata_buf, data_len) = mlx5_buffer.get_inner();
-        // because the mlx5_buffer will be dropped,
-        // replace ref count drop from that
-
-        ensure!(!metadata_buf.is_null(), "Allocated metadata buffer is null");
-        unsafe {
-            init_metadata(
-                metadata_buf,
-                buf,
-                get_data_mempool(registered_mempool),
-                get_metadata_mempool(registered_mempool),
-                data_len,
-                0,
-            );
+        MbufMetadata {
+            data: data,
+            mempool: mempool,
+            refcnt_index: refcnt_index,
+            offset: offset,
+            len: len,
         }
-        Ok(Some(MbufMetadata::new(metadata_buf, 0, Some(data_len))?))
+    }
+    pub fn from_buf(mut mlx5_buffer: Mlx5Buffer) -> Self {
+        mlx5_buffer.update_refcnt(1);
+        let (buf, registered_mempool, refcnt_index, data_len) = mlx5_buffer.get_inner();
+        MbufMetadata {
+            data: buf,
+            mempool: registered_mempool,
+            refcnt_index: refcnt_index,
+            offset: 0,
+            len: data_len,
+        }
     }
 
     pub fn increment_refcnt(&mut self) {
-        tracing::debug!(mbuf =? self.mbuf, "Incrementing ref count on mbuf");
         unsafe {
-            custom_mlx5_mbuf_refcnt_update_or_free(self.mbuf, 1);
+            custom_mlx5_refcnt_update_or_free(self.mempool, self.data, self.refcnt_index as _, 1i8);
         }
     }
 
-    /// Initializes metadata object from existing metadata mbuf in c.
-    /// Args:
-    /// @mbuf: mbuf structure that contains metadata
-    /// @data_offset: Application data offset into this buffer.
-    /// @data_len: Optional application data length into the buffer.
-    #[inline]
-    pub fn new(
-        mbuf: *mut custom_mlx5_mbuf,
-        data_offset: usize,
-        data_len: Option<usize>,
-    ) -> Result<Self> {
-        /*ensure!(
-            data_offset <= unsafe { access!(mbuf, data_buf_len, usize) },
-            format!(
-                "Data offset too large: off: {}, data_buf_len: {}",
-                data_offset,
-                unsafe { access!(mbuf, data_buf_len, usize) }
-            ),
-        );*/
-        unsafe {
-            custom_mlx5_mbuf_refcnt_update_or_free(mbuf, 1);
-        }
-        let len = match data_len {
-            Some(x) => {
-                /*ensure!(
-                    x <= unsafe { access!(mbuf, data_buf_len, usize) - data_offset },
-                    "Data len to large"
-                );*/
-                x
-            }
-            None => unsafe { access!(mbuf, data_len, usize) - data_offset },
-        };
-        Ok(MbufMetadata {
-            mbuf: mbuf,
-            offset: data_offset,
-            len: len,
-        })
+    pub fn mempool(&self) -> *mut registered_mempool {
+        self.mempool
     }
 
-    pub fn mbuf(&self) -> *mut custom_mlx5_mbuf {
-        self.mbuf
+    pub fn data(&self) -> *mut ::std::os::raw::c_void {
+        self.data
     }
 }
 
@@ -279,12 +260,10 @@ impl MetadataOps for MbufMetadata {
     }
 
     fn set_data_len_and_offset(&mut self, len: usize, offset: usize) -> Result<()> {
+        let item_len = unsafe { (*self.mempool).data_mempool.item_len };
+        ensure!(offset <= item_len as _, "Offset too large");
         ensure!(
-            offset <= unsafe { access!(self.mbuf, data_buf_len, usize) },
-            "Offset too large"
-        );
-        ensure!(
-            len <= unsafe { access!(self.mbuf, data_buf_len, usize) - offset },
+            (offset + len) <= item_len as _,
             "Provided data len too large"
         );
         self.offset = offset;
@@ -297,7 +276,9 @@ impl MetadataOps for MbufMetadata {
 impl Default for MbufMetadata {
     fn default() -> Self {
         MbufMetadata {
-            mbuf: ptr::null_mut(),
+            data: ptr::null_mut(),
+            mempool: ptr::null_mut(),
+            refcnt_index: 0,
             offset: 0,
             len: 0,
         }
@@ -306,32 +287,29 @@ impl Default for MbufMetadata {
 
 impl Drop for MbufMetadata {
     fn drop(&mut self) {
-        if self.mbuf == std::ptr::null_mut() {
+        if self.data == std::ptr::null_mut() || self.mempool == std::ptr::null_mut() {
             return;
         }
         unsafe {
-            if USING_REF_COUNTING {
-                custom_mlx5_mbuf_refcnt_update_or_free(self.mbuf, -1);
-            } else {
-                custom_mlx5_mbuf_free(self.mbuf);
-            }
+            custom_mlx5_refcnt_update_or_free(
+                self.mempool,
+                self.data,
+                self.refcnt_index as _,
+                -1i8,
+            );
         }
     }
 }
 
 impl Clone for MbufMetadata {
     fn clone(&self) -> MbufMetadata {
-        unsafe {
-            if USING_REF_COUNTING {
-                tracing::debug!(mbuf = ?self.mbuf, "Incrementing ref count");
-                custom_mlx5_mbuf_refcnt_update_or_free(self.mbuf, 1);
-            }
-        }
-        MbufMetadata {
-            mbuf: self.mbuf,
-            offset: self.offset,
-            len: self.len,
-        }
+        MbufMetadata::new(
+            self.data,
+            self.mempool,
+            self.refcnt_index,
+            self.offset,
+            self.len,
+        )
     }
 }
 
@@ -339,15 +317,20 @@ impl std::fmt::Debug for MbufMetadata {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "Mbuf addr: {:?}, off: {}, len: {}",
-            self.mbuf, self.offset, self.len
+            "Data addr: {:?}, mempool: {:?}, refcnt_index: {}, off: {}, len: {}",
+            self.data, self.mempool, self.refcnt_index, self.offset, self.len
         )
     }
 }
 
 impl AsRef<[u8]> for MbufMetadata {
     fn as_ref(&self) -> &[u8] {
-        unsafe { mbuf_slice!(self.mbuf, self.offset, self.len) }
+        unsafe {
+            std::slice::from_raw_parts(
+                (self.data as *mut u8).offset(self.offset as isize),
+                self.len,
+            )
+        }
     }
 }
 
@@ -472,6 +455,66 @@ impl Mlx5DatapathSpecificParams {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub struct RecvMbufArray {
+    array_ptr: *mut [u8],
+}
+
+impl RecvMbufArray {
+    pub fn new(size: usize) -> RecvMbufArray {
+        let array_ptr_box =
+            vec![0u8; size * std::mem::size_of::<recv_mbuf_info>()].into_boxed_slice();
+        let array_ptr = Box::<[u8]>::into_raw(array_ptr_box);
+        for i in 0..size {
+            let ptr = unsafe {
+                (array_ptr as *mut u8).offset((i * std::mem::size_of::<recv_mbuf_info>()) as isize)
+                    as *mut recv_mbuf_info
+            };
+            unsafe {
+                (*ptr).buf_addr = ptr::null_mut();
+                (*ptr).mempool = ptr::null_mut();
+                (*ptr).ref_count_index = 0;
+                (*ptr).rss_hash = 0;
+            }
+        }
+        RecvMbufArray {
+            array_ptr: array_ptr,
+        }
+    }
+
+    pub fn as_recv_mbuf_info_array_ptr(&self) -> *mut recv_mbuf_info {
+        self.array_ptr as *mut recv_mbuf_info
+    }
+
+    pub fn get(&self, i: usize) -> *mut recv_mbuf_info {
+        unsafe {
+            (self.array_ptr as *mut u8).offset((i * std::mem::size_of::<recv_mbuf_info>()) as isize)
+                as *mut recv_mbuf_info
+        }
+    }
+
+    pub fn clear(&mut self, i: usize) {
+        let ptr = unsafe {
+            (self.array_ptr as *mut u8).offset((i * std::mem::size_of::<recv_mbuf_info>()) as isize)
+                as *mut recv_mbuf_info
+        };
+        unsafe {
+            (*ptr).buf_addr = ptr::null_mut();
+            (*ptr).mempool = ptr::null_mut();
+            (*ptr).ref_count_index = 0;
+            (*ptr).rss_hash = 0;
+        }
+    }
+}
+
+impl Drop for RecvMbufArray {
+    fn drop(&mut self) {
+        unsafe {
+            Box::from_raw(self.array_ptr);
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct Mlx5Connection {
     /// Per thread context.
     thread_context: Mlx5PerThreadContext,
@@ -498,7 +541,8 @@ pub struct Mlx5Connection {
     /// Maximum data that can be inlined
     max_inline_size: usize,
     /// Array of mbuf pointers used to receive packets
-    recv_mbufs: [*mut custom_mlx5_mbuf; RECEIVE_BURST_SIZE],
+    recv_mbufs: RecvMbufArray,
+    /// Data used to construct outgoing segment
     first_ctrl_seg: *mut mlx5_wqe_ctrl_seg,
     /// Array of mbuf metadatas to store while finishing serialization
     mbuf_metadatas: [Option<MbufMetadata>; 32],
@@ -515,9 +559,9 @@ impl Mlx5Connection {
     }
 
     fn check_received_pkt(&mut self, pkt_index: usize) -> Result<Option<ReceivedPkt<Self>>> {
-        let recv_mbuf = self.recv_mbufs[pkt_index];
+        let recv_mbuf = self.recv_mbufs.get(pkt_index);
         let eth_hdr = unsafe {
-            mbuf_slice!(
+            recv_mbuf_slice!(
                 recv_mbuf,
                 0,
                 cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE
@@ -534,7 +578,7 @@ impl Mlx5Connection {
         };
 
         let ipv4_hdr = unsafe {
-            mbuf_slice!(
+            recv_mbuf_slice!(
                 recv_mbuf,
                 cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE,
                 cornflakes_libos::utils::IPV4_HEADER2_SIZE
@@ -551,7 +595,7 @@ impl Mlx5Connection {
         };
 
         let udp_hdr = unsafe {
-            mbuf_slice!(
+            recv_mbuf_slice!(
                 recv_mbuf,
                 cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE
                     + cornflakes_libos::utils::IPV4_HEADER2_SIZE,
@@ -576,7 +620,7 @@ impl Mlx5Connection {
             .wrap_err("TOO MANY CONCURRENT CONNECTIONS")?;
 
         let msg_id = unsafe {
-            let slice = mbuf_slice!(
+            let slice = recv_mbuf_slice!(
                 recv_mbuf,
                 cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE,
                 cornflakes_libos::utils::HEADER_ID_SIZE
@@ -590,11 +634,33 @@ impl Mlx5Connection {
             data_len = data_len,
             "Received "
         );
+
+        ensure!(
+            data_len
+                == unsafe {
+                    (*recv_mbuf).pkt_len as usize - cornflakes_libos::utils::TOTAL_HEADER_SIZE
+                },
+            format!(
+                "Data len in udp header {} doesn't match pkt_len minus header size {}",
+                data_len,
+                unsafe {
+                    (*recv_mbuf).pkt_len as usize - cornflakes_libos::utils::TOTAL_HEADER_SIZE
+                }
+            )
+        );
         let datapath_metadata = MbufMetadata::new(
-            recv_mbuf,
+            unsafe { (*recv_mbuf).buf_addr },
+            unsafe { (*recv_mbuf).mempool },
+            unsafe { (*recv_mbuf).ref_count_index as _ },
             cornflakes_libos::utils::TOTAL_HEADER_SIZE,
-            Some(data_len),
-        )?;
+            data_len,
+        );
+        tracing::debug!(
+            data_len = data_len,
+            msg_id = msg_id,
+            conn_id = conn_id,
+            "Received packet"
+        );
 
         let received_pkt = ReceivedPkt::new(vec![datapath_metadata], msg_id, conn_id);
         Ok(Some(received_pkt))
@@ -905,14 +971,16 @@ impl Mlx5Connection {
                 custom_mlx5_add_dpseg(
                     self.thread_context.get_context_ptr(),
                     curr_dpseg,
-                    metadata_mbuf.mbuf(),
+                    metadata_mbuf.data(),
+                    metadata_mbuf.mempool(),
                     metadata_mbuf.offset() as _,
                     metadata_mbuf.data_len() as _,
                 ),
                 custom_mlx5_add_completion_info(
                     self.thread_context.get_context_ptr(),
                     curr_completion,
-                    metadata_mbuf.mbuf(),
+                    metadata_mbuf.data(),
+                    metadata_mbuf.mempool(),
                 ),
             )
         }
@@ -1001,14 +1069,7 @@ impl Mlx5Connection {
                     offset += seg.len();
                 }
 
-                let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                    Some(m) => m,
-                    None => {
-                        bail!(
-                            "Could not allocate corresponding metadata for allocated data buffer"
-                        );
-                    }
-                };
+                let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
 
                 let (curr_dpseg, curr_completion) =
                     self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
@@ -1151,14 +1212,7 @@ impl Mlx5Connection {
                     // copy in the header into a buffer
                     self.copy_hdr(&mut data_buffer, conn_id, msg_id, data_len)?;
                     // attach this data buffer to a metadata buffer
-                    let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                        Some(m) => m,
-                        None => {
-                            bail!(
-                            "Could not allocate corresponding metadata for allocated data buffer"
-                        );
-                        }
-                    };
+                    let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
                     let (curr_dpseg, completion) =
                         self.post_mbuf_metadata(&mut metadata_mbuf, curr_data_seg, curr_completion);
                     curr_data_seg = curr_dpseg;
@@ -1219,14 +1273,7 @@ impl Mlx5Connection {
                 }
 
                 // attach this data buffer to a metadata buffer
-                let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                    Some(m) => m,
-                    None => {
-                        bail!(
-                            "Could not allocate corresponding metadata for allocated data buffer"
-                        );
-                    }
-                };
+                let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
                 let (curr_dpseg, completion) =
                     self.post_mbuf_metadata(&mut metadata_mbuf, curr_data_seg, curr_completion);
                 curr_data_seg = curr_dpseg;
@@ -1540,14 +1587,7 @@ impl Mlx5Connection {
                     // copy in the header into a buffer
                     self.copy_hdr(&mut data_buffer, conn_id, msg_id, data_len)?;
                     // attach this data buffer to a metadata buffer
-                    let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                        Some(m) => m,
-                        None => {
-                            bail!(
-                            "Could not allocate corresponding metadata for allocated data buffer"
-                        );
-                        }
-                    };
+                    let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
                     let (dpseg, completion) =
                         self.post_mbuf_metadata(&mut metadata_mbuf, curr_data_seg, curr_completion);
                     curr_data_seg = dpseg;
@@ -1618,14 +1658,7 @@ impl Mlx5Connection {
                 }
 
                 // attach this data buffer to a metadata buffer
-                let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                    Some(m) => m,
-                    None => {
-                        bail!(
-                            "Could not allocate corresponding metadata for allocated data buffer"
-                        );
-                    }
-                };
+                let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
                 let (dpseg, completion) =
                     self.post_mbuf_metadata(&mut metadata_mbuf, curr_data_seg, curr_completion);
                 curr_data_seg = dpseg;
@@ -1882,7 +1915,6 @@ impl Datapath for Mlx5Connection {
                 let rx_mempool_params: sizes::MempoolAllocationParams =
                     sizes::MempoolAllocationParams::new(
                         sizes::RX_MEMPOOL_MIN_NUM_ITEMS,
-                        sizes::RX_MEMPOOL_METADATA_PGSIZE,
                         sizes::RX_MEMPOOL_DATA_PGSIZE,
                         sizes::RX_MEMPOOL_DATA_LEN,
                     )
@@ -1892,7 +1924,6 @@ impl Datapath for Mlx5Connection {
                     rx_mempool_params.get_item_len() as _,
                     rx_mempool_params.get_num_items() as _,
                     rx_mempool_params.get_data_pgsize() as _,
-                    rx_mempool_params.get_metadata_pgsize() as _,
                     ibv_access_flags_IBV_ACCESS_LOCAL_WRITE as _
                 ));
 
@@ -1966,7 +1997,7 @@ impl Datapath for Mlx5Connection {
             max_segments: 32,
             inline_mode: InlineMode::default(),
             max_inline_size: 256,
-            recv_mbufs: [std::ptr::null_mut(); RECEIVE_BURST_SIZE],
+            recv_mbufs: RecvMbufArray::new(RECEIVE_BURST_SIZE),
             first_ctrl_seg: ptr::null_mut(),
             mbuf_metadatas: Default::default(),
         })
@@ -2151,15 +2182,7 @@ impl Datapath for Mlx5Connection {
 
                     // now put this inside an mbuf and post it.
                     // attach this data buffer to a metadata buffer
-                    let metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                        Some(m) => m,
-                        None => {
-                            bail!(
-                            "Could not allocate corresponding metadata for allocated data buffer"
-                        );
-                        }
-                    };
-
+                    let metadata_mbuf = MbufMetadata::from_buf(data_buffer);
                     // post this data buffer to the ring buffer
                     unsafe {
                         let dpseg = custom_mlx5_dpseg_start(
@@ -2171,7 +2194,8 @@ impl Datapath for Mlx5Connection {
                         custom_mlx5_add_dpseg(
                             self.thread_context.get_context_ptr(),
                             dpseg,
-                            metadata_mbuf.mbuf(),
+                            metadata_mbuf.data(),
+                            metadata_mbuf.mempool(),
                             metadata_mbuf.offset() as _,
                             metadata_mbuf.data_len() as _,
                         );
@@ -2179,7 +2203,8 @@ impl Datapath for Mlx5Connection {
                         custom_mlx5_add_completion_info(
                             self.thread_context.get_context_ptr(),
                             completion,
-                            metadata_mbuf.mbuf(),
+                            metadata_mbuf.data(),
+                            metadata_mbuf.mempool(),
                         );
 
                         // finish transmission
@@ -2316,14 +2341,7 @@ impl Datapath for Mlx5Connection {
 
                     // now put this inside an mbuf and post it.
                     // attach this data buffer to a metadata buffer
-                    let metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                        Some(m) => m,
-                        None => {
-                            bail!(
-                            "Could not allocate corresponding metadata for allocated data buffer"
-                        );
-                        }
-                    };
+                    let metadata_mbuf = MbufMetadata::from_buf(data_buffer);
 
                     // post this data buffer to the ring buffer
                     unsafe {
@@ -2336,7 +2354,8 @@ impl Datapath for Mlx5Connection {
                         custom_mlx5_add_dpseg(
                             self.thread_context.get_context_ptr(),
                             dpseg,
-                            metadata_mbuf.mbuf(),
+                            metadata_mbuf.data(),
+                            metadata_mbuf.mempool(),
                             metadata_mbuf.offset() as _,
                             metadata_mbuf.data_len() as _,
                         );
@@ -2344,7 +2363,8 @@ impl Datapath for Mlx5Connection {
                         custom_mlx5_add_completion_info(
                             self.thread_context.get_context_ptr(),
                             completion,
-                            metadata_mbuf.mbuf(),
+                            metadata_mbuf.data(),
+                            metadata_mbuf.mempool(),
                         );
 
                         // finish transmission
@@ -2390,7 +2410,7 @@ impl Datapath for Mlx5Connection {
             } else {
                 // ASSUMES THAT THE PACKET HAS A FULL HEADER TO FLIP
                 unsafe {
-                    flip_headers(received_pkt.seg(0).mbuf());
+                    flip_headers(received_pkt.seg(0).data());
                     let ctrl_seg = custom_mlx5_fill_in_hdr_segment(
                         self.thread_context.get_context_ptr(),
                         num_octowords as _,
@@ -2412,7 +2432,8 @@ impl Datapath for Mlx5Connection {
                         curr_dpseg = custom_mlx5_add_dpseg(
                             self.thread_context.get_context_ptr(),
                             curr_dpseg,
-                            seg.mbuf(),
+                            seg.data(),
+                            seg.mempool(),
                             seg.offset() as _,
                             seg.data_len() as _,
                         );
@@ -2420,7 +2441,8 @@ impl Datapath for Mlx5Connection {
                         curr_completion = custom_mlx5_add_completion_info(
                             self.thread_context.get_context_ptr(),
                             curr_completion,
-                            seg.mbuf(),
+                            seg.data(),
+                            seg.mempool(),
                         );
                     }
 
@@ -2648,12 +2670,7 @@ impl Datapath for Mlx5Connection {
                 coded_output_stream.flush()?;
             }
 
-            let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                Some(m) => m,
-                None => {
-                    bail!("Could not allocate corresponding metadata for allocated data buffer");
-                }
-            };
+            let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
 
             let _ = self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
         }
@@ -2801,13 +2818,7 @@ impl Datapath for Mlx5Connection {
                 }
             }
 
-            let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                Some(m) => m,
-                None => {
-                    bail!("Could not allocate corresponding metadata for allocated data buffer");
-                }
-            };
-
+            let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
             let _ = self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
         }
 
@@ -2939,13 +2950,7 @@ impl Datapath for Mlx5Connection {
                     "Could not copy whole buffer into allocated buffer"
                 );
             }
-            let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                Some(m) => m,
-                None => {
-                    bail!("Could not allocate corresponding metadata for allocated data buffer");
-                }
-            };
-
+            let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
             let _ = self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
         }
 
@@ -3102,12 +3107,7 @@ impl Datapath for Mlx5Connection {
                     offset += seg.len();
                 }
             }
-            let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                Some(m) => m,
-                None => {
-                    bail!("Could not allocate corresponding metadata for allocated data buffer");
-                }
-            };
+            let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
 
             let (curr_dpseg, curr_completion) =
                 self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
@@ -3141,14 +3141,16 @@ impl Datapath for Mlx5Connection {
                                     custom_mlx5_add_dpseg(
                                         self.thread_context.get_context_ptr(),
                                         dpseg,
-                                        mbuf_metadata.mbuf(),
+                                        mbuf_metadata.data(),
+                                        mbuf_metadata.mempool(),
                                         mbuf_metadata.offset() as _,
                                         mbuf_metadata.data_len() as _,
                                     ),
                                     custom_mlx5_add_completion_info(
                                         self.thread_context.get_context_ptr(),
                                         completion,
-                                        mbuf_metadata.mbuf(),
+                                        mbuf_metadata.data(),
+                                        mbuf_metadata.mempool(),
                                     ),
                                 )
                             }
@@ -3188,6 +3190,7 @@ impl Datapath for Mlx5Connection {
         sga: (MsgID, ConnID, ArenaOrderedRcSga<Self>),
         end_batch: bool,
     ) -> Result<()> {
+        tracing::debug!(msg_id = sga.0, conn_id = sga.1, ordered_sga =? sga.2, "Sending sga");
         #[cfg(feature = "profiler")]
         perftools::timer!("queue arena ordered rcsga");
 
@@ -3312,13 +3315,8 @@ impl Datapath for Mlx5Connection {
                     );
                 }
             }
-            let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                Some(m) => m,
-                None => {
-                    bail!("Could not allocate corresponding metadata for allocated data buffer");
-                }
-            };
-
+            let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
+            tracing::debug!(metadata_mbuf =? metadata_mbuf, "Calling post mbuf metadata for copied data");
             let (curr_dpseg, curr_completion) =
                 self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
             dpseg = curr_dpseg;
@@ -3351,14 +3349,16 @@ impl Datapath for Mlx5Connection {
                                     custom_mlx5_add_dpseg(
                                         self.thread_context.get_context_ptr(),
                                         dpseg,
-                                        mbuf_metadata.mbuf(),
+                                        mbuf_metadata.data(),
+                                        mbuf_metadata.mempool(),
                                         mbuf_metadata.offset() as _,
                                         mbuf_metadata.data_len() as _,
                                     ),
                                     custom_mlx5_add_completion_info(
                                         self.thread_context.get_context_ptr(),
                                         completion,
-                                        mbuf_metadata.mbuf(),
+                                        mbuf_metadata.data(),
+                                        mbuf_metadata.mempool(),
                                     ),
                                 )
                             }
@@ -3537,13 +3537,7 @@ impl Datapath for Mlx5Connection {
                     offset += seg.len();
                 }
             }
-            let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                Some(m) => m,
-                None => {
-                    bail!("Could not allocate corresponding metadata for allocated data buffer");
-                }
-            };
-
+            let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
             let (curr_dpseg, curr_completion) =
                 self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
             dpseg = curr_dpseg;
@@ -3576,14 +3570,16 @@ impl Datapath for Mlx5Connection {
                                     custom_mlx5_add_dpseg(
                                         self.thread_context.get_context_ptr(),
                                         dpseg,
-                                        mbuf_metadata.mbuf(),
+                                        mbuf_metadata.data(),
+                                        mbuf_metadata.mempool(),
                                         mbuf_metadata.offset() as _,
                                         mbuf_metadata.data_len() as _,
                                     ),
                                     custom_mlx5_add_completion_info(
                                         self.thread_context.get_context_ptr(),
                                         completion,
-                                        mbuf_metadata.mbuf(),
+                                        mbuf_metadata.data(),
+                                        mbuf_metadata.mempool(),
                                     ),
                                 )
                             }
@@ -3756,15 +3752,7 @@ impl Datapath for Mlx5Connection {
                     offset += seg.len();
                 }
 
-                let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                    Some(m) => m,
-                    None => {
-                        bail!(
-                            "Could not allocate corresponding metadata for allocated data buffer"
-                        );
-                    }
-                };
-
+                let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
                 let (curr_dpseg, curr_completion) =
                     self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
                 dpseg = curr_dpseg;
@@ -3953,15 +3941,7 @@ impl Datapath for Mlx5Connection {
                     offset += seg.len();
                 }
 
-                let mut metadata_mbuf = match MbufMetadata::from_buf(data_buffer)? {
-                    Some(m) => m,
-                    None => {
-                        bail!(
-                            "Could not allocate corresponding metadata for allocated data buffer"
-                        );
-                    }
-                };
-
+                let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
                 let (curr_dpseg, curr_completion) =
                     self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
                 dpseg = curr_dpseg;
@@ -4075,7 +4055,7 @@ impl Datapath for Mlx5Connection {
         let received = unsafe {
             custom_mlx5_gather_rx(
                 self.thread_context.get_context_ptr(),
-                self.recv_mbufs.as_mut_ptr(),
+                self.recv_mbufs.as_recv_mbuf_info_array_ptr(),
                 RECEIVE_BURST_SIZE as _,
             )
         };
@@ -4093,9 +4073,16 @@ impl Datapath for Mlx5Connection {
                     None => {
                         // free the rest of the packets
                         for _ in (i + 1)..received as usize {
+                            let recv_info = self.recv_mbufs.get(i);
                             unsafe {
-                                custom_mlx5_free_mbuf(self.recv_mbufs[i]);
+                                custom_mlx5_refcnt_update_or_free(
+                                    (*recv_info).mempool,
+                                    (*recv_info).buf_addr,
+                                    (*recv_info).ref_count_index as _,
+                                    -1i8,
+                                );
                             }
+                            self.recv_mbufs.clear(i);
                         }
                         bail!(
                             "Cannot find msg id {} and conn id {} in outgoing window",
@@ -4107,10 +4094,16 @@ impl Datapath for Mlx5Connection {
                 ret.push((received_pkt, dur));
             } else {
                 // free the mbuf
+                let recv_info = self.recv_mbufs.get(i);
                 unsafe {
-                    custom_mlx5_free_mbuf(self.recv_mbufs[i]);
+                    custom_mlx5_refcnt_update_or_free(
+                        (*recv_info).mempool,
+                        (*recv_info).buf_addr,
+                        (*recv_info).ref_count_index as _,
+                        -1i8,
+                    );
                 }
-                self.recv_mbufs[i] = ptr::null_mut();
+                self.recv_mbufs.clear(i);
             }
         }
         Ok(ret)
@@ -4124,7 +4117,7 @@ impl Datapath for Mlx5Connection {
         let received = unsafe {
             custom_mlx5_gather_rx(
                 self.thread_context.get_context_ptr(),
-                self.recv_mbufs.as_mut_ptr(),
+                self.recv_mbufs.as_recv_mbuf_info_array_ptr(),
                 RECEIVE_BURST_SIZE as _,
             )
         };
@@ -4137,13 +4130,17 @@ impl Datapath for Mlx5Connection {
                 ret.push(received_pkt);
             } else {
                 // free the mbuf
+                let recv_info = self.recv_mbufs.get(i);
                 unsafe {
-                    custom_mlx5_free_mbuf(self.recv_mbufs[i]);
+                    custom_mlx5_refcnt_update_or_free(
+                        (*recv_info).mempool,
+                        (*recv_info).buf_addr,
+                        (*recv_info).ref_count_index as _,
+                        -1i8,
+                    );
                 }
+                self.recv_mbufs.clear(i);
             }
-        }
-        for i in 0..RECEIVE_BURST_SIZE as _ {
-            self.recv_mbufs[i] = ptr::null_mut();
         }
         Ok(ret)
     }
@@ -4170,7 +4167,7 @@ impl Datapath for Mlx5Connection {
     }
 
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>> {
-        MbufMetadata::from_buf(buf)
+        Ok(Some(MbufMetadata::from_buf(buf)))
     }
 
     #[inline]
@@ -4185,10 +4182,9 @@ impl Datapath for Mlx5Connection {
             true => PGSIZE_2MB,
             false => PGSIZE_4KB,
         };
-        let mempool_params =
-            sizes::MempoolAllocationParams::new(min_elts, metadata_pgsize, PGSIZE_2MB, actual_size)
-                .wrap_err("Incorrect mempool allocation params")?;
-        tracing::debug!(mempool_params = ?mempool_params, "Adding mempool");
+        let mempool_params = sizes::MempoolAllocationParams::new(min_elts, PGSIZE_2MB, actual_size)
+            .wrap_err("Incorrect mempool allocation params")?;
+        tracing::info!(mempool_params = ?mempool_params, "Adding mempool");
         let data_mempool = DataMempool::new(&mempool_params, &self.thread_context)?;
         let id = self
             .allocator
@@ -4202,9 +4198,8 @@ impl Datapath for Mlx5Connection {
             true => PGSIZE_4KB,
             false => PGSIZE_2MB,
         };
-        let mempool_params =
-            sizes::MempoolAllocationParams::new(min_elts, metadata_pgsize, PGSIZE_2MB, size)
-                .wrap_err("Incorrect mempool allocation params")?;
+        let mempool_params = sizes::MempoolAllocationParams::new(min_elts, PGSIZE_2MB, size)
+            .wrap_err("Incorrect mempool allocation params")?;
         tracing::debug!(mempool_params = ?mempool_params, "Adding mempool");
         let data_mempool = DataMempool::new(&mempool_params, &self.thread_context)?;
         let _ = self

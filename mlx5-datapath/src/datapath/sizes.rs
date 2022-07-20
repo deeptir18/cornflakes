@@ -24,8 +24,6 @@
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::mem;
 
-const METADATA_SIZE: usize = 64;
-pub const RX_MEMPOOL_METADATA_PGSIZE: usize = mem::PGSIZE_2MB;
 pub const RX_MEMPOOL_DATA_PGSIZE: usize = mem::PGSIZE_2MB;
 pub const RX_MEMPOOL_DATA_LEN: usize = 8192;
 pub const RX_MEMPOOL_MIN_NUM_ITEMS: usize = 8192;
@@ -43,11 +41,9 @@ pub fn align_up(x: usize, align_size: usize) -> usize {
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct MempoolAllocationParams {
-    metadata_pgsize: usize,
     item_len: usize,
     data_pgsize: usize,
     num_items: usize,
-    num_metadata_pages: usize,
     num_data_pages: usize,
 }
 
@@ -64,26 +60,7 @@ impl MempoolAllocationParams {
         self.data_pgsize
     }
 
-    pub fn get_metadata_pgsize(&self) -> usize {
-        self.metadata_pgsize
-    }
-
-    pub fn new(
-        min_items: usize,
-        metadata_pgsize: usize,
-        data_pgsize: usize,
-        item_size: usize,
-    ) -> Result<Self> {
-        // check that metadata_pgsize and data_pgsize are proper page sizes
-        if metadata_pgsize != mem::PGSIZE_4KB
-            && metadata_pgsize != mem::PGSIZE_2MB
-            && metadata_pgsize != mem::PGSIZE_1GB
-        {
-            bail!(
-                "Metadata pgsize provided: {} not 4KB, 2MB, or 1GB",
-                metadata_pgsize
-            );
-        }
+    pub fn new(min_items: usize, data_pgsize: usize, item_size: usize) -> Result<Self> {
         if data_pgsize != mem::PGSIZE_4KB
             && data_pgsize != mem::PGSIZE_2MB
             && data_pgsize != mem::PGSIZE_1GB
@@ -100,26 +77,27 @@ impl MempoolAllocationParams {
         }
 
         // calculate alignment number of objects
-        let metadata_items_per_page = metadata_pgsize / METADATA_SIZE;
         let data_items_per_page = data_pgsize / item_size;
-        let alignment_size = align_up(
-            std::cmp::min(metadata_items_per_page, data_items_per_page),
-            std::cmp::max(metadata_items_per_page, data_items_per_page),
-        );
 
         // align the minimum number of objets up
-        let num_items = align_up(min_items, alignment_size);
+        let num_items = align_up(min_items, data_items_per_page);
 
         // calculate the number of data pages and metadata pages accordingly
-        let num_metadata_pages = num_items / alignment_size;
         let num_data_pages = num_items / data_items_per_page;
+        tracing::info!(
+            min_items,
+            data_items_per_page,
+            num_data_pages,
+            data_pgsize,
+            item_size,
+            num_items,
+            "Final allocation params"
+        );
 
         Ok(MempoolAllocationParams {
-            metadata_pgsize: metadata_pgsize,
             item_len: item_size,
             data_pgsize: data_pgsize,
             num_items: num_items,
-            num_metadata_pages: num_metadata_pages,
             num_data_pages: num_data_pages,
         })
     }

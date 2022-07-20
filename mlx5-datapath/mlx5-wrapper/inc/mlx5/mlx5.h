@@ -30,6 +30,9 @@
 #define custom_mlx5_incr_ring_buffer(ptr, start, end, type, ptr_type) \
     ((((char *)ptr + sizeof(type)) == end) ? ((ptr_type)start) : ((ptr_type)((char *)ptr + (sizeof(type)))) )
 
+#define custom_mlx5_rx_buffers_start(v)((char *)(v->rx_buffers))
+#define custom_mlx5_get_rx_buffers_segment(v, idx)((struct custom_mlx5_rx_buffer *)(custom_mlx5_rx_buffers_start(v) + v->rx_wq_dv.stride * idx))
+
 /*
  * Direct hardware queue support
  */
@@ -40,8 +43,22 @@ struct __attribute__((__packed__)) custom_mlx5_transmission_info {
             uint32_t num_wqes; // number of descriptors used by this transmission
             uint32_t num_mbufs; // number of mbufs to decrease the reference count on
         } metadata;
-        struct custom_mlx5_mbuf *mbuf;
+        void *data;
     } info;
+    struct registered_mempool *mempool;
+};
+
+struct __attribute__((__packed__)) custom_mlx5_rx_buffer {
+    void *buf_addr;
+    struct registered_mempool *mempool;
+};
+
+struct recv_mbuf_info {
+    void *buf_addr;
+    struct registered_mempool *mempool;
+    size_t ref_count_index;
+    uint32_t pkt_len;
+    uint32_t rss_hash;
 };
 
 
@@ -75,8 +92,7 @@ struct custom_mlx5_rxq {
 	uint32_t rx_cq_log_stride;
 	uint32_t rx_wq_log_stride;
 
-	void **buffers; // array of posted buffers
-
+    void *rx_buffers; // array of posted buffers and associated data
 
 	struct ibv_cq_ex *rx_cq;
 	struct ibv_wq *rx_wq;
@@ -114,7 +130,6 @@ struct custom_mlx5_txq {
  * Or can different `mempools` share the same backing registered region? */
 struct registered_mempool {
     struct custom_mlx5_mempool data_mempool;
-    struct custom_mlx5_mempool metadata_mempool;
     struct ibv_mr *mr; /* If this is null, this means the mempool isn't registered. */
 };
 
@@ -143,7 +158,6 @@ struct custom_mlx5_per_thread_context {
     struct custom_mlx5_rxq rxq; /* Rxq for receiving packets. */
     struct custom_mlx5_txq txq; /* Txq for sending packets. */
     struct registered_mempool *rx_mempool; /* Receive mempool associated with the rxq. */
-    struct custom_mlx5_mempool external_data_pool; /* Memory pool used for attaching external data.*/
 };
 
 /* Given index into threads array, get per thread context. */

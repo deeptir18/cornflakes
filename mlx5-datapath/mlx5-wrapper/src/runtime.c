@@ -31,9 +31,12 @@ void custom_mlx5_process_completion(uint16_t wqe_idx, struct custom_mlx5_txq *v)
     NETPERF_DEBUG("Transmission %p, num_wqes: %u, num_mbufs: %u", transmission, transmission->info.metadata.num_wqes, transmission->info.metadata.num_mbufs);
     for (uint64_t i = 0; i < transmission->info.metadata.num_mbufs; i++) {
         curr = custom_mlx5_incr_transmission_info(v, curr);
-        NETPERF_DEBUG("Processing completion entry %p with mbuf %p", curr, curr->info.mbuf);
-        // reduce the ref count on this mbuf
-        custom_mlx5_mbuf_refcnt_update_or_free(curr->info.mbuf, -1);
+        NETPERF_DEBUG("Processing completion entry %p with data addr %p", curr, curr->info.data);
+        // find ref count index
+        size_t refcnt_index = (size_t)(custom_mlx5_mempool_find_index(&(curr->mempool->data_mempool), (void *)curr->info.data));
+        // reduce refcnt or free data
+        NETPERF_DEBUG("Index %lu, Processing completion for mempool %p, data %p, refcnt_index %lu; cur refcnt: %u, cur allocated: %lu", i, curr->mempool, curr->info.data, refcnt_index, curr->mempool->data_mempool.ref_counts[refcnt_index], curr->mempool->data_mempool.allocated);
+        custom_mlx5_refcnt_update_or_free(curr->mempool, curr->info.data, refcnt_index, -1);
     }
     // advance the sq_head
     v->true_cq_head += transmission->info.metadata.num_wqes;
@@ -83,7 +86,7 @@ int custom_mlx5_process_completions(struct custom_mlx5_per_thread_context *per_t
 }
 
 int custom_mlx5_gather_rx(struct custom_mlx5_per_thread_context *per_thread_context,
-                    struct custom_mlx5_mbuf **ms,
+                    struct recv_mbuf_info *recv_mbufs,
                     unsigned int budget) {
     struct registered_mempool *rx_mempool = per_thread_context->rx_mempool;
     struct custom_mlx5_rxq *v = &per_thread_context->rxq;
@@ -96,9 +99,8 @@ int custom_mlx5_gather_rx(struct custom_mlx5_per_thread_context *per_thread_cont
 	struct mlx5dv_cq *cq = &v->rx_cq_dv;
 
 	struct mlx5_cqe64 *cqe, *cqes = cq->buf;
-	struct custom_mlx5_mbuf *m;
 
-
+    struct recv_mbuf_info *recv_info = recv_mbufs;
 	for (rx_cnt = 0; rx_cnt < budget; rx_cnt++, v->consumer_idx++) {
 		cqe = &cqes[v->consumer_idx & (cq->cqe_cnt - 1)];
 		opcode = custom_mlx5_cqe_status(cqe, cq->cqe_cnt, v->consumer_idx);
@@ -121,12 +123,16 @@ int custom_mlx5_gather_rx(struct custom_mlx5_per_thread_context *per_thread_cont
 
 		NETPERF_PANIC_ON_TRUE(custom_mlx5_get_cqe_format(cqe) == 0x3i, "Wrong cqe format"); // not compressed
 		wqe_idx = be16toh(cqe->wqe_counter) & (wq->wqe_cnt - 1);
-		m = v->buffers[wqe_idx];
-        // set length to be actual data length received
-        // TODO: necessary to reset the buf address here?
-        m->data_len = be32toh(cqe->byte_cnt);
-        m->rss_hash = custom_mlx5_get_rss_result(cqe);
-		ms[rx_cnt] = m;
+        struct custom_mlx5_rx_buffer *rx_buf_info = custom_mlx5_get_rx_buffers_segment(v, wqe_idx);
+        NETPERF_DEBUG("Got rx_buf_info: %p", rx_buf_info);
+        recv_info->buf_addr = rx_buf_info->buf_addr;
+        recv_info->mempool = rx_buf_info->mempool;
+        recv_info->ref_count_index = custom_mlx5_mempool_find_index(&rx_mempool->data_mempool, rx_buf_info->buf_addr);
+        recv_info->pkt_len = be32toh(cqe->byte_cnt);
+        recv_info->rss_hash = custom_mlx5_get_rss_result(cqe);
+        NETPERF_DEBUG("Result of find index for %p data and mempool buf %p: %d; rx_buf_info ptr; %p", rx_buf_info->buf_addr, rx_mempool->data_mempool.buf, custom_mlx5_mempool_find_index(&rx_mempool->data_mempool, rx_buf_info->buf_addr), rx_buf_info);
+        NETPERF_DEBUG("Received packet with: addr %p, mempool %p, ref_count_index: %lu, pkt_len: %u", rx_buf_info->buf_addr, rx_buf_info->mempool, recv_info->ref_count_index, recv_info->pkt_len);
+        recv_info += 1;
 	}
 
 	if (unlikely(!rx_cnt))
@@ -159,25 +165,27 @@ int custom_mlx5_refill_rxqueue(struct custom_mlx5_per_thread_context *per_thread
     
     for (i = 0; i < rx_cnt; i++) {
         // allocate data mbuf
-        struct custom_mlx5_mbuf *metadata_mbuf = custom_mlx5_allocate_data_and_metadata_mbuf(rx_mempool);
-        struct ibv_mr *mr = rx_mempool->mr;
-
-        if (!metadata_mbuf) {
-            NETPERF_WARN("Not able to allocate rx mbuf to refill pool");
+        void *data = custom_mlx5_mempool_alloc(&rx_mempool->data_mempool);
+        if (data == NULL) {
+            NETPERF_WARN("Could not allocate data mbuf to refill rx queue; allocated in rx_mempool: %lu, capacity in rx_mempool: %lu", rx_mempool->data_mempool.allocated, rx_mempool->data_mempool.capacity);
             return -ENOMEM;
         }
-
+        struct ibv_mr *mr = rx_mempool->mr;
         index = POW2MOD(v->wq_head, wq->wqe_cnt);
         seg = wq->buf + (index << v->rx_wq_log_stride);
         seg->lkey = htobe32(mr->lkey);
-        seg->byte_count = htobe32(metadata_mbuf->data_buf_len);
-        seg->addr = htobe64((unsigned long)metadata_mbuf->buf_addr);
-        v->buffers[index] = metadata_mbuf;
+        seg->byte_count = htobe32(rx_mempool->data_mempool.item_len);
+        seg->addr = htobe64((unsigned long)data);
+
+        struct custom_mlx5_rx_buffer *rx_ring_entry = custom_mlx5_get_rx_buffers_segment(v, index);
+        rx_ring_entry->buf_addr = data;
+        rx_ring_entry->mempool = rx_mempool;
         v->wq_head++;
     }
 
     udma_to_device_barrier();
     wq->dbrec[0] = htobe32(v->wq_head & 0xffff); 
+    NETPERF_DEBUG("After refill, allocated in rx mempool is: %lu, capacity: %lu", rx_mempool->data_mempool.allocated, rx_mempool->data_mempool.capacity);
     return 0;
 }
 
@@ -286,9 +294,9 @@ char *custom_mlx5_work_request_inline_off(struct custom_mlx5_txq *v, size_t inli
             } else {
                 current_segment_ptr += 2;
                 if (round_to_16) {
-                    NETPERF_DEBUG("Current: %p, inline_off: %u, incr: %lu", current_segment_ptr, inline_off, ((inline_off - 2 + 15) & ~0xf));
+                    NETPERF_DEBUG("Current: %p, inline_off: %lu, incr: %lu", current_segment_ptr, inline_off, ((inline_off - 2 + 15) & ~0xf));
                     current_segment_ptr += ((inline_off - 2 + 15) & ~0xf);
-                    NETPERF_DEBUG("Current: %p, inline_off: %u", current_segment_ptr, inline_off);
+                    NETPERF_DEBUG("Current: %p, inline_off: %lu", current_segment_ptr, inline_off);
                 } else {
                     current_segment_ptr += (inline_off - 2);
                 }
@@ -405,23 +413,26 @@ void custom_mlx5_inline_packet_id(struct custom_mlx5_per_thread_context *per_thr
 
 struct mlx5_wqe_data_seg *custom_mlx5_add_dpseg(struct custom_mlx5_per_thread_context *per_thread_context,
                 struct mlx5_wqe_data_seg *dpseg,
-                struct custom_mlx5_mbuf *m, 
+                void *data,
+                struct registered_mempool *mempool,
                 size_t data_off,
                 size_t data_len) {
-    NETPERF_DEBUG("Dpseg being filled in: %p, data_len: %lu, addr: %p, lkey: %u", dpseg, data_len, custom_mlx5_mbuf_offset(m, data_off, char *), m->lkey);
+    NETPERF_DEBUG("Dpseg being filled in: %p, data_len: %lu, addr: %p, lkey: %u", dpseg, data_len, data, mempool->mr->lkey);
     struct custom_mlx5_txq *v = &per_thread_context->txq;
     dpseg->byte_count = htobe32(data_len);
-    dpseg->addr = htobe64(custom_mlx5_mbuf_offset(m, data_off, uint64_t));
-    dpseg->lkey = htobe32(m->lkey);
+    dpseg->addr = htobe64((uint64_t)((char *)data + data_off));
+    dpseg->lkey = htobe32(mempool->mr->lkey);
     return custom_mlx5_incr_dpseg(v, dpseg);
 }
 
 struct custom_mlx5_transmission_info *custom_mlx5_add_completion_info(struct custom_mlx5_per_thread_context *per_thread_context,
             struct custom_mlx5_transmission_info *transmission_info,
-            struct custom_mlx5_mbuf *m) {
+            void *data,
+            struct registered_mempool *mempool) {
     NETPERF_DEBUG("Transmission info being filled in: %p", transmission_info);
     struct custom_mlx5_txq *v = &per_thread_context->txq;
-    transmission_info->info.mbuf = m;
+    transmission_info->info.data = data;
+    transmission_info->mempool = mempool;
     return custom_mlx5_incr_transmission_info(v, transmission_info);
 }
 

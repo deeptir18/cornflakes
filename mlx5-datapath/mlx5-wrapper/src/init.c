@@ -72,44 +72,15 @@ struct custom_mlx5_per_thread_context *custom_mlx5_get_per_thread_context(struct
     return (struct custom_mlx5_per_thread_context *)((char *)context->thread_contexts + idx * custom_mlx5_get_per_thread_context_size(1));
 }
 
-struct custom_mlx5_mbuf *custom_mlx5_allocate_data_and_metadata_mbuf(struct registered_mempool *mempool) {
-    void *data = custom_mlx5_mempool_alloc(&mempool->data_mempool);
-    if (data == NULL) {
-        errno = -ENOMEM;
-        NETPERF_DEBUG("Could not allocate data mbuf");
-        return NULL;
-    }
-    int index = custom_mlx5_mempool_find_index(&mempool->data_mempool, data);
-    if (index == -1 ) {
-        NETPERF_WARN("Calculated index out of bounds for data %p mempool buf: %p, mempool len: %lu", data, (&mempool->data_mempool)->buf, (&mempool->data_mempool)->len);
-        custom_mlx5_mempool_free(&mempool->data_mempool, data);
-        errno = -EINVAL;
-        return NULL;
-    }
-    struct custom_mlx5_mbuf *metadata = (struct custom_mlx5_mbuf *)(custom_mlx5_mempool_alloc_by_idx(&mempool->metadata_mempool, (size_t)index));
-    if (metadata == NULL) {
-        custom_mlx5_mempool_free(&mempool->data_mempool, data);
-        NETPERF_DEBUG("Could not allocate metadata mbuf");
-        errno = -ENOMEM;
-        return NULL;
-    }
-
-    // initialize the metadata mbuf to point to the data mbuf
-    custom_mlx5_mbuf_init(metadata, data, &mempool->metadata_mempool, &mempool->data_mempool);
-    return metadata;
-}
-
 void custom_mlx5_clear_registered_mempool(struct registered_mempool *mempool) {
     mempool->mr = NULL;
     custom_mlx5_clear_mempool(&mempool->data_mempool);
-    custom_mlx5_clear_mempool(&mempool->metadata_mempool);
 }
 
 
 void custom_mlx5_clear_per_thread_context(struct custom_mlx5_global_context *context, size_t idx) {
     struct custom_mlx5_per_thread_context *per_thread_context = custom_mlx5_get_per_thread_context(context, idx);
     per_thread_context->global_context = NULL;
-    custom_mlx5_clear_mempool(&per_thread_context->external_data_pool);
     memset(&per_thread_context->rxq, 0, sizeof(struct custom_mlx5_rxq));
     memset(&per_thread_context->txq, 0, sizeof(struct custom_mlx5_txq));
 }
@@ -117,8 +88,7 @@ void custom_mlx5_clear_per_thread_context(struct custom_mlx5_global_context *con
 int custom_mlx5_allocate_mempool(struct registered_mempool *mempool,
                     size_t item_len,
                     size_t num_items,
-                    size_t data_pgsize,
-                    size_t metadata_pgsize) {
+                    size_t data_pgsize) {
     int ret = 0;
     size_t total_data_len = item_len * num_items;
     if (total_data_len % data_pgsize != 0) {
@@ -126,24 +96,10 @@ int custom_mlx5_allocate_mempool(struct registered_mempool *mempool,
         return -EINVAL;
     }
 
-    size_t total_metadata_len = sizeof(struct custom_mlx5_mbuf) * num_items;
-    if (total_metadata_len % metadata_pgsize != 0) {
-        NETPERF_ERROR("Invalid params to create metadata mempool: (size of mbuf (%lu) x %lu) not aligned to pgsize %lu", sizeof(struct custom_mlx5_mbuf), num_items,  metadata_pgsize);
-        return -EINVAL;
-    }
-
     // create the data mempool
     ret = custom_mlx5_mempool_create(&mempool->data_mempool, total_data_len, data_pgsize, item_len);
     if (ret != 0) {
         NETPERF_ERROR("Data Mempool create failed: %s", strerror(-ret));
-        return ret;
-    }
-
-    // create metadata pool
-    ret = custom_mlx5_mempool_create(&mempool->metadata_mempool, total_metadata_len, metadata_pgsize, sizeof(struct custom_mlx5_mbuf));
-    if (ret != 0) {
-        NETPERF_ERROR("Metadata mempool create failed: %s", strerror(-ret));
-        RETURN_ON_ERR(custom_mlx5_deregister_and_free_register_registered_mempool(mempool), "Dereg and free of mempool failed");
         return ret;
     }
 
@@ -189,12 +145,11 @@ int custom_mlx5_create_and_register_mempool(struct custom_mlx5_global_context *c
                                     size_t item_len,
                                     size_t num_items,
                                     size_t data_pgsize,
-                                    size_t metadata_pgsize,
                                     int registry_flags) {
     int ret = 0;
 
-    // allocate data and metadata portions of mempool
-    ret = custom_mlx5_allocate_mempool(mempool, item_len, num_items, data_pgsize, metadata_pgsize);
+    // allocate data portions of mempool
+    ret = custom_mlx5_allocate_mempool(mempool, item_len, num_items, data_pgsize);
     if (ret != 0) {
         NETPERF_ERROR("Mempool creation failed: %s", strerror(-ret));
         return ret;
@@ -206,7 +161,6 @@ int custom_mlx5_create_and_register_mempool(struct custom_mlx5_global_context *c
         NETPERF_ERROR("Mempool registration failed: %s", strerror(-ret));
         // free the mempool just created
         custom_mlx5_mempool_destroy(&mempool->data_mempool);
-        custom_mlx5_mempool_destroy(&mempool->metadata_mempool);
         return ret;
     }
 
@@ -245,10 +199,6 @@ int custom_mlx5_deregister_and_free_registered_mempool(struct registered_mempool
         custom_mlx5_mempool_destroy(&mempool->data_mempool);
     }
 
-    // unallocate metadata mempool
-    if (custom_mlx5_is_allocated(&mempool->metadata_mempool)) {
-        custom_mlx5_mempool_destroy(&mempool->metadata_mempool);
-    }
     return 0;
 }
 
@@ -256,14 +206,13 @@ int custom_mlx5_init_rx_mempools(struct custom_mlx5_global_context *context,
                         size_t item_len, 
                         size_t num_items, 
                         size_t data_pgsize, 
-                        size_t metadata_pgsize, 
                         int registry_flags) {
     int ret = 0;
     for (int i = 0; i < context->num_threads; i++) {
         struct custom_mlx5_per_thread_context *thread_context = custom_mlx5_get_per_thread_context(context, i);
         struct registered_mempool *mempool = thread_context->rx_mempool;
         NETPERF_DEBUG("Initializing rx mempool at %p", thread_context->rx_mempool);
-        ret = custom_mlx5_create_and_register_mempool(context, mempool, item_len, num_items, data_pgsize, metadata_pgsize, registry_flags);
+        ret = custom_mlx5_create_and_register_mempool(context, mempool, item_len, num_items, data_pgsize, registry_flags);
         if (ret != 0) {
             NETPERF_ERROR("Creation of rx mempool for thread %d failed: %s", i, strerror(-ret));
             RETURN_ON_ERR(free_rx_mempools(context, i), "Cleanup of rx mempools failed");
@@ -284,44 +233,19 @@ int custom_mlx5_free_rx_mempools(struct custom_mlx5_global_context *context, siz
     return 0;
 }
 
-int custom_mlx5_init_external_mempools(struct custom_mlx5_global_context *context, size_t num_pages, size_t pgsize) {
-    int ret = 0;
-    size_t total_len = num_pages * pgsize;
-    if (pgsize % sizeof(struct custom_mlx5_mbuf) != 0) {
-        NETPERF_DEBUG("Invalid params to create metadata mempool: (size of mbuf (%lu)) not aligned to pgsize %lu", sizeof(struct custom_mlx5_mbuf), pgsize);
-        return -EINVAL;
-    }
-    
-    for (int i = 0; i < context->num_threads; i++) {
-        struct custom_mlx5_per_thread_context *thread_context = custom_mlx5_get_per_thread_context(context, i);
-        ret = custom_mlx5_mempool_create(&thread_context->external_data_pool, total_len, pgsize, sizeof(struct custom_mlx5_mbuf));
-        if (ret != 0) {
-            NETPERF_ERROR("Error creating external data mempool: %s", strerror(ret));
-            // destroy external mempools until now
-            for (int mempool_id = 0; mempool_id < i; mempool_id++) {
-                custom_mlx5_mempool_destroy(&(custom_mlx5_get_per_thread_context(context, mempool_id))->external_data_pool);
-            }
-            return ret;
-        }
-    }
-    return 0;
-}
-
 int custom_mlx5_alloc_tx_pool(struct registered_mempool *mempool,
                                                 size_t item_len,
                                                 size_t num_items,
-                                                size_t data_pgsize,
-                                                size_t metadata_pgsize) {
+                                                size_t data_pgsize) {
 
     int ret = 0;
     custom_mlx5_clear_mempool(&(mempool->data_mempool));
-    custom_mlx5_clear_mempool(&(mempool->metadata_mempool));
     if (mempool == NULL) {
         NETPERF_WARN("no memory to malloc registered mempool node");
         return -ENOMEM;
     }
 
-    ret = custom_mlx5_allocate_mempool(mempool, item_len, num_items, data_pgsize, metadata_pgsize);
+    ret = custom_mlx5_allocate_mempool(mempool, item_len, num_items, data_pgsize);
     if (ret != 0) {
         NETPERF_WARN("Failed to allocate mempool: %s", strerror(-ret));
         return ret;
@@ -335,9 +259,8 @@ int custom_mlx5_alloc_and_register_tx_pool(struct custom_mlx5_per_thread_context
                                                         size_t item_len,
                                                         size_t num_items,
                                                         size_t data_pgsize,
-                                                        size_t metadata_pgsize,
                                                         int registry_flags) {
-    int ret = custom_mlx5_alloc_tx_pool(mempool, item_len, num_items, data_pgsize, metadata_pgsize);
+    int ret = custom_mlx5_alloc_tx_pool(mempool, item_len, num_items, data_pgsize);
     if (ret != 0) {
         NETPERF_WARN("Could not allocate registered mempool: %s", strerror(-ret));
         return 0;
@@ -352,17 +275,24 @@ int custom_mlx5_alloc_and_register_tx_pool(struct custom_mlx5_per_thread_context
     return 0;
 }
 
-int custom_mlx5_teardown(struct custom_mlx5_per_thread_context *per_thread_context) {
-    // free the external data pool if necessary
-    if (custom_mlx5_is_allocated(&per_thread_context->external_data_pool)) {
-        custom_mlx5_mempool_destroy(&per_thread_context->external_data_pool);
+int custom_mlx5_refcnt_update_or_free(struct registered_mempool *mempool, 
+        void *buf, 
+        size_t refcnt_index, 
+        int8_t change) {
+    //NETPERF_INFO("Calling refcnt change with %d for mempool %p, mempool, data_mempool %p, mempool buf %p, buf %p, refcnt_index %lu; old: %u, new: %u", change, mempool, &mempool->data_mempool, mempool->data_mempool.buf, buf, refcnt_index, mempool->data_mempool.ref_counts[refcnt_index], mempool->data_mempool.ref_counts[refcnt_index] + change);
+    struct custom_mlx5_mempool *data_mempool = &mempool->data_mempool;
+    data_mempool->ref_counts[refcnt_index] += change;
+    if (data_mempool->ref_counts[refcnt_index] == 0) {
+        custom_mlx5_mempool_free(data_mempool, buf);
     }
+    return 0;
+}
 
+int custom_mlx5_teardown(struct custom_mlx5_per_thread_context *per_thread_context) {
     // free the buffers allocated in the txq and rxq
     free((&per_thread_context->txq)->buffers);
     free((&per_thread_context->txq)->pending_transmissions);
-    free((&per_thread_context->rxq)->buffers);
-
+    free((&per_thread_context->rxq)->rx_buffers);
     return 0;
 }
 
@@ -661,13 +591,13 @@ int custom_mlx5_init_rxq(struct custom_mlx5_per_thread_context *thread_context) 
 	v->rx_cq_log_stride = __builtin_ctz(v->rx_cq_dv.cqe_size);
 
 	/* allocate list of posted buffers */
-	v->buffers = aligned_alloc(CACHE_LINE_SIZE, v->rx_wq_dv.wqe_cnt * sizeof(void *));
-	if (!v->buffers) {
+	v->rx_buffers = aligned_alloc(CACHE_LINE_SIZE, v->rx_wq_dv.wqe_cnt * v->rx_wq_dv.stride);
+	if (!v->rx_buffers) {
         NETPERF_WARN("Failed to alloc rx posted buffers");
 		return -ENOMEM;
     }
-
-	v->rxq.consumer_idx = &v->consumer_idx;
+	
+    v->rxq.consumer_idx = &v->consumer_idx;
     NETPERF_DEBUG("Consumer idx: %u", *(v->rxq.consumer_idx));
 	v->rxq.descriptor_table = v->rx_cq_dv.buf;
 	v->rxq.nr_descriptors = v->rx_cq_dv.cqe_cnt;
@@ -676,25 +606,34 @@ int custom_mlx5_init_rxq(struct custom_mlx5_per_thread_context *thread_context) 
 	v->rxq.parity_bit_mask = MLX5_CQE_OWNER_MASK;
 
 	/* set byte_count and lkey for all descriptors once */
-    // TODO: if we ever experiment with segmented receive, this would need to
-    // change
 	struct mlx5dv_rwq *wq = &v->rx_wq_dv;
+    struct registered_mempool *mempool = thread_context->rx_mempool;
 	for (i = 0; i < wq->wqe_cnt; i++) {
 		struct mlx5_wqe_data_seg *seg = wq->buf + i * wq->stride;
 
 		/* fill queue with buffers */
-        struct custom_mlx5_mbuf *metadata_mbuf = custom_mlx5_allocate_data_and_metadata_mbuf(thread_context->rx_mempool);
-        struct ibv_mr *mr = (thread_context->rx_mempool)->mr;
-        if (!metadata_mbuf) {
-            NETPERF_WARN("Not able to initialize buffer in rxq for thread %lu", thread_context->thread_id);
+        void *data = custom_mlx5_mempool_alloc(&mempool->data_mempool);
+        if (data == NULL) {
+            NETPERF_WARN("Could not allocate data mbuf to refill rx queue");
             return -ENOMEM;
         }
-		seg->byte_count =  htobe32(metadata_mbuf->data_buf_len);
+        int index = custom_mlx5_mempool_find_index(&mempool->data_mempool, data);
+        if (index == -1 ) {
+            NETPERF_WARN("Calculated index out of bounds for data %p mempool buf: %p, mempool len:   %lu", data, (&mempool->data_mempool)->buf, (&mempool->data_mempool)->len);
+            custom_mlx5_mempool_free(&mempool->data_mempool, data);
+            return -EINVAL;
+        }
+        struct ibv_mr *mr = mempool->mr;
+		seg->byte_count =  htobe32(mempool->data_mempool.item_len);
 		seg->lkey = htobe32(mr->lkey);
-		seg->addr = htobe64((unsigned long)(metadata_mbuf->buf_addr));
-		v->buffers[i] = metadata_mbuf;
+		seg->addr = htobe64((unsigned long)(data));
+
+        struct custom_mlx5_rx_buffer *rx_ring_entry = custom_mlx5_get_rx_buffers_segment(v, i);
+        rx_ring_entry->buf_addr = data;
+        rx_ring_entry->mempool = mempool;
 		v->wq_head++;
 	}
+    NETPERF_DEBUG("After init, allocated in rx mempool is: %lu, capacity: %lu", mempool->data_mempool.allocated, mempool->data_mempool.capacity);
 
 	/* set ownership of cqes to "hardware" */
 	struct mlx5dv_cq *cq = &v->rx_cq_dv;

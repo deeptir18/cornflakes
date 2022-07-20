@@ -34,6 +34,17 @@ macro_rules! mbuf_mut_slice(
 );
 
 #[macro_export]
+macro_rules! recv_mbuf_slice(
+    ($mbuf: expr, $offset: expr, $len: expr) => {
+        std::slice::from_raw_parts(
+            ((*$mbuf).buf_addr as *mut u8)
+            .offset($offset as isize),
+            $len,
+        )
+    }
+);
+
+#[macro_export]
 macro_rules! mbuf_slice(
     ($mbuf: expr, $offset: expr, $len: expr) => {
         std::slice::from_raw_parts(

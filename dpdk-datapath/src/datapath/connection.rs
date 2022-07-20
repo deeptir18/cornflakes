@@ -71,10 +71,6 @@ impl DatapathBufferOps for DpdkBuffer {
     fn get_mempool_id(&self) -> MempoolID {
         self.mempool_id
     }
-
-    fn get_metadata_pointer(&self) -> *const u8 {
-        self.mbuf as *const u8
-    }
 }
 
 impl DpdkBuffer {

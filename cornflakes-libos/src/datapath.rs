@@ -221,8 +221,6 @@ pub trait DatapathBufferOps {
     fn set_mempool_id(&mut self, id: MempoolID);
 
     fn get_mempool_id(&self) -> MempoolID;
-
-    fn get_metadata_pointer(&self) -> *const u8;
 }
 
 pub trait Datapath {

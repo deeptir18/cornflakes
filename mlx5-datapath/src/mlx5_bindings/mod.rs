@@ -18,33 +18,12 @@ extern "C" {
 
     fn alloc_data_buf_(mempool: *mut registered_mempool) -> *mut ::std::os::raw::c_void;
 
-    fn alloc_metadata_(
-        mempool: *mut registered_mempool,
-        data_buf: *mut ::std::os::raw::c_void,
-    ) -> *mut custom_mlx5_mbuf;
-
-    fn init_metadata_(
-        mbuf: *mut custom_mlx5_mbuf,
-        buf: *mut ::std::os::raw::c_void,
-        data_mempool: *mut custom_mlx5_mempool,
-        metadata_mempool: *mut custom_mlx5_mempool,
-        data_len: usize,
-        offset: usize,
-    );
-
     fn get_data_mempool_(mempool: *mut registered_mempool) -> *mut custom_mlx5_mempool;
-
-    fn get_metadata_mempool_(mempool: *mut registered_mempool) -> *mut custom_mlx5_mempool;
 
     fn custom_mlx5_mbuf_offset_ptr_(
         mbuf: *mut custom_mlx5_mbuf,
         off: usize,
     ) -> *mut ::std::os::raw::c_void;
-
-    fn custom_mlx5_mempool_free_(
-        item: *mut ::std::os::raw::c_void,
-        mempool: *mut custom_mlx5_mempool,
-    );
 
     fn custom_mlx5_mbuf_at_index_(
         mempool: *mut custom_mlx5_mempool,
@@ -73,7 +52,7 @@ extern "C" {
         inline_off: usize,
     ) -> *mut mlx5_wqe_data_seg;
 
-    fn flip_headers_mlx5_(metadata_mbuf: *mut custom_mlx5_mbuf);
+    fn flip_headers_mlx5_(data: *mut ::std::os::raw::c_void);
 
 }
 
@@ -103,33 +82,8 @@ pub unsafe fn alloc_data_buf(mempool: *mut registered_mempool) -> *mut ::std::os
 }
 
 #[inline]
-pub unsafe fn alloc_metadata(
-    mempool: *mut registered_mempool,
-    data_buf: *mut ::std::os::raw::c_void,
-) -> *mut custom_mlx5_mbuf {
-    alloc_metadata_(mempool, data_buf)
-}
-
-#[inline]
-pub unsafe fn init_metadata(
-    mbuf: *mut custom_mlx5_mbuf,
-    buf: *mut ::std::os::raw::c_void,
-    data_mempool: *mut custom_mlx5_mempool,
-    metadata_mempool: *mut custom_mlx5_mempool,
-    data_len: usize,
-    offset: usize,
-) {
-    init_metadata_(mbuf, buf, data_mempool, metadata_mempool, data_len, offset);
-}
-
-#[inline]
 pub unsafe fn get_data_mempool(mempool: *mut registered_mempool) -> *mut custom_mlx5_mempool {
     get_data_mempool_(mempool)
-}
-
-#[inline]
-pub unsafe fn get_metadata_mempool(mempool: *mut registered_mempool) -> *mut custom_mlx5_mempool {
-    get_metadata_mempool_(mempool)
 }
 
 #[inline]
@@ -138,14 +92,6 @@ pub unsafe fn custom_mlx5_mbuf_offset_ptr(
     off: usize,
 ) -> *mut ::std::os::raw::c_void {
     custom_mlx5_mbuf_offset_ptr_(mbuf, off)
-}
-
-#[inline]
-pub unsafe fn custom_mlx5_mempool_free(
-    item: *mut ::std::os::raw::c_void,
-    mempool: *mut custom_mlx5_mempool,
-) {
-    custom_mlx5_mempool_free_(item, mempool);
 }
 
 #[inline]
@@ -191,6 +137,6 @@ pub unsafe fn custom_mlx5_dpseg_start(
 }
 
 #[inline]
-pub unsafe fn flip_headers(metadata_mbuf: *mut custom_mlx5_mbuf) {
-    flip_headers_mlx5_(metadata_mbuf);
+pub unsafe fn flip_headers(data: *mut ::std::os::raw::c_void) {
+    flip_headers_mlx5_(data);
 }

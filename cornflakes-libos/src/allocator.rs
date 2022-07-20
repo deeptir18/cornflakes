@@ -46,12 +46,6 @@ pub trait DatapathMemoryPool {
 
     fn get_1g_pages(&self) -> Vec<usize>;
 
-    /// Turns raw pointer into memory pool's metadata pointer
-    fn turn_to_metadata(
-        ptr: usize,
-        buffer: &[u8],
-    ) -> Result<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata>;
-
     /// Register the backing region behind this memory pool
     fn register(&mut self, registration_context: Self::RegistrationContext) -> Result<()>;
 
@@ -283,6 +277,7 @@ where
                 for (mempool_id, mempool) in mempools.iter() {
                     match mempool.alloc_data_buf(*mempool_id)? {
                         Some(x) => {
+                            tracing::debug!(align_size, mempool_id, buf =? x, "Allocating tx buffer");
                             return Ok(Some(x));
                         }
                         None => {}
@@ -354,9 +349,6 @@ where
         buffer: &[u8],
     ) -> Result<Option<<<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata>>
     {
-        #[cfg(feature = "profiler")]
-        perftools::timer!("recover buffer func higher level allocator");
-
         match self.find_mempool_id(buffer) {
             Some(id) => {
                 let mempool = self.mempools.get(&id).unwrap();
@@ -369,51 +361,6 @@ where
                 return Ok(None);
             }
         }
-        /*{
-            #[cfg(feature = "profiler")]
-            perftools::timer!("get cached metadata");
-
-            match self.address_cache.get(&(buffer.as_ptr() as usize)) {
-                Some(metadata_pointer) => {
-                    return Ok(Some(M::turn_to_metadata(*metadata_pointer, buffer)?));
-                }
-                None => {}
-            }
-        }*/
-        // search through recv mempools first
-        /*for (_id, mempool) in self.recv_mempools.iter() {
-            if mempool.is_buf_within_bounds(buffer) {
-                let metadata = mempool
-                    .recover_buffer(buffer)
-                    .wrap_err("unable to recover metadata")?;
-                return Ok(Some(metadata));
-            }
-        }
-
-        let align_size = align_to_pow2(buffer.len());
-        match self.mempool_ids.get(&align_size) {
-            Some(mempools) => {
-                for mempool_id in mempools.iter() {
-                    let mempool = self.mempools.get(mempool_id).unwrap();
-                    if mempool.has_allocated() {
-                        if mempool.is_buf_within_bounds(buffer) {
-                            if mempool.is_registered() {
-                                let metadata = mempool
-                                    .recover_buffer(buffer)
-                                    .wrap_err("unable to recover metadata")?;
-                                return Ok(Some(metadata));
-                            } else {
-                                return Ok(None);
-                            }
-                        }
-                    }
-                }
-                return Ok(None);
-            }
-            None => {
-                return Ok(None);
-            }
-        }*/
     }
 
     /// Checks whether a given datapath buffer is in registered memory or not.

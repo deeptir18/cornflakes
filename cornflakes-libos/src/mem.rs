@@ -6,7 +6,7 @@ use std::slice;
 pub const PAGESIZE: usize = 4096;
 const PGSHIFT_4KB: usize = 12;
 const PGSHIFT_2MB: usize = 21;
-const PGSHIFT_1GB: usize = 20;
+const PGSHIFT_1GB: usize = 30;
 pub const PGSIZE_4KB: usize = 1 << PGSHIFT_4KB;
 pub const PGSIZE_2MB: usize = 1 << PGSHIFT_2MB;
 pub const PGSIZE_1GB: usize = 1 << PGSHIFT_1GB;

@@ -79,11 +79,11 @@ __custom_mlx5_mem_map_anom(void *base, size_t len, size_t pgsize,
 #endif
 		break;
 	case PGSIZE_1GB:
-#ifdef MAP_HUGE_1GB
-		flags |= MAP_HUGETLB | MAP_HUGE_1GB;
-#else
-		return MAP_FAILED;
-#endif
+//ifdef MAP_HUGE_1GB
+		flags |= MAP_HUGETLB;
+//#else
+		//return MAP_FAILED;
+//#endif
 		break;
 	default: /* fail on other sizes */
 		return MAP_FAILED;

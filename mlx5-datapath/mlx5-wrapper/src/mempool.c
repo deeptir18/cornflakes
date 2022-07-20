@@ -48,6 +48,25 @@ void __custom_mlx5_mempool_free_debug_check(struct custom_mlx5_mempool *m, void 
 
 #endif /* DEBUG */
 
+void *custom_mlx5_mempool_alloc(struct custom_mlx5_mempool *m)
+{
+	void *item;
+	if (unlikely(m->allocated >= m->capacity))
+		return NULL;
+	item = m->free_items[m->allocated++];
+	__custom_mlx5_mempool_alloc_debug_check(m, item);
+	return item;
+}
+
+int custom_mlx5_mempool_find_index(struct custom_mlx5_mempool *m, void *item) {
+    // todo: MAKE THIS PANIC ON TRUE?
+    /*if ((char *)item < (char *)m->buf && (char *)item >= ((char *)m->buf + m->len)) {
+        return -1;
+    }*/
+    //NETPERF_DEBUG("Log item len: %lu, item: %p, mempool buf: %p, dif: %lu, returned index: %d", m->log_item_len, item, m->buf, (char *)item - (char *)m->buf, (int)(((char *)item - (char *)m->buf) >> m->log_item_len));
+    return (int)(((char *)item - (char *)m->buf) >> m->log_item_len);
+}
+
 int custom_mlx5_is_allocated(struct custom_mlx5_mempool *mempool) {
     if (mempool->buf != NULL) {
         return 1;
@@ -55,6 +74,18 @@ int custom_mlx5_is_allocated(struct custom_mlx5_mempool *mempool) {
         return 0;
     }
 }
+
+void custom_mlx5_mempool_free(struct custom_mlx5_mempool *m, void *item) {
+	__custom_mlx5_mempool_free_debug_check(m, item);
+    if (m->allocated == 0) {
+        NETPERF_WARN("Freeing item %p item back into mempool %p with mem allocated 0.\n", item, m);
+        return;
+    }
+    //NETPERF_INFO("Freeing item %p back into mempool %p with allocated %lu", item, m, m->allocated);
+    m->free_items[--m->allocated] = item;
+    NETPERF_ASSERT(m->allocated <= m->capacity, "Overflow in mempool"); /* ensure no overflow */
+}
+
 
 int custom_mlx5_is_registered(struct custom_mlx5_mempool *mempool) {
     if (mempool->lkey != -1) {
@@ -87,11 +118,17 @@ static int custom_mlx5_mempool_populate(struct custom_mlx5_mempool *m, void *buf
             NETPERF_DEBUG("Calloc didn't allocate free items list.");
 		return -ENOMEM;
     }
+    m->ref_counts = calloc(nr_pages * items_per_page, sizeof(uint8_t));
+    if (!m->ref_counts) {
+        NETPERF_DEBUG("Calloc didn't allocate ref counts list.");
+        return -ENOMEM;
+    }
 
 	for (i = 0; i < nr_pages; i++) {
 		for (j = 0; j < items_per_page; j++) {
 			m->free_items[m->capacity++] =
 				(char *)buf + pgsize * i + item_len * j;
+            m->ref_counts[i * j] = 0;
 		}
 	}
 
@@ -116,7 +153,7 @@ int custom_mlx5_mempool_create(struct custom_mlx5_mempool *m, size_t len,
 
     void *buf = custom_mlx5_mem_map_anom(NULL, len, pgsize, 0);
     if (buf ==  NULL) {
-        NETPERF_WARN("mem_map_anom failed: resulting buffer is null.");
+        NETPERF_WARN("mem_map_anom failed: resulting buffer is null: len %lu, pgsize %lu", len, pgsize);
         return -EINVAL;
     }
 

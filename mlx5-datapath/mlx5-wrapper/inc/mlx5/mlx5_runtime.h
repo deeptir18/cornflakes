@@ -76,7 +76,7 @@ int custom_mlx5_process_completions(struct custom_mlx5_per_thread_context *per_t
  * Number of packets received.
  * */
 int custom_mlx5_gather_rx(struct custom_mlx5_per_thread_context *per_thread_context,
-                    struct custom_mlx5_mbuf **ms,
+                    struct recv_mbuf_info *recv_mbufs,
                     unsigned int budget);
                     
 
@@ -246,7 +246,7 @@ void custom_mlx5_inline_packet_id(struct custom_mlx5_per_thread_context *per_thr
  * Arguments:
  * @per_thread_context: mlx5 per thread context
  * @dpseg - Pointer to the dpseg.
- * @m - mbuf to add as dpseg.
+ * @m - Pointer to data.
  * @data_off - data offset into mbuf.
  * @data_len - size of data to reference inside mbuf.
  *
@@ -255,7 +255,8 @@ void custom_mlx5_inline_packet_id(struct custom_mlx5_per_thread_context *per_thr
  * */
 struct mlx5_wqe_data_seg *custom_mlx5_add_dpseg(struct custom_mlx5_per_thread_context *per_thread_context,
                 struct mlx5_wqe_data_seg *dpseg,
-                struct custom_mlx5_mbuf *m, 
+                void *data,
+                struct registered_mempool *mempool,
                 size_t data_off,
                 size_t data_len);
 
@@ -265,14 +266,16 @@ struct mlx5_wqe_data_seg *custom_mlx5_add_dpseg(struct custom_mlx5_per_thread_co
  * Arguments:
  * @per_thread_context: mlx5 per thread context
  * @transmission info - current completion info struct,
- * @m - mbuf to record.
+ * @data - Actual data pointer; required if on completion data must be freed.
+ * @mempool - Data mempool this buffer came from,
  *
  * Returns:
  * location to record next transmission info.
  * */
 struct custom_mlx5_transmission_info *custom_mlx5_add_completion_info(struct custom_mlx5_per_thread_context *per_thread_context,
                 struct custom_mlx5_transmission_info *transmission_info,
-                struct custom_mlx5_mbuf *m);
+                void *data,
+                struct registered_mempool *mempool);
 
 /* 
  * finish_one_transmission - Finishes a single transmission.
