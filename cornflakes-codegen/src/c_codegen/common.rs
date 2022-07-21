@@ -18,6 +18,7 @@ pub enum ArgType {
     Ref { inner_ty: String },
     RefMut { inner_ty: String },
     List { datapath: Option<String>, param_ty: Box<ArgType> },
+    Buffer,
 }
 
 impl ArgType {
@@ -43,6 +44,13 @@ impl ArgType {
         }
     }
 
+    pub fn is_buffer(&self) -> bool {
+        match self {
+            ArgType::Buffer => true,
+            _ => false,
+        }
+    }
+
     pub fn to_string(&self) -> &str {
         match self {
             ArgType::Rust { string } => string,
@@ -52,6 +60,7 @@ impl ArgType {
             ArgType::List{..} => "*const ::std::os::raw::c_void",
             ArgType::Ref{..} => "*mut ::std::os::raw::c_void",
             ArgType::RefMut{..} => "*mut ::std::os::raw::c_void",
+            ArgType::Buffer => "*const ::std::os::raw::c_uchar",
         }
     }
 
@@ -91,6 +100,7 @@ impl ArgType {
             ArgType::Ref{..} => unimplemented!("unknown struct ref probably"),
             ArgType::RefMut{..} => unimplemented!("unknown struct ref mut
                 probably"),
+            ArgType::Buffer => unimplemented!(),
         }
     }
 }
@@ -171,64 +181,42 @@ pub fn add_cf_string_or_bytes(
     datapath: Option<&str>,
     ty: &str,
 ) -> Result<()> {
+    let (struct_ty, struct_name) = if let Some(datapath) = datapath {
+        (format!("{}<{}>", ty, datapath), format!("{}::<{}>", ty, datapath))
+    } else {
+        (ty.to_string(), ty.to_string())
+    };
+
     ////////////////////////////////////////////////////////////////////////////
     // <ty>_new_from_bytes
-    let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("buffer", "*const ::std::os::raw::c_uchar")),
-        FunctionArg::CArg(CArgInfo::arg("buffer_len", "usize")),
-        FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_uchar")),
-    ];
-    let func_context = FunctionContext::new_extern_c(
-        &format!("{}_new_from_bytes", ty), true, args, false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    compiler.add_unsafe_def_with_let(false, None, "arg0",
-        "std::slice::from_raw_parts(buffer, buffer_len)")?;
-    let new_from_bytes = match datapath {
-        Some(datapath) => format!(
-            "Box::into_raw(Box::new({}::<{}>::new_from_bytes(arg0)))",
-            ty, datapath,
-        ),
-        None => format!(
-            "Box::into_raw(Box::new({}::new_from_bytes(arg0)))", ty,
-        ),
-    };
-    compiler.add_def_with_let(false, None, "value", &new_from_bytes)?;
-    compiler.add_unsafe_set("return_ptr", "value as _")?;
-    compiler.pop_context()?; // end of function
-    compiler.add_newline()?;
+    add_extern_c_wrapper_function(
+        compiler,
+        &format!("{}_new_from_bytes", ty),
+        &struct_name,
+        "new_from_bytes",
+        None,
+        vec![("buffer", ArgType::Buffer)],
+        Some(ArgType::VoidPtr { inner_ty: struct_ty.clone() }),
+        false,
+    )?;
 
     ////////////////////////////////////////////////////////////////////////////
     // <ty>_new
-    let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("buffer", "*const ::std::os::raw::c_uchar")),
-        FunctionArg::CArg(CArgInfo::arg("buffer_len", "usize")),
-        FunctionArg::CArg(CArgInfo::arg("datapath", "*mut ::std::os::raw::c_void")),
-        FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_uchar")),
-    ];
-    let func_context = FunctionContext::new_extern_c(
-        &format!("{}_new", ty), true, args, false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    compiler.add_unsafe_def_with_let(false, None, "arg0",
-        "std::slice::from_raw_parts(buffer, buffer_len)")?;
-    compiler.add_unsafe_def_with_let(false, None, "arg1",
-        "Box::from_raw(datapath as *mut Mlx5Connection)")?;
-    let new_from_bytes = match datapath {
-        Some(datapath) => format!(
-            "Box::into_raw(Box::new({}::<{}>::new(arg0, &arg1).unwrap()))",
-            ty, datapath,
-        ),
-        None => format!(
-            "Box::into_raw(Box::new({}::new(arg0, &arg1)))", ty,
-        ),
-    };
-    compiler.add_def_with_let(false, None, "value", &new_from_bytes)?;
-    compiler.add_unsafe_set("return_ptr", "value as _")?;
-    compiler.add_func_call(None, "Box::into_raw",
-        vec!["arg1".to_string()], false)?;
-    compiler.pop_context()?; // end of function
-    compiler.add_newline()?;
+    if let Some(datapath) = datapath {
+        add_extern_c_wrapper_function(
+            compiler,
+            &format!("{}_new", ty),
+            &struct_name,
+            "new",
+            None,
+            vec![
+                ("buffer", ArgType::Buffer),
+                ("datapath", ArgType::Ref { inner_ty: datapath.to_string() }),
+            ],
+            Some(ArgType::VoidPtr { inner_ty: struct_ty.clone() }),
+            true,
+        )?;
+    }
 
     ////////////////////////////////////////////////////////////////////////////
     // <ty>_unpack
@@ -384,9 +372,15 @@ pub fn add_extern_c_wrapper_function(
         }
         for (arg_name, arg_ty) in &raw_args {
             args.push(FunctionArg::CArg(CArgInfo::arg(arg_name, arg_ty.to_string())));
+            if arg_ty.is_buffer() {
+                args.push(FunctionArg::CArg(CArgInfo::len_arg(arg_name)));
+            }
         }
         if let Some(ret_ty) = &raw_ret {
             args.push(FunctionArg::CArg(CArgInfo::ret_arg(ret_ty.to_string())));
+            if ret_ty.is_buffer() {
+                args.push(FunctionArg::CArg(CArgInfo::ret_len_arg()));
+            }
         }
         args
     };
@@ -418,6 +412,10 @@ pub fn add_extern_c_wrapper_function(
             ArgType::RefMut { inner_ty } => format!(
                 "{} as *mut {}",
                 arg_name, inner_ty,
+            ),
+            ArgType::Buffer => format!(
+                "unsafe {{ std::slice::from_raw_parts({}, {}_len) }}",
+                arg_name, arg_name,
             ),
         };
         compiler.add_def_with_let(false, None, &left, &right)?;
@@ -479,6 +477,7 @@ pub fn add_extern_c_wrapper_function(
                    false)?;
                 compiler.add_unsafe_set("return_ptr", "value as _")?;
             }
+            ArgType::Buffer => unimplemented!(),
             ArgType::RefMut{..} => unimplemented!(),
         }
     }
@@ -497,6 +496,7 @@ pub fn add_extern_c_wrapper_function(
             },
             ArgType::RefMut{..} => { continue; },
             ArgType::List{..} => { continue; },
+            ArgType::Buffer => { continue; },
         };
     }
 

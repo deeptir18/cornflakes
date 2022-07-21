@@ -2,7 +2,6 @@ use super::{
     super::header_utils::{MessageInfo, ProtoReprInfo},
     super::rust_codegen::{
         Context, FunctionArg, FunctionContext, SerializationCompiler, CArgInfo,
-        MatchContext,
     },
     common::*,
 };
@@ -162,60 +161,24 @@ fn add_shared_rcsga_header_repr(
     datapath: &str,
 ) -> Result<()> {
     let struct_name = format!("{}<{}>", &msg_info.get_name(), datapath);
-    add_deserialize_from_buf_function(compiler, msg_info, &struct_name)?;
-    add_serialize_into_arena_sga_function(compiler, msg_info, &struct_name, datapath)?;
-    Ok(())
-}
 
-fn add_deserialize_from_buf_function(
-    compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
-    struct_name: &str,
-) -> Result<()> {
-    let args = {
-        let mut args = vec![];
-        args.push(FunctionArg::CSelfArg);
-        args.push(FunctionArg::CArg(CArgInfo::arg("buffer", "*const ::std::os::raw::c_uchar")));
-        args.push(FunctionArg::CArg(CArgInfo::len_arg("buffer")));
-        args
-    };
+    // add deserialize_from_buf function
+    add_extern_c_wrapper_function(
+        compiler,
+        &format!("{}_deserialize_from_buf", &msg_info.get_name()),
+        &struct_name,
+        "deserialize_from_buf",
+        Some(true),
+        vec![("buffer", ArgType::Buffer)],
+        None,
+        true,
+    )?;
 
-    let func_context = FunctionContext::new_extern_c(
-        &format!("{}_{}", &msg_info.get_name(), "deserialize_from_buf"),
-        true, args, true,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    compiler.add_unsafe_def_with_let(true, None, "self_", &format!(
-        "Box::from_raw(self_ as *mut {})", struct_name))?;
-    compiler.add_unsafe_def_with_let(false, None, "arg0", "std::slice::from_raw_parts(buffer, buffer_len)")?;
-    compiler.add_func_call_with_let("value", None, Some("self_".to_string()),
-        "deserialize_from_buf", vec!["arg0".to_string()], false)?;
-    compiler.add_func_call(None, "Box::into_raw", vec!["self_".to_string()], false)?;
-
-    let match_context = MatchContext::new_with_def("value",
-        vec!["Ok (value)".to_string(), "Err(_)".to_string()], "value");
-    compiler.add_context(Context::Match(match_context))?;
-    compiler.add_return_val("value", false)?;
-    compiler.pop_context()?;
-    compiler.add_return_val("1", true)?;
-    compiler.pop_context()?;
-    compiler.add_line("0")?;
-
-    compiler.pop_context()?; // end of function
-    compiler.add_newline()?;
-    Ok(())
-}
-
-fn add_serialize_into_arena_sga_function(
-    compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
-    struct_name: &str,
-    datapath: &str,
-) -> Result<()> {
+    // add serialize_into_arena_sga function
     add_extern_c_wrapper_function(
         compiler,
         &format!("{}_serialize_into_arena_sga", &msg_info.get_name()),
-        struct_name,
+        &struct_name,
         "serialize_into_arena_sga",
         Some(false),
         vec![
