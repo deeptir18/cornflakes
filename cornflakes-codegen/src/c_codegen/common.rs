@@ -76,7 +76,7 @@ impl ArgType {
             ArgType::Bytes{..} => "*const ::std::os::raw::c_void",
             ArgType::String{..} => "*const ::std::os::raw::c_void",
             ArgType::VoidPtr{..} => "*mut ::std::os::raw::c_void",
-            ArgType::List{..} => "*const ::std::os::raw::c_void",
+            ArgType::List{..} => "*mut ::std::os::raw::c_void",
             ArgType::Ref{..} => "*mut ::std::os::raw::c_void",
             ArgType::RefMut{..} => "*mut ::std::os::raw::c_void",
             ArgType::Buffer => "*const ::std::os::raw::c_uchar",
