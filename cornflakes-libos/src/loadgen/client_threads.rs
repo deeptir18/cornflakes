@@ -5,6 +5,7 @@ use serde_json::to_writer;
 use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
+    ops::AddAssign,
 };
 
 const NANOS_IN_SEC: f64 = 1000000000.0;
@@ -32,10 +33,10 @@ pub struct SummaryHistogram {
 impl Default for SummaryHistogram {
     fn default() -> Self {
         SummaryHistogram {
-            precision: 100,
+            precision: 1000,
             map: BTreeMap::default(),
             count: 0,
-            num_client_threads: 1,
+            num_client_threads: 0,
         }
     }
 }
@@ -76,6 +77,15 @@ impl SummaryHistogram {
 
     fn map(&self) -> &BTreeMap<u64, u64> {
         &self.map
+    }
+
+    fn convert_to_us(&self) -> SummaryHistogram {
+        let mut res: BTreeMap<u64, u64> = BTreeMap::default();
+        for (key, val) in self.map.iter() {
+            res.insert(*key / 1000, *val);
+        }
+
+        SummaryHistogram::new(self.precision, res, self.count, self.num_client_threads)
     }
 
     fn value_at_quantile(&self, quantile: f64) -> Result<u64> {
@@ -172,6 +182,12 @@ impl std::ops::Add for SummaryHistogram {
             }
             return SummaryHistogram::new(other.precision(), res, count, num_threads);
         }
+    }
+}
+
+impl AddAssign for SummaryHistogram {
+    fn add_assign(&mut self, other: Self) {
+        *self = self.clone() + other;
     }
 }
 
@@ -326,6 +342,10 @@ impl ThreadStats {
         self.summary_latencies.dump(self.thread_id);
     }
 
+    pub fn clear_summary_histogram(&mut self) {
+        self.summary_histogram = SummaryHistogram::default();
+    }
+
     pub fn summary_histogram(&self) -> SummaryHistogram {
         self.summary_histogram.clone()
     }
@@ -353,13 +373,16 @@ impl std::ops::Add for ThreadStats {
     }
 }
 
-fn vec_to_map(vec: Vec<ThreadStats>) -> HashMap<usize, ThreadStats> {
+fn vec_to_map(vec: Vec<ThreadStats>) -> (SummaryHistogram, HashMap<usize, ThreadStats>) {
     let mut map: HashMap<usize, ThreadStats> = HashMap::default();
-    for (i, stats) in vec.into_iter().enumerate() {
+    let mut summary_histogram = SummaryHistogram::default();
+    for (i, mut stats) in vec.into_iter().enumerate() {
         assert!(stats.thread_id == i);
+        summary_histogram += stats.summary_histogram();
+        stats.clear_summary_histogram();
         map.insert(i, stats);
     }
-    map
+    (summary_histogram, map)
 }
 
 pub fn dump_thread_stats(
