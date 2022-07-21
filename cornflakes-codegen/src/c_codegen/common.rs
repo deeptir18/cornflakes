@@ -462,19 +462,31 @@ pub fn add_extern_c_wrapper_function(
     };
 
     // Call function wrapper
-    if self_ty.is_some() {
-        compiler.add_func_call_with_let("value", ret_ty,
-            Some("self_".to_string()), func_name, args, false)?;
+    let (caller, func) = if self_ty.is_some() {
+        (Some("self_".to_string()), func_name.to_string())
     } else {
-        compiler.add_func_call_with_let("value", ret_ty, None,
-            &format!("{}::{}", struct_name, func_name), args, false)?;
+        (None, format!("{}::{}", struct_name, func_name))
+    };
+    if use_error_code || raw_ret.is_some() {
+        compiler.add_func_call_with_let("value", ret_ty, caller, &func, args, false)?;
+    } else {
+        compiler.add_func_call(caller, &func, args, false)?;
     }
 
     // Unwrap result if uses an error code
     if use_error_code {
-        let match_context = MatchContext::new_with_def(
-            "value", vec!["Ok(value)".to_string(), "Err(_)".to_string()], "value",
-        );
+        let match_context = if raw_ret.is_some() {
+            MatchContext::new_with_def(
+                "value",
+                vec!["Ok(value)".to_string(), "Err(_)".to_string()],
+                "value",
+            )
+        } else {
+            MatchContext::new(
+                "value",
+                vec!["Ok(value)".to_string(), "Err(_)".to_string()],
+            )
+        };
         compiler.add_context(Context::Match(match_context))?;
         compiler.add_return_val("value", false)?;
         compiler.pop_context()?;
