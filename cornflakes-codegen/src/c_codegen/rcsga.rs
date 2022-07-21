@@ -117,35 +117,21 @@ fn add_arena_allocate(
     datapath: &str,
 ) -> Result<()> {
     // add allocate function
-    let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("num_entries", "usize")),
-        FunctionArg::CArg(CArgInfo::arg("arena", "*mut ::std::os::raw::c_void")),
-        FunctionArg::CArg(CArgInfo::ret_arg("*mut ::std::os::raw::c_void")),
-    ];
-    let func_context = FunctionContext::new_extern_c(
-        "ArenaOrderedRcSga_allocate", true, args, false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    compiler.add_def_with_let(false, None, "arg0", "num_entries")?;
-    compiler.add_unsafe_def_with_let(false, None, "arg1",
-        "Box::from_raw(arena as *mut bumpalo::Bump)")?;
-    compiler.add_func_call_with_let(
-        "value",
-        Some(format!("ArenaOrderedRcSga<{}>", datapath)),
+    add_extern_c_wrapper_function(
+        compiler,
+        "ArenaOrderedRcSga_allocate",
+        &format!("ArenaOrderedRcSga::<{}>", datapath),
+        "allocate",
         None,
-        "ArenaOrderedRcSga::allocate",
         vec![
-            "arg0".to_string(),
-            "&arg1".to_string(),
+            ("num_entries", ArgType::Rust { string: "usize".to_string() }),
+            ("arena", ArgType::Ref { inner_ty: "bumpalo::Bump".to_string() }),
         ],
+        Some(ArgType::VoidPtr {
+            inner_ty: format!("ArenaOrderedRcSga<{}>", datapath),
+        }),
         false,
     )?;
-    compiler.add_def_with_let(false, None, "value",
-        "Box::into_raw(Box::new(value))")?;
-    compiler.add_unsafe_set("return_ptr", "value as _")?;
-    compiler.add_func_call(None, "Box::into_raw", vec!["arg1".to_string()], false)?;
-    compiler.pop_context()?; // end of function
-    compiler.add_newline()?;
     Ok(())
 }
 

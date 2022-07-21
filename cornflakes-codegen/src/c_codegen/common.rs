@@ -286,22 +286,16 @@ pub fn add_variable_list(
 
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_init
-    let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("num", "usize")),
-        FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_void")),
-    ];
-    let func_context = FunctionContext::new_extern_c(
+    add_extern_c_wrapper_function(
+        compiler,
         &format!("{}_init", &struct_name),
-        true, args, false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    compiler.add_def_with_let(false, Some(struct_ty.clone()), "list",
-        "VariableList::init(num)")?;
-    compiler.add_def_with_let(false, None, "list",
-        "Box::into_raw(Box::new(list))")?;
-    compiler.add_unsafe_set("return_ptr", "list as _")?;
-    compiler.pop_context()?; // end of function
-    compiler.add_newline()?;
+        &format!("VariableList::{}", &struct_ty["VariableList".len()..]),
+        "init",
+        None,
+        vec![("num", ArgType::Rust { string: "usize".to_string() })],
+        Some(ArgType::VoidPtr { inner_ty: struct_ty.clone() }),
+        false,
+    )?;
 
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_append
@@ -520,15 +514,15 @@ pub fn add_default_impl(
     msg_info: &MessageInfo,
     datapath: Option<&str>,
 ) -> Result<()> {
-    let func_name = match datapath {
-        Some(datapath) => format!("<{}>::default", datapath),
-        None => "default".to_string(),
+    let struct_name = match datapath {
+        Some(datapath) => format!("{}::<{}>", &msg_info.get_name(), datapath),
+        None => msg_info.get_name(),
     };
     add_extern_c_wrapper_function(
         compiler,
         &format!("{}_default", msg_info.get_name()),
-        &msg_info.get_name(),
-        &func_name,
+        &struct_name,
+        "default",
         None,
         vec![],
         Some(ArgType::VoidPtr { inner_ty: msg_info.get_name() }),
@@ -544,15 +538,15 @@ pub fn add_impl(
     datapath: Option<&str>,
 ) -> Result<()> {
     compiler.add_newline()?;
-    let func_name = match datapath {
-        Some(datapath) => format!("<{}>::new", datapath),
-        None => "new".to_string(),
+    let struct_name = match datapath {
+        Some(datapath) => format!("{}::<{}>", &msg_info.get_name(), datapath),
+        None => msg_info.get_name(),
     };
     add_extern_c_wrapper_function(
         compiler,
         &format!("{}_new", msg_info.get_name()),
-        &msg_info.get_name(),
-        &func_name,
+        &struct_name,
+        "new",
         None,
         vec![],
         Some(ArgType::VoidPtr { inner_ty: msg_info.get_name() }),
