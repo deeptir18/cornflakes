@@ -250,12 +250,11 @@ pub fn add_cf_string_or_bytes(
     compiler.add_context(Context::Function(func_context))?;
     let box_from_raw = match datapath {
         Some(datapath) => format!(
-            "Box::from_raw(self_ as *mut *mut {}<{}>)", ty, datapath,
+            "Box::from_raw(self_ as *mut {}<{}>)", ty, datapath,
         ),
-        None => format!("Box::from_raw(self_ as *mut *mut {})", ty),
+        None => format!("Box::from_raw(self_ as *mut {})", ty),
     };
-    compiler.add_unsafe_def_with_let(false, None, "self_box", &box_from_raw)?;
-    compiler.add_unsafe_def_with_let(false, None, "self_", "&**self_box")?;
+    compiler.add_unsafe_def_with_let(false, None, "self_", &box_from_raw)?;
     // Note: The two different header types just have a different function name
     // to get a pointer to the bytes.
     compiler.add_unsafe_set("return_ptr", match datapath {
@@ -264,7 +263,7 @@ pub fn add_cf_string_or_bytes(
     })?;
     compiler.add_unsafe_set("return_len_ptr", "self_.len()")?;
     compiler.add_func_call(None, "Box::into_raw",
-        vec!["self_box".to_string()], false)?;
+        vec!["self_".to_string()], false)?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
     Ok(())
@@ -310,9 +309,9 @@ pub fn add_variable_list(
     add_extern_c_wrapper_function(
         compiler,
         &format!("{}_append", &struct_name),
-        &format!("*mut {}", &struct_ty),
+        &struct_ty,
         "append",
-        Some(SelfArgType::RefMut),
+        Some(SelfArgType::Mut),
         vec![("val", ArgType::VoidPtr { inner_ty: param_ty.to_cf_string() })],
         None,
         false,
@@ -323,9 +322,9 @@ pub fn add_variable_list(
     add_extern_c_wrapper_function(
         compiler,
         &format!("{}_len", &struct_name),
-        &format!("*const {}", &struct_ty),
+        &struct_ty,
         "len",
-        Some(SelfArgType::Ref),
+        Some(SelfArgType::Value),
         vec![],
         Some(ArgType::Rust { string: "usize".to_string() }),
         false,
@@ -336,13 +335,11 @@ pub fn add_variable_list(
     add_extern_c_wrapper_function(
         compiler,
         &format!("{}_index", &struct_name),
-        &format!("*const {}", &struct_ty),
+        &struct_ty,
         "index",
-        Some(SelfArgType::Ref),
+        Some(SelfArgType::Value),
         vec![("idx", ArgType::Rust { string: "usize".to_string() })],
-        Some(ArgType::VoidPtr {
-            inner_ty: format!("*const {}", &param_ty.to_cf_string()),
-        }),
+        Some(ArgType::Ref { inner_ty: param_ty.to_cf_string() }),
         false,
     )?;
 
@@ -450,11 +447,8 @@ pub fn add_extern_c_wrapper_function(
         .collect::<Vec<_>>();
     let ret_ty = if let Some(ref ret_ty) = raw_ret {
         match ret_ty {
-            ArgType::List{..} => {
-                // Need to cast VariableList to *const pointer because they are
-                // returned as a reference.
-                Some(format!("*const {}", ret_ty.to_cf_string()))
-            }
+            ArgType::Ref { inner_ty } => Some(format!("*const {}", &inner_ty)),
+            ArgType::RefMut { inner_ty } => Some(format!("*mut {}", &inner_ty)),
             _ => None,
         }
     } else {
@@ -501,14 +495,16 @@ pub fn add_extern_c_wrapper_function(
                 compiler.add_unsafe_set("return_ptr", "value")?;
             }
             ArgType::VoidPtr{..} | ArgType::Bytes{..} | ArgType::String{..}
-                    | ArgType::Ref{..} | ArgType::List{..} => {
+                    | ArgType::List{..} => {
                 compiler.add_func_call_with_let("value", None, None,
                    "Box::into_raw", vec!["Box::new(value)".to_string()],
                    false)?;
                 compiler.add_unsafe_set("return_ptr", "value as _")?;
             }
+            ArgType::Ref{..} | ArgType::RefMut{..} => {
+                compiler.add_unsafe_set("return_ptr", "value as _")?;
+            },
             ArgType::Buffer => unimplemented!(),
-            ArgType::RefMut{..} => unimplemented!(),
         }
     }
 
@@ -655,7 +651,13 @@ pub fn add_get(
     field: &FieldInfo,
     datapath: Option<&str>,
 ) -> Result<()> {
-    let return_type = ArgType::new(fd, field, datapath)?;
+    let return_type = {
+        let ty = ArgType::new(fd, field, datapath)?;
+        match ty {
+            ArgType::List{..} => ArgType::Ref { inner_ty: ty.to_cf_string() },
+            ty => ty,
+        }
+    };
     let struct_name = match datapath {
         Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
         None => msg_info.get_name(),
@@ -683,7 +685,13 @@ pub fn add_get_mut(
     field: &FieldInfo,
     datapath: Option<&str>,
 ) -> Result<()> {
-    let return_type = ArgType::new(fd, field, datapath)?;
+    let return_type = {
+        let ty = ArgType::new(fd, field, datapath)?;
+        match ty {
+            ArgType::List{..} => ArgType::Ref { inner_ty: ty.to_cf_string() },
+            ty => ty,
+        }
+    };
     let struct_name = match datapath {
         Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
         None => msg_info.get_name(),
