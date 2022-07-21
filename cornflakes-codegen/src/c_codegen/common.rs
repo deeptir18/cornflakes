@@ -21,6 +21,25 @@ pub enum ArgType {
     Buffer,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum SelfArgType {
+    Value,
+    Ref,
+    RefMut,
+    Mut,
+}
+
+impl SelfArgType {
+    pub fn is_ref(&self) -> bool {
+        match self {
+            SelfArgType::Value => false,
+            SelfArgType::Ref => true,
+            SelfArgType::RefMut => true,
+            SelfArgType::Mut => false,
+        }
+    }
+}
+
 impl ArgType {
     pub fn new(
         fd: &ProtoReprInfo,
@@ -231,11 +250,12 @@ pub fn add_cf_string_or_bytes(
     compiler.add_context(Context::Function(func_context))?;
     let box_from_raw = match datapath {
         Some(datapath) => format!(
-            "Box::from_raw(self_ as *mut {}<{}>)", ty, datapath,
+            "Box::from_raw(self_ as *mut *mut {}<{}>)", ty, datapath,
         ),
-        None => format!("Box::from_raw(self_ as *mut {})", ty),
+        None => format!("Box::from_raw(self_ as *mut *mut {})", ty),
     };
-    compiler.add_unsafe_def_with_let(false, None, "self_", &box_from_raw)?;
+    compiler.add_unsafe_def_with_let(false, None, "self_box", &box_from_raw)?;
+    compiler.add_unsafe_def_with_let(false, None, "self_", "&**self_box")?;
     // Note: The two different header types just have a different function name
     // to get a pointer to the bytes.
     compiler.add_unsafe_set("return_ptr", match datapath {
@@ -244,7 +264,7 @@ pub fn add_cf_string_or_bytes(
     })?;
     compiler.add_unsafe_set("return_len_ptr", "self_.len()")?;
     compiler.add_func_call(None, "Box::into_raw",
-        vec!["self_".to_string()], false)?;
+        vec!["self_box".to_string()], false)?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
     Ok(())
@@ -287,71 +307,45 @@ pub fn add_variable_list(
 
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_append
-    let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("self_", "*const ::std::os::raw::c_void")),
-        FunctionArg::CArg(CArgInfo::arg("value", param_ty.to_string())),
-    ];
-    let func_context = FunctionContext::new_extern_c(
+    add_extern_c_wrapper_function(
+        compiler,
         &format!("{}_append", &struct_name),
-        true, args, false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    compiler.add_unsafe_def_with_let(false, None, "self_",
-        &format!("Box::from_raw(self_ as *mut *mut {})", &struct_ty))?;
-    compiler.add_unsafe_def_with_let(false, None, "self_ref", "&mut **self_")?;
-    compiler.add_unsafe_def_with_let(false, None, "value",
-        &format!("Box::from_raw(value as *mut {})", param_ty.to_cf_string()))?;
-    compiler.add_func_call(Some("self_ref".to_string()), "append",
-        vec!["*value".to_string()], false)?;
-    compiler.add_func_call(None, "Box::into_raw",
-        vec!["self_".to_string()], false)?;
-    compiler.pop_context()?; // end of function
-    compiler.add_newline()?;
+        &format!("*mut {}", &struct_ty),
+        "append",
+        Some(SelfArgType::RefMut),
+        vec![("val", ArgType::VoidPtr { inner_ty: param_ty.to_cf_string() })],
+        None,
+        false,
+    )?;
 
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_len
-    let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("self_", "*const ::std::os::raw::c_void")),
-        FunctionArg::CArg(CArgInfo::ret_arg("usize")),
-    ];
-    let func_context = FunctionContext::new_extern_c(
+    add_extern_c_wrapper_function(
+        compiler,
         &format!("{}_len", &struct_name),
-        true, args, false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    compiler.add_unsafe_def_with_let(false, None, "self_",
-        &format!("Box::from_raw(self_ as *mut *const {})", &struct_ty))?;
-    compiler.add_unsafe_def_with_let(false, None, "self_ref", "&**self_")?;
-    compiler.add_def_with_let(false, None, "value", "self_ref.len()")?;
-    compiler.add_func_call(None, "Box::into_raw",
-        vec!["self_".to_string()], false)?;
-    compiler.add_unsafe_set("return_ptr", "value as _")?;
-    compiler.pop_context()?; // end of function
-    compiler.add_newline()?;
+        &format!("*const {}", &struct_ty),
+        "len",
+        Some(SelfArgType::Ref),
+        vec![],
+        Some(ArgType::Rust { string: "usize".to_string() }),
+        false,
+    )?;
 
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_index
-    let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("self_", "*const ::std::os::raw::c_void")),
-        FunctionArg::CArg(CArgInfo::arg("idx", "usize")),
-        FunctionArg::CArg(CArgInfo::ret_arg(param_ty.to_string())),
-    ];
-    let func_context = FunctionContext::new_extern_c(
+    add_extern_c_wrapper_function(
+        compiler,
         &format!("{}_index", &struct_name),
-        true, args, false,
-    );
-    compiler.add_context(Context::Function(func_context))?;
-    compiler.add_unsafe_def_with_let(false, None, "self_",
-        &format!("Box::from_raw(self_ as *mut *const {})", &struct_ty))?;
-    compiler.add_unsafe_def_with_let(false, None, "self_ref", "&**self_")?;
-    compiler.add_def_with_let(
-        false, Some(format!("*const {}", &param_ty.to_cf_string())),
-        "value", "self_ref.index(idx)")?;
-    compiler.add_func_call(None, "Box::into_raw",
-        vec!["self_".to_string()], false)?;
-    compiler.add_unsafe_set("return_ptr", "value as _")?;
-    compiler.pop_context()?; // end of function
-    compiler.add_newline()?;
+        &format!("*const {}", &struct_ty),
+        "index",
+        Some(SelfArgType::Ref),
+        vec![("idx", ArgType::Rust { string: "usize".to_string() })],
+        Some(ArgType::VoidPtr {
+            inner_ty: format!("*const {}", &param_ty.to_cf_string()),
+        }),
+        false,
+    )?;
+
     Ok(())
 }
 
@@ -360,14 +354,14 @@ pub fn add_extern_c_wrapper_function(
     extern_name: &str,
     struct_name: &str,
     func_name: &str,
-    is_mut_self: Option<bool>,
+    self_ty: Option<SelfArgType>,
     raw_args: Vec<(&str, ArgType)>,
     raw_ret: Option<ArgType>,
     use_error_code: bool,
 ) -> Result<()> {
     let args = {
         let mut args = vec![];
-        if is_mut_self.is_some() {
+        if self_ty.is_some() {
             args.push(FunctionArg::CSelfArg);
         }
         for (arg_name, arg_ty) in &raw_args {
@@ -390,10 +384,30 @@ pub fn add_extern_c_wrapper_function(
     );
     compiler.add_context(Context::Function(func_context))?;
 
-    if let Some(is_mut) = is_mut_self {
-        compiler.add_unsafe_def_with_let(is_mut, None, "self_", &format!(
-            "Box::from_raw(self_ as *mut {})", struct_name,
-        ))?;
+    // Format self argument
+    if let Some(ref self_ty) = self_ty {
+        match self_ty {
+            SelfArgType::Value => {
+                compiler.add_unsafe_def_with_let(false, None, "self_",
+                    &format!("Box::from_raw(self_ as *mut {})", struct_name))?;
+            }
+            SelfArgType::Ref => {
+                compiler.add_unsafe_def_with_let(false, None, "self_box",
+                    &format!("Box::from_raw(self_ as *mut {})", struct_name))?;
+                compiler.add_unsafe_def_with_let(false, None, "self_",
+                    "&**self_box")?;
+            }
+            SelfArgType::RefMut => {
+                compiler.add_unsafe_def_with_let(false, None, "self_box",
+                    &format!("Box::from_raw(self_ as *mut {})", struct_name))?;
+                compiler.add_unsafe_def_with_let(false, None, "self_",
+                    "&mut **self_box")?;
+            }
+            SelfArgType::Mut => {
+                compiler.add_unsafe_def_with_let(true, None, "self_",
+                    &format!("Box::from_raw(self_ as *mut {})", struct_name))?;
+            }
+        }
     }
 
     // Format arguments
@@ -405,7 +419,11 @@ pub fn add_extern_c_wrapper_function(
                 "unsafe {{ *Box::from_raw({} as *mut {}) }}",
                 arg_name, arg_ty.to_cf_string(),
             ),
-            ArgType::VoidPtr { inner_ty } | ArgType::Ref { inner_ty } => format!(
+            ArgType::VoidPtr { inner_ty } => format!(
+                "unsafe {{ *Box::from_raw({} as *mut {}) }}",
+                arg_name, inner_ty,
+            ),
+            ArgType::Ref { inner_ty } => format!(
                 "unsafe {{ Box::from_raw({} as *mut {}) }}",
                 arg_name, inner_ty,
             ),
@@ -444,7 +462,7 @@ pub fn add_extern_c_wrapper_function(
     };
 
     // Call function wrapper
-    if is_mut_self.is_some() {
+    if self_ty.is_some() {
         compiler.add_func_call_with_let("value", ret_ty,
             Some("self_".to_string()), func_name, args, false)?;
     } else {
@@ -483,15 +501,21 @@ pub fn add_extern_c_wrapper_function(
     }
 
     // Unformat arguments
-    if is_mut_self.is_some() {
-        compiler.add_func_call(None, "Box::into_raw", vec!["self_".to_string()], false)?;
+    if let Some(ref self_ty) = self_ty {
+        let arg_name = if self_ty.is_ref() {
+            "self_box"
+        } else {
+            "self_"
+        }.to_string();
+        compiler.add_func_call(None, "Box::into_raw", vec![arg_name], false)?;
     }
     for (i, (_, arg_ty)) in raw_args.iter().enumerate() {
         match arg_ty {
             ArgType::Rust{..} => { continue; },
             ArgType::Bytes{..} => { continue; },
             ArgType::String{..} => { continue; },
-            ArgType::VoidPtr{..} | ArgType::Ref{..} => {
+            ArgType::VoidPtr{..} => { continue; },
+            ArgType::Ref{..} => {
                 compiler.add_func_call(None, "Box::into_raw", vec![format!("arg{}", i)], false)?;
             },
             ArgType::RefMut{..} => { continue; },
@@ -604,7 +628,7 @@ pub fn add_has(
         &format!("{}_{}", msg_info.get_name(), &func_name),
         &struct_name,
         &func_name,
-        Some(false),
+        Some(SelfArgType::Value),
         vec![],
         Some(ArgType::Rust { string: "bool".to_string() }),
         false,
@@ -630,7 +654,7 @@ pub fn add_get(
         &format!("{}_{}", msg_info.get_name(), &func_name),
         &struct_name,
         &func_name,
-        Some(false),
+        Some(SelfArgType::Value),
         vec![],
         Some(return_type),
         false,
@@ -658,7 +682,7 @@ pub fn add_get_mut(
         &format!("{}_{}", msg_info.get_name(), &func_name),
         &struct_name,
         &func_name,
-        Some(true),
+        Some(SelfArgType::Mut),
         vec![],
         Some(return_type),
         false,
@@ -685,7 +709,7 @@ pub fn add_set(
         &format!("{}_{}", msg_info.get_name(), &func_name),
         &struct_name,
         &func_name,
-        Some(true),
+        Some(SelfArgType::Mut),
         vec![(&field_name, field_type)],
         None,
         false,
@@ -708,7 +732,7 @@ pub fn add_list_init(
         &format!("{}_init_{}", msg_info.get_name(), field.get_name()),
         &struct_name,
         &format!("init_{}", field.get_name()),
-        Some(true),
+        Some(SelfArgType::Mut),
         vec![("num", ArgType::Rust { string: "usize".to_string() })],
         None,
         false,
