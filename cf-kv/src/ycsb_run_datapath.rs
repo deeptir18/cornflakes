@@ -25,6 +25,7 @@ macro_rules! run_server(
         let load_generator = YCSBServerLoader::new($opt.value_size_generator, $opt.num_values, $opt.num_keys, $opt.allocate_contiguously);
         let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type, false, $opt.non_refcounted)?;
         kv_server.init(&mut connection)?;
+        kv_server.write_ready($opt.ready_file)?;
         kv_server.run_state_machine(&mut connection)?;
     }
 );
@@ -267,4 +268,9 @@ pub struct YCSBOpt {
     pub allocate_contiguously: bool,
     #[structopt(long = "non_refcounted", help = "Non refcounted version of cornflakes")]
     pub non_refcounted: bool,
+    #[structopt(
+        long = "ready_file",
+        help = "File to indicate server is ready to receive requests"
+    )]
+    pub ready_file: Option<String>,
 }

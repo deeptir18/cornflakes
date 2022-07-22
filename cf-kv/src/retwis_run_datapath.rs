@@ -25,6 +25,7 @@ macro_rules! run_server_retwis(
         let load_generator = RetwisServerLoader::new($opt.num_keys, $opt.key_size, $opt.value_size_generator);
         let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, $opt.zero_copy_puts, $opt.non_refcounted)?;
         kv_server.init(&mut connection)?;
+        kv_server.write_ready($opt.ready_file)?;
         kv_server.run_state_machine(&mut connection)?;
     }
 );
@@ -256,4 +257,9 @@ pub struct RetwisOpt {
     pub retwis_distribution: RetwisRequestDistribution,
     #[structopt(long = "non_refcounted", help = "Non refcounted version of cornflakes")]
     pub non_refcounted: bool,
+    #[structopt(
+        long = "ready_file",
+        help = "File to indicate server is ready to receive requests"
+    )]
+    pub ready_file: Option<String>,
 }

@@ -29,6 +29,7 @@ macro_rules! run_server (
                 echo_server.set_with_copy();
             }
 
+            echo_server.write_ready($opt.ready_file)?;
             echo_server.run_state_machine(&mut connection)?;
     }
 );
@@ -233,4 +234,9 @@ pub struct DsEchoOpt {
         default_value = "single"
     )]
     pub message_type: SimpleMessageType,
+    #[structopt(
+        long = "ready_file",
+        help = "File to indicate server is ready to receive requests"
+    )]
+    pub ready_file: Option<String>,
 }

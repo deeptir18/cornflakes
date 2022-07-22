@@ -7,7 +7,7 @@ use super::super::{
     ArenaOrderedSga,
 };
 use color_eyre::eyre::Result;
-use std::time::Instant;
+use std::{fs::File, io::Write, time::Instant};
 pub trait ServerSM {
     type Datapath: Datapath;
 
@@ -60,6 +60,17 @@ pub trait ServerSM {
         _arena: &mut bumpalo::Bump,
     ) -> Result<()> {
         unimplemented!();
+    }
+
+    fn write_ready(&self, ready_file: Option<String>) -> Result<()> {
+        match ready_file {
+            Some(r) => {
+                let mut file = File::create(r)?;
+                file.write_all(b"ready\n")?;
+            }
+            None => {}
+        }
+        Ok(())
     }
 
     fn run_state_machine(&mut self, datapath: &mut Self::Datapath) -> Result<()> {
