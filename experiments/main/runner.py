@@ -1,3 +1,5 @@
+#!/usr/bin/python3
+import shutil
 import abc
 import yaml
 import argparse
@@ -6,12 +8,14 @@ from main import utils
 from pathlib import Path
 import multiprocessing as mp
 import subprocess as sh
-from fabric import Connection
 import git
 from collections import defaultdict
 import time
+import copy
 from tqdm import tqdm
-
+from main import connection
+import agenda
+import threading
 
 class UserNameSpace(object):
     pass
@@ -96,25 +100,6 @@ class Experiment(metaclass=abc.ABCMeta):
         return
 
     @abc.abstractmethod
-    def get_git_directories(self):
-        """
-        Returns list of main git directories the program is stored in.
-        Used to store hashes of programs in experiment log.
-        """
-        return
-
-    def get_program_version_info(self):
-        ret = {}
-        for git_dir in self.get_git_directories():
-            repo = git.Repo(git_dir)
-            branch = repo.active_branch.name
-            sha = repo.head.object.hexsha
-            is_dirty = repo.is_dirty()
-            ret[git_dir] = {"branch": branch, "hash": sha, "is_dirty":
-                            is_dirty}
-        return ret
-
-    @abc.abstractmethod
     def get_exp_config(self):
         """
         Returns the experiment config yaml,
@@ -153,17 +138,6 @@ class Experiment(metaclass=abc.ABCMeta):
         self.exp_post_process_analysis(total_args, logfile, new_logfile)
 
     @abc.abstractmethod
-    def run_analysis_individual_trial(self,
-                                      higher_level_folder,
-                                      program_metadata,
-                                      iteration,
-                                      print_stats=False):
-        """
-        Runs individual analysis for the trial just happened.
-        """
-        return
-
-    @abc.abstractmethod
     def skip_iteration(self, total_args, iteration):
         """
         Checks if we can skip the iterations based on the throughouts achieved
@@ -194,51 +168,45 @@ class Experiment(metaclass=abc.ABCMeta):
         """
         Runs analysis in a loop for each iteration.
         Includes running any graphing.
+        If "analysis.log" does not exist in a certain iteration,
+        warns script.
         """
-        pool = mp.Pool(mp.cpu_count())
-        pool_args = []
+        if len(iterations) == 0:
+            return
+        csv_header = iterations[0].get_csv_header()
         folder_path = Path(total_args.folder)
-        program_metadata = self.get_exp_config()["programs"]
-        f = None
-        if logfile is not None:
-            logfile_path = folder_path / logfile
-            f = open(logfile_path, "w")
-            f.write(self.get_logfile_header() + os.linesep)
+        if logfile is None:
+            return
 
-        ct = 0
+        df = pd.DataFrame(columns = csv_header)
         for iteration in iterations:
-            # use torch (Which should parallelize within iterations)
-            ct += 1
-            # check if the folder has "analysis.log"
             analysis_path = iteration.get_folder_name(folder_path) /\
                 "analysis.log"
             skipped = iteration.get_folder_name(folder_path) /\
                 "skipped.log"
             ret = ""
-            if (os.path.exists(analysis_path)):
-                try:
-                    with open(analysis_path) as analysis_file:
-                        lines = analysis_file.readlines()
-                        lines = [line.strip() for line in lines]
-                        ret = lines[0]
-                except:
-                    # otherwise, try to parse again
-                    ret = ""
-            if (ret == "") and not(os.path.exists(skipped)):
-                ret = self.run_analysis_individual_trial(folder_path,
-                                                         program_metadata,
-                                                         iteration, print_stats)
-            if ret != "":
-                if f is not None:
-                    f.write(ret + os.linesep)
-        if f is not None:
-            f.close()
+            if (os.path.exists(skipped)):
+                continue
+            if not(os.path.exists(analysis_path)):
+                status = iteration.run(folder_path,
+                                   self.get_exp_config(),
+                                   self.get_machine_config(),
+                                   total_args.pprint,
+                                   total_args.use_perf,
+                                   print_stats)
+                if not status:
+                    utils.warn("Analysis for iteration {} did not exist and failed to rerun".format(str(iteration)))
+                    continue
+            
+            iteration_df = iteration.read_analysis_log(folder_path)
+            df.append(iteration_df, ignore_index = True)
+        # write to logfile
+        df.to_csv(str(folder_path/logfile))
 
     def run_iterations(self, total_args, iterations, print_stats=False):
         """
         Loops over the iterations and runs each experiment.
         """
-        program_version_info = self.get_program_version_info()
         folder_path = Path(total_args.folder)
         program_metadata = self.get_exp_config()["programs"]
         ct = 0
@@ -246,19 +214,20 @@ class Experiment(metaclass=abc.ABCMeta):
         already_ran = 0
         total = len(iterations)
         start = time.time()
-        expected_time = 20 * total / 3600.0
+        expected_time = 30 * total / 3600.0
         utils.warn("Expected time to finish: {} hours".format(expected_time))
         for iteration in iterations:
             ct += 1
-            if iteration.get_folder_name(folder_path).exists():
+            iteration_path = iteration.get_folder_name(folder_path)
+            analysis_log = Path(iteration_path) / "analysis.log"
+            if (os.path.exists(str(iteration_path))):
                 utils.info("Iteration already exists, skipping {}; already ran {}".format(
                     iteration, already_ran))
                 self.append_to_skip_info(total_args, iteration, folder_path)
-                if os.path.exists(iteration.get_folder_name(folder_path) / "skipped.log"):
-                    skipped += 1
-                else:
-                    already_ran += 1
-
+                already_ran += 1
+                continue
+            elif os.path.exists(iteration.get_folder_name(folder_path) / "skipped.log"):
+                skipped += 1
                 continue
             if self.skip_iteration(total_args, iteration):
                 utils.info("Skipping iteration  # {} out of {}; already_ran {},"
@@ -266,6 +235,7 @@ class Experiment(metaclass=abc.ABCMeta):
                                                total,
                                                already_ran,
                                                skipped))
+                skipped += 1
                 # append a folder to say this iteration was skipped
                 if not total_args.pprint:
                     iteration.create_folder(folder_path)
@@ -284,48 +254,34 @@ class Experiment(metaclass=abc.ABCMeta):
                                     float(total) * 100.0),
                     expected_time_to_finish, already_ran, skipped))
 
-            if not total_args.pprint:
-                iteration.create_folder(folder_path)
             utils.debug("Running iteration: ", iteration)
-            status = iteration.run(iteration.get_folder_name(folder_path),
+            status = iteration.run(folder_path,
                                    self.get_exp_config(),
                                    self.get_machine_config(),
                                    total_args.pprint,
-                                   program_version_info,
-                                   total_args.use_perf)
+                                   total_args.use_perf,
+                                   print_stats)
             if not status:
                 time.sleep(5)
                 for i in range(utils.NUM_RETRIES):
                     utils.debug("Retrying iteration because it failed for the ",
                                 "{}th time.".format(i+1))
-                    status = iteration.run(iteration.get_folder_name(folder_path),
-                                           self.get_exp_config(),
-                                           self.get_machine_config(),
-                                           total_args.pprint,
-                                           program_version_info)
+                    status = iteration.run(folder_path,
+                                   self.get_exp_config(),
+                                   self.get_machine_config(),
+                                   total_args.pprint,
+                                   total_args.use_perf,
+                                   print_stats)
                     if status:
                         break
             if not status:
                 utils.warn("Failed to execute program after {} retries.".format(
                     utils.NUM_RETRIES))
                 exit(1)
+            
             ret = ""
-            # before next trial, run analysis
-            if not total_args.pprint:
-                ret = self.run_analysis_individual_trial(folder_path,
-                                                     program_metadata,
-                                                     iteration, print_stats)
-            if ret != "":
-                # open a file called "analysis.log" in the iteration folder and
-                # write the folder there
-                analysis_path = iteration.get_folder_name(folder_path) /\
-                    "analysis.log"
-                f = open(analysis_path, "w")
-                if f is not None:
-                    f.write(ret + os.linesep)
-                    f.close()
-                self.append_to_skip_info(total_args, iteration, folder_path)
-            # because we've tried to do analysis, ok to sleep for less
+            # append optional skip info about this trial to the skip
+            self.append_to_skip_info(total_args, iteration, folder_path)
             time.sleep(2)
 
     def execute(self, parser, namespace):
@@ -360,243 +316,428 @@ class Iteration(metaclass=abc.ABCMeta):
         return
 
     @ abc.abstractmethod
-    def get_folder_name(self, high_level_folder):
+    def get_iteration_params(self):
+        """
+        Returns array of parameters this iteration could vary (for the csv
+        file). For ordering in logfile csv.
+        """
         return
 
     @ abc.abstractmethod
-    def get_hosts(self, program_name, programs_metadata):
+    def get_iteration_params_values(self):
+        """
+        Returns dictionary of iteration params.
+        """
+        return
+
+    @ abc.abstractmethod
+    def get_iteration_avg_message_size(self):
+        """
+        Returns the average message size for the iteration
+        """
+        return
+
+    def get_program_version_info(self, host_cornflakes_dir, host, cxn):
+        ret = {}
+        res = cxn.run("git branch", 
+                wd = host_cornflakes_dir,
+                quiet = True)
+        if res.exited == 0:
+            ret["cornflakes_branch"] = res.stdout
+        res = cxn.run("git rev-parse HEAD", 
+                wd = host_cornflakes_dir, 
+                quiet = True)
+        if res.exited == 0:
+            ret["cornflakes_hash"] = res.stdout
+        res = cxn.run("git status --short", 
+                wd = host_cornflakes_dir, 
+                quiet = True)
+        if res.exited == 0:
+            ret["cornflakes_status"] = res.stdout
+        res = cxn.run("git submodule status", 
+                wd = host_cornflakes_dir, 
+                quiet = True)
+        if res.exited == 0:
+            ret["cornflakes_submodule_status"] = res.stdout
+        return ret
+
+    def read_key_from_analysis_log(self, folder_path, key):
+        df = self.read_analysis_log(folder_path)
+        try:
+            return df[key].iloc(0)
+        except:
+            raise ValueError("Could not read value of {} from df {}".format(key, df))
+            
+    # returns dataframe representing the data
+    def read_analysis_log(self, local_folder):
+        analysis_file = Path(self.get_folder_name(local_folder) /
+        "analysis.log")
+        if not(os.path.exists(analysis_file)):
+            return pd.DataFrame()
+        else:
+            return pd.read_csv(analysis_file)
+
+    def calculate_iteration_stats(self, local_folder,
+            client_file_list, print_stats):
+        """
+        Analyzes this iteration stats.
+        If print_stats is true, prints out values of parameters and values
+        of stats.
+        Default implementation assumes Rust clients that implement the state
+        machine trait.
+        Otherwise, writes csv into local_folder/analysis.log.
+        """
+        # TODO: iterate over all "client_type" hosts used by this
+        # iteration
+        # collect and sum histogram
+        # collect and sum achieved load pps
+        # convert total achieved load pps to gbps
+        packets_received = 0
+        packets_sent = 0
+        max_runtime = 0
+        histogram = utils.Histogram({})
+        for filename in client_file_list:
+            # format: json file with map 1: histogram
+            # map 2: map from int -> {thread_stats}
+            yaml_map = yaml.load(Path(filename).read_text(),
+                    Loader=yaml.FullLoader)
+            histogram_map = yaml_map[0]
+            client_histogram = utils.Histogram(histogram_map)
+            # combine client histogram into total histogram
+            histogram.combine(client_histogram)
+
+            # count packets sent and received
+            threads_map = yaml_map[1]
+            for thread, thread_info in threads_map.items():
+                packets_sent += thread_info["num_sent"]
+                packets_received += thread_info["num_received"]
+                thread_runtime = thread_info["runtime"]
+                max_runtime = max(thread_runtime, max_runtime)
+
+        # calculate full statistics
+        achieved_load_pps = float(packets_received) / max_runtime
+        achieved_load_pps_sent = float(packets_sent) / max_runtime
+        achieved_load_gbps = utils.get_tput_gbps(achieved_load_pps,
+                self.get_iteration_avg_message_size())
+        achieved_load_gbps_sent = utils.get_tput_gbps(achieved_load_pps_sent, self.get_iteration_avg_message_size())
+
+        iteration_params = self.get_iteration_params_values()
+        # assumes iteration param has offered load pps
+        offered_load_pps = iteration_params["offered_load_pps"]
+        offered_load_gbps = iteration_params["offered_load_gbps"]
+        percent_achieved = float(achieved_load_pps) / float(offered_load_pps)
+
+        iteration_params["achieved_load_pps"] = achieved_load_pps
+        iteration_params["achieved_load_pps_sent"] = achieved_load_pps_sent
+        iteration_params["achieved_load_gbps"] = achieved_load_gbps
+        iteration_params["achieved_load_gbps_sent"] = achieved_load_gbps_sent
+        iteration_params["percent_achieved_rate"] = percent_achieved
+        iteration_params["avg"] = histogram.avg() / float(1000)
+        iteration_params["median"] = histogram.value_at_quantile(0.50) / float(1000)
+        iteration_params["p99"] = histogram.value_at_quantile(0.99) / float(1000)
+        iteration_params["p999"] = histogram.value_at_quantile(0.999) / float(1000)
+
+        format_string_params = ["{{{}}}".format(x) for x in
+                self.get_csv_header()]
+        format_string = ",".join(format_string_params)
+        format_string = format_string.format(**iteration_params)
+
+        analysis_path = Path(local_folder) / "analysis.log"
+        with open(str(analysis_path), "w") as f:
+            f.write(",".join(self.get_csv_header()))
+            f.write(format_string + os.linesep)
+            f.close()
+        if print_stats:
+            utils.info("Experiment results:"
+                               "offered load: {:.4f} req/s | {:.4f} Gbps, "
+                               "achieved load: {:.4f} req/s | {:.4f} Gbps, "
+                               "percentage achieved rate: {:.4f}, "
+                               "avg latency: {: .4f} \u03BCs, median: {: .4f} \u03BCs, p99: {: .4f} \u03BCs, p999:"
+                               "{: .4f} \u03BCs".format(
+                                   offered_load_pps, offered_load_gbps,
+                                   achieved_load_pps, achieved_load_gbps,
+                                   percent_achieved,
+                                   iteration_params["avg"],
+                                   iteration_params["median"],
+                                   iteration_params["p99"],
+                                   iteration_params["p999"]))
+    def get_csv_header(self):
+        csv_order = self.get_iteration_params()
+        csv_order.extend(["achieved_load_pps", "achieved_load_pps_sent",
+        "achieved_load_gbps", "achieved_load_gbps_sent",
+        "percent_achieved_rate", "avg", "median", "p99", "p999"])
+        return csv_order
+
+    @ abc.abstractmethod
+    def get_folder_name(self, high_level_folder):
+        return
+
+    @abc.abstractmethod
+    def get_host_list(self, host_type_map):
+        """
+        Returns list of all hosts this program needs to make connections
+        with.
+        """
+        return
+    @abc.abstractmethod
+    def get_program_hosts(self, program_name, host_type_map):
+        """
+        Returns list of hosts based on program_name.
+        """
         return
 
     @ abc.abstractmethod
     def get_program_args(self,
-                         folder,
-                         program_name,
                          host,
-                         config_yaml,
-                         programs_metadata,
-                         exp_time):
+                         program_name,
+                         programs_metadata):
         """
         Given a program name specified in the exp_yaml, return the arguments
         corresponding to that program.
         """
         return
 
-    @ abc.abstractmethod
-    def get_relevant_hosts(self, program):
-        """
-        Returns the relevant hosts for this program in the yaml.
-        """
-        return
-
     def create_folder(self, high_level_folder):
         folder_name = self.get_folder_name(high_level_folder)
         folder_name.mkdir(parents=True, exist_ok=True)
+    def delete_folder(self, high_level_folder):
+        folder_name = self.get_folder_name(high_level_folder)
+        shutil.rmtree(folder_name)
 
-    def new_connection(self, host, machine_config):
-        host_addr = machine_config["hosts"][host]["addr"]
-        key = machine_config["key"]
-        user = machine_config["user"]
-        cxn = Connection(host=host_addr,
-                         user=user,
-                         port=22,
-                         connect_kwargs={"key_filename": [key]})
-        utils.debug("Connection params: host={},user={},port=22,key={}".format(host_addr, user, key))
-        return cxn
-
-    def kill_remote_process(self, cmd, host, machine_config):
-        key = machine_config["key"]
-        user = machine_config["user"]
-        host_addr = machine_config["hosts"][host]["addr"]
-
-        ssh_command = "ssh -i {} {}@{} {}".format(key, user, host_addr, cmd)
-        sh.run(ssh_command, timeout=10, shell=True)
-
-    def run_cmd_sudo(self, cmd, host, machine_config, fail_ok=False, return_dict=None, proc_counter=None):
-
-        cxn = self.new_connection(host, machine_config)
-        res = None
-        try:
-            res = cxn.sudo(cmd, hide=False)
-            utils.warn("Running command: {}".format(cmd))
-            res.stdout.strip()
-            if return_dict is not None and proc_counter is not None:
-                return_dict[proc_counter] = True
-            return
-        except:
-            if not fail_ok:
-                utils.error(
-                    "Failed to run cmd {} on host {}.".format(cmd, host))
-                if return_dict is not None and proc_counter is not None:
-                    return_dict[proc_counter] = False
-                return
-            if return_dict is not None and proc_counter is not None:
-                return_dict[proc_counter] = True
-                return
-
-    def run(self, folder, exp_config, machine_config, pprint,
-            program_version_info, use_perf=False):
+    def run(self, local_results, exp_config, machine_config, pprint,
+            use_perf=False, print_stats = False):
         """
         Runs the actual program.
         Arguments:
-            * folder - Path that all logfiles from this iteration should go.
+            * local_results - Folder where local results go (not specific to
+            this iteration).
             * exp_config - Experiment yaml that contains command lines. Assumes
             this contains a set of programs to run, each with a list of
             corresponding hosts that can run that command line.
             * machine_config - Machine level config yaml.
             * pprint - Instead of running, just print out command lines.
-            * program_version_info - Metadata about the commit version of the
-            repo at time of experiment.
             * use_perf - Whether to use perf or not when running the server.
         """
-        programs_to_join_immediately = {}
-        programs_to_kill = {}
-        # map from start time (in seconds) to list
-        # of programs with that start time
-        programs_by_start_time = defaultdict(list)
-
-        # assumes program processes to be executed are in order in the yaml
-        commands = exp_config["commands"]
         programs = exp_config["programs"]
         exp_time = exp_config["time"]
 
+        # recording the arguments used to run this invocation
         record_paths = {}
 
         # map from a program id to the actual process
         program_counter = 0
-        proc_map = {}
-        status_dict = {}
         manager = mp.Manager()
-        status_dict = manager.dict()
-        # spawn the commands
-        for command in commands:
-            program_name = command["program"]
-            # if (program_name == "start_server"):
-            #    continue
+        # status of each (program_name, host)
+        status_dict = {}
+        # map of hosts -> connections
+        connections = {}
+
+        # map of (program_name, host) -> program_args
+        program_args_map = {}
+
+        # map of (program_name, host) -> multiprocessing targets
+        proc_map = {}
+
+        # program commands
+        program_cmds = {}
+
+        # command queue for background processes
+        server_command_queue = []
+        client_command_queue = []
+
+        # create a local folder path for results
+        local_results_path = self.get_folder_name(local_results)
+        self.create_folder(local_results)
+        
+        host_type_map = machine_config["host_types"]
+        program_host_list = self.get_host_list(host_type_map)
+        program_run_kwargs = {}
+
+        # record paths: maps (program_name, host) to command run to record
+        record_paths = {}
+        
+        # populate program host list
+        for host in program_host_list:
+            host_tmp = machine_config["hosts"][host]["tmp_folder"]
+            host_addr = machine_config["hosts"][host]["addr"]
+            key = machine_config["key"]
+            user = machine_config["user"]               
+            connection_wrapper = connection.ConnectionWrapper(
+                                        addr = host_addr,
+                                        user = user,
+                                        port = 22,
+                                        key = key)
+            connections[host] = connection_wrapper
+                
+            # for this host, create the remote temporary folder
+            remote_tmp_path = self.get_folder_name(machine_config["hosts"][host]["tmp_folder"])
+            if not pprint:
+                connections[host].mkdir(remote_tmp_path)
+        
+        # populate  program args
+        for program_name in programs:
             program = programs[program_name]
-            program_hosts = program["hosts"]
-            kill_cmd = None
-            if "stop" in program:
-                kill_cmd = program["stop"]
-            utils.info("Relevant hosts:"
-                       "{}".format(self.get_relevant_hosts(program, program_name)))
-            for host in self.get_relevant_hosts(program, program_name):
-                program_cmd = program["start"]
+            program_hosts = self.get_program_hosts(program_name,
+                    host_type_map)
+            agenda.subtask(f"Args for {program_name}:"\
+                    "{program_hosts}")
+            for host in program_hosts:
+                # populate program args
+                program_args = self.get_program_args(host,
+                                                     machine_config,
+                                                     program_name,
+                                                     programs)
+                program_args["cornflakes_dir"] = machine_config["hosts"][host]["cornflakes_dir"]
+                program_args["config_file"] = machine_config["hosts"][host]["config_file"]
+                program_args["folder"] = self.get_folder_name(host_tmp)
+                program_args["local_folder"] = local_results_path
+                program_args["host"] = host
+                program_args["time"] = exp_time
+                program_args_map[(program_name, host)] = program_args
+
+                program_cmd = program["start"].format(**program_args)
+                stdout = None
+                stderr = None
                 if "log" in program:
                     if "out" in program["log"]:
-                        stdout = program["log"]["out"]
-                        program_cmd += " > {}".format(stdout)
+                        stdout = program["log"]["out"].format(**program_args)
                     if "err" in program["log"]:
-                        stderr = program["log"]["err"]
-                        program_cmd += " 2> {}".format(stderr)
-                    if "record" in program["log"]:
-                        record_path = program["log"]["record"]
-
-                program_args = self.get_program_args(folder,
-                                                     program_name,
-                                                     host,
-                                                     machine_config,
-                                                     programs,
-                                                     exp_time)
-                program_cmd = program_cmd.format(**program_args)
+                        stderr = program["log"]["err"].format(**program_args)
                 if use_perf and "perf" in program:
                     utils.debug("current program args: {}", program_args)
                     perf_cmd = program["perf"].format(**program_args)
                     program_cmd = "{} {}".format(perf_cmd, program_cmd)
-                record_path = record_path.format(**program_args)
-                fail_ok = False
-                if kill_cmd is not None:
-                    kill_cmd = kill_cmd.format(**program_args)
-                    fail_ok = True
-
-                yaml_record = {"host": host, "args": program_args, "command":
-                               program_cmd,
-                               "stop_command": kill_cmd, "version_info":
-                               program_version_info}
-
                 if pprint:
-                    utils.debug(
-                        "Host {}: \n\t - Running Cmd: {}\n\t - Stopped by: {}".format(host, program_cmd, kill_cmd))
-
+                    utils.debug("Host = {}, Running: {}".format(host, program_cmd))
                 else:
-                    record_paths[record_path] = yaml_record
-                    proc = mp.Process(target=self.run_cmd_sudo,
-                                      args=(program_cmd, host, machine_config,
-                                            fail_ok, status_dict,
-                                            program_counter))
+                    program_host_type = program["host_type"]
+                    background_arg = False
 
-                    start_time = int(command["begin"])
-                    proc_map[program_counter] = proc
-                    programs_by_start_time[start_time].append((kill_cmd,
-                                                               program_counter,
-                                                               program_name,
-                                                               host,
-                                                               program_args))
-                    program_counter += 1
-        # now start each start program
-        cur_time = 0
-        program_start_times = sorted(programs_by_start_time.keys())
-        for start_time in program_start_times:
-            if start_time != cur_time:
-                time.sleep(start_time - cur_time)
-            cur_time = start_time
-            progs = programs_by_start_time[start_time]
-            for info in progs:
-                kill_cmd = info[0]
-                program_counter = info[1]
-                program_name = info[2]
-                host = info[3]
-                proc = proc_map[program_counter]
-                program_args = info[4]
-                utils.debug("Starting program {} on host {}, args: {}".format(
-                    program_name, host, program_args))
-                proc.start()
-                #if program_name == "start_server":
-                    #input('press enter to cont.')
+                    if program_host_type == "server":
+                        server_command_queue.append((program_name, host))
+                        background_arg = True
+                    elif program_host_type == "client":
+                        client_command_queue.append((program_name, host))
+                    program_cmds[(program_name, host)] = program_cmd
+                    record_paths[(program_name, host)] = {"host": host, "args": program_args, "command": program_cmd}
+                    program_run_kwargs[(program_name, host)] = {
+                            "cmd": program_cmd,
+                            "stdin": None,
+                            "stdout": stdout,
+                            "stderr": stderr,
+                            "ignore_out": False,
+                            "wd": None,
+                            "sudo": True,
+                            "background": background_arg,
+                            "quiet": False,
+                            "pty": True,
+                            "res_map": status_dict,
+                            "res_key": (program_name, host)
+                            }
 
-                if kill_cmd == None:
-                    programs_to_join_immediately[host] = program_counter
-                else:
-                    programs_to_kill[host] = (program_counter,
-                                              kill_cmd)
+        # function to check whether a certain program can be started
+        def is_ready(other_program_name):
+            other_program = programs[other_program_name]
+            program_host_list = self.get_program_hosts(other_program_name, host_type_map)
+            for other_host in program_host_list:
+                other_program_args = program_args_map[(other_program_name,
+                        other_host)]
+                for (ready_file, ready_string) in other_program["ready_file"].items():
+                    ready_file = ready_file.format(**other_program_args)
+                    if not(connections[other_host].check_ready(ready_file, ready_string)):
+                        return False
+            return True
+
+        # start server programs
+        for program_name, host in server_command_queue:
+            program = programs[program_name]
+            connections[host].run(**program_run_kwargs[(program_name,
+                host)])
+            # should be ready
+            time.sleep(10)
+        clients = [threading.Thread(
+            target = run_client,
+            kwargs = {"cxn": connections[host], "kwargs":
+                program_run_kwargs[(program_name, host)]})
+        for program_name, host in client_command_queue]
+        [c.start() for c in clients]
+        [c.join() for c in clients]
+
+        ## kill the server 
+        for program_name, host in server_command_queue:
+            program = programs[program_name]
+            program_args = program_args_map[(program_name, host)]
+            binary_to_stop = program["binary_to_stop"].format(**program_args)
+            res = connections[host].stop_background_binary(
+                    binary_to_stop,
+                    sudo = True)
+            if res.exited != 0:
+                utils.warn("Failed to kill server: stdout: {} stderr: {}".format(res.stdout, res.stderr))
 
         any_failed = False
-        # now join all of the joining programs
-        for host in programs_to_join_immediately:
-            prog_counter = programs_to_join_immediately[host]
-            proc = proc_map[prog_counter]
-            res = proc.join()
-            status = status_dict[prog_counter]
-            if not status:
+        for program_name, host in client_command_queue:
+            program = programs[program_name]
+            status = status_dict[(program_name, host)]
+            if status.exited != 0:
+                utils.warn(f"Host {host} failed to execute"\
+                "{program_name} program")
                 any_failed = True
-            utils.debug("Host {} done; status: {}".format(host, status))
 
-        # now kill the rest of the programs
-        for host in programs_to_kill:
-            (program_counter, kill_cmd) = programs_to_kill[host]
-            try:
-                kill_cmd_with_sleep = kill_cmd + "; /bin/sleep 3"
-                utils.debug(
-                    "Trying to run kill command: {} on host {}".format(kill_cmd, host))
-                self.kill_remote_process(kill_cmd_with_sleep, host,
-                                         machine_config)
-            except:
-                utils.warn("Failed to run kill command:",
-                           "{}".format(kill_cmd_with_sleep))
-                exit(1)
-            try:
-                proc_map[program_counter].join()
-            except:
-                utils.warn(
-                    "Failed to run join command: {}".format(program_counter))
+        if not(any_failed):
+            for program_name in programs:
+                program = programs[program_name]
+                program_hosts = self.get_program_hosts(program_name, host_type_map)
+                # transfer all logs locally
+                for host in program_hosts:
+                    program_args = program_args_map[(program_name, host)]
+                    program_args_copy = copy.deepcopy(program_args)
+                    for filetype, filename in program["log"].items():
+                        remote_file = filename.format(**program_args)
+                        program_args_copy["folder"] = local_results_path
+                        local_file = filename.format(**program_args_copy)
+                        connections[host].get(remote_file, local_file)
 
-        # now, experiment is over, so record experiment metadata
-        for record_path in record_paths:
-            yaml_record = record_paths[record_path]
-            with open(record_path, 'w') as file:
-                yaml.dump(yaml_record, file)
-            file.close()
+        # delete all files, even if stuff has failed
+        for host in program_host_list:
+            # delete all remote tmp files
+            host_tmp = machine_config["hosts"][host]["tmp_folder"]
+            connections[host].run("rm -rf {}".format(host_tmp), sudo = True)
 
+        # if any failed, delete local results path
+        if pprint:
+            return True
         if any_failed:
-            utils.error("One of the programs failed.")
+            self.delete_folder(local_results)
             return False
+        
+        program_version_info = {}
+        for host in program_host_list:
+            program_version_info[host] = self.get_program_version_info(
+                    machine_config["hosts"][host]["cornflakes_dir"],
+                    host, 
+                    connections[host])
+            record_paths["program_version_info"] =  program_version_info
+        local_record = str(Path(local_results_path) / "record.log")
+        with open(local_record, 'w') as file:
+            yaml.dump(record_paths, file)
+            file.close()
+            
+        client_list = self.get_program_hosts("start_client",
+                    host_type_map)
+        client_file_list = []
+        for host in client_list:
+            program_args = program_args_map[("start_client", host)]
+            program_args_copy = copy.deepcopy(program_args)
+            program_args_copy["folder"] = local_results_path
+            client_file_list.append(programs["start_client"]["log"]["results"].format(**program_args_copy))
+        # run analysis
+        if not pprint:
+            self.calculate_iteration_stats(
+                    local_results_path,                        client_file_list, print_stats)
         return True
+
+def run_client(cxn, kwargs):
+    cxn.run(**kwargs)
+
+
+

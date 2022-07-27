@@ -63,8 +63,45 @@ class KVIteration(runner.Iteration):
                                self.serialization,
                                self.num_threads,
                                self.get_trial_string())
+    def hash(self):
+        # hashes every argument EXCEPT for client rates.
+        args = [self.size_distr, self.num_keys, self.serialization,
+                self.num_threads, self.num_values,  self.trial, slef.load_trace,
+                self.access_trace]
 
-    def get_avg_size(self):
+    def get_iteration_params(self):
+        """
+        Returns an array of parameters for this experiment.
+        """
+        return ["serialization", "size_distr", "avg_size", "num_keys",
+                "num_values", "num_threads",
+                "num_clients", "load_trace", "access_trace",
+                "offered_load_pps", "offered_load_gbps"]
+
+    def get_iteration_params_values(self):
+        offered_load_pps = 0
+        for info in self.client_rates:
+            rate = info[0]
+            num = info[1]
+            offered_load_pps += rate * num * self.num_threads
+        # convert to gbps
+        offered_load_gbps = utils.get_tput_gbps(offered_load_pps,
+                self.avg_size)
+        return {
+                "serialization": self.serialization,
+                "size_distr": self.size_distr,
+                "avg_size": self.avg_size,
+                "num_keys": self.num_keys,
+                "num_values": self.num_values,
+                "num_threads": self.num_threads,
+                "num_clients": self.get_num_clients(),
+                "load_trace": self.load_trace,
+                "access_trace": self.access_trace,
+                "offered_load_pps": offered_load_pps,
+                "offered_load_gbps": offered_load_gbps,
+            }
+
+    def get_iteration_avg_message_size(self):
         return self.avg_size
 
     def get_num_threads(self):
@@ -118,13 +155,20 @@ class KVIteration(runner.Iteration):
             ret += "{}@{}".format(num, rate)
         return ret
 
-    def get_relevant_hosts(self, programs_metadata, program):
-        if program == "start_server":
-            return programs_metadata["hosts"]
-        elif program == "start_client":
-            return self.get_iteration_clients(programs_metadata["hosts"])
-        else:
-            utils.debug("Passed in unknown program name: {}".format(program))
+    def get_host_list(self, host_type_map):
+        ret = []
+        if "server" in host_type_map:
+            ret.extend(host_type_map["server"])
+        if "client" in host_type_map:
+            ret.extend(self.get_iteration_clients(host_type_map["client"]))
+        return ret
+    
+    def get_program_hosts(self, program_name, host_type_map):
+        ret = []
+        if program_name == "start_server":
+            return host_type_map["server"]
+        elif program_name == "start_client":
+            return self.get_iteration_clients(host_type_map["client"]) 
 
     def get_num_clients(self):
         total_hosts = 0
@@ -188,45 +232,43 @@ class KVIteration(runner.Iteration):
         return ret
 
     def get_program_args(self,
-                         folder,
-                         program,
                          host,
                          config_yaml,
-                         programs_metadata,
-                         exp_time):
+                         program,
+                         programs_metadata):
+        utils.debug("Running get program args with host {}, program {}", host,
+                program)
         ret = {}
-        ret["cornflakes_dir"] = config_yaml["cornflakes_dir"]
-        ret["config_file"] = config_yaml["config_file"]
         ret["size_distr"] = "{}".format(self.size_distr)
         ret["num_keys"] = "{}".format(self.num_keys)
         ret["num_values"] = "{}".format(self.num_values)
         ret["library"] = self.serialization
-        ret["client-library"] = self.serialization
-        ret["folder"] = str(folder)
+        ret["client_library"] = self.serialization
 
         if ret["library"] == "cornflakes-dynamic":
-            ret["client-library"] = "cornflakes1c-dynamic"
-            ret["inline_mode"] = "object_header"
+            ret["client_library"] = "cornflakes1c-dynamic"
+            ret["inline_mode"] = "objectheader"
             ret["push_buf_type"] = "arenaorderedsga"
         else:
             ret["inline_mode"] = "packetheader"
             ret["push_buf_type"] = "singlebuf"
 
-        # TODO: make this dynamic
-        ret["start_cutoff"] = 10
-
-        server_host = programs_metadata["start_server"]["hosts"][0]
+        host_type_map = config_yaml["host_types"]
+        server_host = host_type_map["server"][0]
         if program == "start_server":
             ret["trace"] = self.load_trace
-            ret["server_ip"] = config_yaml["hosts"][server_host]["ip"]
+            ret["server_ip"] = config_yaml["hosts"][host]["ip"]
+            ret["mode"] = "server"
         elif program == "start_client":
             ret["queries"] = self.access_trace
             ret["inline_mode"] = "nothing"
             ret["push_buf_type"] = "singlebuf"
+            ret["mode"] = "client"
 
             # calculate client rate
             host_options = self.get_iteration_clients(
-                programs_metadata[program]["hosts"])
+                    host_type_map["client"])
+            utils.debug(host_options)
             rate = self.find_rate(host_options, host)
             ret["rate"] = rate
             ret["num_threads"] = self.num_threads
@@ -235,13 +277,8 @@ class KVIteration(runner.Iteration):
             ret["machine_id"] = self.find_client_id(host_options, host)
 
             # calculate server host
-            ret["server_ip"] = config_yaml["hosts"][server_host]["ip"]
+            ret["server_ip"] =  config_yaml["hosts"][server_host]["ip"]
             ret["client_ip"] = config_yaml["hosts"][host]["ip"]
-
-            # exp time
-            ret["time"] = exp_time
-            ret["host"] = host
-
         else:
             utils.error("Unknown program name: {}".format(program))
             exit(1)
@@ -258,10 +295,6 @@ class KVBench(runner.Experiment):
 
     def experiment_name(self):
         return self.exp
-
-    def get_git_directories(self):
-        directory = self.config_yaml["cornflakes_dir"]
-        return [directory]
 
     def skip_iteration(self, total_args, iteration):
         return False
@@ -453,120 +486,6 @@ class KVBench(runner.Experiment):
                     self.run_summary_analysis(df, out, serialization,
                                               num_values, value_size)
         out.close()
-
-    def run_analysis_individual_trial(self,
-                                      higher_level_folder,
-                                      program_metadata,
-                                      iteration,
-                                      print_stats=False):
-        exp_folder = iteration.get_folder_name(higher_level_folder)
-        utils.debug("Running analysis on folder {}".format(exp_folder))
-        start = time.time()
-
-        # parse stdout logs
-        total_offered_load_pps = 0
-        total_offered_load_gbps = 0
-        total_achieved_load_gbps = 0
-        total_achieved_load_pps = 0
-        total_retries = 0
-        client_latency_lists = []
-        clients = iteration.get_iteration_clients(
-            program_metadata["start_client"]["hosts"])
-
-        num_threads = iteration.get_num_threads()
-
-        for host in clients:
-            args = {"folder": str(exp_folder), "host": host}
-            thread_file = "{folder}/{host}.threads.log".format(**args)
-            for thread in range(iteration.get_num_threads()):
-                args["thread"] = thread  # replace thread number
-                latency_log = "{folder}/{host}.latency-t{thread}.log".format(
-                    **args)
-                latencies = utils.parse_latency_log(
-                    latency_log, STRIP_THRESHOLD)
-                if len(latencies) == 0:
-                    utils.warn(
-                        "Error parsing latency log {}".format(latency_log))
-                    return ""
-                client_latency_lists.append(latencies)
-
-                thread_info = utils.read_threads_json(thread_file, thread)
-
-                host_offered_load_pps = float(thread_info["offered_load_pps"])
-                host_offered_load_gbps = float(
-                    thread_info["offered_load_gbps"])
-                total_offered_load_pps += host_offered_load_pps
-                total_offered_load_gbps += host_offered_load_gbps
-
-                host_achieved_load_pps = float(
-                    thread_info["achieved_load_pps"])
-                host_achieved_load_gbps = float(
-                    thread_info["achieved_load_gbps"])
-                total_achieved_load_pps += host_achieved_load_pps
-                total_achieved_load_gbps += host_achieved_load_gbps
-
-                # add retries
-                retries = int(thread_info["retries"])
-                total_retries += retries
-
-                if print_stats:
-                    # convert to microseconds
-                    host_p99 = utils.p99_func(latencies) / 1000.0
-                    host_p999 = utils.p999_func(latencies) / 1000.0
-                    host_median = utils.median_func(latencies) / 1000.0
-                    host_avg = utils.mean_func(latencies) / 1000.0
-                    utils.info("Client {}, Thread {}: "
-                               "offered load: {:.4f} req/s | {:.4f} Gbps, "
-                               "achieved load: {:.4f} req/s | {:.4f} Gbps, "
-                               "percentage achieved rate: {:.4f}, "
-                               "retries: {}, "
-                               "avg latency: {: .4f} \u03BCs, p99: {: .4f} \u03BCs, p999:"
-                               "{: .4f} \u03BCs, median: {: .4f} \u03BCs".format(
-                                   host, thread, host_offered_load_pps, host_offered_load_gbps,
-                                   host_achieved_load_pps, host_achieved_load_gbps,
-                                   float(host_achieved_load_pps /
-                                         host_offered_load_pps),
-                                   retries,
-                                   host_avg, host_p99, host_p999, host_median))
-
-        sorted_latencies = utils.sort_latency_lists(client_latency_lists)
-        median = utils.median_func(sorted_latencies) / float(1000)
-        p99 = utils.p99_func(sorted_latencies) / float(1000)
-        p999 = utils.p999_func(sorted_latencies) / float(1000)
-        avg = utils.mean_func(sorted_latencies) / float(1000)
-
-        if print_stats:
-            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, " \
-                "achieved load: {:.4f} req/s | {:.4f} Gbps, " \
-                "percentage achieved rate: {:.4f}," \
-                "retries: {}, " \
-                "avg latency: {:.4f} \u03BCs, p99: {:.4f} \u03BCs, p999: {:.4f}" \
-                "\u03BCs, median: {:.4f} \u03BCs".format(
-                    total_offered_load_pps, total_offered_load_gbps,
-                    total_achieved_load_pps, total_achieved_load_gbps,
-                    float(total_achieved_load_pps / total_offered_load_pps),
-                    total_retries,
-                    avg, p99, p999, median)
-            utils.info("Total Stats: ", total_stats)
-        percent_acheived_load = float(total_achieved_load_pps /
-                                      total_offered_load_pps)
-        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
-                                                                      iteration.get_avg_size(),
-                                                                      iteration.get_num_keys(),
-                                                                      iteration.get_num_values(),
-                                                                      total_offered_load_pps,
-                                                                      total_offered_load_gbps,
-                                                                      total_achieved_load_pps,
-                                                                      total_achieved_load_gbps,
-                                                                      percent_acheived_load,
-                                                                      total_retries,
-                                                                      avg,
-                                                                      median,
-                                                                      p99,
-                                                                      p999)
-        utils.debug("Returning csv line: {} in {}".format(csv_line, time.time()
-                    - start))
-        return csv_line
 
     def graph_results(self, args, folder, logfile, post_process_logfile):
         cornflakes_repo = self.config_yaml["cornflakes_dir"]

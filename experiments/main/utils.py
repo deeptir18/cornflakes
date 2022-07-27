@@ -7,6 +7,7 @@ import colorama
 from colorama import Fore
 from colorama import Style
 from statistics import mean
+import copy
 import json
 import numpy as np
 import torch
@@ -15,6 +16,80 @@ NUM_TRIALS = 1
 NUM_RETRIES = 0
 
 PERCENT_ACHIEVED_CUTOFF = 0.98
+DEFAULT_HISTOGRAM_PRECISION = 1000
+
+class Histogram(object):
+    def __init__(self, histogram_yaml_map):
+        if "precision" in histogram_yaml_map and "map" in histogram_yaml_map and "count" in histogram_yaml_map:
+
+            self._precision = int(histogram_yaml_map["precision"])
+            self._histogram = {int(k): int(v) for k,v in
+                    histogram_yaml_map["map"].items()}
+            self._count = int(histogram_yaml_map["count"])
+        else:
+            self._precision = DEFAULT_HISTOGRAM_PRECISION
+            self._histogram = {}
+            self._count = 0
+    
+    @property
+    def precision(self):
+        return self._precision
+
+    @property
+    def histogram(self):
+        return self._histogram
+
+    @property
+    def count(self):
+        return self._count
+
+    def add_latency_from_hist(self, latency, count):
+        bucket = latency
+        if not(latency % self._precision == 0):
+            bucket = int((latency / self._precision  + 1) *
+                    self._precision)
+        if bucket in self._histogram:
+            self._histogram[bucket] += count
+        else:
+            self._histogram[bucket] = count
+
+    
+    def combine(self, other):
+        self._count += other.count
+        if self._precision >= other.precision:
+            for key, count in other.histogram.items():
+                self.add_latency_from_hist(key, count)
+        else:
+            for key, count in self._histogram.items():
+                other.add_latency_from_hist(key, count)
+            self._precision = other.precision
+            self._histogram = copy.deepcopy(other.histogram)
+    def avg(self):
+        # TODO: does this overflow?
+        total = 0
+        for key, count in self._histogram.items():
+            total += key * count
+        return total / float(self._count)
+    def value_at_quantile(self, quantile):
+        """
+        Calculates percentile given decimal quantile.
+        """
+        if quantile >= 1:
+            raise Exception("Quantile must be less than 1")
+        index = int(self.count * quantile)
+        cur_index = 0
+        for key in sorted(self._histogram.keys()):
+            count = self._histogram[key]
+            if count == 0:
+                continue
+            for i in range(0, count):
+                if cur_index == index:
+                    return key
+                cur_index += 1
+        raise Exception("unreachable")
+
+
+
 
 
 def read_threads_json(json_file, thread_id):

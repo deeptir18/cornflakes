@@ -27,4 +27,4 @@ pip3 install setuptools_rust # and then you need to install this
 pip3 install fabric # and try this again
 pip3 install pyelftools
 pip3 install numpy pandas torch
-
+pip3 install agenda toml

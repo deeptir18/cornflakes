@@ -124,9 +124,43 @@ class ScatterGatherIteration(runner.Iteration):
 
     def hash(self):
         args = [self.segment_size, self.num_segments, self.with_copy,
-                self.num_threads, self.trial, self.as_one, self.array_size,
+                self.num_threads, self.get_num_clients(), self.self.trial, self.as_one, self.array_size,
                 self.busy_cycles, self.recv_pkt_size, self.echo_mode]
         return hashlib.md5(json_dumps(args).encode('utf-8')).hexdigest()
+
+    def get_iteration_params(self):
+        """
+        Returns an array of parameters for this experiment
+        """
+        return ["segment_size", "num_segments", "with_copy", "as_one",
+        "array_size", "busy_cycles", "recv_size", "num_threads",
+        "num_clients", "echo_mode", "offered_load_pps", "offered_load_gbps"]
+
+    def get_iteration_params_values(self):
+        """
+        Returns dictionary of above iteration params.
+        """
+        offered_load_pps = 0
+        for info in self.client_rates:
+            rate = info[0]
+            num = info[1]
+            offered_load_pps += rate * num * self.num_threads
+        # convert to gbps
+        offered_load_gbps = utils.get_tput_gbps(offered_load_pps,
+                self.segment_size * self.num_segments)
+
+        return {
+                "segment_size": self.segment_size,
+                "num_segments": self.num_segments,
+                "with_copy": self.with_copy
+                "num_threads": self.num_threads,
+                "num_clients": self.get_num_clients(),
+                "echo_mode": self.echo_mode,
+                "offered_load_pps": offered_load_pps,
+                "offered_load_gbps": offered_load_gbps,
+        }
+    def get_iteration_avg_message_size(self):
+        return self.segment_size * self.num_segments
 
     def get_echo_mode(self):
         return self.echo_mode
@@ -182,13 +216,20 @@ class ScatterGatherIteration(runner.Iteration):
             ret += "{}@{}".format(num, rate)
         return ret
 
-    def get_relevant_hosts(self, programs_metadata, program):
-        if program == "start_server":
-            return programs_metadata["hosts"]
-        elif program == "start_client":
-            return self.get_iteration_clients(programs_metadata["hosts"])
-        else:
-            utils.debug("Passed in unknown program name: {}".format(program))
+    def get_host_list(self, host_type_map):
+        ret = []
+        if "server" in host_type_map:
+            ret.extend(host_type_map["server"])
+        if "client" in host_type_map:
+            ret.extend(self.get_iteration_clients(host_type_map["client"]))
+        return ret
+
+    def get_program_hosts(self, program_name, host_type_map):
+        ret = []
+        if program_name == "start_server":
+            return host_type_map["server"]
+        elif program_name == "start_client":
+            return self.get_iteration_clients(host_type_map["client"]) 
 
     def get_iteration_clients(self, possible_hosts):
         total_hosts = 0
@@ -296,18 +337,6 @@ class ScatterGatherIteration(runner.Iteration):
     def get_folder_name(self, high_level_folder):
         return self.get_parent_folder(high_level_folder) / self.get_trial_string()
 
-    def get_hosts(self, program, programs_metadata):
-        ret = []
-        if program == "start_server":
-            return [programs_metadata[program]["hosts"][0]]
-        elif program == "start_client":
-            options = programs_metadata[program]["hosts"]
-            return self.get_iteration_clients(options)
-        else:
-            utils.error("Unknown program name: {}".format(program))
-            exit(1)
-        return ret
-
     def find_client_id(self, host):
         return int(host[len(host) - 1])
 
@@ -332,8 +361,9 @@ class ScatterGatherIteration(runner.Iteration):
         ret["num_machines"] = self.get_num_clients()
         ret["random_seed"] = int(time.time())
         ret["busy_cycles"] = self.busy_cycles
+        host_type_map = config_yaml["host_types"]
+        server_host = host_type_map["server"][0]
         # both sides need to know about the server mac address
-        server_host = programs_metadata["start_server"]["hosts"][0]
         ret["server_mac"] = config_yaml["hosts"][server_host]["mac"]
         ret["server_ip"] = config_yaml["hosts"][server_host]["ip"]
         # set with_copy, segment_size, num_segments based on if it is with_copy
@@ -399,31 +429,8 @@ class ScatterGather(runner.Experiment):
         # map from (iteration with rate set to 0, (throughput, percent achieved, stop))
         self.iteration_skipping_information = {}
 
-    def read_throughput(self, iteration, higher_level_folder):
-        folder_path = iteration.get_folder_name(higher_level_folder)
-        analysis_path = folder_path / "analysis.log"
-        try:
-            with open(analysis_path) as analysis_file:
-                lines = analysis_file.readlines()
-                lines = [line.strip() for line in lines]
-                ret = lines[0]
-                split_ret = ret.split(",")
-                throughput = float(split_ret[12])
-                percent = float(split_ret[13])
-                utils.info("Iteration {} had tput: {} Gbps, percent achieved: {}".format(
-                    str(iteration), throughput, percent))
-                return (throughput, percent)
-        except:
-            utils.warn("Could not read throughput of trial from path {}",
-                       analysis_path)
-            return (0, 0)
-
     def experiment_name(self):
         return self.exp
-
-    def get_git_directories(self):
-        directory = self.config_yaml["cornflakes_dir"]
-        return [directory]
 
     def append_to_skip_info(self, total_args, iteration, higher_level_folder):
         if total_args.exp_type == "individual":
@@ -432,8 +439,13 @@ class ScatterGather(runner.Experiment):
             return
         else:
             iteration_hash = iteration.hash()
-            throughput, percent_achieved = self.read_throughput(iteration,
-                                                                higher_level_folder)
+            try:
+                throughput = iteration.read_key_from_analysis_log(higher_level_folder, "achieved_load_gbps")
+                percent_achieved = iteration.read_key_from_analysis_log(higher_level_folder,
+                        "percent_achieved_rate")
+            except:
+                utils.warn("Could not read throughput and percent achieved for trial {}".format(str(iteration)))
+                continue
             if iteration_hash not in self.iteration_skipping_information:
                 self.iteration_skipping_information[iteration_hash] = (
                     throughput, percent_achieved, False)
@@ -818,122 +830,6 @@ class ScatterGather(runner.Experiment):
                                                       array_size, recv_size,
                                                       num_segments, segment_size, with_copy)
         out.close()
-
-    def run_analysis_individual_trial(self,
-                                      higher_level_folder,
-                                      program_metadata,
-                                      iteration,
-                                      print_stats=False):
-        exp_folder = iteration.get_folder_name(higher_level_folder)
-        # parse each client log
-        # parse stdout logs
-        total_offered_load_pps = 0
-        total_offered_load_gbps = 0
-        total_achieved_load_gbps = 0
-        total_achieved_load_pps = 0
-        total_retries = 0
-        client_latency_lists = []
-        clients = iteration.get_iteration_clients(
-            program_metadata["start_client"]["hosts"])
-
-        num_threads = iteration.get_num_threads()
-        num_clients = iteration.get_num_clients()
-
-        for host in clients:
-            args = {"folder": str(exp_folder), "host": host}
-            thread_file = "{folder}/{host}.threads.log".format(**args)
-            for thread in range(iteration.get_num_threads()):
-                args["thread"] = thread  # replace thread number
-                latency_log = "{folder}/{host}.latency-t{thread}.log".format(
-                    **args)
-                latencies = utils.parse_latency_log(latency_log,
-                                                    STRIP_THRESHOLD)
-                if len(latencies) == 0:
-                    utils.warn(
-                        "Error parsing latency log {}".format(latency_log))
-                    return ""
-                client_latency_lists.append(latencies)
-
-                thread_info = utils.read_threads_json(thread_file, thread)
-
-                host_offered_load_pps = float(thread_info["offered_load_pps"])
-                host_offered_load_gbps = float(
-                    thread_info["offered_load_gbps"])
-                total_offered_load_pps += host_offered_load_pps
-                total_offered_load_gbps += host_offered_load_gbps
-
-                host_achieved_load_pps = float(
-                    thread_info["achieved_load_pps"])
-                host_achieved_load_gbps = float(
-                    thread_info["achieved_load_gbps"])
-                total_achieved_load_pps += host_achieved_load_pps
-                total_achieved_load_gbps += host_achieved_load_gbps
-
-                # add retries
-                retries = int(thread_info["retries"])
-                total_retries += retries
-
-                if print_stats:
-                    # convert to microseconds
-                    host_p99 = utils.p99_func(latencies) / 1000.0
-                    host_p999 = utils.p999_func(latencies) / 1000.0
-                    host_median = utils.median_func(latencies) / 1000.0
-                    host_avg = utils.mean_func(latencies) / 1000.0
-                    utils.info("Client {}, Thread {}: "
-                               "offered load: {:.4f} req/s | {:.4f} Gbps, "
-                               "achieved load: {:.4f} req/s | {:.4f} Gbps, "
-                               "percentage achieved rate: {:.4f}, "
-                               "retries: {}, "
-                               "avg latency: {: .4f} \u03BCs, p99: {: .4f} \u03BCs, p999:"
-                               "{: .4f} \u03BCs, median: {: .4f} \u03BCs".format(
-                                   host, thread, host_offered_load_pps, host_offered_load_gbps,
-                                   host_achieved_load_pps, host_achieved_load_gbps,
-                                   float(host_achieved_load_pps /
-                                         host_offered_load_pps),
-                                   retries,
-                                   host_avg, host_p99, host_p999, host_median))
-
-        sorted_latencies = utils.sort_latency_lists(client_latency_lists)
-        median = utils.median_func(sorted_latencies) / float(1000)
-        p99 = utils.p99_func(sorted_latencies) / float(1000)
-        p999 = utils.p999_func(sorted_latencies) / float(1000)
-        avg = utils.mean_func(sorted_latencies) / float(1000)
-
-        if print_stats:
-            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, "\
-                "achieved load: {:.4f} req/s | {:.4f} Gbps, "\
-                "percentage achieved rate: {:.4f},"\
-                "retries: {}, "\
-                "avg latency: {:.4f} \u03BCs, p99: {:.4f} \u03BCs, p999: {:.4f}"\
-                "\u03BCs, median: {:.4f} \u03BCs".format(
-                    total_offered_load_pps, total_offered_load_gbps,
-                    total_achieved_load_pps, total_achieved_load_gbps,
-                    float(total_achieved_load_pps / total_offered_load_pps),
-                    total_retries,
-                    avg, p99, p999, median)
-            utils.info("Total Stats: ", total_stats)
-        percent_acheived_load = float(total_achieved_load_pps /
-                                      total_offered_load_pps)
-
-        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_segment_size(),
-                                                                                  iteration.get_num_segments(),
-                                                                                  iteration.get_with_copy(),
-                                                                                  iteration.get_as_one(),
-                                                                                  iteration.get_array_size(),
-                                                                                  iteration.get_busy_cycles(),
-                                                                                  iteration.get_recv_pkt_size(),
-                                                                                  iteration.get_num_threads(),
-                                                                                  iteration.get_num_clients(),
-                                                                                  total_offered_load_pps,
-                                                                                  total_offered_load_gbps,
-                                                                                  total_achieved_load_pps,
-                                                                                  total_achieved_load_gbps,
-                                                                                  percent_acheived_load,
-                                                                                  avg * 1000,
-                                                                                  median * 1000,
-                                                                                  p99 * 1000,
-                                                                                  p999 * 1000)
-        return csv_line
 
     def run_plot_cmd(self, args):
         try:
