@@ -162,7 +162,7 @@ fn add_shared_rcsga_header_repr(
         struct_ty.clone(),
         SelfArgType::Mut,
         "deserialize_from_buf",
-        vec![("buffer", ArgType::Buffer)],
+        vec![("buffer", ArgType::new_u8_buffer())],
         None,
         true,
     )?;

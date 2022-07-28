@@ -1,18 +1,15 @@
+use super::HeaderType;
 use ffiber::{CDylibCompiler, types::*, compiler::*};
 use color_eyre::eyre::Result;
-use std::path::Path;
 
-pub fn compile(output_folder: &str) -> Result<()> {
+pub fn compile(output_folder: &str, header_type: HeaderType) -> Result<()> {
     let mut compiler = CDylibCompiler::new("mlx5-datapath", &output_folder);
-    let src_folder = Path::new(&output_folder)
-        .join("mlx5-datapath-c")
-        .join("src");
     gen_cargo_toml(&mut compiler)?;
-    gen_dependencies(&mut compiler)?;
+    gen_dependencies(&mut compiler, header_type)?;
     gen_constructor(&mut compiler)?;
     gen_configuration(&mut compiler)?;
     gen_pop(&mut compiler)?;
-    gen_push(&mut compiler)?;
+    gen_push(&mut compiler, header_type)?;
     compiler.flush()?;
     Ok(())
 }
@@ -28,10 +25,16 @@ fn gen_cargo_toml(compiler: &mut CDylibCompiler) -> Result<()> {
     Ok(())
 }
 
-fn gen_dependencies(compiler: &mut CDylibCompiler) -> Result<()> {
-    compiler.add_dependency("cornflakes_libos::{ \
-        datapath::{Datapath, InlineMode}, ArenaOrderedRcSga, \
-    }")?;
+fn gen_dependencies(
+    compiler: &mut CDylibCompiler,
+    header_type: HeaderType,
+) -> Result<()> {
+    compiler.add_dependency(match header_type {
+        HeaderType::Sga => "cornflakes_libos::OrderedSga",
+        HeaderType::RcSga => "cornflakes_libos::ArenaOrderedRcSga",
+        _ => unimplemented!(),
+    })?;
+    compiler.add_dependency("cornflakes_libos::datapath::{Datapath, InlineMode}")?;
     compiler.add_dependency("cornflakes_utils::AppMode")?;
     compiler.add_dependency("color_eyre::eyre::Result")?;
     compiler.add_dependency("mlx5_datapath::datapath::connection::Mlx5Connection")?;
@@ -193,13 +196,88 @@ fn gen_pop(compiler: &mut CDylibCompiler) -> Result<()> {
     Ok(())
 }
 
-fn gen_push(compiler: &mut CDylibCompiler) -> Result<()> {
-    ////////////////////////////////////////////////////////////////////////////
-    // Mlx5Connection_push_ordered_sgas
-    // TODO: buffers of different types
+fn gen_push(
+    compiler: &mut CDylibCompiler,
+    header_type: HeaderType,
+) -> Result<()> {
+    match header_type {
+        HeaderType::Sga => { add_push_ordered_sgas_fn(compiler)?; }
+        HeaderType::RcSga => { add_queue_arena_ordered_sga_fn(compiler)?; }
+        _ => { unimplemented!() }
+    }
 
     ////////////////////////////////////////////////////////////////////////////
-    // Mlx5Connection_queue_arena_ordered_sga
+    // Mlx5Connection_queue_single_buffer_with_copy
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("conn", "&mut Mlx5Connection")),
+        FunctionArg::CArg(CArgInfo::arg("msg_id", "u32")),
+        FunctionArg::CArg(CArgInfo::arg("conn_id", "usize")),
+        FunctionArg::CArg(CArgInfo::arg("buffer", "&[u8]")),
+        FunctionArg::CArg(CArgInfo::arg("end_batch", "bool")),
+    ];
+    compiler.inner.add_context(Context::Function(FunctionContext::new(
+        "Mlx5Connection_queue_single_buffer_with_copy_inner",
+        false, args, "Result<()>",
+    )))?;
+    compiler.inner.add_line("conn.queue_single_buffer_with_copy((msg_id, conn_id, buffer), end_batch)")?;
+    compiler.inner.pop_context()?; // end of function
+    compiler.inner.add_newline()?;
+    compiler.add_extern_c_function_standalone(
+        "Mlx5Connection_queue_single_buffer_with_copy",
+        "Mlx5Connection_queue_single_buffer_with_copy_inner",
+        vec![
+            ("conn", ArgType::new_ref_mut("Mlx5Connection")),
+            ("msg_id", ArgType::Primitive("u32".to_string())),
+            ("conn_id", ArgType::Primitive("usize".to_string())),
+            ("buffer", ArgType::new_u8_buffer()),
+            ("end_batch", ArgType::Primitive("bool".to_string())),
+        ],
+        None,
+        true,
+    )?;
+    Ok(())
+}
+
+fn add_push_ordered_sgas_fn(compiler: &mut CDylibCompiler) -> Result<()> {
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("conn", "&mut Mlx5Connection")),
+        FunctionArg::CArg(CArgInfo::arg("n", "usize")),
+        FunctionArg::CArg(CArgInfo::arg("msg_ids", "&[u32]")),
+        FunctionArg::CArg(CArgInfo::arg("conn_ids", "&[usize]")),
+        FunctionArg::CArg(CArgInfo::arg("sgas", "&[*mut OrderedSga]")),
+    ];
+    compiler.inner.add_context(Context::Function(FunctionContext::new(
+        "Mlx5Connection_push_ordered_sgas_inner",
+        false, args, "Result<()>",
+    )))?;
+    compiler.inner.add_def_with_let(
+        false,
+        Some("Vec<_>".to_string()),
+        "ordered_sgas",
+        "(0..n)
+            .map(|i| (msg_ids[i], conn_ids[i], unsafe { *Box::from_raw(sgas[i]) }))
+            .collect()",
+    )?;
+    compiler.inner.add_line("conn.push_ordered_sgas(&ordered_sgas[..])")?;
+    compiler.inner.pop_context()?; // end of function
+    compiler.inner.add_newline()?;
+    compiler.add_extern_c_function_standalone(
+        "Mlx5Connection_push_ordered_sgas",
+        "Mlx5Connection_push_ordered_sgas_inner",
+        vec![
+            ("conn", ArgType::new_ref_mut("Mlx5Connection")),
+            ("n", ArgType::Primitive("usize".to_string())),
+            ("msg_ids", ArgType::Buffer(Box::new(ArgType::Primitive("u32".to_string())))),
+            ("conn_ids", ArgType::Buffer(Box::new(ArgType::Primitive("usize".to_string())))),
+            ("sgas", ArgType::Buffer(Box::new(ArgType::Primitive("*mut OrderedSga".to_string())))),
+        ],
+        None,
+        true,
+    )?;
+    Ok(())
+}
+
+fn add_queue_arena_ordered_sga_fn(compiler: &mut CDylibCompiler) -> Result<()> {
     let args = vec![
         FunctionArg::CArg(CArgInfo::arg("conn", "&mut Mlx5Connection")),
         FunctionArg::CArg(CArgInfo::arg("msg_id", "u32")),
@@ -225,36 +303,6 @@ fn gen_push(compiler: &mut CDylibCompiler) -> Result<()> {
                 name: "ArenaOrderedRcSga".to_string(),
                 params: vec![Box::new(ArgType::new_struct("Mlx5Connection"))],
             }),
-            ("end_batch", ArgType::Primitive("bool".to_string())),
-        ],
-        None,
-        true,
-    )?;
-
-    ////////////////////////////////////////////////////////////////////////////
-    // Mlx5Connection_queue_single_buffer_with_copy
-    let args = vec![
-        FunctionArg::CArg(CArgInfo::arg("conn", "&mut Mlx5Connection")),
-        FunctionArg::CArg(CArgInfo::arg("msg_id", "u32")),
-        FunctionArg::CArg(CArgInfo::arg("conn_id", "usize")),
-        FunctionArg::CArg(CArgInfo::arg("buffer", "&[u8]")),
-        FunctionArg::CArg(CArgInfo::arg("end_batch", "bool")),
-    ];
-    compiler.inner.add_context(Context::Function(FunctionContext::new(
-        "Mlx5Connection_queue_single_buffer_with_copy_inner",
-        false, args, "Result<()>",
-    )))?;
-    compiler.inner.add_line("conn.queue_single_buffer_with_copy((msg_id, conn_id, buffer), end_batch)")?;
-    compiler.inner.pop_context()?; // end of function
-    compiler.inner.add_newline()?;
-    compiler.add_extern_c_function_standalone(
-        "Mlx5Connection_queue_single_buffer_with_copy",
-        "Mlx5Connection_queue_single_buffer_with_copy_inner",
-        vec![
-            ("conn", ArgType::new_ref_mut("Mlx5Connection")),
-            ("msg_id", ArgType::Primitive("u32".to_string())),
-            ("conn_id", ArgType::Primitive("usize".to_string())),
-            ("buffer", ArgType::Buffer),
             ("end_batch", ArgType::Primitive("bool".to_string())),
         ],
         None,

@@ -131,7 +131,7 @@ fn add_cf_string_or_bytes(
         struct_ty.clone(),
         SelfArgType::None,
         "new_from_bytes",
-        vec![("buffer", ArgType::Buffer)],
+        vec![("buffer", ArgType::new_u8_buffer())],
         Some(struct_ty.clone()),
         false,
     )?;
@@ -144,7 +144,7 @@ fn add_cf_string_or_bytes(
             SelfArgType::None,
             "new",
             vec![
-                ("buffer", ArgType::Buffer),
+                ("buffer", ArgType::new_u8_buffer()),
                 ("datapath", ArgType::Ref(
                     Box::new(ArgType::new_struct(datapath))
                 )),

@@ -30,7 +30,7 @@ pub fn compile(repr: &ProtoReprInfo, output_folder: &str, options: CompileOption
         header_type: options.header_type,
         language: Language::Rust,
     })?;
-    mlx5_datapath::compile(output_folder)?;
+    mlx5_datapath::compile(output_folder, options.header_type)?;
     Ok(())
 }
 
