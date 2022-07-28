@@ -145,9 +145,9 @@ fn add_cf_string_or_bytes(
             None,
             vec![
                 ("buffer", ArgType::Buffer),
-                ("datapath", ArgType::Ref {
-                    ty: Box::new(ArgType::new_struct(datapath)),
-                }),
+                ("datapath", ArgType::Ref(
+                    Box::new(ArgType::new_struct(datapath))
+                )),
             ],
             Some(struct_ty.clone()),
             true,
@@ -254,7 +254,7 @@ fn add_variable_list(
         "index",
         Some(SelfArgType::Value),
         vec![("idx", ArgType::Primitive("usize".to_string()))],
-        Some(ArgType::Ref { ty: Box::new(param_ty) }),
+        Some(ArgType::Ref(Box::new(param_ty))),
         false,
     )?;
 
@@ -353,7 +353,7 @@ fn add_get(
         match ty {
             ArgType::Struct { ref name, .. } => {
                 if name == "VariableList" {
-                    ArgType::Ref { ty: Box::new(ty) }
+                    ArgType::Ref(Box::new(ty))
                 } else {
                     ty
                 }
@@ -387,7 +387,7 @@ fn add_get_mut(
         match ty {
             ArgType::Struct { ref name, .. } => {
                 if name == "VariableList" {
-                    ArgType::Ref { ty: Box::new(ty) }
+                    ArgType::Ref(Box::new(ty))
                 } else {
                     ty
                 }

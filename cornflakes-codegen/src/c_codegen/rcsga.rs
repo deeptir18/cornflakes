@@ -173,18 +173,14 @@ fn add_shared_rcsga_header_repr(
         "serialize_into_arena_sga",
         Some(SelfArgType::Value),
         vec![
-            ("ordered_sga", ArgType::RefMut {
-                ty: Box::new(ArgType::Struct {
+            ("ordered_sga", ArgType::RefMut(
+                Box::new(ArgType::Struct {
                     name: "ArenaOrderedRcSga".to_string(),
                     params: vec![Box::new(ArgType::new_struct(datapath))],
                 }),
-            }),
-            ("arena", ArgType::Ref {
-                ty: Box::new(ArgType::new_struct("Bump")),
-            }),
-            ("datapath", ArgType::Ref {
-                ty: Box::new(ArgType::new_struct(datapath)),
-            }),
+            )),
+            ("arena", ArgType::new_ref("Bump")),
+            ("datapath", ArgType::new_ref(datapath)),
             ("with_copy", ArgType::Primitive("bool".to_string())),
         ],
         None,
