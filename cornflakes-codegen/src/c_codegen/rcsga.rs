@@ -1,39 +1,36 @@
 use super::{
     super::header_utils::{MessageInfo, ProtoReprInfo},
-    super::rust_codegen::{
-        Context, FunctionArg, FunctionContext, SerializationCompiler, CArgInfo,
-    },
     common::*,
 };
 use color_eyre::eyre::Result;
+use ffiber::{
+    CDylibCompiler,
+    types::{SelfArgType, ArgType},
+    compiler::{
+        Context, FunctionArg, FunctionContext, SerializationCompiler, CArgInfo,
+    },
+};
 
-pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
+pub fn compile(fd: &ProtoReprInfo, compiler: &mut CDylibCompiler) -> Result<()> {
     let datapath = "Mlx5Connection";  // hardcoded datapath
     add_rcsga_dependencies(fd, compiler)?;
-    compiler.add_newline()?;
     add_bumpalo_functions(compiler)?;
-    compiler.add_newline()?;
     add_arena_allocate(compiler, datapath)?;
-    compiler.add_newline()?;
     add_cornflakes_structs(fd, compiler, Some(datapath))?;
 
     // For each message type: add basic constructors, getters and setters, and
     // header trait functions.
     for message in fd.get_repr().messages.iter() {
-        compiler.add_newline()?;
         let msg_info = MessageInfo(message.clone());
         add_default_impl(compiler, &msg_info, Some(datapath))?;
-        compiler.add_newline()?;
         add_impl(fd, compiler, &msg_info, Some(datapath))?;
-        compiler.add_newline()?;
         add_rcsga_header_repr(compiler, &msg_info, datapath)?;
-        compiler.add_newline()?;
         add_shared_rcsga_header_repr(compiler, &msg_info, datapath)?;
     }
     Ok(())
 }
 
-fn add_rcsga_dependencies(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Result<()> {
+fn add_rcsga_dependencies(fd: &ProtoReprInfo, compiler: &mut CDylibCompiler) -> Result<()> {
     compiler.add_dependency("bumpalo")?;
     compiler.add_dependency("cornflakes_libos::{ArenaOrderedSga, ArenaOrderedRcSga}")?;
     compiler.add_dependency("cornflakes_libos::dynamic_rcsga_hdr::*")?;
@@ -50,14 +47,13 @@ fn add_rcsga_dependencies(fd: &ProtoReprInfo, compiler: &mut SerializationCompil
     Ok(())
 }
 
-fn add_bumpalo_functions(compiler: &mut SerializationCompiler) -> Result<()> {
+fn add_bumpalo_functions(compiler: &mut CDylibCompiler) -> Result<()> {
     // add bump intialization function (manually-generated)
-    add_bump_initialization_function(compiler)?;
+    add_bump_initialization_function(&mut compiler.inner)?;
 
     // add arena reset function
-    add_extern_c_wrapper_function(
-        compiler,
-        "Bump_reset",
+    compiler.add_extern_c_function(
+        Some("Bump_reset"),
         "bumpalo::Bump",
         "reset",
         Some(SelfArgType::Mut),
@@ -112,22 +108,22 @@ fn add_bump_initialization_function(
 
 /// cornflakes-libos/src/lib.rs
 fn add_arena_allocate(
-    compiler: &mut SerializationCompiler,
+    compiler: &mut CDylibCompiler,
     datapath: &str,
 ) -> Result<()> {
     // add allocate function
-    add_extern_c_wrapper_function(
-        compiler,
-        "ArenaOrderedRcSga_allocate",
+    compiler.add_extern_c_function(
+        Some("ArenaOrderedRcSga_allocate"),
         &format!("ArenaOrderedRcSga::<{}>", datapath),
         "allocate",
         None,
         vec![
-            ("num_entries", ArgType::Rust { string: "usize".to_string() }),
-            ("arena", ArgType::Ref { inner_ty: "bumpalo::Bump".to_string() }),
+            ("num_entries", ArgType::Primitive("usize".to_string())),
+            ("arena", ArgType::new_ref("bumpalo::Bump")),
         ],
-        Some(ArgType::VoidPtr {
-            inner_ty: format!("ArenaOrderedRcSga<{}>", datapath),
+        Some(ArgType::Struct {
+            name: "ArenaOrderedRcSga".to_string(),
+            params: vec![Box::new(ArgType::new_struct(datapath))],
         }),
         false,
     )?;
@@ -135,19 +131,18 @@ fn add_arena_allocate(
 }
 
 fn add_rcsga_header_repr(
-    compiler: &mut SerializationCompiler,
+    compiler: &mut CDylibCompiler,
     msg_info: &MessageInfo,
     datapath: &str,
 ) -> Result<()> {
     // add num scatter_gather_entries function
-    add_extern_c_wrapper_function(
-        compiler,
-        &format!("{}_num_scatter_gather_entries", msg_info.get_name()),
+    compiler.add_extern_c_function(
+        Some(&format!("{}_num_scatter_gather_entries", msg_info.get_name())),
         &format!("{}<{}>", msg_info.get_name(), datapath),
         "num_scatter_gather_entries",
         Some(SelfArgType::Value),
         vec![],
-        Some(ArgType::Rust { string: "usize".to_string() }),
+        Some(ArgType::Primitive("usize".to_string())),
         false,
     )?;
     Ok(())
@@ -156,16 +151,15 @@ fn add_rcsga_header_repr(
 // These aren't generated functions so we generate the wrappers manually.
 // See: cornflakes-codegen/src/utils/dynamic_rcsga_hdr.rs
 fn add_shared_rcsga_header_repr(
-    compiler: &mut SerializationCompiler,
+    compiler: &mut CDylibCompiler,
     msg_info: &MessageInfo,
     datapath: &str,
 ) -> Result<()> {
     let struct_name = format!("{}<{}>", &msg_info.get_name(), datapath);
 
     // add deserialize_from_buf function
-    add_extern_c_wrapper_function(
-        compiler,
-        &format!("{}_deserialize_from_buf", &msg_info.get_name()),
+    compiler.add_extern_c_function(
+        Some(&format!("{}_deserialize_from_buf", &msg_info.get_name())),
         &struct_name,
         "deserialize_from_buf",
         Some(SelfArgType::Mut),
@@ -175,21 +169,25 @@ fn add_shared_rcsga_header_repr(
     )?;
 
     // add serialize_into_arena_sga function
-    add_extern_c_wrapper_function(
-        compiler,
-        &format!("{}_serialize_into_arena_sga", &msg_info.get_name()),
+    compiler.add_extern_c_function(
+        Some(&format!("{}_serialize_into_arena_sga", &msg_info.get_name())),
         &struct_name,
         "serialize_into_arena_sga",
         Some(SelfArgType::Value),
         vec![
             ("ordered_sga", ArgType::RefMut {
-                inner_ty: format!("ArenaOrderedRcSga<{}>", datapath),
+                ty: Box::new(ArgType::Struct {
+                    name: "ArenaOrderedRcSga".to_string(),
+                    params: vec![Box::new(ArgType::new_struct(datapath))],
+                }),
             }),
             ("arena", ArgType::Ref {
-                inner_ty: "bumpalo::Bump".to_string(),
+                ty: Box::new(ArgType::new_struct("bumpalo::Bump")),
             }),
-            ("datapath", ArgType::Ref { inner_ty: datapath.to_string() }),
-            ("with_copy", ArgType::Rust { string: "bool".to_string() }),
+            ("datapath", ArgType::Ref {
+                ty: Box::new(ArgType::new_struct(datapath)),
+            }),
+            ("with_copy", ArgType::Primitive("bool".to_string())),
         ],
         None,
         true,
