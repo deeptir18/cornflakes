@@ -30,18 +30,97 @@ fn gen_cargo_toml(compiler: &mut CDylibCompiler) -> Result<()> {
 
 fn gen_dependencies(compiler: &mut CDylibCompiler) -> Result<()> {
     compiler.add_dependency("cornflakes_libos::{ \
-        datapath::{Datapath, InlineMode}, \
-        {ArenaOrderedRcSga, OrderedSga}, \
+        datapath::{Datapath, InlineMode}, ArenaOrderedRcSga, \
     }")?;
     compiler.add_dependency("cornflakes_utils::AppMode")?;
-    compiler.add_dependency("color_eyre::Result")?;
+    compiler.add_dependency("color_eyre::eyre::Result")?;
     compiler.add_dependency("mlx5_datapath::datapath::connection::Mlx5Connection")?;
     compiler.add_dependency("std::{ffi::CStr, net::Ipv4Addr, str::FromStr}")?;
     Ok(())
 }
 
 fn gen_constructor(compiler: &mut CDylibCompiler) -> Result<()> {
+    ////////////////////////////////////////////////////////////////////////////
+    // convert_c_char
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("ptr", "*const ::std::os::raw::c_char")),
+    ];
+    compiler.inner.add_context(Context::Function(FunctionContext::new(
+        "convert_c_char", false, args, "String",
+    )))?;
+    compiler.inner.add_unsafe_def_with_let(false, Some("&CStr".to_string()), "cstr",
+        "CStr::from_ptr(ptr)")?;
+    compiler.inner.add_def_with_let(false, Some("&str".to_string()), "str_slice",
+        "cstr.to_str().unwrap()")?;
+    compiler.inner.add_line("str_slice.to_string()")?;
+    compiler.inner.pop_context()?; // end of function
+    compiler.inner.add_newline()?;
+
+    ////////////////////////////////////////////////////////////////////////////
     // Mlx5Connection_new
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("config_file", "*const ::std::os::raw::c_char")),
+        FunctionArg::CArg(CArgInfo::arg("server_ip", "*const ::std::os::raw::c_char")),
+        FunctionArg::CArg(CArgInfo::ret_arg("*mut ::std::os::raw::c_void")),
+    ];
+    compiler.inner.add_context(Context::Function(FunctionContext::new_extern_c(
+        "Mlx5Connection_new", true, args, true,
+    )))?;
+
+    compiler.inner.add_context(Context::Match(MatchContext::new_with_def(
+        "Mlx5Connection::parse_config_file( \
+            convert_c_char(config_file).as_str(), \
+            &Ipv4Addr::from_str(convert_c_char(server_ip).as_str()).unwrap(), \
+        )",
+        vec!["Ok(value)".to_string(), "Err(_)".to_string()],
+        "mut datapath_params",
+    )))?;
+    compiler.inner.add_return_val("value", false)?;
+    compiler.inner.pop_context()?;
+    compiler.inner.add_return_val("1", true)?;
+    compiler.inner.pop_context()?;
+
+    compiler.inner.add_context(Context::Match(MatchContext::new_with_def(
+        "Mlx5Connection::compute_affinity(&datapath_params, 1, None, AppMode::Server)",
+        vec!["Ok(value)".to_string(), "Err(_)".to_string()],
+        "addresses",
+    )))?;
+    compiler.inner.add_return_val("value", false)?;
+    compiler.inner.pop_context()?;
+    compiler.inner.add_return_val("1", true)?;
+    compiler.inner.pop_context()?;
+
+    compiler.inner.add_context(Context::Match(MatchContext::new_with_def(
+        "Mlx5Connection::global_init(1, &mut datapath_params, addresses)",
+        vec!["Ok(value)".to_string(), "Err(_)".to_string()],
+        "per_thread_contexts",
+    )))?;
+    compiler.inner.add_return_val("value", false)?;
+    compiler.inner.pop_context()?;
+    compiler.inner.add_return_val("1", true)?;
+    compiler.inner.pop_context()?;
+
+    compiler.inner.add_context(Context::Match(MatchContext::new_with_def(
+        "Mlx5Connection::per_thread_init( \
+            datapath_params, \
+            per_thread_contexts.into_iter().nth(0).unwrap(), \
+            AppMode::Server, \
+        )",
+        vec!["Ok(value)".to_string(), "Err(_)".to_string()],
+        "conn",
+    )))?;
+    compiler.inner.add_return_val("value", false)?;
+    compiler.inner.pop_context()?;
+    compiler.inner.add_return_val("1", true)?;
+    compiler.inner.pop_context()?;
+
+    compiler.inner.add_def_with_let(false, None, "conn_box",
+        "Box::into_raw(Box::new(conn))")?;
+    compiler.inner.add_unsafe_set("return_ptr", "conn_box as _")?;
+    compiler.inner.add_return_val("0", false)?;
+    compiler.inner.pop_context()?; // end of function
+    compiler.inner.add_newline()?;
+
     Ok(())
 }
 
