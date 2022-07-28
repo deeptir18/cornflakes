@@ -129,8 +129,8 @@ fn add_cf_string_or_bytes(
     // <ty>_new_from_bytes
     compiler.add_extern_c_function(
         struct_ty.clone(),
+        SelfArgType::None,
         "new_from_bytes",
-        None,
         vec![("buffer", ArgType::Buffer)],
         Some(struct_ty.clone()),
         false,
@@ -141,8 +141,8 @@ fn add_cf_string_or_bytes(
     if let Some(datapath) = datapath {
         compiler.add_extern_c_function(
             struct_ty.clone(),
+            SelfArgType::None,
             "new",
-            None,
             vec![
                 ("buffer", ArgType::Buffer),
                 ("datapath", ArgType::Ref(
@@ -215,8 +215,8 @@ fn add_variable_list(
     compiler.add_extern_c_function_with_name(
         &format!("{}_init", &extern_prefix),
         struct_ty.clone(),
+        SelfArgType::None,
         "init",
-        None,
         vec![("num", ArgType::Primitive("usize".to_string()))],
         Some(struct_ty.clone()),
         false,
@@ -227,8 +227,8 @@ fn add_variable_list(
     compiler.add_extern_c_function_with_name(
         &format!("{}_append", &extern_prefix),
         struct_ty.clone(),
+        SelfArgType::Mut,
         "append",
-        Some(SelfArgType::Mut),
         vec![("val", param_ty.clone())],
         None,
         false,
@@ -239,8 +239,8 @@ fn add_variable_list(
     compiler.add_extern_c_function_with_name(
         &format!("{}_len", &extern_prefix),
         struct_ty.clone(),
+        SelfArgType::Value,
         "len",
-        Some(SelfArgType::Value),
         vec![],
         Some(ArgType::Primitive("usize".to_string())),
         false,
@@ -251,8 +251,8 @@ fn add_variable_list(
     compiler.add_extern_c_function_with_name(
         &format!("{}_index", &extern_prefix),
         struct_ty.clone(),
+        SelfArgType::Value,
         "index",
-        Some(SelfArgType::Value),
         vec![("idx", ArgType::Primitive("usize".to_string()))],
         Some(ArgType::Ref(Box::new(param_ty))),
         false,
@@ -268,8 +268,8 @@ pub fn add_default_impl(
 ) -> Result<()> {
     compiler.add_extern_c_function(
         struct_ty.clone(),
+        SelfArgType::None,
         "default",
-        None,
         vec![],
         Some(ArgType::new_struct(&msg_info.get_name())),
         false,
@@ -286,8 +286,8 @@ pub fn add_impl(
 ) -> Result<()> {
     compiler.add_extern_c_function(
         struct_ty.clone(),
+        SelfArgType::None,
         "new",
-        None,
         vec![],
         Some(struct_ty.clone()),
         false,
@@ -332,8 +332,8 @@ fn add_has(
     let func_name = format!("has_{}", field.get_name());
     compiler.add_extern_c_function(
         struct_ty.clone(),
+        SelfArgType::Value,
         &func_name,
-        Some(SelfArgType::Value),
         vec![],
         Some(ArgType::Primitive("bool".to_string())),
         false,
@@ -364,8 +364,8 @@ fn add_get(
     let func_name = format!("get_{}", field.get_name());
     compiler.add_extern_c_function(
         struct_ty.clone(),
+        SelfArgType::Value,
         &func_name,
-        Some(SelfArgType::Value),
         vec![],
         Some(return_type),
         false,
@@ -398,8 +398,8 @@ fn add_get_mut(
     let func_name = format!("get_mut_{}", field.get_name());
     compiler.add_extern_c_function(
         struct_ty.clone(),
+        SelfArgType::Mut,
         &func_name,
-        Some(SelfArgType::Mut),
         vec![],
         Some(return_type),
         false,
@@ -419,8 +419,8 @@ fn add_set(
     let func_name = format!("set_{}", &field_name);
     compiler.add_extern_c_function(
         struct_ty.clone(),
+        SelfArgType::Mut,
         &func_name,
-        Some(SelfArgType::Mut),
         vec![(&field_name, field_type)],
         None,
         false,
@@ -435,8 +435,8 @@ fn add_list_init(
 ) -> Result<()> {
     compiler.add_extern_c_function(
         struct_ty.clone(),
+        SelfArgType::Mut,
         &format!("init_{}", field.get_name()),
-        Some(SelfArgType::Mut),
         vec![("num", ArgType::Primitive("usize".to_string()))],
         None,
         false,

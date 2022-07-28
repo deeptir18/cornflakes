@@ -18,7 +18,7 @@ cornflakes-utils = { path = "../cornflakes-utils" }
 cornflakes-libos = { path = "../cornflakes-libos" }
 perftools = {git = "https://github.com/demikernel/perftools", rev = "3f3f11b", optional = true}
 bitmaps = "3.2.0"
-ffiber = { git = "https://github.com/ygina/ffiber", rev = "8ae1d8d" }
+ffiber = { git = "https://github.com/ygina/ffiber", rev = "a8e8983" }
 
 [dev-dependencies]
 libc = "0.2.81"

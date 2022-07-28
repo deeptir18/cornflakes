@@ -58,8 +58,8 @@ fn add_bumpalo_functions(compiler: &mut CDylibCompiler) -> Result<()> {
     // add arena reset function
     compiler.add_extern_c_function(
         ArgType::new_struct("Bump"),
+        SelfArgType::Mut,
         "reset",
-        Some(SelfArgType::Mut),
         vec![],
         None,
         false,
@@ -122,8 +122,8 @@ fn add_arena_allocate(
     // add allocate function
     compiler.add_extern_c_function(
         struct_ty.clone(),
+        SelfArgType::None,
         "allocate",
-        None,
         vec![
             ("num_entries", ArgType::Primitive("usize".to_string())),
             ("arena", ArgType::new_ref("Bump")),
@@ -141,8 +141,8 @@ fn add_rcsga_header_repr(
     // add num scatter_gather_entries function
     compiler.add_extern_c_function(
         struct_ty.clone(),
+        SelfArgType::Value,
         "num_scatter_gather_entries",
-        Some(SelfArgType::Value),
         vec![],
         Some(ArgType::Primitive("usize".to_string())),
         false,
@@ -160,8 +160,8 @@ fn add_shared_rcsga_header_repr(
     // add deserialize_from_buf function
     compiler.add_extern_c_function(
         struct_ty.clone(),
+        SelfArgType::Mut,
         "deserialize_from_buf",
-        Some(SelfArgType::Mut),
         vec![("buffer", ArgType::Buffer)],
         None,
         true,
@@ -170,8 +170,8 @@ fn add_shared_rcsga_header_repr(
     // add serialize_into_arena_sga function
     compiler.add_extern_c_function(
         struct_ty.clone(),
+        SelfArgType::Value,
         "serialize_into_arena_sga",
-        Some(SelfArgType::Value),
         vec![
             ("ordered_sga", ArgType::RefMut(
                 Box::new(ArgType::Struct {
