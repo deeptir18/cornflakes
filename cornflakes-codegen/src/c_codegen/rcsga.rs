@@ -22,16 +22,20 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut CDylibCompiler) -> Result<()> 
     // header trait functions.
     for message in fd.get_repr().messages.iter() {
         let msg_info = MessageInfo(message.clone());
-        add_default_impl(compiler, &msg_info, Some(datapath))?;
-        add_impl(fd, compiler, &msg_info, Some(datapath))?;
-        add_rcsga_header_repr(compiler, &msg_info, datapath)?;
-        add_shared_rcsga_header_repr(compiler, &msg_info, datapath)?;
+        let struct_ty = ArgType::Struct {
+            name: msg_info.get_name(),
+            params: vec![Box::new(ArgType::new_struct(datapath))],
+        };
+        add_default_impl(compiler, &msg_info, &struct_ty)?;
+        add_impl(fd, compiler, &msg_info, &struct_ty, Some(datapath))?;
+        add_rcsga_header_repr(compiler, &struct_ty)?;
+        add_shared_rcsga_header_repr(compiler, &struct_ty, datapath)?;
     }
     Ok(())
 }
 
 fn add_rcsga_dependencies(fd: &ProtoReprInfo, compiler: &mut CDylibCompiler) -> Result<()> {
-    compiler.add_dependency("bumpalo")?;
+    compiler.add_dependency("bumpalo::Bump")?;
     compiler.add_dependency("cornflakes_libos::{ArenaOrderedSga, ArenaOrderedRcSga}")?;
     compiler.add_dependency("cornflakes_libos::dynamic_rcsga_hdr::*")?;
     compiler.add_dependency("mlx5_datapath::datapath::connection::Mlx5Connection")?;
@@ -53,8 +57,7 @@ fn add_bumpalo_functions(compiler: &mut CDylibCompiler) -> Result<()> {
 
     // add arena reset function
     compiler.add_extern_c_function(
-        Some("Bump_reset"),
-        "bumpalo::Bump",
+        ArgType::new_struct("Bump"),
         "reset",
         Some(SelfArgType::Mut),
         vec![],
@@ -94,7 +97,7 @@ fn add_bump_initialization_function(
         "arena",
         None,
         None,
-        "bumpalo::Bump::with_capacity",
+        "Bump::with_capacity",
         vec!["capacity * 100".to_string()],
         false,
     )?;
@@ -111,20 +114,21 @@ fn add_arena_allocate(
     compiler: &mut CDylibCompiler,
     datapath: &str,
 ) -> Result<()> {
+    let struct_ty = ArgType::Struct {
+        name: "ArenaOrderedRcSga".to_string(),
+        params: vec![Box::new(ArgType::new_struct(datapath))],
+    };
+
     // add allocate function
     compiler.add_extern_c_function(
-        Some("ArenaOrderedRcSga_allocate"),
-        &format!("ArenaOrderedRcSga::<{}>", datapath),
+        struct_ty.clone(),
         "allocate",
         None,
         vec![
             ("num_entries", ArgType::Primitive("usize".to_string())),
-            ("arena", ArgType::new_ref("bumpalo::Bump")),
+            ("arena", ArgType::new_ref("Bump")),
         ],
-        Some(ArgType::Struct {
-            name: "ArenaOrderedRcSga".to_string(),
-            params: vec![Box::new(ArgType::new_struct(datapath))],
-        }),
+        Some(struct_ty),
         false,
     )?;
     Ok(())
@@ -132,13 +136,11 @@ fn add_arena_allocate(
 
 fn add_rcsga_header_repr(
     compiler: &mut CDylibCompiler,
-    msg_info: &MessageInfo,
-    datapath: &str,
+    struct_ty: &ArgType,
 ) -> Result<()> {
     // add num scatter_gather_entries function
     compiler.add_extern_c_function(
-        Some(&format!("{}_num_scatter_gather_entries", msg_info.get_name())),
-        &format!("{}<{}>", msg_info.get_name(), datapath),
+        struct_ty.clone(),
         "num_scatter_gather_entries",
         Some(SelfArgType::Value),
         vec![],
@@ -152,15 +154,12 @@ fn add_rcsga_header_repr(
 // See: cornflakes-codegen/src/utils/dynamic_rcsga_hdr.rs
 fn add_shared_rcsga_header_repr(
     compiler: &mut CDylibCompiler,
-    msg_info: &MessageInfo,
+    struct_ty: &ArgType,
     datapath: &str,
 ) -> Result<()> {
-    let struct_name = format!("{}<{}>", &msg_info.get_name(), datapath);
-
     // add deserialize_from_buf function
     compiler.add_extern_c_function(
-        Some(&format!("{}_deserialize_from_buf", &msg_info.get_name())),
-        &struct_name,
+        struct_ty.clone(),
         "deserialize_from_buf",
         Some(SelfArgType::Mut),
         vec![("buffer", ArgType::Buffer)],
@@ -170,8 +169,7 @@ fn add_shared_rcsga_header_repr(
 
     // add serialize_into_arena_sga function
     compiler.add_extern_c_function(
-        Some(&format!("{}_serialize_into_arena_sga", &msg_info.get_name())),
-        &struct_name,
+        struct_ty.clone(),
         "serialize_into_arena_sga",
         Some(SelfArgType::Value),
         vec![
@@ -182,7 +180,7 @@ fn add_shared_rcsga_header_repr(
                 }),
             }),
             ("arena", ArgType::Ref {
-                ty: Box::new(ArgType::new_struct("bumpalo::Bump")),
+                ty: Box::new(ArgType::new_struct("Bump")),
             }),
             ("datapath", ArgType::Ref {
                 ty: Box::new(ArgType::new_struct(datapath)),

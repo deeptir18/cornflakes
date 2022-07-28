@@ -124,17 +124,11 @@ fn add_cf_string_or_bytes(
     } else {
         ArgType::new_struct(ty)
     };
-    let struct_name = if let Some(d) = datapath {
-        format!("{}::<{}>", ty, d)
-    } else {
-        ty.to_string()
-    };
 
     ////////////////////////////////////////////////////////////////////////////
     // <ty>_new_from_bytes
     compiler.add_extern_c_function(
-        Some(&format!("{}_new_from_bytes", ty)),
-        &struct_name,
+        struct_ty.clone(),
         "new_from_bytes",
         None,
         vec![("buffer", ArgType::Buffer)],
@@ -146,8 +140,7 @@ fn add_cf_string_or_bytes(
     // <ty>_new
     if let Some(datapath) = datapath {
         compiler.add_extern_c_function(
-            Some(&format!("{}_new", ty)),
-            &struct_name,
+            struct_ty.clone(),
             "new",
             None,
             vec![
@@ -172,12 +165,8 @@ fn add_cf_string_or_bytes(
         &format!("{}_unpack", ty), true, args, false,
     );
     compiler.inner.add_context(Context::Function(func_context))?;
-    let box_from_raw = match datapath {
-        Some(datapath) => format!(
-            "Box::from_raw(self_ as *mut {}<{}>)", ty, datapath,
-        ),
-        None => format!("Box::from_raw(self_ as *mut {})", ty),
-    };
+    let box_from_raw = format!(
+        "Box::from_raw(self_ as *mut {})", &struct_ty.to_rust_str());
     compiler.inner.add_unsafe_def_with_let(false, None, "self_", &box_from_raw)?;
     // Note: The two different header types just have a different function name
     // to get a pointer to the bytes.
@@ -223,10 +212,9 @@ fn add_variable_list(
 
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_init
-    compiler.add_extern_c_function(
-        Some(&format!("{}_init", &extern_prefix)),
-        &format!("VariableList::{}",
-            &struct_ty.to_rust_str()["VariableList".len()..]),
+    compiler.add_extern_c_function_with_name(
+        &format!("{}_init", &extern_prefix),
+        struct_ty.clone(),
         "init",
         None,
         vec![("num", ArgType::Primitive("usize".to_string()))],
@@ -236,9 +224,9 @@ fn add_variable_list(
 
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_append
-    compiler.add_extern_c_function(
-        Some(&format!("{}_append", &extern_prefix)),
-        &struct_ty.to_rust_str(),
+    compiler.add_extern_c_function_with_name(
+        &format!("{}_append", &extern_prefix),
+        struct_ty.clone(),
         "append",
         Some(SelfArgType::Mut),
         vec![("val", param_ty.clone())],
@@ -248,9 +236,9 @@ fn add_variable_list(
 
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_len
-    compiler.add_extern_c_function(
-        Some(&format!("{}_len", &extern_prefix)),
-        &struct_ty.to_rust_str(),
+    compiler.add_extern_c_function_with_name(
+        &format!("{}_len", &extern_prefix),
+        struct_ty.clone(),
         "len",
         Some(SelfArgType::Value),
         vec![],
@@ -260,9 +248,9 @@ fn add_variable_list(
 
     ////////////////////////////////////////////////////////////////////////////
     // VariableList_<param_ty>_index
-    compiler.add_extern_c_function(
-        Some(&format!("{}_index", &extern_prefix)),
-        &struct_ty.to_rust_str(),
+    compiler.add_extern_c_function_with_name(
+        &format!("{}_index", &extern_prefix),
+        struct_ty.clone(),
         "index",
         Some(SelfArgType::Value),
         vec![("idx", ArgType::Primitive("usize".to_string()))],
@@ -276,15 +264,10 @@ fn add_variable_list(
 pub fn add_default_impl(
     compiler: &mut CDylibCompiler,
     msg_info: &MessageInfo,
-    datapath: Option<&str>,
+    struct_ty: &ArgType,
 ) -> Result<()> {
-    let struct_name = match datapath {
-        Some(datapath) => format!("{}::<{}>", &msg_info.get_name(), datapath),
-        None => msg_info.get_name(),
-    };
     compiler.add_extern_c_function(
-        Some(&format!("{}_default", msg_info.get_name())),
-        &struct_name,
+        struct_ty.clone(),
         "default",
         None,
         vec![],
@@ -298,25 +281,21 @@ pub fn add_impl(
     fd: &ProtoReprInfo,
     compiler: &mut CDylibCompiler,
     msg_info: &MessageInfo,
+    struct_ty: &ArgType,
     datapath: Option<&str>,
 ) -> Result<()> {
-    let struct_name = match datapath {
-        Some(datapath) => format!("{}::<{}>", &msg_info.get_name(), datapath),
-        None => msg_info.get_name(),
-    };
     compiler.add_extern_c_function(
-        Some(&format!("{}_new", msg_info.get_name())),
-        &struct_name,
+        struct_ty.clone(),
         "new",
         None,
         vec![],
-        Some(ArgType::new_struct(&msg_info.get_name())),
+        Some(struct_ty.clone()),
         false,
     )?;
 
     for field in msg_info.get_fields().iter() {
         let field_info = FieldInfo(field.clone());
-        add_field_methods(fd, compiler, msg_info, &field_info, datapath)?;
+        add_field_methods(fd, compiler, &field_info, struct_ty, datapath)?;
     }
     Ok(())
 }
@@ -324,41 +303,35 @@ pub fn add_impl(
 fn add_field_methods(
     fd: &ProtoReprInfo,
     compiler: &mut CDylibCompiler,
-    msg_info: &MessageInfo,
     field: &FieldInfo,
+    struct_ty: &ArgType,
     datapath: Option<&str>,
 ) -> Result<()> {
     // add has_x, get_x, set_x
-    add_has(compiler, msg_info, field, datapath)?;
-    add_get(fd, compiler, msg_info, field, datapath)?;
-    add_set(fd, compiler, msg_info, field, datapath)?;
+    add_has(compiler, field, struct_ty)?;
+    add_get(fd, compiler, field, struct_ty, datapath)?;
+    add_set(fd, compiler, field, struct_ty, datapath)?;
 
     // if field is a list or a nested struct, add get_mut_x
     if field.is_list() || field.is_nested_msg() {
-        add_get_mut(fd, compiler, msg_info, field, datapath)?;
+        add_get_mut(fd, compiler, field, struct_ty, datapath)?;
     }
 
     // if field is list, add init_x
     if field.is_list() {
-        add_list_init(compiler, msg_info, field, datapath)?;
+        add_list_init(compiler, field, struct_ty)?;
     }
     Ok(())
 }
 
 fn add_has(
     compiler: &mut CDylibCompiler,
-    msg_info: &MessageInfo,
     field: &FieldInfo,
-    datapath: Option<&str>,
+    struct_ty: &ArgType,
 ) -> Result<()> {
-    let struct_name = match datapath {
-        Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
-        None => msg_info.get_name(),
-    };
     let func_name = format!("has_{}", field.get_name());
     compiler.add_extern_c_function(
-        Some(&format!("{}_{}", msg_info.get_name(), &func_name)),
-        &struct_name,
+        struct_ty.clone(),
         &func_name,
         Some(SelfArgType::Value),
         vec![],
@@ -371,8 +344,8 @@ fn add_has(
 fn add_get(
     fd: &ProtoReprInfo,
     compiler: &mut CDylibCompiler,
-    msg_info: &MessageInfo,
     field: &FieldInfo,
+    struct_ty: &ArgType,
     datapath: Option<&str>,
 ) -> Result<()> {
     let return_type = {
@@ -388,14 +361,9 @@ fn add_get(
             ty => ty,
         }
     };
-    let struct_name = match datapath {
-        Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
-        None => msg_info.get_name(),
-    };
     let func_name = format!("get_{}", field.get_name());
     compiler.add_extern_c_function(
-        Some(&format!("{}_{}", msg_info.get_name(), &func_name)),
-        &struct_name,
+        struct_ty.clone(),
         &func_name,
         Some(SelfArgType::Value),
         vec![],
@@ -410,8 +378,8 @@ fn add_get(
 fn add_get_mut(
     fd: &ProtoReprInfo,
     compiler: &mut CDylibCompiler,
-    msg_info: &MessageInfo,
     field: &FieldInfo,
+    struct_ty: &ArgType,
     datapath: Option<&str>,
 ) -> Result<()> {
     let return_type = {
@@ -427,14 +395,9 @@ fn add_get_mut(
             ty => ty,
         }
     };
-    let struct_name = match datapath {
-        Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
-        None => msg_info.get_name(),
-    };
     let func_name = format!("get_mut_{}", field.get_name());
     compiler.add_extern_c_function(
-        Some(&format!("{}_{}", msg_info.get_name(), &func_name)),
-        &struct_name,
+        struct_ty.clone(),
         &func_name,
         Some(SelfArgType::Mut),
         vec![],
@@ -447,20 +410,15 @@ fn add_get_mut(
 fn add_set(
     fd: &ProtoReprInfo,
     compiler: &mut CDylibCompiler,
-    msg_info: &MessageInfo,
     field: &FieldInfo,
+    struct_ty: &ArgType,
     datapath: Option<&str>,
 ) -> Result<()> {
     let field_name = field.get_name();
     let field_type = new_arg_type(fd, field, datapath)?;
-    let struct_name = match datapath {
-        Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
-        None => msg_info.get_name(),
-    };
-    let func_name = format!("set_{}", field.get_name());
+    let func_name = format!("set_{}", &field_name);
     compiler.add_extern_c_function(
-        Some(&format!("{}_{}", msg_info.get_name(), &func_name)),
-        &struct_name,
+        struct_ty.clone(),
         &func_name,
         Some(SelfArgType::Mut),
         vec![(&field_name, field_type)],
@@ -472,17 +430,11 @@ fn add_set(
 
 fn add_list_init(
     compiler: &mut CDylibCompiler,
-    msg_info: &MessageInfo,
     field: &FieldInfo,
-    datapath: Option<&str>,
+    struct_ty: &ArgType,
 ) -> Result<()> {
-    let struct_name = match datapath {
-        Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
-        None => msg_info.get_name(),
-    };
     compiler.add_extern_c_function(
-        Some(&format!("{}_init_{}", msg_info.get_name(), field.get_name())),
-        &struct_name,
+        struct_ty.clone(),
         &format!("init_{}", field.get_name()),
         Some(SelfArgType::Mut),
         vec![("num", ArgType::Primitive("usize".to_string()))],
