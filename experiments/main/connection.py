@@ -14,7 +14,6 @@ from main import utils
 
 class ConnectionWrapper(Connection):
     def __init__(self, addr, user=None, port=22, key=None):
-        utils.debug("Connection params: host={},user={},port={},key={}".format(addr, user, port,key))
         connect_kwargs = {}
         if key is not None:
             connect_kwargs["key_filename"] = [key]
@@ -96,37 +95,40 @@ class ConnectionWrapper(Connection):
 
         return res
 
-    def stop_background_binary(self, binary_name, sudo = False):
+    def stop_background_binary(self, binary_name, quiet = False, sudo = False):
         stop_command = f"kill -9 `ps aux | grep {binary_name} | grep SCREEN | grep -v grep | awk '{{print $2}}'`"
-        return self.run(stop_command, sudo = sudo)
+        return self.run(stop_command, quiet = quiet, sudo = sudo)
 
     def file_exists(self, fname):
-        res = self.run(f"ls {fname}")
+        res = self.run(f"ls {fname}", quiet = True)
         return res.exited == 0
 
     def check_ready(self, fname, fstring):
+        if not(self.file_exists(fname)):
+            return False
         res = self.run(f"cat {fname}", quiet = True)
         if res.exited != 0:
             return False
         else:
-            print(res.stdout)
-            return str(res.stdout) == fstring
+            return str(res.stdout).strip() == fstring
 
     def prog_exists(self, prog):
         res = self.run(f"which {prog}")
         return res.exited == 0
 
-    def check_proc(self, proc_name, proc_out):
-        res = self.run(f"pgrep {proc_name}")
+    def read_file(self, fname):
+        res = self.run(f"cat {fname}", quiet = True)
+        if res.exited == 0:
+            return str(res.stdout)
+        return None
+
+
+    def check_proc(self, proc_name):
+        res = self.run(f"pgrep {proc_name}", quiet = True)
         if res.exited != 0:
             agenda.subfailure(f'failed to find running process with name \"{proc_name}\" on {self.addr}')
-            res = self.run(f'tail {proc_out}')
-            if res.exited == 0:
-                print(res.command)
-                print(res.stdout)
-            else:
-                print(res)
-            sys.exit(1)
+            return False
+        return True
 
 
     def check_file(self, grep, where):
@@ -155,16 +157,8 @@ class ConnectionWrapper(Connection):
 
         return super().put(local_file, remote, preserve_mode)
 
-    def check_ready(self, remote_file, remote_string):
-        # check whether the remote file on this connection contains string
-        # "remote string"
-        res = self.run(f"cat {remote_file}")
-        if res.exited == 0:
-            return str(res.stdout) == remote_string
-
-    
     def mkdir(self, remote_path):
-        self.run(f"mkdir -p {remote_path}")
+        self.run(f"mkdir -p {remote_path}", quiet = True)
 
     def get(self, remote_file, local=None, preserve_mode=True):
         if local is None:

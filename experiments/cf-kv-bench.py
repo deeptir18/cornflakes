@@ -37,6 +37,7 @@ class KVIteration(runner.Iteration):
                  load_trace,
                  access_trace,
                  num_threads,
+                 extra_serialization_params,
                  trial=None):
         self.avg_size = avg_size
         self.client_rates = client_rates
@@ -48,6 +49,7 @@ class KVIteration(runner.Iteration):
         self.trial = trial
         self.load_trace = load_trace
         self.access_trace = access_trace
+        self.extra_serialization_params = extra_serialization_params
 
     def __str__(self):
         return "Iteration info: client rates: {}, " \
@@ -56,27 +58,31 @@ class KVIteration(runner.Iteration):
             "num values: {}, " \
             "serialization: {}, " \
             "num_threads: {}, " \
+            "extra serialization_params: {}, "\
             "trial: {}".format(self.get_client_rate_string(),
                                self.get_size_distr_string(),
                                self.get_num_keys_string(),
                                self.get_num_values_string(),
                                self.serialization,
                                self.num_threads,
+                               str(self.extra_serialization_params),
                                self.get_trial_string())
     def hash(self):
         # hashes every argument EXCEPT for client rates.
         args = [self.size_distr, self.num_keys, self.serialization,
                 self.num_threads, self.num_values,  self.trial, slef.load_trace,
-                self.access_trace]
+                self.access_trace, str(self.extra_serialization_params)]
 
     def get_iteration_params(self):
         """
         Returns an array of parameters for this experiment.
         """
-        return ["serialization", "size_distr", "avg_size", "num_keys",
+        params= ["serialization", "size_distr", "avg_size", "num_keys",
                 "num_values", "num_threads",
                 "num_clients", "load_trace", "access_trace",
                 "offered_load_pps", "offered_load_gbps"]
+        params.extend(self.extra_serialization_params.get_iteration_params())
+        return params
 
     def get_iteration_params_values(self):
         offered_load_pps = 0
@@ -86,8 +92,8 @@ class KVIteration(runner.Iteration):
             offered_load_pps += rate * num * self.num_threads
         # convert to gbps
         offered_load_gbps = utils.get_tput_gbps(offered_load_pps,
-                self.avg_size)
-        return {
+                self.get_iteration_avg_message_size())
+        ret = {
                 "serialization": self.serialization,
                 "size_distr": self.size_distr,
                 "avg_size": self.avg_size,
@@ -100,9 +106,11 @@ class KVIteration(runner.Iteration):
                 "offered_load_pps": offered_load_pps,
                 "offered_load_gbps": offered_load_gbps,
             }
+        ret.update(self.extra_serialization_params.get_iteration_params_values())
+        return ret
 
     def get_iteration_avg_message_size(self):
-        return self.avg_size
+        return self.avg_size * self.num_values
 
     def get_num_threads(self):
         return self.num_threads
@@ -205,13 +213,11 @@ class KVIteration(runner.Iteration):
     def get_size_distr_string(self):
         return "size_{}".format(self.size_distr)
 
-    def get_serialization_folder(self, high_level_folder):
-        path = Path(high_level_folder)
-        return path / self.serialization
-
     def get_parent_folder(self, high_level_folder):
         path = Path(high_level_folder)
-        return path / self.serialization / self.get_size_distr_string() /\
+        return path / self.serialization /\
+                self.extra_serialization_params.get_subfolder() /\
+                self.get_size_distr_string() /\
             self.get_num_keys_string() /\
             self.get_num_values_string() / self.get_client_rate_string() /\
             self.get_num_threads_string()
@@ -236,8 +242,6 @@ class KVIteration(runner.Iteration):
                          config_yaml,
                          program,
                          programs_metadata):
-        utils.debug("Running get program args with host {}, program {}", host,
-                program)
         ret = {}
         ret["size_distr"] = "{}".format(self.size_distr)
         ret["num_keys"] = "{}".format(self.num_keys)
@@ -245,14 +249,7 @@ class KVIteration(runner.Iteration):
         ret["library"] = self.serialization
         ret["client_library"] = self.serialization
 
-        if ret["library"] == "cornflakes-dynamic":
-            ret["client_library"] = "cornflakes1c-dynamic"
-            ret["inline_mode"] = "objectheader"
-            ret["push_buf_type"] = "arenaorderedsga"
-        else:
-            ret["inline_mode"] = "packetheader"
-            ret["push_buf_type"] = "singlebuf"
-
+        self.extra_serialization_params.fill_in_args(ret, program)
         host_type_map = config_yaml["host_types"]
         server_host = host_type_map["server"][0]
         if program == "start_server":
@@ -261,14 +258,11 @@ class KVIteration(runner.Iteration):
             ret["mode"] = "server"
         elif program == "start_client":
             ret["queries"] = self.access_trace
-            ret["inline_mode"] = "nothing"
-            ret["push_buf_type"] = "singlebuf"
             ret["mode"] = "client"
 
             # calculate client rate
             host_options = self.get_iteration_clients(
                     host_type_map["client"])
-            utils.debug(host_options)
             rate = self.find_rate(host_options, host)
             ret["rate"] = rate
             ret["num_threads"] = self.num_threads
@@ -312,6 +306,11 @@ class KVBench(runner.Experiment):
             client_rates = [(total_args.rate, total_args.num_clients)]
             value_size = int(total_args.size / total_args.num_values)
             size_distr = "UniformOverSizes-{}".format(value_size)
+            extra_serialization_params = runner.ExtraSerializationParameters(total_args.serialization,
+                    total_args.buf_mode,
+                    total_args.inline_mode,
+                    total_args.max_sg_segments,
+                    total_args.copy_threshold)
             it = KVIteration(client_rates,
                              value_size,
                              size_distr,
@@ -320,7 +319,8 @@ class KVBench(runner.Experiment):
                              total_args.serialization,
                              total_args.load_trace,
                              total_args.access_trace,
-                             total_args.num_threads)
+                             total_args.num_threads,
+                             extra_serialization_params)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             if total_args.analysis_only or total_args.graph_only:
@@ -407,6 +407,7 @@ class KVBench(runner.Experiment):
                                 dest="serialization",
                                 choices=SERIALIZATION_LIBRARIES,
                                 required=True)
+            runner.extend_with_serialization_parameters(parser) 
         args = parser.parse_args(namespace=namespace)
         return args
 

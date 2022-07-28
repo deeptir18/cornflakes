@@ -7,6 +7,36 @@ use tracing_subscriber;
 use tracing_subscriber::{filter::LevelFilter, FmtSubscriber};
 use yaml_rust::{Yaml, YamlLoader};
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct CopyingThreshold {
+    thresh: usize,
+}
+
+impl CopyingThreshold {
+    pub fn new(thresh: usize) -> Self {
+        CopyingThreshold { thresh: thresh }
+    }
+
+    pub fn thresh(&self) -> usize {
+        self.thresh
+    }
+}
+impl std::str::FromStr for CopyingThreshold {
+    type Err = color_eyre::eyre::Error;
+    fn from_str(s: &str) -> Result<CopyingThreshold> {
+        match s.to_string().parse::<usize>() {
+            Ok(val) => Ok(CopyingThreshold::new(val)),
+            Err(e) => {
+                if s == "infinity" || s == "Infinity" || s == "INFINITY" {
+                    return Ok(CopyingThreshold::new(usize::MAX));
+                } else {
+                    bail!("Could not parse copying threshold from {}: {:?}", s, e);
+                }
+            }
+        }
+    }
+}
+
 pub fn get_thread_latlog(name: &str, thread_id: usize) -> Result<String> {
     let filename = Path::new(name);
     let stem = match filename.file_stem() {

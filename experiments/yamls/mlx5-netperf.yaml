@@ -11,6 +11,7 @@ programs:
             out: "{folder}/{host}.log"
             err: "{folder}/{host}.err.log"
         binary_to_stop: "{cornflakes_dir}/mlx5-netperf/build/mlx5-netperf"
+        binary_name: "mlx5-netperf"
         stop: kill -9 `ps aux | grep  {cornflakes_dir}/mlx5-netperf/build/mlx5-netperf | grep -v grep | awk '{{print $2}}'`
     start_client:
         host_type: "client"

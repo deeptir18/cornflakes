@@ -17,6 +17,115 @@ from main import connection
 import agenda
 import threading
 
+def extend_with_serialization_parameters(parser):
+    parser.add_argument("-pbt", "--push_buf_type",
+                                dest="buf_mode",
+                                choices=["singlebuf", "arenaorderedsga"],
+                                required=True)
+    parser.add_argument("-inline", "--inline_mode",
+                                dest="inline_mode",
+                                choices=["nothing", "packetheader",
+                                    "objectheader"],
+                                required=True)
+    parser.add_argument("-ct", "--copy_threshold",
+                                dest="copy_threshold",
+                                default = "infinity")
+    parser.add_argument("-maxseg", "--max_sg_segments",
+                                dest="max_sg_segments",
+                                default=1,
+                                type=int)
+    return parser
+
+class ExtraSerializationParameters(object):
+    def __init__(self,
+                serialization,
+                buf_mode = None,
+                inline_mode = None,
+                max_sg_segments = None,
+                copy_threshold = None):
+        self.serialization = serialization
+        
+        # extra parameters
+        if buf_mode != None:
+            self.buf_mode = buf_mode
+        else:
+            if self.serialization == "cornflakes-dynamic" or self.serialization == "cornflakes1c-dynamic":
+                self.buf_mode = "arenaorderedrcsga"
+            else:
+                self.buf_mode = "singlebuf"
+
+        if inline_mode != None:
+            self.inline_mode = inline_mode
+        else:
+            if self.serialization == "cornflakes-dynamic" or self.serialization == "cornflakes1c-dynamic":
+                self.inline_mode = "objectheader"
+            else:
+                self.inline_mode = "packetheader"
+
+        if max_sg_segments != None:
+            self.max_sg_segments = max_sg_segments
+        else:
+            if self.serialization == "cornflakes-dynamic":
+                self.max_sg_segments = 32
+            else:
+                self.max_sg_segments = 1
+
+        if copy_threshold != None:
+            self.copy_threshold = copy_threshold
+        else:
+            if self.serialization == "cornflakes-dynamic":
+                self.copy_threshold = 0
+            else:
+                self.copy_threshold = "infinity"
+
+    def fill_in_args(self, ret, program_name):
+        ret["library"] = self.serialization
+        ret["inline_mode"] = self.inline_mode
+        ret["push_buf_type"] = self.buf_mode
+        ret["copy_threshold"] = self.copy_threshold
+        ret["max_sg_segments"] = self.max_sg_segments
+            
+        if ret["library"] == "cornflakes-dynamic":
+            ret["client_library"] = "cornflakes1c-dynamic"
+
+        if program_name == "start_client":
+            ret["inline_mode"] = "nothing"
+            ret["push_buf_type"] = "singlebuf"
+            ret["copy_threshold"] = "infinity"
+            ret["max_sg_segments"] = 1
+
+    def __str__(self):
+        return "inline_mode: {}, buf_type: {}, max_sg_segments: {}, copy_threshold: {}".format(self.inline_mode, 
+                self.buf_mode,
+                self.max_sg_segments, 
+                self.copy_threshold)
+
+    def get_iteration_params(self):
+        return ["buf_mode", 
+                "inline_mode", 
+                "max_sg_segments",
+                "copy_threshold"]
+    def get_iteration_params_values(self):
+        return {
+            "buf_mode": self.buf_mode,
+            "inline_mode": self.inline_mode,
+            "max_sg_segments": self.max_sg_segments,
+            "copy_threshold": self.copy_threshold,
+            }
+    def get_buf_mode_str(self):
+        return "bufmode_{}".format(self.buf_mode)
+    def get_inline_mode_str(self):
+        return "inlinemode_{}".format(self.inline_mode)
+    def get_max_sg_segments_str(self):
+        return "maxsgsegs_{}".format(self.max_sg_segments)
+    def get_copy_threshold_str(self):
+        return "copythreshold_{}".format(self.copy_threshold)
+    def get_subfolder(self):
+        return Path(self.get_buf_mode_str()) /\
+                    self.get_inline_mode_str() /\
+                    self.get_max_sg_segments_str() /\
+                    self.get_copy_threshold_str()
+
 class UserNameSpace(object):
     pass
 
@@ -448,11 +557,14 @@ class Iteration(metaclass=abc.ABCMeta):
             f.write(format_string + os.linesep)
             f.close()
         if print_stats:
-            utils.info("Experiment results:"
-                               "offered load: {:.4f} req/s | {:.4f} Gbps, "
-                               "achieved load: {:.4f} req/s | {:.4f} Gbps, "
-                               "percentage achieved rate: {:.4f}, "
-                               "avg latency: {: .4f} \u03BCs, median: {: .4f} \u03BCs, p99: {: .4f} \u03BCs, p999:"
+            utils.info("Experiment results:\n"
+                               "\t- offered load: {:.4f} req/s | {:.4f} Gbps\n"
+                               "\t- achieved load: {:.4f} req/s | {:.4f} Gbps\n"
+                               "\t- percentage achieved rate: {:.4f}\n"
+                               "\t- avg latency: {: .4f}"
+                               "\u03BCs\n\t- median: {:"
+                               ".4f} \u03BCs\n\t- p99: {: .4f}"
+                               "\u03BCs\n\t- p999:"
                                "{: .4f} \u03BCs".format(
                                    offered_load_pps, offered_load_gbps,
                                    achieved_load_pps, achieved_load_gbps,
@@ -579,8 +691,6 @@ class Iteration(metaclass=abc.ABCMeta):
             program = programs[program_name]
             program_hosts = self.get_program_hosts(program_name,
                     host_type_map)
-            agenda.subtask(f"Args for {program_name}:"\
-                    "{program_hosts}")
             for host in program_hosts:
                 # populate program args
                 program_args = self.get_program_args(host,
@@ -604,7 +714,6 @@ class Iteration(metaclass=abc.ABCMeta):
                     if "err" in program["log"]:
                         stderr = program["log"]["err"].format(**program_args)
                 if use_perf and "perf" in program:
-                    utils.debug("current program args: {}", program_args)
                     perf_cmd = program["perf"].format(**program_args)
                     program_cmd = "{} {}".format(perf_cmd, program_cmd)
                 if pprint:
@@ -649,39 +758,93 @@ class Iteration(metaclass=abc.ABCMeta):
             return True
 
         # start server programs
+        ct = 0
+        server_failed = False
         for program_name, host in server_command_queue:
             program = programs[program_name]
             connections[host].run(**program_run_kwargs[(program_name,
                 host)])
-            # should be ready
-            time.sleep(10)
-        clients = [threading.Thread(
+            program_args = program_args_map[(program_name, host)]
+            binary_name = program["binary_name"].format(**program_args_map[(program_name, host)])
+            # give some time for process to run or fail
+            time.sleep(1)
+            while not(connections[host].check_proc(binary_name)):
+                res = status_dict[(program_name, host)]
+                stdout = res.stdout
+                stderr = res.stderr
+                if "out" in program["log"]:
+                    stdout = connections[host].read_file(program["log"]["out"].format(**program_args))
+                if "err" in program["log"]:
+                    stderr = connections[host].read_file(program["log"]["err"].format(**program_args))
+                utils.warn("Program {} on host {} failed:\n\t- stdout: "\
+                            "{}\n\t- stderr: "\
+                    "{}".format(program_name, host, stdout,
+                        stderr))
+                # kill all processes until this
+                for i in range(0, ct):
+                    prev_program = server_command_queue[i][0]
+                    prev_host = server_command_queue[i][1]
+                    res = connections[prev_host].stop_background_binary(
+                        programs[prev_program]["binary_to_stop"].format(**program_args_map[(prev_program,
+                            prev_host)]),
+                            quiet = True,
+                            sudo = True)
+                server_failed = True
+                break
+            if server_failed:
+                break
+
+
+            while not(is_ready(program_name)):
+                time.sleep(1)
+                continue
+            ct += 1
+        
+        if not(server_failed):
+            clients = [threading.Thread(
             target = run_client,
             kwargs = {"cxn": connections[host], "kwargs":
                 program_run_kwargs[(program_name, host)]})
-        for program_name, host in client_command_queue]
-        [c.start() for c in clients]
-        [c.join() for c in clients]
+            for program_name, host in client_command_queue]
+            [c.start() for c in clients]
+            [c.join() for c in clients]
 
-        ## kill the server 
-        for program_name, host in server_command_queue:
-            program = programs[program_name]
-            program_args = program_args_map[(program_name, host)]
-            binary_to_stop = program["binary_to_stop"].format(**program_args)
-            res = connections[host].stop_background_binary(
+        ## kill the server
+        if not(server_failed):
+            for program_name, host in server_command_queue:
+                program = programs[program_name]
+                program_args = program_args_map[(program_name, host)]
+                binary_to_stop = program["binary_to_stop"].format(**program_args)
+                res = connections[host].stop_background_binary(
                     binary_to_stop,
+                    quiet = True,
                     sudo = True)
-            if res.exited != 0:
-                utils.warn("Failed to kill server: stdout: {} stderr: {}".format(res.stdout, res.stderr))
+                if res.exited != 0:
+                    utils.warn("Failed to kill server: stdout: {} stderr: {}".format(res.stdout, res.stderr))
 
-        any_failed = False
-        for program_name, host in client_command_queue:
-            program = programs[program_name]
-            status = status_dict[(program_name, host)]
-            if status.exited != 0:
-                utils.warn(f"Host {host} failed to execute"\
-                "{program_name} program")
-                any_failed = True
+        any_failed = server_failed
+        if not(server_failed):
+            for program_name, host in client_command_queue:
+                program = programs[program_name]
+                program_args = program_args_map[(program_name, host)]
+                status = status_dict[(program_name, host)]
+                stdout = status.stdout
+                stderr = status.stderr
+                if "out" in program["log"]:
+                    stdout = connections[host].read_file(program["log"]["out"].format(**program_args))
+                if "err" in program["log"]:
+                    stderr = connections[host].read_file(program["log"]["err"].format(**program_args))
+                utils.warn("Program {} on host {} failed:\n\t- stdout: "\
+                            "{}\n\t- stderr: "\
+                    "{}".format(program_name, host, stdout,
+                        stderr))
+                if status.exited != 0:
+                    utils.warn("Program {} on host {} failed; stdout: {}; stderr:"\
+                    "{}".format(program_name, 
+                        host, 
+                        stdout,
+                        stderr))
+                    any_failed = True
 
         if not(any_failed):
             for program_name in programs:
@@ -701,7 +864,9 @@ class Iteration(metaclass=abc.ABCMeta):
         for host in program_host_list:
             # delete all remote tmp files
             host_tmp = machine_config["hosts"][host]["tmp_folder"]
-            connections[host].run("rm -rf {}".format(host_tmp), sudo = True)
+            connections[host].run("rm -rf {}".format(host_tmp), 
+                    sudo = True,
+                    quiet = True)
 
         # if any failed, delete local results path
         if pprint:

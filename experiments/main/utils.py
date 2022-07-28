@@ -116,7 +116,7 @@ def error(*args):
 
 def warn(*args):
     prepend = "\u2192"
-    print(Fore.BLUE + Style.BRIGHT, prepend, " [WARN]: ", Style.RESET_ALL, *args, file=sys.stderr)
+    print(Fore.BLUE + Style.BRIGHT, prepend, "[WARN]: ", Style.RESET_ALL, *args, file=sys.stderr)
 
 
 def mean_func(arr):

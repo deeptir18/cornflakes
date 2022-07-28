@@ -4,7 +4,7 @@ use cornflakes_libos::{
     datapath::{InlineMode, PushBufType},
     loadgen::request_schedule::DistributionType,
 };
-use cornflakes_utils::{AppMode, SerializationType, TraceLevel};
+use cornflakes_utils::{AppMode, CopyingThreshold, SerializationType, TraceLevel};
 use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
@@ -17,9 +17,9 @@ macro_rules! run_server(
         let mut connection = <$datapath as Datapath>::per_thread_init(datapath_params, per_thread_contexts.into_iter().nth(0).unwrap(),
         AppMode::Server)?;
 
-        connection.set_copying_threshold($opt.copying_threshold);
+        connection.set_copying_threshold($opt.copying_threshold.thresh());
         connection.set_inline_mode($opt.inline_mode);
-        tracing::info!(threshold = $opt.copying_threshold, "Setting zero-copy copying threshold");
+        tracing::info!(threshold = $opt.copying_threshold.thresh(), "Setting zero-copy copying threshold");
 
         // init ycsb load generator
         let load_generator = YCSBServerLoader::new($opt.value_size_generator, $opt.num_values, $opt.num_keys, $opt.allocate_contiguously);
@@ -83,7 +83,7 @@ macro_rules! run_client(
                     cornflakes_utils::AppMode::Client,
                 )?;
 
-                connection.set_copying_threshold(std::usize::MAX);
+                connection.set_copying_threshold(usize::MAX);
 
                 let mut ycsb_client = YCSBClient::new_ycsb_client(&opt_clone.queries.as_str(),opt_clone.client_id, i, opt_clone.num_clients, opt_clone.num_threads, opt_clone.value_size_generator.clone(), opt_clone.num_keys, opt_clone.num_values)?;
 
@@ -138,7 +138,7 @@ pub fn check_opt(opt: &mut YCSBOpt) -> Result<()> {
 
     if opt.serialization == SerializationType::CornflakesOneCopyDynamic {
         // copy all segments
-        opt.copying_threshold = usize::MAX;
+        opt.copying_threshold = CopyingThreshold::new(usize::MAX)
     }
 
     Ok(())
@@ -215,7 +215,7 @@ pub struct YCSBOpt {
         help = "Datapath copy threshold. Copies everything below this threshold. If set to infinity, tries to use zero-copy for everything. If set to 0, uses zero-copy for nothing.",
         default_value = "256"
     )]
-    pub copying_threshold: usize,
+    pub copying_threshold: CopyingThreshold,
     #[structopt(
         short = "r",
         long = "rate",
