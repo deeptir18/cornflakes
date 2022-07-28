@@ -8,6 +8,7 @@ use std::{str, path::Path};
 
 mod common;
 mod rcsga;
+mod mlx5_datapath;
 
 /// package-name-c/
 ///     src/
@@ -29,6 +30,7 @@ pub fn compile(repr: &ProtoReprInfo, output_folder: &str, options: CompileOption
         header_type: options.header_type,
         language: Language::Rust,
     })?;
+    mlx5_datapath::compile(output_folder)?;
     Ok(())
 }
 

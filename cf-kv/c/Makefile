@@ -19,6 +19,7 @@ deps:
 # 	cd $(CORNFLAKES_DIR)/linux-datapath-c/ && cargo b --release
 	cd $(CORNFLAKES_DIR)/cf-kv/ && cargo b --release
 	cd $(CF_KV_OUT_DIR)/kv-sga-cornflakes-c/ && cargo b --release
+	cd $(CF_KV_OUT_DIR)/mlx5-datapath-c/ && cargo b --release
 	cd $(CURRENT_DIR)
 
 run:
