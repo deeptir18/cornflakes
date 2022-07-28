@@ -140,7 +140,23 @@ fn gen_configuration(compiler: &mut CDylibCompiler) -> Result<()> {
 
     ////////////////////////////////////////////////////////////////////////////
     // Mlx5Connection_set_inline_mode
-    // TODO: enums
+    compiler.add_extern_c_function(
+        ArgType::new_struct("Mlx5Connection"),
+        SelfArgType::Mut,
+        "set_inline_mode",
+        vec![
+            ("inline_mode", ArgType::Enum {
+                name: "InlineMode".to_string(),
+                variants: vec![
+                    "Nothing".to_string(),
+                    "PacketHeader".to_string(),
+                    "ObjectHeader".to_string(),
+                ],
+            }),
+        ],
+        None,
+        false,
+    )?;
 
     ////////////////////////////////////////////////////////////////////////////
     // Mlx5Connection_add_memory_pool
