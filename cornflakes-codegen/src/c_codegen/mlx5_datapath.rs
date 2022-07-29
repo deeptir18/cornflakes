@@ -34,7 +34,7 @@ fn gen_dependencies(
         HeaderType::RcSga => "cornflakes_libos::ArenaOrderedRcSga",
         _ => unimplemented!(),
     })?;
-    compiler.add_dependency("cornflakes_libos::datapath::{Datapath, InlineMode}")?;
+    compiler.add_dependency("cornflakes_libos::datapath::{Datapath, InlineMode, ReceivedPkt}")?;
     compiler.add_dependency("cornflakes_utils::AppMode")?;
     compiler.add_dependency("color_eyre::eyre::Result")?;
     compiler.add_dependency("mlx5_datapath::datapath::connection::Mlx5Connection")?;
@@ -192,7 +192,19 @@ fn gen_configuration(compiler: &mut CDylibCompiler) -> Result<()> {
 }
 
 fn gen_pop(compiler: &mut CDylibCompiler) -> Result<()> {
+    ////////////////////////////////////////////////////////////////////////////
     // Mlx5Connection_pop
+    compiler.add_extern_c_function(
+        ArgType::new_struct("Mlx5Connection"),
+        SelfArgType::Mut,
+        "pop",
+        vec![],
+        Some(ArgType::Buffer(Box::new(ArgType::Struct {
+            name: "ReceivedPkt".to_string(),
+            params: vec![Box::new(ArgType::new_struct("Mlx5Connection"))],
+        }))),
+        true,
+    )?;
     Ok(())
 }
 
@@ -269,7 +281,8 @@ fn add_push_ordered_sgas_fn(compiler: &mut CDylibCompiler) -> Result<()> {
             ("n", ArgType::Primitive("usize".to_string())),
             ("msg_ids", ArgType::Buffer(Box::new(ArgType::Primitive("u32".to_string())))),
             ("conn_ids", ArgType::Buffer(Box::new(ArgType::Primitive("usize".to_string())))),
-            ("sgas", ArgType::Buffer(Box::new(ArgType::Primitive("*mut OrderedSga".to_string())))),
+            ("sgas", ArgType::Buffer(Box::new(ArgType::RefMut(Box::new(
+                ArgType::new_struct("OrderedSga")))))),
         ],
         None,
         true,
