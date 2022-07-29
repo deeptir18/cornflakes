@@ -6,6 +6,7 @@ pub fn compile(output_folder: &str, header_type: HeaderType) -> Result<()> {
     let mut compiler = CDylibCompiler::new("mlx5-datapath", &output_folder);
     gen_cargo_toml(&mut compiler)?;
     gen_dependencies(&mut compiler, header_type)?;
+    gen_received_pkt(&mut compiler)?;
     gen_constructor(&mut compiler)?;
     gen_configuration(&mut compiler)?;
     gen_pop(&mut compiler)?;
@@ -39,6 +40,57 @@ fn gen_dependencies(
     compiler.add_dependency("color_eyre::eyre::Result")?;
     compiler.add_dependency("mlx5_datapath::datapath::connection::Mlx5Connection")?;
     compiler.add_dependency("std::{ffi::CStr, net::Ipv4Addr, str::FromStr}")?;
+    Ok(())
+}
+
+fn gen_received_pkt(compiler: &mut CDylibCompiler) -> Result<()> {
+    let struct_ty = ArgType::Struct {
+        name: "ReceivedPkt".to_string(),
+        params: vec![Box::new(ArgType::new_struct("Mlx5Connection"))],
+    };
+
+    ////////////////////////////////////////////////////////////////////////////
+    // ReceivedPkt_msg_id
+    compiler.add_extern_c_function(
+        struct_ty.clone(),
+        SelfArgType::Value,
+        "msg_id",
+        vec![],
+        Some(ArgType::Primitive("u32".to_string())),
+        false,
+    )?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // ReceivedPkt_conn_id
+    compiler.add_extern_c_function(
+        struct_ty.clone(),
+        SelfArgType::Value,
+        "conn_id",
+        vec![],
+        Some(ArgType::Primitive("usize".to_string())),
+        false,
+    )?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // ReceivedPkt_unpack
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("self_", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_uchar")),
+        FunctionArg::CArg(CArgInfo::ret_len_arg()),
+    ];
+    let func_context = FunctionContext::new_extern_c(
+        "ReceivedPkt_unpack", true, args, false,
+    );
+    compiler.inner.add_context(Context::Function(func_context))?;
+    compiler.inner.add_unsafe_def_with_let(false, None, "self_",
+        &format!("Box::from_raw(self_ as *mut {})", &struct_ty.to_rust_str()))?;
+    compiler.inner.add_def_with_let(false, None, "pkt", "self_.seg(0)")?;
+    compiler.inner.add_unsafe_set("return_ptr", "pkt.as_ref().as_ptr()")?;
+    compiler.inner.add_unsafe_set("return_len_ptr", "pkt.as_ref().len()")?;
+    compiler.inner.add_func_call(None, "Box::into_raw",
+        vec!["self_".to_string()], false)?;
+    compiler.inner.pop_context()?; // end of function
+    compiler.inner.add_newline()?;
     Ok(())
 }
 
