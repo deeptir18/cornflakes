@@ -8,6 +8,7 @@
 pub mod allocator;
 pub mod datapath;
 pub mod dynamic_rcsga_hdr;
+pub mod dynamic_rcsga_hybrid_hdr;
 pub mod dynamic_sga_hdr;
 pub mod loadgen;
 pub mod mem;
@@ -1863,6 +1864,210 @@ where
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct SerializationCopyBuf<D>
+where
+    D: datapath::Datapath,
+{
+    buf: D::DatapathBuffer,
+    starting_offset: usize,
+}
+
+impl<D> SerializationCopyBuf<D>
+where
+    D: datapath::Datapath,
+{
+    pub fn new(datapath: &mut D) -> Result<Self> {
+        match datapath.allocate_mtu_tx_buffer()? {
+            Some(buf) => Ok(SerializationCopyBuf {
+                buf: buf,
+                starting_offset: 0,
+            }),
+            None => {
+                bail!("Could not allocate tx buffer for serialization copying.");
+            }
+        }
+    }
+
+    pub fn set_offset(&mut self, off: usize) {
+        self.starting_offset = off
+    }
+
+    pub fn len(&self) -> usize {
+        self.buf.as_ref().len()
+    }
+}
+
+impl<D> std::io::Write for SerializationCopyBuf<D>
+where
+    D: datapath::Datapath,
+{
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buf.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CopyContext<'a, D>
+where
+    D: datapath::Datapath,
+{
+    pub copy_buffers: bumpalo::collections::Vec<'a, SerializationCopyBuf<D>>,
+}
+
+impl<'a, D> CopyContext<'a, D>
+where
+    D: datapath::Datapath,
+{
+    #[inline]
+    pub fn data_len(&self) -> usize {
+        self.copy_buffers.iter().map(|buf| buf.len()).sum::<usize>()
+    }
+    #[inline]
+    pub fn num_segs(&self) -> usize {
+        self.copy_buffers.len()
+    }
+    #[inline]
+    pub fn new(arena: &'a bumpalo::Bump) -> Self {
+        CopyContext {
+            copy_buffers: bumpalo::collections::Vec::new_in(&arena),
+        }
+    }
+
+    #[inline]
+    pub fn push(&mut self, datapath: &mut D) -> Result<()> {
+        self.copy_buffers.push(SerializationCopyBuf::new(datapath)?);
+        Ok(())
+    }
+
+    /// Copies data into copy context.
+    /// Returns (start, end) range of copy context that buffer was copied into.
+    #[inline]
+    pub fn copy(&mut self, buf: &[u8], datapath: &mut D) -> Result<(usize, usize)> {
+        let current_data_len = self.data_len();
+        if self.copy_buffers.len() == 0 {
+            self.push(datapath);
+        }
+        let copy_buffers_len = self.copy_buffers.len();
+        let mut last_buf = &mut self.copy_buffers[copy_buffers_len - 1];
+        let mut written = last_buf.write(buf)?;
+        if buf.len() > written {
+            self.push(datapath);
+            let last_buf = &mut self.copy_buffers[copy_buffers_len];
+            written += last_buf.write(&buf[written..buf.len()])?;
+        }
+        if written != buf.len() {
+            bail!(
+                "Failed to write entire buf len into copy buffer, only wrote: {:?}",
+                written
+            );
+        }
+        return Ok((current_data_len, current_data_len + written));
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ArenaDatapathSga<'a, D>
+where
+    D: datapath::Datapath,
+{
+    // buffers user has copied into
+    copy_context: CopyContext<'a, D>,
+    // zero copy entries
+    zero_copy_entries: bumpalo::collections::Vec<'a, D::DatapathMetadata>,
+    // zero copy entry offsets
+    zero_copy_entry_offsets: bumpalo::collections::Vec<'a, usize>,
+    // actual hdr
+    header: bumpalo::collections::Vec<'a, u8>,
+}
+
+impl<'a, D> ArenaDatapathSga<'a, D>
+where
+    D: datapath::Datapath,
+{
+    pub fn new(
+        arena: &'a bumpalo::Bump,
+        copy_context: CopyContext<'a, D>,
+        num_zero_copy_entries: usize,
+        header_size: usize,
+    ) -> Self {
+        ArenaDatapathSga {
+            copy_context: copy_context,
+            zero_copy_entries: bumpalo::collections::Vec::from_iter_in(
+                std::iter::repeat(D::DatapathMetadata::default()).take(num_zero_copy_entries),
+                arena,
+            ),
+            zero_copy_entry_offsets: bumpalo::collections::Vec::with_capacity_zeroed_in(
+                num_zero_copy_entries,
+                arena,
+            ),
+            header: bumpalo::collections::Vec::with_capacity_zeroed_in(header_size, arena),
+        }
+    }
+
+    pub fn write_zero_copy_offsets(&mut self, mut offset: usize) {
+        for (header_offset, zero_copy_seg) in self
+            .zero_copy_entry_offsets
+            .iter()
+            .zip(self.zero_copy_entries.iter())
+        {
+            let seg_len = zero_copy_seg.as_ref().len();
+            let header_buffer = &mut self.header.as_mut_slice();
+            tracing::debug!(addr =? &header_buffer[*header_offset..(*header_offset + 8)].as_ptr(), "Addr without cast");
+            let mut obj_ref = MutForwardPointer(header_buffer, *header_offset);
+            tracing::debug!(
+                "At offset {}, writing in size {} and offset {}",
+                *header_offset,
+                seg_len,
+                offset,
+            );
+            obj_ref.write_size(seg_len as u32);
+            obj_ref.write_offset(offset as u32);
+            offset += seg_len;
+        }
+    }
+
+    /// Reference to header
+    pub fn get_header(&self) -> &[u8] {
+        &self.header.as_slice()
+    }
+
+    /// Get mutable reference to header
+    pub fn get_mut_header(&mut self) -> &mut [u8] {
+        self.header.as_mut_slice()
+    }
+
+    /// Get mutable reference to copy entries.
+    pub fn get_mut_copy_context(&mut self) -> &mut CopyContext<'a, D> {
+        &mut self.copy_context
+    }
+
+    /// Get mutable reference to offsets
+    pub fn get_mut_zero_copy_offsets(&mut self) -> &mut [usize] {
+        self.zero_copy_entry_offsets.as_mut_slice()
+    }
+
+    /// Get mutable reference to entries
+    pub fn get_mut_zero_copy_entries(&mut self) -> &mut [D::DatapathMetadata] {
+        self.zero_copy_entries.as_mut_slice()
+    }
+
+    /// Data length of entire SGA
+    pub fn data_len(&self) -> usize {
+        self.copy_context.data_len()
+            + self
+                .zero_copy_entries
+                .iter()
+                .map(|seg| seg.as_ref().len())
+                .sum::<usize>()
+            + self.header.len()
     }
 }
 #[derive(Debug, PartialEq, Eq, Clone)]

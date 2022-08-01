@@ -4166,6 +4166,11 @@ impl Datapath for Mlx5Connection {
         self.allocator.allocate_buffer(size)
     }
 
+    fn allocate_mtu_tx_buffer(&mut self) -> Result<Option<Self::DatapathBuffer>> {
+        self.allocator
+            .allocate_tx_buffer(<Self as Datapath>::max_packet_size())
+    }
+
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>> {
         Ok(Some(MbufMetadata::from_buf(buf)))
     }

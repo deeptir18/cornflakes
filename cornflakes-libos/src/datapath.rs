@@ -453,6 +453,9 @@ pub trait Datapath {
     /// @size: minimum size of buffer to be allocated.
     fn allocate(&mut self, size: usize) -> Result<Option<Self::DatapathBuffer>>;
 
+    /// Allocate a tx buffer with MTU size (max packet size).
+    fn allocate_mtu_tx_buffer(&mut self) -> Result<Option<Self::DatapathBuffer>>;
+
     /// Consume a datapath buffer and returns a metadata object that owns the underlying
     /// buffer.
     /// Args:
@@ -524,6 +527,6 @@ pub trait Datapath {
 
     /// Maximum possible packet size
     fn max_packet_size() -> usize {
-        9216
+        8192
     }
 }

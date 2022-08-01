@@ -523,6 +523,10 @@ impl Datapath for LinuxConnection {
         unimplemented!();
     }
 
+    fn allocate_mtu_tx_buffer(&mut self) -> Result<Option<Self::DatapathBuffer>> {
+        unimplemented!();
+    }
+
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>> {
         Ok(Some(ByteBuffer::from_buf(buf)))
     }
