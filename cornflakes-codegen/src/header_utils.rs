@@ -28,6 +28,7 @@ pub struct ProtoReprInfo {
     datapath_trait_key: String,
     datapath_trait: String,
     ref_counted_mode: bool,
+    hybrid_mode: bool,
     needs_datapath_param: bool,
 }
 
@@ -45,7 +46,12 @@ impl ProtoReprInfo {
             datapath_trait: DATAPATH_TRAIT.to_string(),
             ref_counted_mode: false,
             needs_datapath_param: false,
+            hybrid_mode: false,
         }
+    }
+
+    pub fn hybrid_mode(&self) -> bool {
+        self.hybrid_mode
     }
 
     pub fn set_needs_datapath_param(&mut self) {
@@ -66,6 +72,10 @@ impl ProtoReprInfo {
 
     pub fn set_ref_counted(&mut self) {
         self.ref_counted_mode = true;
+    }
+
+    pub fn set_hybrid_mode(&mut self) {
+        self.hybrid_mode = true;
     }
 
     pub fn get_message_map(&self) -> &HashMap<String, Message> {
@@ -169,12 +179,13 @@ impl ProtoReprInfo {
 
     pub fn get_rust_type(&self, field: FieldInfo) -> Result<String> {
         let type_params = match self.ref_counted_mode {
-            true => {
-                vec![
+            true => match self.hybrid_mode {
+                true => vec![self.get_datapath_trait_key()],
+                false => vec![
                     format!("'{}", self.lifetime_name),
                     self.get_datapath_trait_key(),
-                ]
-            }
+                ],
+            },
 
             false => {
                 vec![format!("'{}", self.lifetime_name)]
@@ -200,7 +211,7 @@ impl ProtoReprInfo {
                     }
                 };
                 let mut params: Vec<String> = Vec::default();
-                if msg.requires_lifetime(&self.message_map)? {
+                if msg.requires_lifetime(&self.message_map)? && !self.hybrid_mode() {
                     params.push(format!("'{}", self.lifetime_name));
                 }
                 if msg.requires_datapath_type_param(self.ref_counted_mode, &self.message_map)? {
@@ -218,6 +229,14 @@ impl ProtoReprInfo {
         };
 
         if self.ref_counted_mode {
+            let params = match self.hybrid_mode {
+                true => vec![base_type.clone(), self.datapath_trait_key.clone()],
+                false => vec![
+                    format!("'{}", self.lifetime_name),
+                    base_type.clone(),
+                    self.datapath_trait_key.clone(),
+                ],
+            };
             if field.is_list() {
                 match &field.0.typ {
                     FieldType::Int32
@@ -225,20 +244,14 @@ impl ProtoReprInfo {
                     | FieldType::Uint32
                     | FieldType::Uint64
                     | FieldType::Float => {
-                        return Ok(format!(
-                            "List<'{}, {}, {}>",
-                            self.lifetime_name, base_type, self.datapath_trait_key
-                        ));
+                        return Ok(format!("List<{}>", params.join(","),));
                     }
                     FieldType::String
                     | FieldType::Bytes
                     | FieldType::RefCountedBytes
                     | FieldType::RefCountedString
                     | FieldType::MessageOrEnum(_) => {
-                        return Ok(format!(
-                            "VariableList<'{}, {}, {}>",
-                            self.lifetime_name, base_type, self.datapath_trait_key
-                        ));
+                        return Ok(format!("VariableList<{}>", params.join(","),));
                     }
                     _ => {
                         bail!("FieldType {:?} not supported by compiler", field.0.typ);
@@ -249,13 +262,17 @@ impl ProtoReprInfo {
             }
         } else {
             if field.is_list() {
+                let lifetime_name_to_add = match self.hybrid_mode {
+                    false => format!("'{}, ", self.lifetime_name),
+                    true => "".to_string(),
+                };
                 match &field.0.typ {
                     FieldType::Int32
                     | FieldType::Int64
                     | FieldType::Uint32
                     | FieldType::Uint64
                     | FieldType::Float => {
-                        return Ok(format!("List<'{}, {}>", self.lifetime_name, base_type));
+                        return Ok(format!("List<{}{}>", lifetime_name_to_add, base_type));
                     }
                     FieldType::String
                     | FieldType::Bytes
@@ -263,8 +280,8 @@ impl ProtoReprInfo {
                     | FieldType::RefCountedString
                     | FieldType::MessageOrEnum(_) => {
                         return Ok(format!(
-                            "VariableList<'{}, {}>",
-                            self.lifetime_name, base_type
+                            "VariableList<{}{}>",
+                            lifetime_name_to_add, base_type
                         ));
                     }
                     _ => {
@@ -331,10 +348,12 @@ impl MessageInfo {
 
     pub fn get_type_params(&self, is_ref_counted: bool, fd: &ProtoReprInfo) -> Result<Vec<String>> {
         let mut ret: Vec<String> = Vec::default();
-        if self.requires_lifetime(&fd.get_message_map())? {
+        if self.requires_lifetime(&fd.get_message_map())? && !fd.hybrid_mode() {
             ret.push(fd.get_lifetime());
         }
-        if self.requires_datapath_type_param(is_ref_counted, &fd.get_message_map())? {
+        if self.requires_datapath_type_param(is_ref_counted, &fd.get_message_map())?
+            || fd.hybrid_mode
+        {
             ret.push(fd.get_datapath_trait_key());
         }
 
@@ -366,7 +385,8 @@ impl MessageInfo {
     ) -> Result<WhereClause> {
         if is_ref_counted
             && (self.requires_datapath_type_param(is_ref_counted, &fd.get_message_map())?
-                || fd.needs_datapath_param())
+                || fd.needs_datapath_param()
+                || fd.hybrid_mode())
         {
             return Ok(WhereClause::new(vec![WherePair::new(
                 &fd.get_datapath_trait_key(),

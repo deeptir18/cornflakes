@@ -4,6 +4,7 @@ use std::{fs::File, io::Write, path::Path, process::Command, str};
 use which::which;
 
 mod constant_codegen;
+mod hybridrcsga;
 mod linear_codegen;
 mod linear_codegen_rc;
 mod rcsga;
@@ -31,6 +32,10 @@ pub fn compile(repr: &ProtoReprInfo, output_folder: &str, options: CompileOption
         HeaderType::RcSga => {
             rcsga::compile(&repr, &mut compiler)
                 .wrap_err("RcSga codegen failed to generate code.")?;
+        }
+        HeaderType::HybridRcSga => {
+            hybridrcsga::compile(&repr, &mut compiler)
+                .wrap_err("Hybrid RcSga codegen failed to generate code.")?;
         }
     }
     compiler.flush(&repr.get_output_file(output_folder).as_path())?;
@@ -208,12 +213,7 @@ impl FunctionContext {
         }
     }
 
-    pub fn new_extern_c(
-        name: &str,
-        is_pub: bool,
-        args: Vec<FunctionArg>,
-        err_code: bool,
-    ) -> Self {
+    pub fn new_extern_c(name: &str, is_pub: bool, args: Vec<FunctionArg>, err_code: bool) -> Self {
         let ret = if err_code { "u32" } else { "" };
         let mut func_context = Self::new(name, is_pub, args, ret);
         func_context.is_extern_c = true;
@@ -235,6 +235,10 @@ impl FunctionContext {
 
         let lifetime: Option<String> = Some(func_lifetime.to_string());
 
+        let where_cl = match where_clause {
+            "" => None,
+            x => Some(x.to_string()),
+        };
         FunctionContext {
             name: name.to_string(),
             is_pub: is_pub,
@@ -243,7 +247,7 @@ impl FunctionContext {
             started: false,
             ret_type: ret_type,
             func_lifetime: lifetime,
-            where_clause: Some(where_clause.to_string()),
+            where_clause: where_cl,
         }
     }
 }
@@ -731,7 +735,8 @@ impl SerializationCompiler {
     }
 
     pub fn add_extern_crate(&mut self, crate_name: &str) -> Result<()> {
-        self.current_string.push_str(&format!("extern crate {};", crate_name));
+        self.current_string
+            .push_str(&format!("extern crate {};", crate_name));
         self.add_newline()?;
         Ok(())
     }
@@ -919,9 +924,17 @@ impl SerializationCompiler {
             false => "",
         };
 
-        let line = format!("let {}{} = {}{}({}){};", left,
-            return_ty.map(|ty| format!(": {}", ty)).unwrap_or("".to_string()),
-            caller_str, func, args.join(", "), res);
+        let line = format!(
+            "let {}{} = {}{}({}){};",
+            left,
+            return_ty
+                .map(|ty| format!(": {}", ty))
+                .unwrap_or("".to_string()),
+            caller_str,
+            func,
+            args.join(", "),
+            res
+        );
         self.add_line(&line)?;
         Ok(())
     }

@@ -1,5 +1,5 @@
-mod header_utils;
 pub mod c_codegen;
+mod header_utils;
 pub mod rust_codegen;
 pub mod utils;
 use color_eyre::eyre::{bail, Result, WrapErr};
@@ -17,6 +17,7 @@ pub enum HeaderType {
     LinearDeserializationRefCnt,
     Sga,
     RcSga,
+    HybridRcSga, // version that copies data into the buffer on set
 }
 
 impl std::str::FromStr for HeaderType {
@@ -28,6 +29,7 @@ impl std::str::FromStr for HeaderType {
             "dynamic-rc" => HeaderType::LinearDeserializationRefCnt,
             "sga" => HeaderType::Sga,
             "rcsga" => HeaderType::RcSga,
+            "hybrid-rcsga" => HeaderType::HybridRcSga,
             x => bail!("{} header type unknown.", x),
         })
     }
@@ -117,8 +119,13 @@ pub fn compile(input_file: &str, output_folder: &str, options: CompileOptions) -
     let mut repr = generate_proto_representation(input_file)?;
     if options.header_type == HeaderType::LinearDeserializationRefCnt
         || options.header_type == HeaderType::RcSga
+        || options.header_type == HeaderType::HybridRcSga
     {
         repr.set_ref_counted();
+    }
+
+    if options.header_type == HeaderType::HybridRcSga {
+        repr.set_hybrid_mode();
     }
     if options.header_type == HeaderType::Sga || options.header_type == HeaderType::RcSga {
         repr.set_lifetime_name("obj");

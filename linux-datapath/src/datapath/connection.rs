@@ -523,7 +523,7 @@ impl Datapath for LinuxConnection {
         unimplemented!();
     }
 
-    fn allocate_mtu_tx_buffer(&mut self) -> Result<Option<Self::DatapathBuffer>> {
+    fn allocate_mtu_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)> {
         unimplemented!();
     }
 

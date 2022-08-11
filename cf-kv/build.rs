@@ -10,6 +10,7 @@ use std::{
 
 fn main() {
     println!("cargo:rerun-if-changed=src/cornflakes_dynamic/kv.proto");
+    println!("cargo:rerun-if-changed=src/cornflakes_dynamic/kv_hybrid.proto");
     println!("cargo:rerun-if-changed=src/flatbuffers/cf_kv_fb.fbs");
     println!("cargo:rerun-if-changed=src/capnproto/cf_kv.capnp");
     println!("cargo:rerun-if-changed=src/protobuf/kv.proto");
@@ -43,6 +44,19 @@ fn main() {
         }
     }
 
+    let input_cf_file_sga_hybrid = input_cf_path.clone().join("kv_hybrid.proto");
+    // with ref counting hybrid
+    println!("{:?}", out_dir);
+    match compile(
+        input_cf_file_sga_hybrid.as_path().to_str().unwrap(),
+        &out_dir,
+        CompileOptions::new_with_datapath_param(HeaderType::HybridRcSga, Language::Rust),
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("Cornflakes dynamic hybrid rc sga failed: {:?}", e);
+        }
+    }
     let input_cf_file_sga = input_cf_path.clone().join("kv_nonrefcounted.proto");
     // with ref counting
     match compile(

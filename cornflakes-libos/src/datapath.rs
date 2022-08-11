@@ -231,7 +231,8 @@ pub trait Datapath {
         + Eq
         + std::fmt::Debug
         + DatapathBufferOps
-        + Default;
+        + Default
+        + Clone;
 
     /// Metadata that wraps around a datapath buffer.
     type DatapathMetadata: AsRef<[u8]>
@@ -454,7 +455,7 @@ pub trait Datapath {
     fn allocate(&mut self, size: usize) -> Result<Option<Self::DatapathBuffer>>;
 
     /// Allocate a tx buffer with MTU size (max packet size).
-    fn allocate_mtu_tx_buffer(&mut self) -> Result<Option<Self::DatapathBuffer>>;
+    fn allocate_mtu_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)>;
 
     /// Consume a datapath buffer and returns a metadata object that owns the underlying
     /// buffer.

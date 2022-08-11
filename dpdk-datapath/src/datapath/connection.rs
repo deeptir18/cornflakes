@@ -63,6 +63,16 @@ impl Default for DpdkBuffer {
     }
 }
 
+impl Clone for DpdkBuffer {
+    fn clone(&self) -> Self {
+        unsafe { rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1) }
+        DpdkBuffer {
+            mbuf: self.mbuf,
+            mempool_id: self.mempool_id,
+        }
+    }
+}
+
 impl DatapathBufferOps for DpdkBuffer {
     fn set_mempool_id(&mut self, id: MempoolID) {
         self.mempool_id = id;
@@ -75,10 +85,15 @@ impl DatapathBufferOps for DpdkBuffer {
 
 impl DpdkBuffer {
     pub fn new(mbuf: *mut rte_mbuf, mempool_id: MempoolID) -> Self {
+        unsafe { rte_pktmbuf_refcnt_update_or_free(mbuf, 1) }
         DpdkBuffer {
             mbuf: mbuf,
             mempool_id: mempool_id,
         }
+    }
+
+    pub fn increment_refcnt(&mut self) {
+        unsafe { rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1) }
     }
 
     pub fn get_inner(self) -> *mut rte_mbuf {
@@ -153,6 +168,14 @@ impl Write for DpdkBuffer {
     }
 }
 
+impl Drop for DpdkBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            rte_pktmbuf_refcnt_update_or_free(self.mbuf, -1);
+        }
+    }
+}
+
 #[derive(PartialEq, Eq)]
 pub struct RteMbufMetadata {
     /// Underlying mbuf
@@ -164,16 +187,11 @@ pub struct RteMbufMetadata {
 }
 
 impl RteMbufMetadata {
-    pub fn from_dpdk_buf(dpdk_buffer: DpdkBuffer) -> Self {
-        // data_len already set in this mbuf
+    pub fn from_dpdk_buf(mut dpdk_buffer: DpdkBuffer) -> Self {
+        // increment reference count before mbuf gets dropped
+        dpdk_buffer.increment_refcnt();
         let mbuf = dpdk_buffer.get_inner();
 
-        // increment the reference count of the underlying mbuf
-        unsafe {
-            if USING_REF_COUNTING {
-                rte_pktmbuf_refcnt_set(mbuf, 1)
-            }
-        };
         let data_len = unsafe { access!(mbuf, data_len, usize) };
 
         RteMbufMetadata {
@@ -1584,9 +1602,9 @@ impl Datapath for DpdkConnection {
         self.allocator.allocate_buffer(size)
     }
 
-    fn allocate_mtu_tx_buffer(&mut self) -> Result<Option<Self::DatapathBuffer>> {
-        self.allocator
-            .allocate_tx_buffer(<Self as Datapath>::max_packet_size())
+    fn allocate_mtu_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)> {
+        let packet_size = <Self as Datapath>::max_packet_size();
+        Ok((self.allocator.allocate_tx_buffer(packet_size)?, packet_size))
     }
 
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>> {

@@ -1,9 +1,9 @@
-pub mod kv_serializer {
+pub mod kv_serializer_hybrid {
     #![allow(unused_variables)]
     #![allow(non_camel_case_types)]
     #![allow(non_upper_case_globals)]
     #![allow(non_snake_case)]
-    include!(concat!(env!("OUT_DIR"), "/kv_rcsga_cornflakes.rs"));
+    include!(concat!(env!("OUT_DIR"), "/kv_rcsga_hybrid_cornflakes.rs"));
 }
 pub mod kv_serializer_sga {
     #![allow(unused_variables)]
@@ -11,6 +11,13 @@ pub mod kv_serializer_sga {
     #![allow(non_upper_case_globals)]
     #![allow(non_snake_case)]
     include!(concat!(env!("OUT_DIR"), "/kv_sga_cornflakes.rs"));
+}
+pub mod kv_serializer {
+    #![allow(unused_variables)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_upper_case_globals)]
+    #![allow(non_snake_case)]
+    include!(concat!(env!("OUT_DIR"), "/kv_rcsga_cornflakes.rs"));
 }
 use cornflakes_libos::{
     allocator::MempoolID,

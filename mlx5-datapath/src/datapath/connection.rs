@@ -7,10 +7,9 @@ use cornflakes_libos::{
     allocator::{MemoryPoolAllocator, MempoolID},
     datapath::{Datapath, DatapathBufferOps, InlineMode, MetadataOps, ReceivedPkt},
     dynamic_sga_hdr::SgaHeaderRepr,
-    mem::{PGSIZE_2MB, PGSIZE_4KB},
+    mem::PGSIZE_2MB,
     utils::AddressInfo,
     ArenaOrderedRcSga, ArenaOrderedSga, ConnID, MsgID, OrderedRcSga, OrderedSga, RcSga, RcSge, Sga,
-    USING_REF_COUNTING,
 };
 
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
@@ -50,6 +49,21 @@ pub struct Mlx5Buffer {
     data_len: usize,
     /// Mempool ID: which mempool was this allocated from?
     mempool_id: MempoolID,
+}
+
+impl Clone for Mlx5Buffer {
+    fn clone(&self) -> Self {
+        unsafe {
+            custom_mlx5_refcnt_update_or_free(self.mempool, self.data, self.refcnt_index as _, 1i8);
+        }
+        Mlx5Buffer {
+            data: self.data,
+            mempool: self.mempool,
+            refcnt_index: self.refcnt_index,
+            data_len: self.data_len,
+            mempool_id: self.mempool_id,
+        }
+    }
 }
 
 impl Default for Mlx5Buffer {
@@ -4166,9 +4180,9 @@ impl Datapath for Mlx5Connection {
         self.allocator.allocate_buffer(size)
     }
 
-    fn allocate_mtu_tx_buffer(&mut self) -> Result<Option<Self::DatapathBuffer>> {
-        self.allocator
-            .allocate_tx_buffer(<Self as Datapath>::max_packet_size())
+    fn allocate_mtu_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)> {
+        let packet_size = <Self as Datapath>::max_packet_size();
+        Ok((self.allocator.allocate_tx_buffer(packet_size)?, packet_size))
     }
 
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>> {
@@ -4183,10 +4197,6 @@ impl Datapath for Mlx5Connection {
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {
         // use 2MB pages for data, 2MB pages for metadata (?)
         let actual_size = cornflakes_libos::allocator::align_to_pow2(size);
-        let metadata_pgsize = match min_elts > 8192 {
-            true => PGSIZE_2MB,
-            false => PGSIZE_4KB,
-        };
         let mempool_params = sizes::MempoolAllocationParams::new(min_elts, PGSIZE_2MB, actual_size)
             .wrap_err("Incorrect mempool allocation params")?;
         tracing::info!(mempool_params = ?mempool_params, "Adding mempool");
@@ -4199,10 +4209,6 @@ impl Datapath for Mlx5Connection {
     }
 
     fn add_tx_mempool(&mut self, size: usize, min_elts: usize) -> Result<()> {
-        let metadata_pgsize = match min_elts > 8192 {
-            true => PGSIZE_4KB,
-            false => PGSIZE_2MB,
-        };
         let mempool_params = sizes::MempoolAllocationParams::new(min_elts, PGSIZE_2MB, size)
             .wrap_err("Incorrect mempool allocation params")?;
         tracing::debug!(mempool_params = ?mempool_params, "Adding mempool");

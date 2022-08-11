@@ -79,15 +79,6 @@ impl SummaryHistogram {
         &self.map
     }
 
-    fn convert_to_us(&self) -> SummaryHistogram {
-        let mut res: BTreeMap<u64, u64> = BTreeMap::default();
-        for (key, val) in self.map.iter() {
-            res.insert(*key / 1000, *val);
-        }
-
-        SummaryHistogram::new(self.precision, res, self.count, self.num_client_threads)
-    }
-
     fn value_at_quantile(&self, quantile: f64) -> Result<u64> {
         let index = (self.count as f64 * quantile) as usize;
         let mut ct = 0;
