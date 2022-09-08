@@ -44,6 +44,7 @@ submodules:
 	git submodule init
 	git submodule update --init -f --recursive
 	$(MAKE) submodules -C mlx5-datapath/mlx5-wrapper
+	$(MAKE) submodules -C mlx5-netperf
 	# apply DPDK patch to dpdk datapath submodule
 	git -C dpdk-datapath/3rdparty/dpdk apply ../dpdk-mlx.patch
 	# build dpdk datapath submodule
