@@ -10,13 +10,9 @@ if [ "$PRIMARY" = "y" ]; then
 fi
 cd protobuf
 if [ "$PRIMARY" = "y" ]; then
-    ./autogen.sh
-    ./configure
-    make -j
-    make check
+    bazel build :protoc :protobuf
 fi
-sudo make install
-sudo ldconfig
+sudo cp bazel-bin/protoc /usr/local/bin
 cd ..
 
 # clone flatbuffers
