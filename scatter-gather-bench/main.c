@@ -135,7 +135,8 @@ struct OutgoingHeader
 typedef struct ClientRequest
 {
     uint64_t timestamp; // this is within the request struct, but not sent
-    uint64_t packet_id;
+    uint32_t packet_id;
+    uint32_t id_padding;
     uint64_t segment_offsets[32]; // maximum number of segments we'd be asking for (within array_size)
 } __attribute__((packed)) ClientRequest;
 
@@ -612,7 +613,8 @@ static void initialize_client_requests_common(size_t num_total_clients) {
         }
         for (size_t iter = 0; iter < num_requests; iter++) {
             current_req->timestamp = 0; // TODO: fill this in
-            current_req->packet_id = (uint64_t)iter;
+            current_req->packet_id = (uint32_t)iter;
+            current_req->id_padding = 0;
             for (size_t i = 0; i < (size_t)num_mbufs; i++) {
                 //NETPERF_DEBUG("[Client %lu], req %lu, ,seg # %lu, index: %lu", client_id, iter, i, cur_region_idx);
                 current_req->segment_offsets[i] = cur_region_idx;
