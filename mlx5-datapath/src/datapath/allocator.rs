@@ -27,7 +27,7 @@ impl Drop for DataMempool {
                 );
             }
             tracing::warn!("Dropping data mempool {:?}", self.mempool_ptr);
-            Box::from_raw(self.mempool_ptr);
+            let _ = Box::from_raw(self.mempool_ptr);
         }
     }
 }
@@ -74,7 +74,7 @@ impl DataMempool {
                 mempool_params
             );
             unsafe {
-                Box::from_raw(mempool_ptr);
+                let _ = Box::from_raw(mempool_ptr);
             }
             bail!("Failed register mempool with params {:?}", mempool_params);
         }

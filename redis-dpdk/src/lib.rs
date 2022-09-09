@@ -28,7 +28,7 @@ pub extern "C" fn alloc_sga_vec(size: usize) -> *mut ::std::os::raw::c_void {
 #[no_mangle]
 pub extern "C" fn free_sga_vec(sga_ptr: *mut ::std::os::raw::c_void) {
     unsafe {
-        Box::from_raw(sga_ptr as *mut Vec<(MsgID, ConnID, Sga)>);
+        let _ = Box::from_raw(sga_ptr as *mut Vec<(MsgID, ConnID, Sga)>);
     }
 }
 
@@ -104,7 +104,7 @@ pub extern "C" fn new_dpdk_datapath(
 #[no_mangle]
 pub extern "C" fn drop_dpdk_connection(connection: *mut ::std::os::raw::c_void) {
     unsafe {
-        Box::from_raw(connection as *mut DpdkConnection);
+        let _ = Box::from_raw(connection as *mut DpdkConnection);
     }
 }
 

@@ -652,7 +652,7 @@ where
     ) -> Result<KVClient<R, C, D>> {
         let (ref_kv, ref_list_kv) = match server_trace {
             Some((file, load_gen)) => load_gen.new_ref_kv_state(file)?,
-            None => ((HashMap::default(), HashMap::default())),
+            None => (HashMap::default(), HashMap::default()),
         };
         Ok(KVClient {
             request_generator: request_generator,

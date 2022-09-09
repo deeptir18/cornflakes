@@ -423,10 +423,10 @@ impl Drop for Mlx5PerThreadContext {
             };
 
             unsafe {
-                Box::from_raw(thread_ptr);
+                let _ = Box::from_raw(thread_ptr);
             }
             unsafe {
-                Box::from_raw(global_context_ptr);
+                let _ = Box::from_raw(global_context_ptr);
             }
         }
     }
@@ -523,7 +523,7 @@ impl RecvMbufArray {
 impl Drop for RecvMbufArray {
     fn drop(&mut self) {
         unsafe {
-            Box::from_raw(self.array_ptr);
+            let _ = Box::from_raw(self.array_ptr);
         }
     }
 }
