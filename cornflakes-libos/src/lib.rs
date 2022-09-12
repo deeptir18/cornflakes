@@ -1956,7 +1956,9 @@ pub struct SerializationCopyBuf<D>
 where
     D: datapath::Datapath,
 {
+    // underlying datapath buffer
     buf: D::DatapathBuffer,
+    // how much is allocated
     total_len: usize,
 }
 
@@ -1964,6 +1966,9 @@ impl<D> SerializationCopyBuf<D>
 where
     D: datapath::Datapath,
 {
+    pub fn get_buffer(&self) -> D::DatapathBuffer {
+        self.buf.clone()
+    }
     pub fn new(datapath: &mut D) -> Result<Self> {
         let (buf_option, max_len) = datapath.allocate_mtu_tx_buffer()?;
         match buf_option {
@@ -2046,6 +2051,11 @@ where
     #[inline]
     pub fn num_segs(&self) -> usize {
         self.copy_buffers.len()
+    }
+
+    #[inline]
+    pub fn copy_buffers_slice(&self) -> &[SerializationCopyBuf<D>] {
+        &self.copy_buffers.as_slice()
     }
     #[inline]
     pub fn new(arena: &'a bumpalo::Bump, threshold: usize) -> Self {
@@ -2156,6 +2166,20 @@ where
         }
     }
 
+    #[inline]
+    pub fn zero_copy_entries_mut_slice(&mut self) -> &mut [D::DatapathMetadata] {
+        self.zero_copy_entries.as_mut_slice()
+    }
+
+    #[inline]
+    pub fn copy_context(&self) -> &CopyContext<'a, D> {
+        &self.copy_context
+    }
+
+    pub fn copy_len(&self) -> usize {
+        self.copy_context.data_len()
+    }
+
     /// Get mutable reference to header
     pub fn get_header(&self) -> &[u8] {
         self.header.as_slice()
@@ -2170,6 +2194,10 @@ where
                 .map(|seg| seg.as_ref().len())
                 .sum::<usize>()
             + self.header.len()
+    }
+
+    pub fn num_zero_copy_entries(&self) -> usize {
+        self.zero_copy_entries.len()
     }
 }
 #[derive(Debug, PartialEq, Eq, Clone)]

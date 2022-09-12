@@ -24,8 +24,10 @@ use cornflakes_libos::{
     datapath::{Datapath, PushBufType, ReceivedPkt},
     dynamic_rcsga_hdr::RcSgaHeaderRepr,
     dynamic_rcsga_hdr::*,
+    dynamic_rcsga_hybrid_hdr,
+    dynamic_rcsga_hybrid_hdr::HybridArenaRcSgaHdr,
     state_machine::server::ServerSM,
-    ArenaOrderedRcSga,
+    ArenaDatapathSga, ArenaOrderedRcSga, CopyContext,
 };
 use kv_serializer::*;
 
@@ -76,14 +78,14 @@ where
         &self,
         kv_server: &'kv KVServer<D>,
         pkt: &ReceivedPkt<D>,
-        datapath: &D,
+        datapath: &mut D,
         arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedRcSga<'arena, D>>
+    ) -> Result<ArenaDatapathSga<'arena, D>>
     where
         'kv: 'arena,
     {
-        let mut get_req = GetReq::new();
-        get_req.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
+        let mut get_req = kv_serializer_hybrid::GetReq::new();
+        get_req.deserialize(pkt, REQ_TYPE_SIZE)?;
         let value = match kv_server.get(get_req.get_key().to_str()?) {
             Some(v) => v,
             None => {
@@ -96,14 +98,18 @@ where
             value.as_ref().as_ptr(),
             value.as_ref().len()
         );
-        let mut get_resp = GetResp::new();
+        let mut get_resp = kv_serializer_hybrid::GetResp::new();
         get_resp.set_id(get_req.get_id());
-        get_resp.set_val(CFBytes::new(value.as_ref(), datapath)?);
-        let mut arena_sga =
-            ArenaOrderedRcSga::allocate(get_resp.num_scatter_gather_entries(), &arena);
-        get_resp.serialize_into_arena_sga(&mut arena_sga, arena, datapath, self.with_copies)?;
-        tracing::debug!("Done serializing response");
-        Ok(arena_sga)
+
+        // initialize copy context
+        let mut copy_context = CopyContext::new(arena, datapath.get_copying_threshold());
+        get_resp.set_val(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+            value.as_ref(),
+            datapath,
+            &mut copy_context,
+        )?);
+        let datapath_sga = get_resp.serialize_into_arena_datapath_sga(copy_context, arena)?;
+        Ok(datapath_sga)
     }
 
     fn handle_put<'arena>(
@@ -135,21 +141,22 @@ where
         &self,
         kv_server: &'kv KVServer<D>,
         pkt: &ReceivedPkt<D>,
-        datapath: &D,
+        datapath: &mut D,
         arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedRcSga<'arena, D>>
+    ) -> Result<ArenaDatapathSga<'arena, D>>
     where
         'kv: 'arena,
     {
-        let mut getm_req = GetMReq::new();
+        let mut getm_req = kv_serializer_hybrid::GetMReq::new();
         {
             #[cfg(feature = "profiler")]
             perftools::timer!("Deserialize pkt");
-            getm_req.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
+            getm_req.deserialize(&pkt, REQ_TYPE_SIZE)?;
         }
-        let mut getm_resp = GetMResp::new();
+        let mut getm_resp = kv_serializer_hybrid::GetMResp::new();
         getm_resp.init_vals(getm_req.get_keys().len());
         let vals = getm_resp.get_mut_vals();
+        let mut copy_context = CopyContext::new(arena, datapath.get_copying_threshold());
         for key in getm_req.get_keys().iter() {
             let value = {
                 tracing::debug!("Key bytes: {:?}", key);
@@ -171,27 +178,21 @@ where
             {
                 #[cfg(feature = "profiler")]
                 perftools::timer!("append value");
-                vals.append(CFBytes::new(value.as_ref(), datapath)?);
+                vals.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                    value.as_ref(),
+                    datapath,
+                    &mut copy_context,
+                )?);
             }
         }
         getm_resp.set_id(getm_req.get_id());
 
-        let mut arena_sga = {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("allocate sga");
-            ArenaOrderedRcSga::allocate(getm_resp.num_scatter_gather_entries(), &arena)
-        };
-        {
+        let datapath_sga = {
             #[cfg(feature = "profiler")]
             perftools::timer!("serialize sga");
-            getm_resp.serialize_into_arena_sga(
-                &mut arena_sga,
-                arena,
-                datapath,
-                self.with_copies,
-            )?;
-        }
-        Ok(arena_sga)
+            getm_resp.serialize_into_arena_datapath_sga(copy_context, arena)
+        }?;
+        Ok(datapath_sga)
     }
 
     fn handle_putm<'arena>(
@@ -218,14 +219,14 @@ where
         &self,
         list_kv_server: &'kv ListKVServer<D>,
         pkt: &ReceivedPkt<D>,
-        datapath: &D,
+        datapath: &mut D,
         arena: &'arena bumpalo::Bump,
-    ) -> Result<ArenaOrderedRcSga<'arena, D>>
+    ) -> Result<ArenaDatapathSga<'arena, D>>
     where
         'kv: 'arena,
     {
-        let mut getlist_req = GetListReq::new();
-        getlist_req.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
+        let mut getlist_req = kv_serializer_hybrid::GetListReq::new();
+        getlist_req.deserialize(&pkt, REQ_TYPE_SIZE)?;
         let value_list = match list_kv_server.get(getlist_req.get_key().to_str()?) {
             Some(v) => v,
             None => {
@@ -233,18 +234,21 @@ where
             }
         };
 
-        let mut getlist_resp = GetListResp::new();
+        let mut getlist_resp = kv_serializer_hybrid::GetListResp::new();
+        let mut copy_context = CopyContext::new(arena, datapath.get_copying_threshold());
         getlist_resp.set_id(getlist_req.get_id());
         getlist_resp.init_val_list(value_list.len());
         let list = getlist_resp.get_mut_val_list();
         for value in value_list.iter() {
-            list.append(CFBytes::new(value.as_ref(), datapath)?);
+            list.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                value.as_ref(),
+                datapath,
+                &mut copy_context,
+            )?);
         }
 
-        let mut arena_sga =
-            ArenaOrderedRcSga::allocate(getlist_resp.num_scatter_gather_entries(), &arena);
-        getlist_resp.serialize_into_arena_sga(&mut arena_sga, arena, datapath, self.with_copies)?;
-        Ok(arena_sga)
+        let datapath_sga = getlist_resp.serialize_into_arena_datapath_sga(copy_context, arena)?;
+        Ok(datapath_sga)
     }
 
     fn handle_putlist<'arena>(
@@ -348,9 +352,9 @@ where
                 MsgType::Get => {
                     let sga =
                         self.serializer
-                            .handle_get(&self.kv_server, &pkt, &datapath, &arena)?;
+                            .handle_get(&self.kv_server, &pkt, datapath, &arena)?;
                     datapath
-                        .queue_arena_ordered_rcsga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
+                        .queue_arena_datapath_sga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
                 }
                 MsgType::Put => {
                     let sga = self.serializer.handle_put(
@@ -368,7 +372,7 @@ where
                         self.serializer
                             .handle_getm(&self.kv_server, &pkt, datapath, &arena)?;
                     datapath
-                        .queue_arena_ordered_rcsga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
+                        .queue_arena_datapath_sga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
                 }
                 MsgType::PutM(_size) => {
                     let sga = self.serializer.handle_putm(
@@ -389,7 +393,7 @@ where
                         &arena,
                     )?;
                     datapath
-                        .queue_arena_ordered_rcsga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
+                        .queue_arena_datapath_sga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
                 }
                 MsgType::PutList(_size) => {
                     let sga = self.serializer.handle_putlist(

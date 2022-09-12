@@ -227,10 +227,10 @@ where
     fn inner_deserialize(&mut self, buf: &D::DatapathMetadata, header_offset: usize) -> Result<()>;
 
     #[inline]
-    fn deserialize(&mut self, pkt: ReceivedPkt<D>) -> Result<()> {
+    fn deserialize(&mut self, pkt: &ReceivedPkt<D>, offset: usize) -> Result<()> {
         // Right now, for deserialize we assume one contiguous buffer
         let metadata = pkt.seg(0);
-        self.inner_deserialize(metadata, 0)?;
+        self.inner_deserialize(metadata, offset)?;
         Ok(())
     }
 }
@@ -591,7 +591,7 @@ where
 {
     num_space: usize,
     num_set: usize,
-    elts: Vec<T>,
+    elts: Vec<T>, // TODO: maybe this should be a arena vec
     _phantom_data: PhantomData<D>,
 }
 
