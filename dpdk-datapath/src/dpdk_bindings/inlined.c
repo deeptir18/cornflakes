@@ -272,7 +272,7 @@ void rte_pktmbuf_refcnt_update_or_free_(struct rte_mbuf *packet, int16_t val) {
         rte_pktmbuf_free(packet);
         return;
     } else {
-        //rte_mbuf_refcnt_update(packet, cur_rc + val);
+        rte_mbuf_refcnt_update(packet, cur_rc + val);
         rte_mbuf_refcnt_set(packet, cur_rc + val);
     }
     //printf("[rte_mbuf_refcnt_update_] Refcnt is now %d\n", rte_mbuf_refcnt_read(packet));

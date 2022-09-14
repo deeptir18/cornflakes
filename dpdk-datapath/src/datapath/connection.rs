@@ -85,7 +85,7 @@ impl DatapathBufferOps for DpdkBuffer {
 
 impl DpdkBuffer {
     pub fn new(mbuf: *mut rte_mbuf, mempool_id: MempoolID) -> Self {
-        unsafe { rte_pktmbuf_refcnt_update_or_free(mbuf, 1) }
+        unsafe { rte_pktmbuf_refcnt_set(mbuf, 1) }
         DpdkBuffer {
             mbuf: mbuf,
             mempool_id: mempool_id,
@@ -170,6 +170,9 @@ impl Write for DpdkBuffer {
 
 impl Drop for DpdkBuffer {
     fn drop(&mut self) {
+        tracing::debug!("Dropping dpdk buffer: refcnt is {}", unsafe {
+            rte_pktmbuf_refcnt_read(self.mbuf)
+        });
         unsafe {
             rte_pktmbuf_refcnt_update_or_free(self.mbuf, -1);
         }
@@ -1378,14 +1381,16 @@ impl Datapath for DpdkConnection {
                 .allocator
                 .allocate_tx_buffer(buf.len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE)
                 .wrap_err(format!(
-                    "Could not allocate buf to copy into for buf size {}",
-                    buf.len()
+                    "Could not allocate buf to copy into for buf size {}, packet id {}",
+                    buf.len(),
+                    msg_id,
                 ))? {
                 Some(buf) => buf,
                 None => {
                     bail!(
-                        "Could not allocate buffer to copy into for buf size: {}",
-                        buf.len()
+                        "Could not allocate buffer to copy into for buf size: {}, msg id {}",
+                        buf.len(),
+                        msg_id,
                     );
                 }
             };

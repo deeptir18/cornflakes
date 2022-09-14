@@ -339,14 +339,10 @@ impl DatapathMemoryPool for MempoolInfo {
     ) -> Result<Option<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>>
     {
         let mbuf = unsafe { rte_pktmbuf_alloc(self.handle) };
-        unsafe {
-            rte_pktmbuf_refcnt_set(mbuf, 1);
-        }
-        if !mbuf.is_null() {
-            return Ok(Some(DpdkBuffer::new(mbuf, context)));
-        } else {
+        if mbuf.is_null() {
             return Ok(None);
         }
+        return Ok(Some(DpdkBuffer::new(mbuf, context)));
     }
 }
 
