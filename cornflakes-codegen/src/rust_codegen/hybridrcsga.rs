@@ -52,7 +52,7 @@ fn add_struct_definition(
         &format!("{}", msg_info.get_num_u32_bitmaps()),
     )?;
     compiler.add_newline()?;
-    let type_annotations = msg_info.get_type_params(true, &fd)?;
+    let type_annotations = msg_info.get_type_params_with_lifetime(true, &fd)?;
     let where_clause = msg_info.get_where_clause(true, &fd)?;
     let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
     let mut struct_ctx = StructContext::new(
@@ -76,7 +76,11 @@ fn add_struct_definition(
     if msg_info.has_only_int_fields(true, &fd.get_message_map())? {
         compiler.add_struct_field(
             "_x",
-            &format!("std::marker::PhantomData<{}>", fd.get_datapath_trait_key(),),
+            &format!(
+                "std::marker::PhantomData<&{}[{}]>",
+                fd.get_lifetime(),
+                fd.get_datapath_trait_key(),
+            ),
         )?;
     }
     compiler.pop_context()?;
@@ -88,7 +92,7 @@ fn add_debug_impl(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let type_annotations = msg_info.get_type_params(true, &fd)?;
+    let type_annotations = msg_info.get_type_params_with_lifetime(true, &fd)?;
     let where_clause = msg_info.get_where_clause(true, &fd)?;
     let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
     let trait_name = TraitName::new("std::fmt::Debug", vec![]);
@@ -126,7 +130,7 @@ fn add_clone_impl(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let type_annotations = msg_info.get_type_params(true, &fd)?;
+    let type_annotations = msg_info.get_type_params_with_lifetime(true, &fd)?;
     let where_clause = msg_info.get_where_clause(true, &fd)?;
     let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
     let trait_name = TraitName::new("Clone", vec![]);
@@ -157,7 +161,7 @@ fn add_default_impl(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let type_annotations = msg_info.get_type_params(true, &fd)?;
+    let type_annotations = msg_info.get_type_params_with_lifetime(true, &fd)?;
     let where_clause = msg_info.get_where_clause(true, &fd)?;
     let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
     let trait_name = TraitName::new("Default", vec![]);
@@ -201,7 +205,7 @@ fn add_impl(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let type_annotations = msg_info.get_type_params(true, &fd)?;
+    let type_annotations = msg_info.get_type_params_with_lifetime(true, &fd)?;
     let where_clause = msg_info.get_where_clause(true, &fd)?;
     let impl_context = ImplContext::new(
         StructName::new(&msg_info.get_name(), type_annotations.clone()),
@@ -440,10 +444,11 @@ fn add_header_repr(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
 ) -> Result<()> {
-    let type_annotations = msg_info.get_type_params(true, &fd)?;
+    let type_annotations = msg_info.get_type_params_with_lifetime(true, &fd)?;
     let where_clause = msg_info.get_where_clause(true, &fd)?;
     let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
-    let trait_name = TraitName::new("HybridArenaRcSgaHdr", type_annotations.clone());
+    let trait_type_annotations = msg_info.get_type_params(true, fd)?;
+    let trait_name = TraitName::new("HybridArenaRcSgaHdr", trait_type_annotations.clone());
     let impl_context = ImplContext::new(struct_name, Some(trait_name), where_clause);
     compiler.add_context(Context::Impl(impl_context))?;
 
@@ -737,6 +742,10 @@ fn add_serialization_func(
         false,
         vec![
             FunctionArg::SelfArg,
+            FunctionArg::new_arg(
+                "datapath",
+                ArgInfo::ref_mut_arg(&format!("{}", fd.get_datapath_trait_key()), None),
+            ),
             FunctionArg::new_arg("header", ArgInfo::ref_mut_arg("[u8]", None)),
             FunctionArg::new_arg("constant_header_offset", ArgInfo::owned("usize")),
             FunctionArg::new_arg("dynamic_header_start", ArgInfo::owned("usize")),
@@ -754,7 +763,7 @@ fn add_serialization_func(
                     None,
                 ),
             ),
-            FunctionArg::new_arg("zero_copy_offsets", ArgInfo::ref_mut_arg("[usize]", None)),
+            FunctionArg::new_arg("ds_offset", ArgInfo::ref_mut_arg("usize", None)),
         ],
         "Result<()>",
         "'a",
@@ -835,6 +844,7 @@ fn add_deserialization_func(
                 ),
             ),
             FunctionArg::new_arg("header_offset", ArgInfo::owned("usize")),
+            FunctionArg::new_arg("buffer_offset", ArgInfo::owned("usize")),
         ],
         "Result<()>",
     );
@@ -845,7 +855,7 @@ fn add_deserialization_func(
         false,
         None,
         "bitmap_size",
-        "self.deserialize_bitmap(buffer, header_offset)",
+        "self.deserialize_bitmap(buffer, header_offset, buffer_offset)",
     )?;
 
     let constant_off_mut = msg_info.constant_fields_left(-1) > 1;
@@ -890,10 +900,11 @@ fn add_serialization_for_field(
             | FieldType::String
             | FieldType::Bytes
             | FieldType::MessageOrEnum(_) => {
-                compiler.add_func_call(Some(format!("self.{}", field_info.get_name())), "inner_serialize", vec!["header".to_string(), "cur_constant_offset".to_string(), "cur_dynamic_offset".to_string(), 
+                compiler.add_func_call(Some(format!("self.{}", field_info.get_name())), "inner_serialize", vec!["datapath".to_string(), "header".to_string(), "cur_constant_offset".to_string(), "cur_dynamic_offset".to_string(), 
                     "copy_context".to_string(),
                     format!("&mut zero_copy_scatter_gather_entries[cur_sge_idx..(cur_sge_idx + self.{}.num_zero_copy_scatter_gather_entries())]", field_info.get_name()),
-                    format!("&mut zero_copy_offsets[cur_sge_idx..(cur_sge_idx + self.{}.num_zero_copy_scatter_gather_entries())]", field_info.get_name())], true)?;
+                    "ds_offset".to_string()],
+                    true)?;
                 used_sge_idx = true;
             }
             _ => {
@@ -912,10 +923,11 @@ fn add_serialization_for_field(
                 compiler.add_line(&format!("LittleEndian::write_{}(&mut header[cur_constant_offset..(cur_constant_offset + {})], self.{});", rust_type, field_size, &field_info.get_name()))?;
             }
             FieldType::String | FieldType::Bytes => {
-                compiler.add_func_call(Some(format!("self.{}", &field_info.get_name())), "inner_serialize", vec!["header".to_string(), "cur_constant_offset".to_string(), "cur_dynamic_offset".to_string(), 
+                compiler.add_func_call(Some(format!("self.{}", &field_info.get_name())), "inner_serialize", vec!["datapath".to_string(), "header".to_string(), "cur_constant_offset".to_string(), "cur_dynamic_offset".to_string(), 
                     "copy_context".to_string(),
                     format!("&mut zero_copy_scatter_gather_entries[cur_sge_idx..(cur_sge_idx + self.{}.num_zero_copy_scatter_gather_entries())]", field_info.get_name()),
-                format!("&mut zero_copy_offsets[cur_sge_idx..(cur_sge_idx + self.{}.num_zero_copy_scatter_gather_entries())]", field_info.get_name())], true)?;
+                    "ds_offset".to_string()],
+                true)?;
                 used_sge_idx = true;
             }
             FieldType::MessageOrEnum(_) => {
@@ -930,8 +942,10 @@ fn add_serialization_for_field(
                     ],
                     false,
                 )?;
-                compiler.add_func_call(Some(format!("self.{}", &field_info.get_name())), "inner_serialize", vec!["header".to_string(), "cur_dynamic_offset".to_string(), format!("cur_dynamic_offset + self.{}.dynamic_header_start()", field_info.get_name()), format!("&mut zero_copy_scatter_gather_entries[cur_sge_idx..(cur_sge_idx + self.{}.num_zero_copy_scatter_gather_entries())]", field_info.get_name()),
-                format!("&mut zero_copy_offsets[cur_sge_idx..(cur_sge_idx + self.{}.num_zero_copy_scatter_gather_entries())]", field_info.get_name())], true)?;
+                compiler.add_func_call(Some(format!("self.{}", &field_info.get_name())), "inner_serialize", vec![
+                    "datapath".to_string(), "header".to_string(), "cur_dynamic_offset".to_string(), format!("cur_dynamic_offset + self.{}.dynamic_header_start()", field_info.get_name()), format!("&mut zero_copy_scatter_gather_entries[cur_sge_idx..(cur_sge_idx + self.{}.num_zero_copy_scatter_gather_entries())]", field_info.get_name()),
+                "ds_offset".to_string()],
+                true)?;
                 used_sge_idx = true;
             }
             _ => {
@@ -989,7 +1003,11 @@ fn add_deserialization_for_field(
                 compiler.add_func_call(
                     Some(format!("self.{}", field_info.get_name())),
                     "inner_deserialize",
-                    vec!["buffer".to_string(), "cur_constant_offset".to_string()],
+                    vec![
+                        "buffer".to_string(),
+                        "cur_constant_offset".to_string(),
+                        "buffer_offset".to_string(),
+                    ],
                     true,
                 )?;
             }
@@ -1007,13 +1025,17 @@ fn add_deserialization_for_field(
             | FieldType::Float => {
                 compiler.add_statement(
                     &format!("self.{}", field_info.get_name()), 
-                    &format!("LittleEndian::read_{}(&buffer.as_ref()[cur_constant_offset..(cur_constant_offset + {})])", rust_type, field_info.get_header_size_str(true, true)?))?;
+                    &format!("LittleEndian::read_{}(&buffer.as_ref()[(cur_constant_offset + buffer_offset)..(cur_constant_offset + buffer_offset + {})])", rust_type, field_info.get_header_size_str(true, true)?))?;
             }
             FieldType::String | FieldType::Bytes => {
                 compiler.add_func_call(
                     Some(format!("self.{}", field_info.get_name())),
                     "inner_deserialize",
-                    vec!["buffer".to_string(), "cur_constant_offset".to_string()],
+                    vec![
+                        "buffer".to_string(),
+                        "cur_constant_offset".to_string(),
+                        "buffer_offset".to_string(),
+                    ],
                     true,
                 )?;
             }
@@ -1024,6 +1046,7 @@ fn add_deserialization_for_field(
                     vec![
                         "buffer".to_string(),
                         "read_size_and_offset(cur_constant_offset, buffer)?.1".to_string(),
+                        "buffer_offset".to_string(),
                     ],
                     true,
                 )?;

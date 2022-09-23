@@ -65,7 +65,9 @@ impl Default for DpdkBuffer {
 
 impl Clone for DpdkBuffer {
     fn clone(&self) -> Self {
-        unsafe { rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1) }
+        if self.mbuf != std::ptr::null_mut() {
+            unsafe { rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1) }
+        }
         DpdkBuffer {
             mbuf: self.mbuf,
             mempool_id: self.mempool_id,
@@ -337,7 +339,9 @@ impl Clone for RteMbufMetadata {
     fn clone(&self) -> RteMbufMetadata {
         unsafe {
             if USING_REF_COUNTING {
-                rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1);
+                if self.mbuf != std::ptr::null_mut() {
+                    rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1);
+                }
             }
         }
         RteMbufMetadata {

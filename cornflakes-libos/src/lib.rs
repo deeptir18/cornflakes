@@ -2139,26 +2139,8 @@ where
     pub fn new(
         copy_context: CopyContext<'a, D>,
         zero_copy_entries: bumpalo::collections::Vec<'a, D::DatapathMetadata>,
-        zero_copy_offsets: bumpalo::collections::Vec<'a, usize>,
-        mut header: bumpalo::collections::Vec<'a, u8>,
+        header: bumpalo::collections::Vec<'a, u8>,
     ) -> Self {
-        let mut offset = header.len() + copy_context.data_len();
-        // write in zero copy stuff into header
-        for (header_offset, zero_copy_seg) in zero_copy_offsets.iter().zip(zero_copy_entries.iter())
-        {
-            let seg_len = zero_copy_seg.as_ref().len();
-            let header_buffer = &mut header.as_mut_slice();
-            let mut obj_ref = MutForwardPointer(header_buffer, *header_offset);
-            tracing::debug!(
-                "At offset {}, writing in size {} and offset {}",
-                *header_offset,
-                seg_len,
-                offset,
-            );
-            obj_ref.write_size(seg_len as u32);
-            obj_ref.write_offset(offset as u32);
-            offset += seg_len;
-        }
         ArenaDatapathSga {
             copy_context: copy_context,
             zero_copy_entries: zero_copy_entries,

@@ -54,8 +54,15 @@ pub struct Mlx5Buffer {
 
 impl Clone for Mlx5Buffer {
     fn clone(&self) -> Self {
-        unsafe {
-            custom_mlx5_refcnt_update_or_free(self.mempool, self.data, self.refcnt_index as _, 1i8);
+        if self.data != std::ptr::null_mut() {
+            unsafe {
+                custom_mlx5_refcnt_update_or_free(
+                    self.mempool,
+                    self.data,
+                    self.refcnt_index as _,
+                    1i8,
+                );
+            }
         }
         Mlx5Buffer {
             data: self.data,
@@ -227,8 +234,10 @@ impl MbufMetadata {
         offset: usize,
         len: usize,
     ) -> Self {
-        unsafe {
-            custom_mlx5_refcnt_update_or_free(mempool, data, refcnt_index as _, 1i8);
+        if data != std::ptr::null_mut() {
+            unsafe {
+                custom_mlx5_refcnt_update_or_free(mempool, data, refcnt_index as _, 1i8);
+            }
         }
         MbufMetadata {
             data: data,

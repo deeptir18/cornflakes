@@ -180,7 +180,10 @@ impl ProtoReprInfo {
     pub fn get_rust_type(&self, field: FieldInfo) -> Result<String> {
         let type_params = match self.ref_counted_mode {
             true => match self.hybrid_mode {
-                true => vec![self.get_datapath_trait_key()],
+                true => vec![
+                    format!("'{}", &self.lifetime_name),
+                    self.get_datapath_trait_key(),
+                ],
                 false => vec![
                     format!("'{}", self.lifetime_name),
                     self.get_datapath_trait_key(),
@@ -211,7 +214,7 @@ impl ProtoReprInfo {
                     }
                 };
                 let mut params: Vec<String> = Vec::default();
-                if msg.requires_lifetime(&self.message_map)? && !self.hybrid_mode() {
+                if msg.requires_lifetime(&self.message_map)? || self.hybrid_mode() {
                     params.push(format!("'{}", self.lifetime_name));
                 }
                 if msg.requires_datapath_type_param(self.ref_counted_mode, &self.message_map)? {

@@ -133,14 +133,21 @@ where
 
     /// Copies bitmap into object's bitmap, returning the space from offset that the bitmap
     /// in the serialized header format takes.
-    fn deserialize_bitmap<'buf>(&mut self, pkt: &D::DatapathMetadata, offset: usize) -> usize {
+    fn deserialize_bitmap<'buf>(
+        &mut self,
+        pkt: &D::DatapathMetadata,
+        offset: usize,
+        buffer_offset: usize,
+    ) -> usize {
         let header = pkt.as_ref();
-        let bitmap_size = LittleEndian::read_u32(&header[offset..(offset + BITMAP_LENGTH_FIELD)]);
+        let bitmap_size = LittleEndian::read_u32(
+            &header[(buffer_offset + offset)..(buffer_offset + offset + BITMAP_LENGTH_FIELD)],
+        );
         self.set_bitmap(
             (0..std::cmp::min(bitmap_size, Self::NUM_U32_BITMAPS as u32) as usize).map(|i| {
                 let num = LittleEndian::read_u32(
-                    &header[(offset + BITMAP_LENGTH_FIELD + i * 4)
-                        ..(offset + BITMAP_LENGTH_FIELD + (i + 1) * 4)],
+                    &header[(buffer_offset + offset + BITMAP_LENGTH_FIELD + i * 4)
+                        ..(buffer_offset + offset + BITMAP_LENGTH_FIELD + (i + 1) * 4)],
                 );
                 Bitmap::<32>::from_value(num)
             }),
@@ -179,20 +186,23 @@ where
 
     fn inner_serialize<'a>(
         &self,
+        datapath: &mut D,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_offset: usize,
         copy_context: &mut CopyContext<'a, D>,
         zero_copy_entries: &mut [D::DatapathMetadata],
-        zero_copy_offsets: &mut [usize],
+        ds_offset: &mut usize,
     ) -> Result<()>;
 
     #[inline]
     fn serialize_into_arena_datapath_sga<'a>(
         &self,
+        datapath: &mut D,
         mut copy_context: CopyContext<'a, D>,
         arena: &'a bumpalo::Bump,
     ) -> Result<ArenaDatapathSga<'a, D>> {
+        tracing::debug!("Serializing into sga");
         let mut owned_hdr = {
             let size = self.total_header_size(false, true);
             bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
@@ -203,39 +213,43 @@ where
             std::iter::repeat(D::DatapathMetadata::default()).take(num_zero_copy_entries),
             arena,
         );
-        let mut zero_copy_offsets =
-            bumpalo::collections::Vec::with_capacity_zeroed_in(num_zero_copy_entries, arena);
+        let mut ds_offset = header_buffer.len() + copy_context.data_len();
 
         // inner serialize
         self.inner_serialize(
+            datapath,
             header_buffer,
             0,
             self.dynamic_header_start(),
             &mut copy_context,
             zero_copy_entries.as_mut_slice(),
-            zero_copy_offsets.as_mut_slice(),
+            &mut ds_offset,
         )?;
 
         Ok(ArenaDatapathSga::new(
             copy_context,
             zero_copy_entries,
-            zero_copy_offsets,
             owned_hdr,
         ))
     }
 
-    fn inner_deserialize(&mut self, buf: &D::DatapathMetadata, header_offset: usize) -> Result<()>;
+    fn inner_deserialize(
+        &mut self,
+        buf: &D::DatapathMetadata,
+        header_offset: usize,
+        buffer_offset: usize,
+    ) -> Result<()>;
 
     #[inline]
     fn deserialize(&mut self, pkt: &ReceivedPkt<D>, offset: usize) -> Result<()> {
         // Right now, for deserialize we assume one contiguous buffer
         let metadata = pkt.seg(0);
-        self.inner_deserialize(metadata, offset)?;
+        self.inner_deserialize(metadata, 0, offset)?;
         Ok(())
     }
 }
 
-pub enum CFBytes<D>
+pub enum CFBytes<'raw, D>
 where
     D: Datapath,
 {
@@ -243,9 +257,11 @@ where
     RefCounted(D::DatapathMetadata),
     /// Or references the user provided copy context
     Copied(CopyContextRef<D>),
+    /// Raw reference.
+    Raw(&'raw [u8]),
 }
 
-impl<D> Clone for CFBytes<D>
+impl<'raw, D> Clone for CFBytes<'raw, D>
 where
     D: Datapath,
 {
@@ -253,11 +269,12 @@ where
         match self {
             CFBytes::RefCounted(metadata) => CFBytes::RefCounted(metadata.clone()),
             CFBytes::Copied(copy_context_ref) => CFBytes::Copied(copy_context_ref.clone()),
+            CFBytes::Raw(raw_ref) => CFBytes::Raw(raw_ref),
         }
     }
 }
 
-impl<D> AsRef<[u8]> for CFBytes<D>
+impl<'raw, D> AsRef<[u8]> for CFBytes<'raw, D>
 where
     D: Datapath,
 {
@@ -265,19 +282,20 @@ where
         match self {
             CFBytes::RefCounted(m) => m.as_ref(),
             CFBytes::Copied(copy_context_ref) => copy_context_ref.as_ref(),
+            CFBytes::Raw(raw_ref) => raw_ref,
         }
     }
 }
-impl<D> Default for CFBytes<D>
+impl<'raw, D> Default for CFBytes<'raw, D>
 where
     D: Datapath,
 {
     fn default() -> Self {
-        CFBytes::RefCounted(D::DatapathMetadata::default())
+        CFBytes::Raw(&[])
     }
 }
 
-impl<D> std::fmt::Debug for CFBytes<D>
+impl<'raw, D> std::fmt::Debug for CFBytes<'raw, D>
 where
     D: Datapath,
 {
@@ -293,11 +311,15 @@ where
                 .field("start", &copy_context_ref.offset())
                 .field("len", &copy_context_ref.len())
                 .finish(),
+            CFBytes::Raw(raw_ref) => f
+                .debug_struct("CFBytes raw")
+                .field("addr", raw_ref)
+                .finish(),
         }
     }
 }
 
-impl<D> CFBytes<D>
+impl<'raw, D> CFBytes<'raw, D>
 where
     D: Datapath,
 {
@@ -322,7 +344,7 @@ where
     }
 }
 
-impl<D> HybridArenaRcSgaHdr<D> for CFBytes<D>
+impl<'raw, D> HybridArenaRcSgaHdr<D> for CFBytes<'raw, D>
 where
     D: Datapath,
 {
@@ -351,6 +373,7 @@ where
         match self {
             CFBytes::RefCounted(_) => 1,
             CFBytes::Copied(_) => 0,
+            CFBytes::Raw(_) => 0,
         }
     }
 
@@ -366,17 +389,22 @@ where
     #[inline]
     fn inner_serialize<'a>(
         &self,
+        datapath: &mut D,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         _dynamic_header_start: usize,
         copy_context: &mut CopyContext<'a, D>,
         zero_copy_scatter_gather_entries: &mut [D::DatapathMetadata],
-        zero_copy_offsets: &mut [usize],
+        ds_offset: &mut usize,
     ) -> Result<()> {
         match self {
             CFBytes::RefCounted(metadata) => {
                 zero_copy_scatter_gather_entries[0] = metadata.clone();
-                zero_copy_offsets[0] = constant_header_offset;
+                let offset_to_write = *ds_offset;
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                obj_ref.write_size(metadata.as_ref().len() as u32);
+                obj_ref.write_offset(offset_to_write as u32);
+                *ds_offset += metadata.as_ref().len();
             }
             CFBytes::Copied(copy_context_ref) => {
                 // check the copy_context against the copy context ref
@@ -387,24 +415,38 @@ where
                 obj_ref.write_size(copy_context_ref.len() as u32);
                 obj_ref.write_offset(offset_to_write as u32);
             }
+            CFBytes::Raw(raw_ref) => {
+                // copy into the copy context
+                let copy_context_ref = copy_context.copy(raw_ref, datapath)?;
+                let offset_to_write = copy_context_ref.total_offset() + header_buffer.len();
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                obj_ref.write_size(copy_context_ref.len() as u32);
+                obj_ref.write_offset(offset_to_write as u32);
+            }
         }
         Ok(())
     }
 
     #[inline]
-    fn inner_deserialize(&mut self, buf: &D::DatapathMetadata, header_offset: usize) -> Result<()> {
+    fn inner_deserialize(
+        &mut self,
+        buf: &D::DatapathMetadata,
+        header_offset: usize,
+        buffer_offset: usize,
+    ) -> Result<()> {
         let mut new_metadata = buf.clone();
-        let forward_pointer = ForwardPointer(buf.as_ref(), header_offset);
+        let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
+        let original_offset = buf.offset();
         new_metadata.set_data_len_and_offset(
             forward_pointer.get_size() as usize,
-            forward_pointer.get_offset() as usize,
+            forward_pointer.get_offset() as usize + original_offset + buffer_offset,
         )?;
         *self = CFBytes::RefCounted(new_metadata);
         Ok(())
     }
 }
 
-pub enum CFString<D>
+pub enum CFString<'raw, D>
 where
     D: Datapath,
 {
@@ -412,9 +454,10 @@ where
     RefCounted(D::DatapathMetadata),
     /// Or references the user provided copy context
     Copied(CopyContextRef<D>),
+    Raw(&'raw [u8]),
 }
 
-impl<D> Clone for CFString<D>
+impl<'raw, D> Clone for CFString<'raw, D>
 where
     D: Datapath,
 {
@@ -422,11 +465,12 @@ where
         match self {
             CFString::RefCounted(metadata) => CFString::RefCounted(metadata.clone()),
             CFString::Copied(copy_context_ref) => CFString::Copied(copy_context_ref.clone()),
+            CFString::Raw(raw_ref) => CFString::Raw(raw_ref),
         }
     }
 }
 
-impl<D> AsRef<[u8]> for CFString<D>
+impl<'raw, D> AsRef<[u8]> for CFString<'raw, D>
 where
     D: Datapath,
 {
@@ -434,19 +478,20 @@ where
         match self {
             CFString::RefCounted(m) => m.as_ref(),
             CFString::Copied(copy_context_ref) => copy_context_ref.as_ref(),
+            CFString::Raw(raw_ref) => raw_ref,
         }
     }
 }
-impl<D> Default for CFString<D>
+impl<'raw, D> Default for CFString<'raw, D>
 where
     D: Datapath,
 {
     fn default() -> Self {
-        CFString::RefCounted(D::DatapathMetadata::default())
+        CFString::Raw(&[])
     }
 }
 
-impl<D> std::fmt::Debug for CFString<D>
+impl<'raw, D> std::fmt::Debug for CFString<'raw, D>
 where
     D: Datapath,
 {
@@ -462,11 +507,15 @@ where
                 .field("start", &copy_context_ref.offset())
                 .field("len", &copy_context_ref.len())
                 .finish(),
+            CFString::Raw(raw_ref) => f
+                .debug_struct("CFString raw")
+                .field("addr", raw_ref)
+                .finish(),
         }
     }
 }
 
-impl<D> CFString<D>
+impl<'raw, D> CFString<'raw, D>
 where
     D: Datapath,
 {
@@ -502,7 +551,7 @@ where
     }
 }
 
-impl<D> HybridArenaRcSgaHdr<D> for CFString<D>
+impl<'raw, D> HybridArenaRcSgaHdr<D> for CFString<'raw, D>
 where
     D: Datapath,
 {
@@ -531,6 +580,7 @@ where
         match self {
             CFString::RefCounted(_) => 1,
             CFString::Copied(_) => 0,
+            CFString::Raw(_) => 0,
         }
     }
 
@@ -546,17 +596,22 @@ where
     #[inline]
     fn inner_serialize<'a>(
         &self,
+        datapath: &mut D,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         _dynamic_header_start: usize,
         copy_context: &mut CopyContext<'a, D>,
         zero_copy_scatter_gather_entries: &mut [D::DatapathMetadata],
-        zero_copy_offsets: &mut [usize],
+        ds_offset: &mut usize,
     ) -> Result<()> {
         match self {
             CFString::RefCounted(metadata) => {
                 zero_copy_scatter_gather_entries[0] = metadata.clone();
-                zero_copy_offsets[0] = constant_header_offset;
+                let offset_to_write = *ds_offset;
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                obj_ref.write_size(metadata.as_ref().len() as u32);
+                obj_ref.write_offset(offset_to_write as u32);
+                *ds_offset += metadata.as_ref().len();
             }
             CFString::Copied(copy_context_ref) => {
                 // check the copy_context against the copy context ref
@@ -567,17 +622,30 @@ where
                 obj_ref.write_size(copy_context_ref.len() as u32);
                 obj_ref.write_offset(offset_to_write as u32);
             }
+            CFString::Raw(raw_ref) => {
+                let copy_context_ref = copy_context.copy(raw_ref, datapath)?;
+                let offset_to_write = copy_context_ref.total_offset() + header_buffer.len();
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                obj_ref.write_size(copy_context_ref.len() as u32);
+                obj_ref.write_offset(offset_to_write as u32);
+            }
         }
         Ok(())
     }
 
     #[inline]
-    fn inner_deserialize(&mut self, buf: &D::DatapathMetadata, header_offset: usize) -> Result<()> {
+    fn inner_deserialize(
+        &mut self,
+        buf: &D::DatapathMetadata,
+        header_offset: usize,
+        buffer_offset: usize,
+    ) -> Result<()> {
         let mut new_metadata = buf.clone();
-        let forward_pointer = ForwardPointer(buf.as_ref(), header_offset);
+        let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
+        let original_offset = buf.offset();
         new_metadata.set_data_len_and_offset(
             forward_pointer.get_size() as usize,
-            forward_pointer.get_offset() as usize,
+            forward_pointer.get_offset() as usize + original_offset + buffer_offset,
         )?;
         *self = CFString::RefCounted(new_metadata);
         Ok(())
@@ -755,15 +823,17 @@ where
     #[inline]
     fn inner_serialize<'a>(
         &self,
+        datapath: &mut D,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
         copy_context: &mut CopyContext<'a, D>,
         zero_copy_scatter_gather_entries: &mut [D::DatapathMetadata],
-        zero_copy_offsets: &mut [usize],
+        ds_offset: &mut usize,
     ) -> Result<()> {
         #[cfg(feature = "profiler")]
         perftools::timer!("List inner serialize");
+        tracing::debug!("List inner serialize");
 
         {
             let mut forward_pointer = MutForwardPointer(header_buffer, constant_header_offset);
@@ -784,21 +854,23 @@ where
                 forward_offset.write_size(elt.dynamic_header_size() as u32);
                 forward_offset.write_offset(cur_dynamic_off as u32);
                 elt.inner_serialize(
+                    datapath,
                     header_buffer,
                     cur_dynamic_off,
                     cur_dynamic_off + elt.dynamic_header_start(),
                     copy_context,
                     &mut zero_copy_scatter_gather_entries[sge_idx..(sge_idx + required_sges)],
-                    &mut zero_copy_offsets[sge_idx..(sge_idx + required_sges)],
+                    ds_offset,
                 )?;
             } else {
                 elt.inner_serialize(
+                    datapath,
                     header_buffer,
                     dynamic_header_start + T::CONSTANT_HEADER_SIZE * i,
                     cur_dynamic_off,
                     copy_context,
                     &mut zero_copy_scatter_gather_entries[sge_idx..(sge_idx + required_sges)],
-                    &mut zero_copy_offsets[sge_idx..(sge_idx + required_sges)],
+                    ds_offset,
                 )?;
             }
             sge_idx += required_sges;
@@ -812,8 +884,9 @@ where
         &mut self,
         buffer: &D::DatapathMetadata,
         constant_offset: usize,
+        buffer_offset: usize,
     ) -> Result<()> {
-        let forward_pointer = ForwardPointer(buffer.as_ref(), constant_offset);
+        let forward_pointer = ForwardPointer(buffer.as_ref(), constant_offset + buffer_offset);
         let size = forward_pointer.get_size() as usize;
         let dynamic_offset = forward_pointer.get_offset() as usize;
 
@@ -825,13 +898,17 @@ where
 
         for (i, elt) in self.elts.iter_mut().take(size).enumerate() {
             if elt.dynamic_header_size() == 0 {
-                elt.inner_deserialize(buffer, dynamic_offset + i * T::CONSTANT_HEADER_SIZE)?;
+                elt.inner_deserialize(
+                    buffer,
+                    dynamic_offset + i * T::CONSTANT_HEADER_SIZE,
+                    buffer_offset,
+                )?;
             } else {
                 let (_size, dynamic_off) = read_size_and_offset::<D>(
                     dynamic_offset + i * T::CONSTANT_HEADER_SIZE,
                     buffer,
                 )?;
-                elt.inner_deserialize(buffer, dynamic_off)?;
+                elt.inner_deserialize(buffer, dynamic_off, buffer_offset)?;
             }
         }
         Ok(())

@@ -108,7 +108,8 @@ where
             datapath,
             &mut copy_context,
         )?);
-        let datapath_sga = get_resp.serialize_into_arena_datapath_sga(copy_context, arena)?;
+        let datapath_sga =
+            get_resp.serialize_into_arena_datapath_sga(datapath, copy_context, arena)?;
         Ok(datapath_sga)
     }
 
@@ -186,11 +187,12 @@ where
             }
         }
         getm_resp.set_id(getm_req.get_id());
+        tracing::debug!("Sending back {:?}", getm_resp);
 
         let datapath_sga = {
             #[cfg(feature = "profiler")]
             perftools::timer!("serialize sga");
-            getm_resp.serialize_into_arena_datapath_sga(copy_context, arena)
+            getm_resp.serialize_into_arena_datapath_sga(datapath, copy_context, arena)
         }?;
         Ok(datapath_sga)
     }
@@ -247,7 +249,8 @@ where
             )?);
         }
 
-        let datapath_sga = getlist_resp.serialize_into_arena_datapath_sga(copy_context, arena)?;
+        let datapath_sga =
+            getlist_resp.serialize_into_arena_datapath_sga(datapath, copy_context, arena)?;
         Ok(datapath_sga)
     }
 
