@@ -27,6 +27,7 @@ const RECEIVE_BURST_SIZE: usize = 32;
 const SEND_BURST_SIZE: usize = 32;
 const MAX_SCATTERS: usize = 32;
 const MEMPOOL_MAX_SIZE: usize = 65536;
+const TX_MEMPOOL_MIN_ELTS: usize = 8192;
 
 /// RX and TX Prefetch, Host, and Write-back threshold values should be
 /// carefully set for optimal performance. Consult the network
@@ -772,7 +773,7 @@ impl DpdkConnection {
         buffer_size: usize,
         data_len: usize,
     ) -> Result<DpdkBuffer> {
-        let mut dpdk_buffer = match self.allocator.allocate_tx_buffer(buffer_size)? {
+        let mut dpdk_buffer = match self.allocator.allocate_tx_buffer()? {
             Some(x) => x,
             None => {
                 bail!("Error allocating mbuf to copy header into");
@@ -869,7 +870,7 @@ impl DpdkConnection {
                     true => {
                         match self
                             .allocator
-                            .allocate_tx_buffer(data_segment_length)
+                            .allocate_tx_buffer()
                             .wrap_err("Could not allocate dpdk buffer to copy into")?
                         {
                             Some(x) => (0, x),
@@ -967,7 +968,7 @@ impl DpdkConnection {
                     true => {
                         match self
                             .allocator
-                            .allocate_tx_buffer(data_segment_length)
+                            .allocate_tx_buffer()
                             .wrap_err("Could not allocate dpdk buffer to copy into")?
                         {
                             Some(x) => (0, x),
@@ -1302,8 +1303,23 @@ impl Datapath for DpdkConnection {
     where
         Self: Sized,
     {
-        let mut allocator = MemoryPoolAllocator::default();
-        allocator.add_recv_mempool(MempoolInfo::new(context.get_recv_mempool())?);
+        let rx_mempool = MempoolInfo::new(context.get_recv_mempool())?;
+        // add a tx mempool
+        let tx_value_size = align_up(
+            <Self as Datapath>::max_packet_size() + RTE_PKTMBUF_HEADROOM as usize,
+            256,
+        );
+        let tx_mempool_name = format!("thread_{}_tx_mempool", context.get_queue_id());
+        let mempool = create_mempool(&tx_mempool_name, 1, tx_value_size, TX_MEMPOOL_MIN_ELTS - 1)
+            .wrap_err(format!(
+            "Unable to add mempool {:?} to mempool allocator; actual value_size {}, num_values {}",
+            tx_mempool_name,
+            tx_value_size,
+            TX_MEMPOOL_MIN_ELTS - 1
+        ))?;
+        let tx_mempool = MempoolInfo::new(mempool)?;
+        let allocator = MemoryPoolAllocator::new(rx_mempool, tx_mempool)?;
+
         Ok(DpdkConnection {
             thread_context: context,
             mode: mode,
@@ -1381,14 +1397,11 @@ impl Datapath for DpdkConnection {
         for (i, (msg_id, conn_id, buf)) in pkts.iter().enumerate() {
             self.insert_into_outgoing_map(*msg_id, *conn_id);
             // allocate buffer to copy data into
-            let mut dpdk_buffer = match self
-                .allocator
-                .allocate_tx_buffer(buf.len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE)
-                .wrap_err(format!(
-                    "Could not allocate buf to copy into for buf size {}, packet id {}",
-                    buf.len(),
-                    msg_id,
-                ))? {
+            let mut dpdk_buffer = match self.allocator.allocate_tx_buffer().wrap_err(format!(
+                "Could not allocate buf to copy into for buf size {}, packet id {}",
+                buf.len(),
+                msg_id,
+            ))? {
                 Some(buf) => buf,
                 None => {
                     bail!(
@@ -1611,9 +1624,9 @@ impl Datapath for DpdkConnection {
         self.allocator.allocate_buffer(size)
     }
 
-    fn allocate_mtu_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)> {
+    fn allocate_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)> {
         let packet_size = <Self as Datapath>::max_packet_size();
-        Ok((self.allocator.allocate_tx_buffer(packet_size)?, packet_size))
+        Ok((self.allocator.allocate_tx_buffer()?, packet_size))
     }
 
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>> {
@@ -1622,56 +1635,6 @@ impl Datapath for DpdkConnection {
 
     fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>> {
         self.allocator.recover_buffer(buf)
-    }
-
-    fn add_tx_mempool(&mut self, value_size: usize, min_elts: usize) -> Result<()> {
-        let name = format!(
-            "thread_{}_mempool_id_{}",
-            self.thread_context.get_queue_id(),
-            self.allocator.num_mempools_so_far()
-        );
-        tracing::info!(name = ?name, value_size, min_elts, "Adding mempool");
-        let (num_values, num_mempools) = {
-            let log2 = (min_elts as f64).log2().ceil() as u32;
-            let num_elts = usize::pow(2, log2) as usize;
-            let num_mempools = {
-                if num_elts < MEMPOOL_MAX_SIZE {
-                    1
-                } else {
-                    num_elts / MEMPOOL_MAX_SIZE
-                }
-            };
-            (num_elts / num_mempools, num_mempools)
-        };
-        let actual_value_size = align_up(value_size + RTE_PKTMBUF_HEADROOM as usize, 256);
-        tracing::info!(
-            "Creating {} mempools of amount {}, actual value size {}",
-            num_mempools,
-            num_values,
-            actual_value_size
-        );
-        for i in 0..num_mempools {
-            let mempool_name = format!("{}_{}", name, i);
-            let mempool = create_mempool(
-                &mempool_name,
-                1,
-                actual_value_size,
-                num_values - 1,
-            )
-            .wrap_err(format!(
-                "Unable to add mempool {:?} to mempool allocator; actual value_size {}, num_values {}",
-                name,actual_value_size, num_values
-            ))?;
-            tracing::debug!(
-                "Created mempool avail count: {}, in_use count: {}",
-                unsafe { rte_mempool_avail_count(mempool) },
-                unsafe { rte_mempool_in_use_count(mempool) },
-            );
-            let _ = self
-                .allocator
-                .add_tx_mempool(actual_value_size, MempoolInfo::new(mempool)?);
-        }
-        Ok(())
     }
 
     fn add_memory_pool(&mut self, value_size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {

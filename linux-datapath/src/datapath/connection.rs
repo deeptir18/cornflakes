@@ -523,7 +523,7 @@ impl Datapath for LinuxConnection {
         unimplemented!();
     }
 
-    fn allocate_mtu_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)> {
+    fn allocate_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)> {
         unimplemented!();
     }
 
@@ -533,10 +533,6 @@ impl Datapath for LinuxConnection {
 
     fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>> {
         Ok(Some(ByteBuffer::from_raw_buf(buf)))
-    }
-
-    fn add_tx_mempool(&mut self, _size: usize, _min_elts: usize) -> Result<()> {
-        unimplemented!();
     }
 
     fn add_memory_pool(&mut self, _size: usize, _min_elts: usize) -> Result<Vec<MempoolID>> {

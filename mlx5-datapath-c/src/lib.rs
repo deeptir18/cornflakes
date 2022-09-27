@@ -27,10 +27,7 @@ pub struct ReceivedPkt {
 
 // TODO(ygina): move into shared library?
 #[no_mangle]
-pub extern "C" fn OrderedSga_allocate(
-    size: usize,
-    return_ptr: *mut *mut ::std::os::raw::c_void,
-) {
+pub extern "C" fn OrderedSga_allocate(size: usize, return_ptr: *mut *mut ::std::os::raw::c_void) {
     let ordered_sga = OrderedSga::allocate(size);
     let value = Box::into_raw(Box::new(ordered_sga));
     unsafe { *return_ptr = value as _ };
@@ -130,23 +127,15 @@ pub extern "C" fn Mlx5Connection_add_memory_pool(
 }
 
 #[no_mangle]
-pub extern "C" fn Mlx5Connection_add_tx_mempool(
-    conn: *mut ::std::os::raw::c_void,
-    size: usize,
-    min_elts: usize,
-) {
-    let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
-    conn_box.add_tx_mempool(size, min_elts).unwrap();
-    Box::into_raw(conn_box);
-}
-
-#[no_mangle]
 pub extern "C" fn Mlx5Connection_pop(
     conn: *mut ::std::os::raw::c_void,
     n: *mut usize,
 ) -> *mut ReceivedPkt {
     let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
-    let mut pkts = conn_box.pop().unwrap().into_iter()
+    let mut pkts = conn_box
+        .pop()
+        .unwrap()
+        .into_iter()
         .map(|pkt| {
             // TODO(ygina): assume one segment
             let seg = pkt.seg(0);
@@ -163,9 +152,11 @@ pub extern "C" fn Mlx5Connection_pop(
         })
         .collect::<Vec<ReceivedPkt>>();
     Box::into_raw(conn_box);
-    unsafe { *n = pkts.len(); }
+    unsafe {
+        *n = pkts.len();
+    }
     let ptr = pkts.as_mut_ptr();
-    Box::into_raw(Box::new(pkts));  // should we return a ptr to the ptr?
+    Box::into_raw(Box::new(pkts)); // should we return a ptr to the ptr?
     ptr
 }
 
@@ -180,15 +171,14 @@ pub extern "C" fn Mlx5Connection_push_ordered_sgas(
     let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
     let msg_ids: &[u32] = unsafe { std::slice::from_raw_parts(msg_ids, n) };
     let conn_ids: &[usize] = unsafe { std::slice::from_raw_parts(conn_ids, n) };
-    let ordered_sgas: &[*mut OrderedSga] = unsafe {
-        std::slice::from_raw_parts(ordered_sgas as *const *mut OrderedSga, n)
-    };
+    let ordered_sgas: &[*mut OrderedSga] =
+        unsafe { std::slice::from_raw_parts(ordered_sgas as *const *mut OrderedSga, n) };
     let data = (0..n)
-        .map(|i| (
-            msg_ids[i],
-            conn_ids[i],
-            unsafe { *Box::from_raw(ordered_sgas[i]) },
-        ))
+        .map(|i| {
+            (msg_ids[i], conn_ids[i], unsafe {
+                *Box::from_raw(ordered_sgas[i])
+            })
+        })
         .collect::<Vec<_>>();
     conn_box.push_ordered_sgas(&data[..]).unwrap();
     Box::into_raw(conn_box);
@@ -205,11 +195,11 @@ pub extern "C" fn Mlx5Connection_queue_arena_ordered_rcsga(
     let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
     let arg0 = msg_id;
     let arg1 = conn_id;
-    let arg2 = unsafe { Box::from_raw(arena_ordered_rc_sga as *mut
-        ArenaOrderedRcSga<Mlx5Connection>) };
+    let arg2 =
+        unsafe { Box::from_raw(arena_ordered_rc_sga as *mut ArenaOrderedRcSga<Mlx5Connection>) };
     let arg3 = end_batch;
     match conn_box.queue_arena_ordered_rcsga((arg0, arg1, *arg2), arg3) {
-        Ok(()) => {},
+        Ok(()) => {}
         Err(e) => {
             eprintln!("{:?}", e);
             return 1;
@@ -230,9 +220,8 @@ pub extern "C" fn Mlx5Connection_queue_single_buffer_with_copy(
 ) -> u32 {
     let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
     let buffer = unsafe { std::slice::from_raw_parts(buffer, buffer_len) };
-    match conn_box.queue_single_buffer_with_copy(
-            (msg_id, conn_id, buffer), end_batch) {
-        Ok(()) => {},
+    match conn_box.queue_single_buffer_with_copy((msg_id, conn_id, buffer), end_batch) {
+        Ok(()) => {}
         Err(e) => {
             eprintln!("{:?}", e);
             return 1;

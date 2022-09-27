@@ -37,6 +37,8 @@ use perftools;
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 const COMPLETION_BUDGET: usize = 32;
 const RECEIVE_BURST_SIZE: usize = 32;
+const MAX_BUFFER_SIZE: usize = 16384;
+const MEMPOOL_MIN_ELTS: usize = 8192;
 
 #[derive(PartialEq, Eq)]
 pub struct Mlx5Buffer {
@@ -1067,7 +1069,7 @@ impl Mlx5Connection {
             let mut completion =
                 unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
             if allocation_size > 0 {
-                let mut data_buffer = match self.allocator.allocate_tx_buffer(allocation_size)? {
+                let mut data_buffer = match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -1224,10 +1226,7 @@ impl Mlx5Connection {
             if self.zero_copy_rc_seg(rc_sga.get(entry_idx)) {
                 if entry_idx == 0 && !header_written {
                     // write in header
-                    let mut data_buffer = match self
-                        .allocator
-                        .allocate_tx_buffer(cornflakes_libos::utils::TOTAL_HEADER_SIZE)?
-                    {
+                    let mut data_buffer = match self.allocator.allocate_tx_buffer()? {
                         Some(buf) => buf,
                         None => {
                             bail!("No tx mempools to allocate outgoing packet");
@@ -1265,7 +1264,7 @@ impl Mlx5Connection {
                 }
 
                 // allocate an mbuf that can fit this amount of data and copy data to it
-                let mut data_buffer = match self.allocator.allocate_tx_buffer(mbuf_length)? {
+                let mut data_buffer = match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -1651,10 +1650,7 @@ impl Mlx5Connection {
             if self.zero_copy_seg(sga.get(entry_idx).addr()) {
                 if entry_idx == 0 && !header_written {
                     // write in header
-                    let mut data_buffer = match self
-                        .allocator
-                        .allocate_tx_buffer(cornflakes_libos::utils::TOTAL_HEADER_SIZE)?
-                    {
+                    let mut data_buffer = match self.allocator.allocate_tx_buffer()? {
                         Some(buf) => buf,
                         None => {
                             bail!("No tx mempools to allocate outgoing packet");
@@ -1694,7 +1690,7 @@ impl Mlx5Connection {
                 }
 
                 // allocate an mbuf that can fit this amount of data and copy data to it
-                let mut data_buffer = match self.allocator.allocate_tx_buffer(mbuf_length)? {
+                let mut data_buffer = match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -2058,9 +2054,15 @@ impl Datapath for Mlx5Connection {
     where
         Self: Sized,
     {
-        let mut allocator = MemoryPoolAllocator::default();
-        let mempool = DataMempool::new_from_ptr(context.get_recv_mempool_ptr());
-        allocator.add_recv_mempool(mempool);
+        let rx_mempool = DataMempool::new_from_ptr(context.get_recv_mempool_ptr());
+        // allocate a tx mempool
+        let mempool_params =
+            sizes::MempoolAllocationParams::new(MEMPOOL_MIN_ELTS, PGSIZE_2MB, MAX_BUFFER_SIZE)
+                .wrap_err("Incorrect mempool allocation params")?;
+        tracing::debug!(mempool_params = ?mempool_params, "Adding tx mempool");
+        let tx_mempool = DataMempool::new(&mempool_params, &context)?;
+
+        let allocator = MemoryPoolAllocator::new(rx_mempool, tx_mempool)?;
 
         Ok(Mlx5Connection {
             thread_context: context,
@@ -2236,13 +2238,12 @@ impl Datapath for Mlx5Connection {
                 if allocation_size > 0 {
                     // copy data into mbuf
                     // allocate an mbuf that can fit this amount of data and copy data to it
-                    let mut data_buffer =
-                        match self.allocator.allocate_tx_buffer(allocation_size)? {
-                            Some(buf) => buf,
-                            None => {
-                                bail!("No tx mempools to allocate outgoing packet");
-                            }
-                        };
+                    let mut data_buffer = match self.allocator.allocate_tx_buffer()? {
+                        Some(buf) => buf,
+                        None => {
+                            bail!("No tx mempools to allocate outgoing packet");
+                        }
+                    };
                     let write_offset = match !written_header {
                         true => {
                             // copy in the header into a buffer
@@ -2395,13 +2396,12 @@ impl Datapath for Mlx5Connection {
                 if allocation_size > 0 {
                     // copy data into mbuf
                     // allocate an mbuf that can fit this amount of data and copy data to it
-                    let mut data_buffer =
-                        match self.allocator.allocate_tx_buffer(allocation_size)? {
-                            Some(buf) => buf,
-                            None => {
-                                bail!("No tx mempools to allocate outgoing packet");
-                            }
-                        };
+                    let mut data_buffer = match self.allocator.allocate_tx_buffer()? {
+                        Some(buf) => buf,
+                        None => {
+                            bail!("No tx mempools to allocate outgoing packet");
+                        }
+                    };
                     let write_offset = match !written_header {
                         true => {
                             // copy in the header into a buffer
@@ -2721,7 +2721,7 @@ impl Datapath for Mlx5Connection {
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
                 perftools::timer!("allocating stuff to copy into");
-                match self.allocator.allocate_tx_buffer(allocation_size)? {
+                match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
                         bail!(
@@ -2871,7 +2871,7 @@ impl Datapath for Mlx5Connection {
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
                 perftools::timer!("allocating stuff to copy into");
-                match self.allocator.allocate_tx_buffer(allocation_size)? {
+                match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
                         bail!(
@@ -3008,7 +3008,7 @@ impl Datapath for Mlx5Connection {
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
                 perftools::timer!("allocating stuff to copy into");
-                match self.allocator.allocate_tx_buffer(allocation_size)? {
+                match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -3153,7 +3153,7 @@ impl Datapath for Mlx5Connection {
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
                 perftools::timer!("allocating stuff to copy into");
-                match self.allocator.allocate_tx_buffer(allocation_size)? {
+                match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -3358,7 +3358,7 @@ impl Datapath for Mlx5Connection {
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
                 perftools::timer!("allocating stuff to copy into");
-                match self.allocator.allocate_tx_buffer(allocation_size)? {
+                match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -3535,7 +3535,7 @@ impl Datapath for Mlx5Connection {
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
                 perftools::timer!("allocating stuff to copy into");
-                match self.allocator.allocate_tx_buffer(allocation_size)? {
+                match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -3757,7 +3757,7 @@ impl Datapath for Mlx5Connection {
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
                 perftools::timer!("allocating stuff to copy into");
-                match self.allocator.allocate_tx_buffer(allocation_size)? {
+                match self.allocator.allocate_tx_buffer()? {
                     Some(metadata) => metadata,
                     None => {
                         bail!("No tx mempools to allocate outgoing packet");
@@ -3975,7 +3975,7 @@ impl Datapath for Mlx5Connection {
                 let mut data_buffer = {
                     #[cfg(feature = "profiler")]
                     perftools::timer!("allocating stuff to copy into");
-                    match self.allocator.allocate_tx_buffer(allocation_size)? {
+                    match self.allocator.allocate_tx_buffer()? {
                         Some(buf) => buf,
                         None => {
                             bail!("No tx mempools to allocate outgoing packet");
@@ -4164,7 +4164,7 @@ impl Datapath for Mlx5Connection {
                 let mut data_buffer = {
                     #[cfg(feature = "profiler")]
                     perftools::timer!("allocating stuff to copy into");
-                    match self.allocator.allocate_tx_buffer(allocation_size)? {
+                    match self.allocator.allocate_tx_buffer()? {
                         Some(buf) => buf,
                         None => {
                             bail!("No tx mempools to allocate outgoing packet");
@@ -4416,9 +4416,11 @@ impl Datapath for Mlx5Connection {
         self.allocator.allocate_buffer(size)
     }
 
-    fn allocate_mtu_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)> {
-        let packet_size = <Self as Datapath>::max_packet_size();
-        Ok((self.allocator.allocate_tx_buffer(packet_size)?, packet_size))
+    fn allocate_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)> {
+        Ok((
+            self.allocator.allocate_tx_buffer()?,
+            <Self as Datapath>::max_packet_size(),
+        ))
     }
 
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>> {
@@ -4442,17 +4444,6 @@ impl Datapath for Mlx5Connection {
             .add_mempool(mempool_params.get_item_len(), data_mempool)?;
 
         Ok(vec![id])
-    }
-
-    fn add_tx_mempool(&mut self, size: usize, min_elts: usize) -> Result<()> {
-        let mempool_params = sizes::MempoolAllocationParams::new(min_elts, PGSIZE_2MB, size)
-            .wrap_err("Incorrect mempool allocation params")?;
-        tracing::debug!(mempool_params = ?mempool_params, "Adding mempool");
-        let data_mempool = DataMempool::new(&mempool_params, &self.thread_context)?;
-        let _ = self
-            .allocator
-            .add_tx_mempool(mempool_params.get_item_len(), data_mempool);
-        Ok(())
     }
 
     #[inline]

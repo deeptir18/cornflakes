@@ -283,7 +283,6 @@ where
     }
 
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
-        connection.add_tx_mempool(8192, 8192)?;
         Ok(())
     }
 

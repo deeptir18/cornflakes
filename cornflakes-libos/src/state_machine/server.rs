@@ -146,18 +146,6 @@ pub trait ServerSM {
     /// e.g., registering external memory.
     /// By default, adds tx mempools
     fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
-        let mut buf_size = 256;
-        let max_size = 16384;
-        let min_elts = 8192;
-        loop {
-            // add a tx pool with buf size
-            tracing::info!("Adding TX memory pool of size {}", buf_size);
-            connection.add_tx_mempool(buf_size, min_elts)?;
-            buf_size *= 2;
-            if buf_size > max_size {
-                break;
-            }
-        }
         Ok(())
     }
 

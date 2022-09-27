@@ -20,8 +20,6 @@ void Mlx5Connection_set_inline_mode(void *conn, uintptr_t inline_mode);
 
 void Mlx5Connection_add_memory_pool(void *conn, uintptr_t buf_size, uintptr_t min_elts);
 
-void Mlx5Connection_add_tx_mempool(void *conn, uintptr_t size, uintptr_t min_elts);
-
 struct ReceivedPkt *Mlx5Connection_pop(void *conn, uintptr_t *n);
 
 void Mlx5Connection_push_ordered_sgas(void *conn,

@@ -1970,7 +1970,7 @@ where
         self.buf.clone()
     }
     pub fn new(datapath: &mut D) -> Result<Self> {
-        let (buf_option, max_len) = datapath.allocate_mtu_tx_buffer()?;
+        let (buf_option, max_len) = datapath.allocate_tx_buffer()?;
         match buf_option {
             Some(buf) => Ok(SerializationCopyBuf {
                 buf: buf,

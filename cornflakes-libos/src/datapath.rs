@@ -466,7 +466,7 @@ pub trait Datapath {
     fn allocate(&mut self, size: usize) -> Result<Option<Self::DatapathBuffer>>;
 
     /// Allocate a tx buffer with MTU size (max packet size).
-    fn allocate_mtu_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)>;
+    fn allocate_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)>;
 
     /// Consume a datapath buffer and returns a metadata object that owns the underlying
     /// buffer.
@@ -489,8 +489,6 @@ pub trait Datapath {
     /// Vector of memory pool IDs for mempools that were created (datapath may have a maximum size
     /// for the memory pool).
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>>;
-
-    fn add_tx_mempool(&mut self, size: usize, min_elts: usize) -> Result<()>;
 
     /// Checks whether datapath has mempool of size size given (must be power of 2).
     fn has_mempool(&self, size: usize) -> bool;

@@ -4,7 +4,9 @@ use color_eyre::eyre::{bail, Result, WrapErr};
 use hashbrown::HashMap;
 #[cfg(feature = "profiler")]
 use perftools;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
+
+const TX_MEMPOOL_ID: u32 = 1;
 
 pub type MempoolID = u32;
 pub fn align_to_pow2(x: usize) -> usize {
@@ -88,7 +90,7 @@ where
     M: DatapathMemoryPool + PartialEq + Eq + std::fmt::Debug,
 {
     /// Map from pool size to list of currently allocated mempool IDs that applications can
-    /// allocated from.
+    /// allocate memory from.
     mempool_ids: HashMap<usize, HashSet<MempoolID>>,
 
     /// HashMap of IDs to actual mempool object (receive mempools and those app can allocate
@@ -98,9 +100,9 @@ where
     /// Unique IDs assigned to mempools (assumes the number of mempools added won't overflow)
     next_id_to_allocate: MempoolID,
 
-    /// Mempools that the application cannot allocate from; does not have to be searched for
-    /// recovery.
-    tx_mempools: BTreeMap<usize, Vec<(MempoolID, M)>>,
+    /// Each core has one memory pool for allocating tx packets for copying data.
+    /// (size, ID) pair.
+    tx_mempool: M,
 
     /// Cache from allocated addresses -> corresponding metadata for 2mb pages.
     address_cache_2mb: AHashMap<usize, MempoolID>,
@@ -112,26 +114,40 @@ where
     address_cache_1g: AHashMap<usize, MempoolID>,
 }
 
-impl<M> Default for MemoryPoolAllocator<M>
-where
-    M: DatapathMemoryPool + PartialEq + Eq + std::fmt::Debug,
-{
-    fn default() -> Self {
-        MemoryPoolAllocator {
-            mempool_ids: HashMap::default(),
-            mempools: HashMap::default(),
-            next_id_to_allocate: 0,
-            tx_mempools: BTreeMap::default(),
-            address_cache_2mb: AHashMap::default(),
-            address_cache_4k: AHashMap::default(),
-            address_cache_1g: AHashMap::default(),
-        }
-    }
-}
 impl<M> MemoryPoolAllocator<M>
 where
     M: DatapathMemoryPool + PartialEq + Eq + std::fmt::Debug,
 {
+    pub fn new(rx_mempool: M, tx_mempool: M) -> Result<Self> {
+        let mut address_cache_2mb = AHashMap::default();
+        let mut address_cache_4k = AHashMap::default();
+        let mut address_cache_1g = AHashMap::default();
+
+        // add recv mempool to address cache
+        for page in rx_mempool.get_2mb_pages().iter() {
+            address_cache_2mb.insert(*page, 0);
+        }
+        for page in rx_mempool.get_4k_pages().iter() {
+            address_cache_4k.insert(*page, 0);
+        }
+        for page in rx_mempool.get_1g_pages().iter() {
+            address_cache_1g.insert(*page, 0);
+        }
+
+        let mut mempools = HashMap::default();
+        mempools.insert(0, rx_mempool);
+
+        Ok(MemoryPoolAllocator {
+            mempool_ids: HashMap::default(),
+            mempools: mempools,
+            next_id_to_allocate: 1,
+            tx_mempool: tx_mempool,
+            address_cache_2mb: address_cache_2mb,
+            address_cache_4k: address_cache_4k,
+            address_cache_1g: address_cache_1g,
+        })
+    }
+
     #[inline]
     fn find_mempool_id(&self, buf: &[u8]) -> Option<MempoolID> {
         match self
@@ -197,39 +213,6 @@ where
         Ok(self.next_id_to_allocate - 1)
     }
 
-    #[inline]
-    pub fn add_recv_mempool(&mut self, mempool: M) {
-        // add mempool to address cache
-        for page in mempool.get_2mb_pages().iter() {
-            self.address_cache_2mb
-                .insert(*page, self.next_id_to_allocate);
-        }
-        for page in mempool.get_4k_pages().iter() {
-            self.address_cache_4k
-                .insert(*page, self.next_id_to_allocate);
-        }
-        for page in mempool.get_1g_pages().iter() {
-            self.address_cache_1g
-                .insert(*page, self.next_id_to_allocate);
-        }
-
-        self.mempools.insert(self.next_id_to_allocate, mempool);
-        self.next_id_to_allocate += 1;
-    }
-
-    #[inline]
-    pub fn add_tx_mempool(&mut self, item_len: usize, mempool: M) {
-        tracing::info!("Adding mempool of size {}", item_len);
-        if self.tx_mempools.contains_key(&item_len) {
-            let list = self.tx_mempools.get_mut(&item_len).unwrap();
-            list.push((self.next_id_to_allocate, mempool));
-        } else {
-            self.tx_mempools
-                .insert(item_len, vec![(self.next_id_to_allocate, mempool)]);
-        }
-        self.next_id_to_allocate += 1;
-    }
-
     /// Registers the backing region behind the given mempool.
     /// If already registered, does nothing.
     #[inline]
@@ -269,45 +252,9 @@ where
     #[inline]
     pub fn allocate_tx_buffer(
         &self,
-        buf_size: usize,
     ) -> Result<Option<<<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>> {
-        let align_size = align_to_pow2(buf_size);
-        match self.tx_mempools.get(&align_size) {
-            Some(mempools) => {
-                for (mempool_id, mempool) in mempools.iter() {
-                    match mempool.alloc_data_buf(*mempool_id)? {
-                        Some(x) => {
-                            tracing::debug!(align_size, mempool_id, buf =? x, "Allocating tx buffer");
-                            return Ok(Some(x));
-                        }
-                        None => {}
-                    }
-                }
-            }
-            None => {}
-        }
-        for (_size, mempools) in self
-            .tx_mempools
-            .iter()
-            .filter(|(size, _list)| *size >= &buf_size)
-        {
-            tracing::debug!("Looking for tx buffer to allocate {}", buf_size);
-            for (mempool_id, mempool) in mempools.iter() {
-                match mempool.alloc_data_buf(*mempool_id)? {
-                    Some(x) => {
-                        return Ok(Some(x));
-                    }
-                    None => {}
-                }
-            }
-        }
-        tracing::warn!(
-            "Returning none: tx mempools :{:?}, align_size: {}, actual size: {}",
-            self.tx_mempools,
-            align_size,
-            buf_size,
-        );
-        return Ok(None);
+        tracing::debug!("Allocating from tx mempool: {:?}", self.tx_mempool);
+        self.tx_mempool.alloc_data_buf(TX_MEMPOOL_ID)
     }
 
     /// Allocates a datapath buffer (if a mempool is available).

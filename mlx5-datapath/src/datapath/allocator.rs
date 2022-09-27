@@ -83,6 +83,9 @@ impl DataMempool {
             mempool_ptr,
             unsafe { get_data_mempool(mempool_ptr as *mut registered_mempool) }
         );
+        let data = unsafe {
+            custom_mlx5_mempool_alloc(get_data_mempool(mempool_ptr as *mut registered_mempool))
+        };
         Ok(DataMempool {
             mempool_ptr: mempool_ptr,
         })
@@ -252,6 +255,7 @@ impl DatapathMemoryPool for DataMempool {
     {
         let data = unsafe { custom_mlx5_mempool_alloc(self.get_data_mempool()) };
         if data.is_null() {
+            tracing::debug!("Returning ok none ok");
             return Ok(None);
         }
         // recover the ref count index
@@ -260,6 +264,7 @@ impl DatapathMemoryPool for DataMempool {
             unsafe {
                 custom_mlx5_mempool_free(self.get_data_mempool(), data);
             }
+            tracing::debug!("Couldn't find index");
             return Ok(None);
         }
         Ok(Some(Mlx5Buffer::new(
