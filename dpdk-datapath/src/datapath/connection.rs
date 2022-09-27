@@ -770,7 +770,7 @@ impl DpdkConnection {
         &mut self,
         conn_id: ConnID,
         msg_id: MsgID,
-        buffer_size: usize,
+        _buffer_size: usize,
         data_len: usize,
     ) -> Result<DpdkBuffer> {
         let mut dpdk_buffer = match self.allocator.allocate_tx_buffer()? {
@@ -1636,7 +1636,6 @@ impl Datapath for DpdkConnection {
     fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>> {
         self.allocator.recover_buffer(buf)
     }
-
     fn add_memory_pool(&mut self, value_size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {
         let mut ret: Vec<MempoolID> = Vec::default();
         //let num_values = (min_num_values as f64 * 1.20) as usize;

@@ -13,8 +13,6 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
         let msg_info = MessageInfo(message.clone());
         add_struct_definition(fd, compiler, &msg_info)?;
         compiler.add_newline()?;
-        add_default_impl(fd, compiler, &msg_info)?;
-        compiler.add_newline()?;
         add_clone_impl(fd, compiler, &msg_info)?;
         compiler.add_newline()?;
         add_debug_impl(fd, compiler, &msg_info)?;
@@ -71,7 +69,10 @@ fn add_struct_definition(
     // write in struct fields
     for field in msg_info.get_fields().iter() {
         let field_info = FieldInfo(field.clone());
-        compiler.add_struct_field(&field_info.get_name(), &fd.get_rust_type(field_info)?)?;
+        compiler.add_struct_field(
+            &field_info.get_name(),
+            &fd.get_rust_type_hybrid(field_info)?,
+        )?;
     }
     if msg_info.has_only_int_fields(true, &fd.get_message_map())? {
         compiler.add_struct_field(
@@ -156,49 +157,6 @@ fn add_clone_impl(
     compiler.pop_context()?;
     Ok(())
 }
-fn add_default_impl(
-    fd: &ProtoReprInfo,
-    compiler: &mut SerializationCompiler,
-    msg_info: &MessageInfo,
-) -> Result<()> {
-    let type_annotations = msg_info.get_type_params_with_lifetime(true, &fd)?;
-    let where_clause = msg_info.get_where_clause(true, &fd)?;
-    let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
-    let trait_name = TraitName::new("Default", vec![]);
-    let impl_context = ImplContext::new(struct_name, Some(trait_name), where_clause);
-    compiler.add_context(Context::Impl(impl_context))?;
-    let func_context = FunctionContext::new("default", false, Vec::default(), "Self");
-    compiler.add_context(Context::Function(func_context))?;
-    let struct_def_context = StructDefContext::new(&msg_info.get_name());
-    compiler.add_context(Context::StructDef(struct_def_context))?;
-    compiler.add_struct_def_field(
-        "bitmap",
-        &format!(
-            "[Bitmap::<32>::new(); {}_NUM_U32_BITMAPS]",
-            msg_info.get_name()
-        ),
-    )?;
-    for field in msg_info.get_fields().iter() {
-        let field_info = FieldInfo(field.clone());
-        if field_info.is_list() {
-            if field_info.is_int_list() {
-                compiler.add_struct_def_field(&field_info.get_name(), "List::default()")?;
-            } else {
-                compiler.add_struct_def_field(&field_info.get_name(), "VariableList::default()")?;
-            }
-        } else {
-            compiler
-                .add_struct_def_field(&field_info.get_name(), &fd.get_default_type(field_info)?)?;
-        }
-    }
-    if msg_info.has_only_int_fields(true, &fd.get_message_map())? {
-        compiler.add_struct_def_field("_x", "std::marker::PhantomData::default()")?;
-    }
-    compiler.pop_context()?; // end of struct definition
-    compiler.pop_context()?; // end of function
-    compiler.pop_context()?;
-    Ok(())
-}
 
 fn add_impl(
     fd: &ProtoReprInfo,
@@ -226,34 +184,6 @@ fn add_impl(
     }
 
     compiler.add_newline()?;
-    let new_func_context = FunctionContext::new("new", true, vec![], "Self");
-    compiler.add_context(Context::Function(new_func_context))?;
-    let struct_def_context = StructDefContext::new(&msg_info.get_name());
-    compiler.add_context(Context::StructDef(struct_def_context))?;
-    compiler.add_struct_def_field(
-        "bitmap",
-        &format!("[Bitmap::<32>::new(); {}]", msg_info.get_num_u32_bitmaps()),
-    )?;
-    for field in msg_info.get_fields().iter() {
-        let field_info = FieldInfo(field.clone());
-        if field_info.is_list() {
-            if field_info.is_int_list() {
-                compiler.add_struct_def_field(&field_info.get_name(), "List::default()")?;
-            } else {
-                compiler.add_struct_def_field(&field_info.get_name(), "VariableList::default()")?;
-            }
-        } else {
-            compiler
-                .add_struct_def_field(&field_info.get_name(), &fd.get_default_type(field_info)?)?;
-        }
-    }
-
-    if msg_info.has_only_int_fields(true, &fd.get_message_map())? {
-        compiler.add_struct_def_field("_x", "std::marker::PhantomData::default()")?;
-    }
-    compiler.pop_context()?; // end of struct definition
-    compiler.pop_context()?; // end of new function
-
     for field in msg_info.get_fields().iter() {
         let field_info = FieldInfo(field.clone());
         add_field_methods(fd, compiler, &field_info)?;
@@ -315,7 +245,7 @@ fn add_get(
     compiler: &mut SerializationCompiler,
     field: &FieldInfo,
 ) -> Result<()> {
-    let field_type = fd.get_rust_type(field.clone())?;
+    let field_type = fd.get_rust_type_hybrid(field.clone())?;
     let return_type = match field.is_list() || field.is_nested_msg() || field.is_bytes_or_string() {
         true => format!("&{}", field_type),
         false => field_type.to_string(),
@@ -344,7 +274,7 @@ fn add_get_mut(
     field: &FieldInfo,
 ) -> Result<()> {
     let field_name = field.get_name();
-    let rust_type = fd.get_rust_type(field.clone())?;
+    let rust_type = fd.get_rust_type_hybrid(field.clone())?;
     let func_context = FunctionContext::new(
         &format!("get_mut_{}", &field_name),
         true,
@@ -365,7 +295,7 @@ fn add_set(
     let field_name = field.get_name();
     let bitmap_idx_str = field.get_bitmap_idx_str(true);
     let bitmap_offset_str = field.get_u32_bitmap_offset_str(true);
-    let rust_type = fd.get_rust_type(field.clone())?;
+    let rust_type = fd.get_rust_type_hybrid(field.clone())?;
     let func_context = FunctionContext::new(
         &format!("set_{}", field_name),
         true,
@@ -392,6 +322,10 @@ fn add_list_init(compiler: &mut SerializationCompiler, field: &FieldInfo) -> Res
         vec![
             FunctionArg::MutSelfArg,
             FunctionArg::new_arg("num", ArgInfo::owned("usize")),
+            FunctionArg::new_arg(
+                "arena",
+                ArgInfo::ref_arg("bumpalo::Bump", Some("'arena".to_string())),
+            ),
         ],
         "",
     );
@@ -413,13 +347,13 @@ fn add_list_init(compiler: &mut SerializationCompiler, field: &FieldInfo) -> Res
         | FieldType::RefCountedBytes => {
             compiler.add_statement(
                 &format!("self.{}", field.get_name()),
-                &format!("VariableList::init(num)"),
+                &format!("VariableList::init(num, arena)"),
             )?;
         }
         FieldType::MessageOrEnum(_) => {
             compiler.add_statement(
                 &format!("self.{}", field.get_name()),
-                &format!("VariableList::init(num)"),
+                &format!("VariableList::init(num, arena)"),
             )?;
         }
         x => {
@@ -447,7 +381,8 @@ fn add_header_repr(
     let type_annotations = msg_info.get_type_params_with_lifetime(true, &fd)?;
     let where_clause = msg_info.get_where_clause(true, &fd)?;
     let struct_name = StructName::new(&msg_info.get_name(), type_annotations.clone());
-    let trait_type_annotations = msg_info.get_type_params(true, fd)?;
+    let mut trait_type_annotations = msg_info.get_type_params(true, fd)?;
+    trait_type_annotations.insert(0, "'arena".to_string());
     let trait_name = TraitName::new("HybridArenaRcSgaHdr", trait_type_annotations.clone());
     let impl_context = ImplContext::new(struct_name, Some(trait_name), where_clause);
     compiler.add_context(Context::Impl(impl_context))?;
@@ -469,6 +404,49 @@ fn add_header_repr(
         "usize",
         &format!("{}_NUM_U32_BITMAPS", msg_info.get_name()),
     )?;
+
+    // add new_in function
+    let new_in_function_context = FunctionContext::new(
+        "new_in",
+        false,
+        vec![FunctionArg::new_arg(
+            "arena",
+            ArgInfo::ref_arg("bumpalo::Bump", Some("'arena".to_string())),
+        )],
+        "Self where Self: Sized",
+    );
+
+    compiler.add_context(Context::Function(new_in_function_context))?;
+    let struct_def_context = StructDefContext::new(&msg_info.get_name());
+    compiler.add_context(Context::StructDef(struct_def_context))?;
+    compiler.add_struct_def_field(
+        "bitmap",
+        &format!(
+            "[Bitmap::<32>::new(); {}_NUM_U32_BITMAPS]",
+            msg_info.get_name()
+        ),
+    )?;
+    for field in msg_info.get_fields().iter() {
+        let field_info = FieldInfo(field.clone());
+        if field_info.is_list() {
+            if field_info.is_int_list() {
+                compiler.add_struct_def_field(&field_info.get_name(), "List::new_in(arena)")?;
+            } else {
+                compiler
+                    .add_struct_def_field(&field_info.get_name(), "VariableList::new_in(arena)")?;
+            }
+        } else {
+            compiler
+                .add_struct_def_field(&field_info.get_name(), &fd.get_default_type(field_info)?)?;
+        }
+    }
+    if msg_info.has_only_int_fields(true, &fd.get_message_map())? {
+        compiler.add_struct_def_field("_x", "std::marker::PhantomData::default()")?;
+    }
+    compiler.pop_context()?; // end of struct definition
+
+    compiler.pop_context()?;
+    compiler.add_newline()?;
 
     // add dynamic header size function
     let header_size_function_context = FunctionContext::new(
@@ -845,6 +823,10 @@ fn add_deserialization_func(
             ),
             FunctionArg::new_arg("header_offset", ArgInfo::owned("usize")),
             FunctionArg::new_arg("buffer_offset", ArgInfo::owned("usize")),
+            FunctionArg::new_arg(
+                "arena",
+                ArgInfo::ref_arg("bumpalo::Bump", Some("'arena".to_string())),
+            ),
         ],
         "Result<()>",
     );
@@ -1007,6 +989,7 @@ fn add_deserialization_for_field(
                         "buffer".to_string(),
                         "cur_constant_offset".to_string(),
                         "buffer_offset".to_string(),
+                        "arena".to_string(),
                     ],
                     true,
                 )?;
@@ -1016,7 +999,7 @@ fn add_deserialization_for_field(
             }
         }
     } else {
-        let rust_type = fd.get_rust_type(field_info.clone())?;
+        let rust_type = fd.get_rust_type_hybrid(field_info.clone())?;
         match &field_info.0.typ {
             FieldType::Int32
             | FieldType::Int64
@@ -1035,6 +1018,7 @@ fn add_deserialization_for_field(
                         "buffer".to_string(),
                         "cur_constant_offset".to_string(),
                         "buffer_offset".to_string(),
+                        "arena".to_string(),
                     ],
                     true,
                 )?;
@@ -1047,6 +1031,7 @@ fn add_deserialization_for_field(
                         "buffer".to_string(),
                         "read_size_and_offset(cur_constant_offset, buffer)?.1".to_string(),
                         "buffer_offset".to_string(),
+                        "arena".to_string(),
                     ],
                     true,
                 )?;

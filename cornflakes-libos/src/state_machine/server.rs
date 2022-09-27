@@ -192,7 +192,7 @@ pub trait ServerSM {
     /// Initializes any internal state with any datapath specific configuration,
     /// e.g., registering external memory.
     /// By default, adds tx mempools
-    fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
+    fn init(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
         Ok(())
     }
 

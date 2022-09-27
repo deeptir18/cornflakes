@@ -1254,12 +1254,7 @@ impl Mlx5Connection {
             } else {
                 // iterate forward, figure out size of further zero-copy segments
                 let mut curr_idx = entry_idx;
-                let mut mbuf_length = match !header_written && curr_idx == 0 {
-                    true => cornflakes_libos::utils::TOTAL_HEADER_SIZE,
-                    false => 0,
-                };
                 while curr_idx < rc_sga.len() && !self.zero_copy_rc_seg(rc_sga.get(curr_idx)) {
-                    mbuf_length += rc_sga.get(curr_idx).len();
                     curr_idx += 1;
                 }
 

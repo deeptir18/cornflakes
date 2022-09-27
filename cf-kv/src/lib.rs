@@ -789,7 +789,7 @@ where
         )
     }
 
-    fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
+    fn init(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
         Ok(())
     }
 

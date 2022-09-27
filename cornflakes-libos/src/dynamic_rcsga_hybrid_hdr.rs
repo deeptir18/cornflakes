@@ -64,7 +64,7 @@ pub const OFFSET_FIELD: usize = 4;
 /// u32 at beginning representing bitmap size in bytes
 pub const BITMAP_LENGTH_FIELD: usize = 4;
 
-pub trait HybridArenaRcSgaHdr<D>
+pub trait HybridArenaRcSgaHdr<'arena, D>
 where
     D: Datapath,
 {
@@ -77,6 +77,11 @@ where
 
     /// Number of bitmap entries needed to represent this type.
     const NUM_U32_BITMAPS: usize;
+
+    /// New 'default'
+    fn new_in(arena: &'arena bumpalo::Bump) -> Self
+    where
+        Self: Sized;
 
     fn get_bitmap_itermut(&mut self) -> std::slice::IterMut<Bitmap<32>> {
         [].iter_mut()
@@ -162,7 +167,7 @@ where
 
     /// Total header size.
     fn total_header_size(&self, with_ref: bool, _with_bitmap: bool) -> usize {
-        <Self as HybridArenaRcSgaHdr<D>>::CONSTANT_HEADER_SIZE * (with_ref as usize)
+        <Self as HybridArenaRcSgaHdr<'arena, D>>::CONSTANT_HEADER_SIZE * (with_ref as usize)
             + self.dynamic_header_size()
     }
 
@@ -238,13 +243,19 @@ where
         buf: &D::DatapathMetadata,
         header_offset: usize,
         buffer_offset: usize,
+        arena: &'arena bumpalo::Bump,
     ) -> Result<()>;
 
     #[inline]
-    fn deserialize(&mut self, pkt: &ReceivedPkt<D>, offset: usize) -> Result<()> {
+    fn deserialize(
+        &mut self,
+        pkt: &ReceivedPkt<D>,
+        offset: usize,
+        arena: &'arena bumpalo::Bump,
+    ) -> Result<()> {
         // Right now, for deserialize we assume one contiguous buffer
         let metadata = pkt.seg(0);
-        self.inner_deserialize(metadata, 0, offset)?;
+        self.inner_deserialize(metadata, 0, offset, arena)?;
         Ok(())
     }
 }
@@ -344,7 +355,7 @@ where
     }
 }
 
-impl<'raw, D> HybridArenaRcSgaHdr<D> for CFBytes<'raw, D>
+impl<'raw, 'arena, D> HybridArenaRcSgaHdr<'arena, D> for CFBytes<'raw, D>
 where
     D: Datapath,
 {
@@ -354,6 +365,13 @@ where
 
     const NUM_U32_BITMAPS: usize = 0;
 
+    #[inline]
+    fn new_in(_arena: &'arena bumpalo::Bump) -> Self
+    where
+        Self: Sized,
+    {
+        CFBytes::Raw(&[])
+    }
     #[inline]
     fn get_mut_bitmap_entry(&mut self, _offset: usize) -> &mut Bitmap<32> {
         unreachable!();
@@ -433,6 +451,7 @@ where
         buf: &D::DatapathMetadata,
         header_offset: usize,
         buffer_offset: usize,
+        _arena: &'arena bumpalo::Bump,
     ) -> Result<()> {
         let mut new_metadata = buf.clone();
         let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
@@ -551,7 +570,7 @@ where
     }
 }
 
-impl<'raw, D> HybridArenaRcSgaHdr<D> for CFString<'raw, D>
+impl<'raw, 'arena, D> HybridArenaRcSgaHdr<'arena, D> for CFString<'raw, D>
 where
     D: Datapath,
 {
@@ -560,6 +579,14 @@ where
     const CONSTANT_HEADER_SIZE: usize = SIZE_FIELD + OFFSET_FIELD;
 
     const NUM_U32_BITMAPS: usize = 0;
+
+    #[inline]
+    fn new_in(_arena: &'arena bumpalo::Bump) -> Self
+    where
+        Self: Sized,
+    {
+        CFString::Raw(&[])
+    }
 
     #[inline]
     fn get_mut_bitmap_entry(&mut self, _offset: usize) -> &mut Bitmap<32> {
@@ -639,6 +666,7 @@ where
         buf: &D::DatapathMetadata,
         header_offset: usize,
         buffer_offset: usize,
+        _arena: &'arena bumpalo::Bump,
     ) -> Result<()> {
         let mut new_metadata = buf.clone();
         let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
@@ -652,20 +680,20 @@ where
     }
 }
 
-pub struct VariableList<T, D>
+pub struct VariableList<'arena, T, D>
 where
-    T: HybridArenaRcSgaHdr<D> + Clone + Default + std::fmt::Debug,
+    T: HybridArenaRcSgaHdr<'arena, D> + Clone + std::fmt::Debug,
     D: Datapath,
 {
     num_space: usize,
     num_set: usize,
-    elts: Vec<T>, // TODO: maybe this should be a arena vec
+    elts: bumpalo::collections::Vec<'arena, T>,
     _phantom_data: PhantomData<D>,
 }
 
-impl<T, D> Clone for VariableList<T, D>
+impl<'arena, T, D> Clone for VariableList<'arena, T, D>
 where
-    T: HybridArenaRcSgaHdr<D> + Clone + Default + std::fmt::Debug,
+    T: HybridArenaRcSgaHdr<'arena, D> + Clone + std::fmt::Debug,
     D: Datapath,
 {
     fn clone(&self) -> Self {
@@ -678,9 +706,9 @@ where
     }
 }
 
-impl<T, D> std::fmt::Debug for VariableList<T, D>
+impl<'arena, T, D> std::fmt::Debug for VariableList<'arena, T, D>
 where
-    T: HybridArenaRcSgaHdr<D> + Clone + Default + std::fmt::Debug,
+    T: HybridArenaRcSgaHdr<'arena, D> + Clone + std::fmt::Debug,
     D: Datapath,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -691,7 +719,7 @@ where
             .finish()
     }
 }
-impl<T, D> Default for VariableList<T, D>
+/*impl<'arena, T, D> Default for VariableList<'arena, T, D>
 where
     T: HybridArenaRcSgaHdr<D> + Clone + Default + std::fmt::Debug,
     D: Datapath,
@@ -700,23 +728,23 @@ where
         VariableList {
             num_space: 0,
             num_set: 0,
-            elts: vec![],
+            elts: bumpalo::collections::Vec::default(),
             _phantom_data: PhantomData,
         }
     }
-}
+}*/
 
-impl<T, D> VariableList<T, D>
+impl<'arena, T, D> VariableList<'arena, T, D>
 where
-    T: HybridArenaRcSgaHdr<D> + Clone + Default + std::fmt::Debug,
+    T: HybridArenaRcSgaHdr<'arena, D> + Clone + std::fmt::Debug,
     D: Datapath,
 {
     #[inline]
-    pub fn init(num: usize) -> VariableList<T, D> {
+    pub fn init(num: usize, arena: &'arena bumpalo::Bump) -> VariableList<'arena, T, D> {
         VariableList {
             num_space: num,
             num_set: 0,
-            elts: Vec::with_capacity(num),
+            elts: bumpalo::collections::Vec::with_capacity_in(num, arena),
             _phantom_data: PhantomData,
         }
     }
@@ -742,9 +770,9 @@ where
         self.num_set
     }
 }
-impl<T, D> Index<usize> for VariableList<T, D>
+impl<'arena, T, D> Index<usize> for VariableList<'arena, T, D>
 where
-    T: HybridArenaRcSgaHdr<D> + Clone + Default + std::fmt::Debug,
+    T: HybridArenaRcSgaHdr<'arena, D> + Clone + std::fmt::Debug,
     D: Datapath,
 {
     type Output = T;
@@ -753,9 +781,9 @@ where
     }
 }
 
-impl<T, D> HybridArenaRcSgaHdr<D> for VariableList<T, D>
+impl<'arena, T, D> HybridArenaRcSgaHdr<'arena, D> for VariableList<'arena, T, D>
 where
-    T: HybridArenaRcSgaHdr<D> + Clone + Default + std::fmt::Debug,
+    T: HybridArenaRcSgaHdr<'arena, D> + Clone + std::fmt::Debug,
     D: Datapath,
 {
     const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
@@ -764,6 +792,18 @@ where
 
     const NUM_U32_BITMAPS: usize = 0;
 
+    #[inline]
+    fn new_in(arena: &'arena bumpalo::Bump) -> Self
+    where
+        Self: Sized,
+    {
+        VariableList {
+            num_space: 0,
+            num_set: 0,
+            elts: bumpalo::collections::Vec::new_in(arena),
+            _phantom_data: PhantomData,
+        }
+    }
     #[inline]
     fn get_mut_bitmap_entry(&mut self, _offset: usize) -> &mut Bitmap<32> {
         unreachable!();
@@ -885,6 +925,7 @@ where
         buffer: &D::DatapathMetadata,
         constant_offset: usize,
         buffer_offset: usize,
+        arena: &'arena bumpalo::Bump,
     ) -> Result<()> {
         let forward_pointer = ForwardPointer(buffer.as_ref(), constant_offset + buffer_offset);
         let size = forward_pointer.get_size() as usize;
@@ -892,7 +933,7 @@ where
 
         self.num_set = size;
         if self.elts.len() < size {
-            self.elts.resize(size, T::default());
+            self.elts.resize(size, T::new_in(arena));
         }
         self.num_space = size;
 
@@ -902,13 +943,14 @@ where
                     buffer,
                     dynamic_offset + i * T::CONSTANT_HEADER_SIZE,
                     buffer_offset,
+                    arena,
                 )?;
             } else {
                 let (_size, dynamic_off) = read_size_and_offset::<D>(
                     dynamic_offset + i * T::CONSTANT_HEADER_SIZE,
                     buffer,
                 )?;
-                elt.inner_deserialize(buffer, dynamic_off, buffer_offset)?;
+                elt.inner_deserialize(buffer, dynamic_off, buffer_offset, arena)?;
             }
         }
         Ok(())

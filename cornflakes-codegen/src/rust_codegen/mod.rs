@@ -454,7 +454,11 @@ impl StructName {
             Some(t) => {
                 for typ in t.type_vec().iter() {
                     if !base.contains(&typ) {
-                        base.push(typ.to_string());
+                        if typ.to_string().contains("'") {
+                            base.insert(0, typ.to_string());
+                        } else {
+                            base.push(typ.to_string());
+                        }
                     }
                 }
             }

@@ -2059,6 +2059,8 @@ where
     }
     #[inline]
     pub fn new(arena: &'a bumpalo::Bump, datapath: &mut D) -> Result<Self> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Allocate new copy context");
         let serialization_copy_buf = SerializationCopyBuf::new(datapath)?;
         Ok(CopyContext {
             copy_buffers: bumpalo::vec![in arena; serialization_copy_buf],

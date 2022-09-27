@@ -177,8 +177,84 @@ impl ProtoReprInfo {
         Ok(base_type)
     }
 
+    pub fn get_rust_type_hybrid(&self, field: FieldInfo) -> Result<String> {
+        let base_type = match &field.0.typ {
+            FieldType::Int32 => "i32".to_string(),
+            FieldType::Int64 => "i64".to_string(),
+            FieldType::Uint32 => "u32".to_string(),
+            FieldType::Uint64 => "u64".to_string(),
+            FieldType::Float => "f64".to_string(),
+            FieldType::String | FieldType::RefCountedString => {
+                format!(
+                    "CFString<'{}, {}>",
+                    self.lifetime_name,
+                    self.get_datapath_trait_key()
+                )
+            }
+            FieldType::Bytes | FieldType::RefCountedBytes => {
+                format!(
+                    "CFBytes<'{}, {}>",
+                    self.lifetime_name,
+                    self.get_datapath_trait_key()
+                )
+            }
+            FieldType::MessageOrEnum(msg_name) => {
+                let mut type_params = vec![
+                    format!("'{}", self.lifetime_name),
+                    self.get_datapath_trait_key(),
+                ];
+                // if this message contains a list or a message that contains a list, insert
+                // "arena" into the type params
+                let msg = match self.message_map.get(msg_name.as_str()) {
+                    Some(m) => MessageInfo(m.clone()),
+                    None => {
+                        bail!("Field type: {} not in message_map", msg_name);
+                    }
+                };
+
+                if msg.contains_variable_list(&self.message_map)? {
+                    type_params.insert(0, "'arena".to_string());
+                    panic!("Contains variable list true for {:?}", msg);
+                }
+
+                format!("{}<{}>", msg_name, type_params.join(", "))
+            }
+            _ => {
+                bail!("FieldType {:?} not supported by compiler", field.0.typ);
+            }
+        };
+
+        if field.is_list() {
+            match &field.0.typ {
+                FieldType::Int32
+                | FieldType::Int64
+                | FieldType::Uint32
+                | FieldType::Uint64
+                | FieldType::Float => {
+                    bail!("List of Int/Float not supported yet in this codegen mode.");
+                }
+                FieldType::String
+                | FieldType::Bytes
+                | FieldType::RefCountedBytes
+                | FieldType::RefCountedString
+                | FieldType::MessageOrEnum(_) => {
+                    return Ok(format!(
+                        "VariableList<'arena, {}, {}>",
+                        base_type,
+                        self.get_datapath_trait_key()
+                    ));
+                }
+                _ => {
+                    bail!("FieldType {:?} not supported by compiler", field.0.typ);
+                }
+            }
+        } else {
+            return Ok(base_type);
+        }
+    }
+
     pub fn get_rust_type(&self, field: FieldInfo) -> Result<String> {
-        let type_params = match self.ref_counted_mode {
+        let mut type_params = match self.ref_counted_mode {
             true => match self.hybrid_mode {
                 true => vec![
                     format!("'{}", &self.lifetime_name),
@@ -207,6 +283,9 @@ impl ProtoReprInfo {
                 format!("CFBytes<{}>", type_params.join(", "))
             }
             FieldType::MessageOrEnum(msg_name) => {
+                if self.hybrid_mode {
+                    type_params.insert(0, "'arena".to_string());
+                }
                 let msg = match self.message_map.get(msg_name.as_str()) {
                     Some(m) => MessageInfo(m.clone()),
                     None => {
@@ -232,7 +311,7 @@ impl ProtoReprInfo {
         };
 
         if self.ref_counted_mode {
-            let params = match self.hybrid_mode {
+            let mut params = match self.hybrid_mode {
                 true => vec![base_type.clone(), self.datapath_trait_key.clone()],
                 false => vec![
                     format!("'{}", self.lifetime_name),
@@ -254,6 +333,9 @@ impl ProtoReprInfo {
                     | FieldType::RefCountedBytes
                     | FieldType::RefCountedString
                     | FieldType::MessageOrEnum(_) => {
+                        if self.hybrid_mode {
+                            params.insert(0, "'arena".to_string());
+                        }
                         return Ok(format!("VariableList<{}>", params.join(","),));
                     }
                     _ => {
@@ -338,6 +420,11 @@ impl MessageInfo {
         fd: &ProtoReprInfo,
     ) -> Result<Vec<String>> {
         let mut ret: Vec<String> = Vec::default();
+        if fd.hybrid_mode() {
+            if self.contains_variable_list(&fd.get_message_map())? {
+                ret.insert(0, "'arena".to_string());
+            }
+        }
         ret.push(fd.get_lifetime());
         if is_ref_counted
             && (self.requires_datapath_type_param(is_ref_counted, &fd.get_message_map())?
@@ -398,6 +485,16 @@ impl MessageInfo {
         } else {
             return Ok(WhereClause::default());
         }
+    }
+
+    pub fn contains_variable_list(&self, message_map: &HashMap<String, Message>) -> Result<bool> {
+        for field in self.0.fields.iter() {
+            let field_info = FieldInfo(field.clone());
+            if field_info.contains_list(message_map)? {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
     }
 
     pub fn requires_datapath_type_param(
@@ -789,6 +886,28 @@ impl FieldInfo {
             | FieldType::Uint64
             | FieldType::Float => true,
             _ => false,
+        }
+    }
+
+    pub fn contains_list(&self, message_map: &HashMap<String, Message>) -> Result<bool> {
+        if self.is_list() {
+            // TODO: int list here will produce the wrong code
+            return Ok(true);
+        }
+
+        match &self.0.typ {
+            FieldType::MessageOrEnum(msg_name) => {
+                let msg = match message_map.get(msg_name.as_str()) {
+                    Some(m) => MessageInfo(m.clone()),
+                    None => {
+                        bail!("Msg name: {} not found in message map.", msg_name);
+                    }
+                };
+                return msg.contains_variable_list(message_map);
+            }
+            _ => {
+                return Ok(false);
+            }
         }
     }
 

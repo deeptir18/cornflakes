@@ -275,7 +275,7 @@ where
         Ok(true)
     }
 
-    fn init(&mut self, connection: &mut Self::Datapath) -> Result<()> {
+    fn init(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
         tracing::info!(size = self.bytes_to_transmit.len(), "Bytes to transmit");
         Ok(())
     }

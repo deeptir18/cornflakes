@@ -84,8 +84,8 @@ where
     where
         'kv: 'arena,
     {
-        let mut get_req = kv_serializer_hybrid::GetReq::new();
-        get_req.deserialize(pkt, REQ_TYPE_SIZE)?;
+        let mut get_req = kv_serializer_hybrid::GetReq::new_in(arena);
+        get_req.deserialize(pkt, REQ_TYPE_SIZE, arena)?;
         let value = match kv_server.get(get_req.get_key().to_str()?) {
             Some(v) => v,
             None => {
@@ -98,7 +98,7 @@ where
             value.as_ref().as_ptr(),
             value.as_ref().len()
         );
-        let mut get_resp = kv_serializer_hybrid::GetResp::new();
+        let mut get_resp = kv_serializer_hybrid::GetResp::new_in(arena);
         get_resp.set_id(get_req.get_id());
 
         // initialize copy context
@@ -108,6 +108,7 @@ where
             datapath,
             &mut copy_context,
         )?);
+
         let datapath_sga =
             get_resp.serialize_into_arena_datapath_sga(datapath, copy_context, arena)?;
         Ok(datapath_sga)
@@ -148,14 +149,14 @@ where
     where
         'kv: 'arena,
     {
-        let mut getm_req = kv_serializer_hybrid::GetMReq::new();
+        let mut getm_req = kv_serializer_hybrid::GetMReq::new_in(arena);
         {
             #[cfg(feature = "profiler")]
             perftools::timer!("Deserialize pkt");
-            getm_req.deserialize(&pkt, REQ_TYPE_SIZE)?;
+            getm_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
         }
-        let mut getm_resp = kv_serializer_hybrid::GetMResp::new();
-        getm_resp.init_vals(getm_req.get_keys().len());
+        let mut getm_resp = kv_serializer_hybrid::GetMResp::new_in(arena);
+        getm_resp.init_vals(getm_req.get_keys().len(), arena);
         let vals = getm_resp.get_mut_vals();
         let mut copy_context = CopyContext::new(arena, datapath)?;
         for key in getm_req.get_keys().iter() {
@@ -227,8 +228,8 @@ where
     where
         'kv: 'arena,
     {
-        let mut getlist_req = kv_serializer_hybrid::GetListReq::new();
-        getlist_req.deserialize(&pkt, REQ_TYPE_SIZE)?;
+        let mut getlist_req = kv_serializer_hybrid::GetListReq::new_in(arena);
+        getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
         let value_list = match list_kv_server.get(getlist_req.get_key().to_str()?) {
             Some(v) => v,
             None => {
@@ -236,10 +237,10 @@ where
             }
         };
 
-        let mut getlist_resp = kv_serializer_hybrid::GetListResp::new();
+        let mut getlist_resp = kv_serializer_hybrid::GetListResp::new_in(arena);
         let mut copy_context = CopyContext::new(arena, datapath)?;
         getlist_resp.set_id(getlist_req.get_id());
-        getlist_resp.init_val_list(value_list.len());
+        getlist_resp.init_val_list(value_list.len(), arena);
         let list = getlist_resp.get_mut_val_list();
         for value in value_list.iter() {
             list.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
