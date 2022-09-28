@@ -25,7 +25,7 @@ macro_rules! run_server (
 
             echo_server.init(&mut connection)?;
 
-            echo_server.run_state_machine(&mut connection)?;
+            echo_server.run_state_machine_baseline(&mut connection)?;
     }
 );
 

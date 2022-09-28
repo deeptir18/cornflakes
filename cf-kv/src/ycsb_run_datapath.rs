@@ -11,6 +11,7 @@ use structopt::StructOpt;
 #[macro_export]
 macro_rules! run_server(
     ($kv_server: ty, $datapath: ty, $opt: ident) => {
+        let is_baseline = is_baseline(&$opt);
         let mut datapath_params = <$datapath as Datapath>::parse_config_file(&$opt.config_file, &$opt.server_ip)?;
         let addresses = <$datapath as Datapath>::compute_affinity(&datapath_params, 1, None, AppMode::Server)?;
         let per_thread_contexts = <$datapath as Datapath>::global_init(1, &mut datapath_params, addresses)?;
@@ -25,8 +26,12 @@ macro_rules! run_server(
         let load_generator = YCSBServerLoader::new($opt.value_size_generator, $opt.num_values, $opt.num_keys, $opt.allocate_contiguously);
         let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type, false, $opt.non_refcounted)?;
         kv_server.init(&mut connection)?;
-        kv_server.write_ready($opt.ready_file)?;
-        kv_server.run_state_machine(&mut connection)?;
+        kv_server.write_ready($opt.ready_file.clone())?;
+        if is_baseline {
+            kv_server.run_state_machine_baseline(&mut connection)?;
+        } else {
+            kv_server.run_state_machine(&mut connection)?;
+        }
     }
 );
 
@@ -126,7 +131,11 @@ macro_rules! run_client(
     }
 );
 
-fn is_cf(opt: &YCSBOpt) -> bool {
+pub fn is_baseline(opt: &YCSBOpt) -> bool {
+    !(opt.serialization == SerializationType::CornflakesOneCopyDynamic
+        || opt.serialization == SerializationType::CornflakesDynamic)
+}
+pub fn is_cf(opt: &YCSBOpt) -> bool {
     opt.serialization == SerializationType::CornflakesDynamic
         || opt.serialization == SerializationType::CornflakesOneCopyDynamic
 }

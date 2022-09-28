@@ -11,6 +11,7 @@ use structopt::StructOpt;
 #[macro_export]
 macro_rules! run_server_retwis(
     ($kv_server: ty, $datapath: ty, $opt: ident) => {
+        let is_baseline = is_baseline(&$opt);
         let mut datapath_params = <$datapath as Datapath>::parse_config_file(&$opt.config_file, &$opt.server_ip)?;
         let addresses = <$datapath as Datapath>::compute_affinity(&datapath_params, 1, None, AppMode::Server)?;
         let per_thread_contexts = <$datapath as Datapath>::global_init(1, &mut datapath_params, addresses)?;
@@ -25,8 +26,12 @@ macro_rules! run_server_retwis(
         let load_generator = RetwisServerLoader::new($opt.num_keys, $opt.key_size, $opt.value_size_generator);
         let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, $opt.zero_copy_puts, $opt.non_refcounted)?;
         kv_server.init(&mut connection)?;
-        kv_server.write_ready($opt.ready_file)?;
-        kv_server.run_state_machine(&mut connection)?;
+        kv_server.write_ready($opt.ready_file.clone())?;
+        if is_baseline {
+            kv_server.run_state_machine_baseline(&mut connection)?;
+        } else {
+            kv_server.run_state_machine(&mut connection)?;
+        }
     }
 );
 
@@ -128,6 +133,11 @@ macro_rules! run_client_retwis(
 fn is_cf(opt: &RetwisOpt) -> bool {
     opt.serialization == SerializationType::CornflakesDynamic
         || opt.serialization == SerializationType::CornflakesOneCopyDynamic
+}
+
+pub fn is_baseline(opt: &RetwisOpt) -> bool {
+    !(opt.serialization == SerializationType::CornflakesOneCopyDynamic
+        || opt.serialization == SerializationType::CornflakesDynamic)
 }
 
 pub fn check_opt(opt: &mut RetwisOpt) -> Result<()> {

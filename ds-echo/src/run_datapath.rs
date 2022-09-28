@@ -10,6 +10,7 @@ use structopt::StructOpt;
 #[macro_export]
 macro_rules! run_server (
     ($echo_server: ty, $datapath: ty, $opt: ident) => {
+        let is_baseline = is_baseline(&$opt);
         let mut datapath_params = <$datapath as Datapath>::parse_config_file(&$opt.config_file, &$opt.server_ip)?;
         let addresses = <$datapath as Datapath>::compute_affinity(&datapath_params, 1, None, AppMode::Server)?;
         let per_thread_contexts = <$datapath as Datapath>::global_init(1, &mut datapath_params, addresses)?;
@@ -24,13 +25,17 @@ macro_rules! run_server (
         let mut echo_server: $echo_server =
             <$echo_server>::new($opt.push_buf_type);
 
-            echo_server.init(&mut connection)?;
-            if $opt.serialization == SerializationType::CornflakesOneCopyDynamic {
-                echo_server.set_with_copy();
-            }
+        echo_server.init(&mut connection)?;
+        if $opt.serialization == SerializationType::CornflakesOneCopyDynamic {
+            echo_server.set_with_copy();
+        }
 
-            echo_server.write_ready($opt.ready_file)?;
+        echo_server.write_ready($opt.ready_file.clone())?;
+        if is_baseline {
+            echo_server.run_state_machine_baseline(&mut connection)?;
+        } else {
             echo_server.run_state_machine(&mut connection)?;
+        }
     }
 );
 
@@ -125,6 +130,11 @@ macro_rules! run_client (
 fn is_cf(opt: &DsEchoOpt) -> bool {
     opt.serialization == SerializationType::CornflakesDynamic
         || opt.serialization == SerializationType::CornflakesOneCopyDynamic
+}
+
+pub fn is_baseline(opt: &DsEchoOpt) -> bool {
+    !(opt.serialization == SerializationType::CornflakesOneCopyDynamic
+        || opt.serialization == SerializationType::CornflakesDynamic)
 }
 
 pub fn check_opt(opt: &mut DsEchoOpt) -> Result<()> {

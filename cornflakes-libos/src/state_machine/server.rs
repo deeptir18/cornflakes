@@ -73,6 +73,52 @@ pub trait ServerSM {
         Ok(())
     }
 
+    fn run_state_machine_baseline(&mut self, datapath: &mut Self::Datapath) -> Result<()> {
+        // run profiler from here
+        #[cfg(feature = "profiler")]
+        perftools::profiler::reset();
+        let mut _last_log: Instant = Instant::now();
+        let mut _requests_processed = 0;
+
+        loop {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Run state machine loop");
+
+            #[cfg(feature = "profiler")]
+            {
+                if _last_log.elapsed() > std::time::Duration::from_secs(5) {
+                    let d = Instant::now() - _last_log;
+                    tracing::info!(
+                        "Server processed {} # of reqs since last dump at rate of {:.2} reqs/s",
+                        _requests_processed,
+                        _requests_processed as f64 / d.as_secs_f64()
+                    );
+                    perftools::profiler::write(&mut std::io::stdout(), Some(PROFILER_DEPTH))
+                        .unwrap();
+                    perftools::profiler::reset();
+                    _requests_processed = 0;
+                    _last_log = Instant::now();
+                }
+            }
+
+            let pkts = {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("Datapath pop");
+                datapath.pop()?
+            };
+            if pkts.len() > 0 {
+                match self.push_buf_type() {
+                    PushBufType::SingleBuf => {
+                        self.process_requests_single_buf(pkts, datapath)?;
+                    }
+                    _ => {
+                        unreachable!();
+                    }
+                }
+            }
+        }
+    }
+
     fn run_state_machine(&mut self, datapath: &mut Self::Datapath) -> Result<()> {
         // run profiler from here
         #[cfg(feature = "profiler")]
@@ -87,6 +133,7 @@ pub trait ServerSM {
                 Self::Datapath::max_scatter_gather_entries(),
             ) * 100,
         );
+
         loop {
             #[cfg(feature = "profiler")]
             perftools::timer!("Run state machine loop");
