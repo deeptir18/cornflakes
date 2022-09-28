@@ -102,7 +102,7 @@ where
         get_resp.set_id(get_req.get_id());
 
         // initialize copy context
-        let mut copy_context = CopyContext::new(arena, datapath.get_copying_threshold());
+        let mut copy_context = CopyContext::new(arena, datapath)?;
         get_resp.set_val(dynamic_rcsga_hybrid_hdr::CFBytes::new(
             value.as_ref(),
             datapath,
@@ -157,7 +157,7 @@ where
         let mut getm_resp = kv_serializer_hybrid::GetMResp::new();
         getm_resp.init_vals(getm_req.get_keys().len());
         let vals = getm_resp.get_mut_vals();
-        let mut copy_context = CopyContext::new(arena, datapath.get_copying_threshold());
+        let mut copy_context = CopyContext::new(arena, datapath)?;
         for key in getm_req.get_keys().iter() {
             let value = {
                 tracing::debug!("Key bytes: {:?}", key);
@@ -237,7 +237,7 @@ where
         };
 
         let mut getlist_resp = kv_serializer_hybrid::GetListResp::new();
-        let mut copy_context = CopyContext::new(arena, datapath.get_copying_threshold());
+        let mut copy_context = CopyContext::new(arena, datapath)?;
         getlist_resp.set_id(getlist_req.get_id());
         getlist_resp.init_val_list(value_list.len());
         let list = getlist_resp.get_mut_val_list();

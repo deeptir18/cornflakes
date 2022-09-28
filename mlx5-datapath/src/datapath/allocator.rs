@@ -83,9 +83,6 @@ impl DataMempool {
             mempool_ptr,
             unsafe { get_data_mempool(mempool_ptr as *mut registered_mempool) }
         );
-        let data = unsafe {
-            custom_mlx5_mempool_alloc(get_data_mempool(mempool_ptr as *mut registered_mempool))
-        };
         Ok(DataMempool {
             mempool_ptr: mempool_ptr,
         })

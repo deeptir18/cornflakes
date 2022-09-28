@@ -2058,11 +2058,12 @@ where
         &self.copy_buffers.as_slice()
     }
     #[inline]
-    pub fn new(arena: &'a bumpalo::Bump, threshold: usize) -> Self {
-        CopyContext {
-            copy_buffers: bumpalo::collections::Vec::new_in(&arena),
-            threshold: threshold,
-        }
+    pub fn new(arena: &'a bumpalo::Bump, datapath: &mut D) -> Result<Self> {
+        let serialization_copy_buf = SerializationCopyBuf::new(datapath)?;
+        Ok(CopyContext {
+            copy_buffers: bumpalo::vec![in arena; serialization_copy_buf],
+            threshold: datapath.get_copying_threshold(),
+        })
     }
 
     #[inline]
@@ -2091,9 +2092,6 @@ where
     #[inline]
     pub fn copy(&mut self, buf: &[u8], datapath: &mut D) -> Result<CopyContextRef<D>> {
         let current_length = self.copy_buffers.iter().map(|seg| seg.len()).sum::<usize>();
-        if self.copy_buffers.len() == 0 {
-            self.push(datapath)?;
-        }
         let mut copy_buffers_len = self.copy_buffers.len();
         let mut last_buf = &mut self.copy_buffers[copy_buffers_len - 1];
         if last_buf.remaining() < buf.len() {
