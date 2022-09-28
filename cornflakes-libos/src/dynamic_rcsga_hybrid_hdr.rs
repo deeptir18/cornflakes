@@ -932,9 +932,10 @@ where
         let dynamic_offset = forward_pointer.get_offset() as usize;
 
         self.num_set = size;
-        if self.elts.len() < size {
+        self.elts = bumpalo::vec![in &arena; T::new_in(arena); size];
+        /*if self.elts.len() < size {
             self.elts.resize(size, T::new_in(arena));
-        }
+        }*/
         self.num_space = size;
 
         for (i, elt) in self.elts.iter_mut().take(size).enumerate() {
