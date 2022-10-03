@@ -11,7 +11,7 @@ import git
 from collections import defaultdict
 import time
 from tqdm import tqdm
-
+from invoke import UnexpectedExit
 
 class UserNameSpace(object):
     pass
@@ -368,14 +368,15 @@ class Iteration(metaclass=abc.ABCMeta):
         user = machine_config["user"]
         host_addr = machine_config["hosts"][host]["addr"]
 
-        ssh_command = "ssh -i {} {}@{} {}".format(key, user, host_addr, cmd)
+        ssh_command = "ssh -i {} {}@{} '{}'".format(key, user, host_addr, cmd)
+        print("Killing with command:", ssh_command)
         sh.run(ssh_command, timeout=10, shell=True)
 
     def run_cmd_sudo(self, cmd, host, machine_config, fail_ok=False, return_dict=None, proc_counter=None):
-
         cxn = self.new_connection(host, machine_config)
         print('Host and config:', host, machine_config)
         res = None
+        err = False
         try:
             res = cxn.sudo(cmd, hide=False)
             # utils.warn("Ran command: {}".format(cmd))
@@ -383,8 +384,16 @@ class Iteration(metaclass=abc.ABCMeta):
             if return_dict is not None and proc_counter is not None:
                 return_dict[proc_counter] = True
             return
-        except Exception as e:
-            print('Exception on run sudo:', e)
+        except UnexpectedExit as e:
+            print('Unexpected exit on run sudo:', e.result.__dict__)
+            if e.result.exited >= 0:
+                err = True
+            # else: assume killed by our own kill_cmd. (TODO)
+        except Exception as e2:
+            print('Exception on run sudo:', e2)
+            err = True
+
+        if err:
             if not fail_ok:
                 utils.error(
                     "Failed to run cmd {} on host {}.".format(cmd, host))

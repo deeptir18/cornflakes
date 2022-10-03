@@ -125,7 +125,7 @@ typedef unsigned long virtaddr_t;
 /******************************************/
 /******************************************/
 static __thread int thread_id = 0;
-#define MAX_ITERATIONS 8000000
+#define MAX_ITERATIONS 80000000
 static char* latency_log = NULL;
 static char *threads_log = NULL;
 static int has_threads_log = 0;
@@ -154,6 +154,7 @@ typedef struct ClientRequest
 } __attribute__((packed)) ClientRequest;
 
 static void add_latency(Latency_Dist_t *dist, uint64_t latency) {
+  //  printf("In add latency, %ld\n", latency);
   static __thread int thread_id;
     dist->latencies[dist->total_count] = latency;
     dist->total_count++;
@@ -236,7 +237,10 @@ static void dump_latencies(Latency_Dist_t *dist, float total_time, size_t messag
     float achieved_rate_gbps = (float)(dist->total_count) / (float)total_time * (float)(message_size) * 8.0 / (float)1e9;
     float percent_rate = achieved_rate_gbps / rate_gbps;
     if (has_latency_log) {
+      printf("Writing to latency log %s\n", latency_log);
         write_latency_log(latency_log, dist, client_id);
+    } else {
+      printf("No latency log specified\n");
     }
     free((void *)arr);
     statistics->min = dist->min;
@@ -264,10 +268,11 @@ typedef struct Packet_Map_t
 
 static void add_latency_to_map(Packet_Map_t *map, uint64_t rtt, uint32_t id) {
     static __thread int thread_id;
+    //printf("[add_latency_to_map] Adding %ld %d\n", rtt, id);
     map->rtts[map->total_count] = rtt;
     map->ids[map->total_count] = id;
     map->total_count++;
-    if (map->total_count > (MAX_ITERATIONS * 32)) {
+    if (map->total_count > (MAX_ITERATIONS)) {
         printf("[add_latency_to_map] ERROR: Overflow in Packet map");
     }
 }
@@ -1056,6 +1061,7 @@ static int init_dpdk_port(uint16_t port_id, struct rte_mempool **rx_mbuf_pools, 
 
     // allocate and set up num_queues RX queue per Ethernet port.
     for (uint16_t i = 0; i < rx_rings; ++i) {
+        NETPERF_DEBUG("Initializing rx queue %u", i);
         rte_eth_rx_queue_setup(port_id, i, nb_rxd, socket_id, &rx_conf, rx_mbuf_pools[i]);
     }
 
@@ -1152,12 +1158,11 @@ static int global_init(size_t num_queues) {
     our_dpdk_port_id = port_id;
     rte_eth_macaddr_get(our_dpdk_port_id, &my_eth);
     printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-			(unsigned)our_dpdk_port_id,
-			my_eth.addr_bytes[0], my_eth.addr_bytes[1],
-			my_eth.addr_bytes[2], my_eth.addr_bytes[3],
-			my_eth.addr_bytes[4], my_eth.addr_bytes[5]);
-
+	   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
+	   (unsigned)our_dpdk_port_id,
+	   my_eth.addr_bytes[0], my_eth.addr_bytes[1],
+	   my_eth.addr_bytes[2], my_eth.addr_bytes[3],
+	   my_eth.addr_bytes[4], my_eth.addr_bytes[5]);
 
     if (rte_lcore_count() > 1) {
         printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
@@ -1503,6 +1508,7 @@ static void * do_client(void *client) {
             if (rte_get_timer_cycles_() > (start_time + seconds * rte_get_timer_hz_())) {
                 break;
             }
+
             nb_rx = rte_eth_rx_burst_(our_dpdk_port_id, (uint16_t)client_id, pkts, BURST_SIZE);
             if (nb_rx == 0) {
                 if (rte_get_timer_cycles() > (last_sent + wait_time)) {

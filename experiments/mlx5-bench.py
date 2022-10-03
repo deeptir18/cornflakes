@@ -323,6 +323,7 @@ class ScatterGatherIteration(runner.Iteration):
                 ret["segment_size"] = self.segment_size
                 ret["num_segments"] = self.num_segments
         ret["cornflakes_dir"] = config_yaml["cornflakes_dir"]
+        ret["top_dir"] = config_yaml["top_dir"]
         ret["folder"] = str(folder)
         if program == "start_server":
             if (self.recv_pkt_size != 0):
