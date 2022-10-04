@@ -203,11 +203,7 @@ where
             getm_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
         }
         let mut getm_resp = kv_serializer_hybrid::GetMResp::new_in(arena);
-        {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("Init vals");
-            getm_resp.init_vals(getm_req.get_keys().len(), arena);
-        }
+        getm_resp.init_vals(getm_req.get_keys().len(), arena);
         let vals = getm_resp.get_mut_vals();
         for key in getm_req.get_keys().iter() {
             let value = {
