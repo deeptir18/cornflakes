@@ -1932,7 +1932,7 @@ where
     D: datapath::Datapath,
 {
     fn as_ref(&self) -> &[u8] {
-        &self.datapath_buffer.as_ref()[self.start..self.len]
+        &self.datapath_buffer.as_ref()[self.start..(self.start + self.len)]
     }
 }
 
@@ -1972,10 +1972,16 @@ where
     pub fn new(datapath: &mut D) -> Result<Self> {
         let (buf_option, max_len) = datapath.allocate_tx_buffer()?;
         match buf_option {
-            Some(buf) => Ok(SerializationCopyBuf {
-                buf: buf,
-                total_len: max_len,
-            }),
+            Some(buf) => {
+                tracing::debug!(
+                    "Allocated new serialization copy buf, current length is {}",
+                    buf.as_ref().len()
+                );
+                Ok(SerializationCopyBuf {
+                    buf: buf,
+                    total_len: max_len,
+                })
+            }
             None => {
                 bail!("Could not allocate tx buffer for serialization copying.");
             }
@@ -2014,6 +2020,13 @@ where
         len: usize,
         total_offset: usize,
     ) -> CopyContextRef<D> {
+        tracing::debug!(
+            index = index,
+            start = start,
+            len = len,
+            total_offset = total_offset,
+            "Copy context ref being made"
+        );
         CopyContextRef::new(self.buf.clone(), index, start, len, total_offset)
     }
 }
@@ -2038,6 +2051,7 @@ where
 {
     pub copy_buffers: bumpalo::collections::Vec<'a, SerializationCopyBuf<D>>,
     threshold: usize,
+    current_length: usize,
 }
 
 impl<'a, D> CopyContext<'a, D>
@@ -2057,14 +2071,31 @@ where
     pub fn copy_buffers_slice(&self) -> &[SerializationCopyBuf<D>] {
         &self.copy_buffers.as_slice()
     }
+
+    #[inline]
+    pub fn reset(&mut self, datapath: &mut D) -> Result<()> {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Reset copy context");
+        if self.copy_buffers.len() == 0 {
+            let serialization_copy_buf = SerializationCopyBuf::new(datapath)?;
+            self.copy_buffers.push(serialization_copy_buf);
+        } else {
+            for i in 0..self.copy_buffers.len() {
+                let serialization_copy_buf = SerializationCopyBuf::new(datapath)?;
+                self.copy_buffers[i] = serialization_copy_buf;
+            }
+        }
+        self.current_length = 0;
+        Ok(())
+    }
     #[inline]
     pub fn new(arena: &'a bumpalo::Bump, datapath: &mut D) -> Result<Self> {
         #[cfg(feature = "profiler")]
         perftools::timer!("Allocate new copy context");
-        let serialization_copy_buf = SerializationCopyBuf::new(datapath)?;
         Ok(CopyContext {
-            copy_buffers: bumpalo::vec![in arena; serialization_copy_buf],
+            copy_buffers: bumpalo::collections::Vec::with_capacity_in(1, arena),
             threshold: datapath.get_copying_threshold(),
+            current_length: 0,
         })
     }
 
@@ -2089,11 +2120,18 @@ where
         Ok(())
     }
 
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.copy_buffers.len()
+    }
+
     /// Copies data into copy context.
     /// Returns (start, end) range of copy context that buffer was copied into.
     #[inline]
     pub fn copy(&mut self, buf: &[u8], datapath: &mut D) -> Result<CopyContextRef<D>> {
-        let current_length = self.copy_buffers.iter().map(|seg| seg.len()).sum::<usize>();
+        #[cfg(feature = "profiler")]
+        perftools::timer!("Copy in copy context");
+        let current_length = self.current_length;
         let mut copy_buffers_len = self.copy_buffers.len();
         let mut last_buf = &mut self.copy_buffers[copy_buffers_len - 1];
         if last_buf.remaining() < buf.len() {
@@ -2110,6 +2148,7 @@ where
                 written
             );
         }
+        self.current_length += written;
         return Ok(last_buf.copy_context_ref(
             copy_buffers_len - 1,
             current_offset,

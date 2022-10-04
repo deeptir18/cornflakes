@@ -99,7 +99,11 @@ where
         pkt: &ReceivedPkt<D>,
         builder: &mut FlatBufferBuilder,
     ) -> Result<()> {
-        let getm_request = get_root::<cf_kv_fbs::GetMReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+        let getm_request = {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("deserialize");
+            get_root::<cf_kv_fbs::GetMReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
+        };
         let keys = getm_request.keys().unwrap();
         let args_vec_res: Result<Vec<cf_kv_fbs::ValueArgs>> = keys
             .iter()

@@ -1,6 +1,7 @@
 use super::{
-    allocator::MempoolID, dynamic_sga_hdr::SgaHeaderRepr, utils::AddressInfo, ArenaDatapathSga,
-    ArenaOrderedRcSga, ArenaOrderedSga, ConnID, MsgID, OrderedRcSga, OrderedSga, RcSga, Sga,
+    allocator::MempoolID, dynamic_rcsga_hybrid_hdr::HybridArenaRcSgaHdr,
+    dynamic_sga_hdr::SgaHeaderRepr, utils::AddressInfo, ArenaDatapathSga, ArenaOrderedRcSga,
+    ArenaOrderedSga, ConnID, CopyContext, MsgID, OrderedRcSga, OrderedSga, RcSga, Sga,
 };
 use color_eyre::eyre::{bail, Result};
 use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
@@ -243,6 +244,8 @@ pub trait Datapath {
         + MetadataOps
         + Default;
 
+    type CallbackEntryState;
+
     /// Any per thread context required by the datapath per thread.
     type PerThreadContext: Send + Clone;
 
@@ -357,6 +360,20 @@ pub trait Datapath {
         _ordered_sgas: impl Iterator<Item = Result<(MsgID, ConnID, OrderedSga<'sge>)>>,
     ) -> Result<()> {
         Ok(())
+    }
+
+    fn queue_cornflakes_obj<'arena>(
+        &mut self,
+        _msg_id: MsgID,
+        _conn_id: ConnID,
+        _copy_context: &mut CopyContext<'arena, Self>,
+        _cornflakes_obj: impl HybridArenaRcSgaHdr<'arena, Self>,
+        _end_batch: bool,
+    ) -> Result<()>
+    where
+        Self: Sized,
+    {
+        unimplemented!();
     }
 
     fn queue_arena_datapath_sga<'a>(

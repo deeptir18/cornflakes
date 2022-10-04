@@ -887,6 +887,36 @@ impl SerializationCompiler {
         Ok(())
     }
 
+    pub fn add_func_call_with_plus_equals(
+        &mut self,
+        left: &str,
+        caller: Option<String>,
+        func: &str,
+        args: Vec<String>,
+        add_res: bool,
+    ) -> Result<()> {
+        let caller_str = match caller {
+            Some(x) => format!("{}.", x),
+            None => "".to_string(),
+        };
+
+        let res = match add_res {
+            true => "?",
+            false => "",
+        };
+
+        let line = format!(
+            "{} += {}{}({}){};",
+            left,
+            caller_str,
+            func,
+            args.join(", "),
+            res
+        );
+        self.add_line(&line)?;
+        Ok(())
+    }
+
     pub fn add_func_call(
         &mut self,
         caller: Option<String>,

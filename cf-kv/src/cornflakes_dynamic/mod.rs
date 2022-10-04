@@ -27,7 +27,7 @@ use cornflakes_libos::{
     dynamic_rcsga_hybrid_hdr,
     dynamic_rcsga_hybrid_hdr::HybridArenaRcSgaHdr,
     state_machine::server::ServerSM,
-    ArenaDatapathSga, ArenaOrderedRcSga, CopyContext,
+    ArenaDatapathSga, ArenaOrderedRcSga, ConnID, CopyContext, MsgID,
 };
 use kv_serializer::*;
 
@@ -72,6 +72,49 @@ where
     }
     pub fn set_with_copies(&mut self) {
         self.with_copies = true;
+    }
+
+    fn handle_get_serialize_and_send<'kv, 'arena>(
+        &self,
+        msg_id: MsgID,
+        conn_id: ConnID,
+        end_batch: bool,
+        kv_server: &'kv KVServer<D>,
+        pkt: &ReceivedPkt<D>,
+        datapath: &mut D,
+        arena: &'arena bumpalo::Bump,
+    ) -> Result<()>
+    where
+        'kv: 'arena,
+    {
+        let mut get_req = kv_serializer_hybrid::GetReq::new_in(arena);
+        get_req.deserialize(pkt, REQ_TYPE_SIZE, arena)?;
+        let value = match kv_server.get(get_req.get_key().to_str()?) {
+            Some(v) => v,
+            None => {
+                bail!("Could not find value for key: {:?}", get_req.get_key());
+            }
+        };
+        tracing::debug!(
+            "For given key {:?}, found value {:?} with length {}",
+            get_req.get_key().to_str()?,
+            value.as_ref().as_ptr(),
+            value.as_ref().len()
+        );
+        let mut get_resp = kv_serializer_hybrid::GetResp::new_in(arena);
+        get_resp.set_id(get_req.get_id());
+
+        // initialize copy context
+        let mut copy_context = CopyContext::new(arena, datapath)?;
+        get_resp.set_val(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+            value.as_ref(),
+            datapath,
+            &mut copy_context,
+        )?);
+
+        // now serialize and send object
+        datapath.queue_cornflakes_obj(msg_id, conn_id, &mut copy_context, get_resp, end_batch)?;
+        Ok(())
     }
 
     fn handle_get<'kv, 'arena>(
@@ -137,6 +180,69 @@ where
             ArenaOrderedRcSga::allocate(put_resp.num_scatter_gather_entries(), &arena);
         put_resp.serialize_into_arena_sga(&mut arena_sga, arena, datapath, self.with_copies)?;
         Ok(arena_sga)
+    }
+
+    fn handle_getm_serialize_and_send<'kv, 'arena>(
+        &self,
+        msg_id: MsgID,
+        conn_id: ConnID,
+        end_batch: bool,
+        kv_server: &'kv KVServer<D>,
+        pkt: &ReceivedPkt<D>,
+        datapath: &mut D,
+        copy_context: &mut CopyContext<'arena, D>,
+        arena: &'arena bumpalo::Bump,
+    ) -> Result<()>
+    where
+        'kv: 'arena,
+    {
+        let mut getm_req = kv_serializer_hybrid::GetMReq::new_in(arena);
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Deserialize pkt");
+            getm_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+        }
+        let mut getm_resp = kv_serializer_hybrid::GetMResp::new_in(arena);
+        {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Init vals");
+            getm_resp.init_vals(getm_req.get_keys().len(), arena);
+        }
+        let vals = getm_resp.get_mut_vals();
+        for key in getm_req.get_keys().iter() {
+            let value = {
+                tracing::debug!("Key bytes: {:?}", key);
+                #[cfg(feature = "profiler")]
+                perftools::timer!("got value");
+                match kv_server.get(key.to_str()?) {
+                    Some(v) => v,
+                    None => {
+                        bail!("Could not find value for key: {:?}", key);
+                    }
+                }
+            };
+            tracing::debug!(
+                "For given key {:?}, found value {:?} with length {}",
+                key.to_str()?,
+                value.as_ref().as_ptr(),
+                value.as_ref().len()
+            );
+            {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("append value");
+                vals.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                    value.as_ref(),
+                    datapath,
+                    copy_context,
+                )?);
+            }
+        }
+        getm_resp.set_id(getm_req.get_id());
+        tracing::debug!("Finished setting all pointers");
+        tracing::debug!("Sending back {:?}", getm_resp);
+
+        datapath.queue_cornflakes_obj(msg_id, conn_id, copy_context, getm_resp, end_batch)?;
+        Ok(())
     }
 
     fn handle_getm<'kv, 'arena>(
@@ -218,6 +324,52 @@ where
         put_resp.serialize_into_arena_sga(&mut arena_sga, arena, datapath, self.with_copies)?;
         Ok(arena_sga)
     }
+
+    fn handle_getlist_serialize_and_send<'kv, 'arena>(
+        &self,
+        msg_id: MsgID,
+        conn_id: ConnID,
+        end_batch: bool,
+        list_kv_server: &'kv ListKVServer<D>,
+        pkt: &ReceivedPkt<D>,
+        datapath: &mut D,
+        arena: &'arena bumpalo::Bump,
+    ) -> Result<()>
+    where
+        'kv: 'arena,
+    {
+        let mut getlist_req = kv_serializer_hybrid::GetListReq::new_in(arena);
+        getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+        let value_list = match list_kv_server.get(getlist_req.get_key().to_str()?) {
+            Some(v) => v,
+            None => {
+                bail!("Could not find value for key: {:?}", getlist_req.get_key());
+            }
+        };
+
+        let mut getlist_resp = kv_serializer_hybrid::GetListResp::new_in(arena);
+        let mut copy_context = CopyContext::new(arena, datapath)?;
+        getlist_resp.set_id(getlist_req.get_id());
+        getlist_resp.init_val_list(value_list.len(), arena);
+        let list = getlist_resp.get_mut_val_list();
+        for value in value_list.iter() {
+            list.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                value.as_ref(),
+                datapath,
+                &mut copy_context,
+            )?);
+        }
+
+        datapath.queue_cornflakes_obj(
+            msg_id,
+            conn_id,
+            &mut copy_context,
+            getlist_resp,
+            end_batch,
+        )?;
+        Ok(())
+    }
+
     fn handle_getlist<'kv, 'arena>(
         &self,
         list_kv_server: &'kv ListKVServer<D>,
@@ -333,6 +485,91 @@ where
     #[inline]
     fn push_buf_type(&self) -> PushBufType {
         self.push_buf_type
+    }
+
+    #[inline]
+    fn process_requests_object(
+        &mut self,
+        sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        datapath: &mut Self::Datapath,
+        arena: &mut bumpalo::Bump,
+    ) -> Result<()> {
+        let end = sga.len();
+        let mut copy_context = CopyContext::new(arena, datapath)?;
+        for (i, pkt) in sga.into_iter().enumerate() {
+            let end_batch = i == (end - 1);
+            let msg_type = MsgType::from_packet(&pkt)?;
+            tracing::debug!(
+                msg_type =? msg_type,
+                "Received packet with data {:?} ptr and length {}",
+                pkt.seg(0).as_ref().as_ptr(),
+                pkt.data_len()
+            );
+            match msg_type {
+                MsgType::Get => {
+                    self.serializer.handle_get_serialize_and_send(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        end_batch,
+                        &self.kv_server,
+                        &pkt,
+                        datapath,
+                        &arena,
+                    )?;
+                }
+                MsgType::Put => {
+                    unimplemented!();
+                }
+                MsgType::GetM(_size) => {
+                    copy_context.reset(datapath)?;
+                    self.serializer.handle_getm_serialize_and_send(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        end_batch,
+                        &self.kv_server,
+                        &pkt,
+                        datapath,
+                        &mut copy_context,
+                        arena,
+                    )?;
+                }
+                MsgType::PutM(_size) => {
+                    unimplemented!();
+                }
+                MsgType::GetList(_size) => {
+                    self.serializer.handle_getlist_serialize_and_send(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        end_batch,
+                        &self.list_kv_server,
+                        &pkt,
+                        datapath,
+                        &arena,
+                    )?;
+                }
+                MsgType::PutList(_size) => {
+                    unimplemented!();
+                }
+                MsgType::AddUser => {
+                    unimplemented!();
+                }
+                MsgType::FollowUnfollow => {
+                    unimplemented!();
+                }
+                MsgType::PostTweet => {
+                    unimplemented!();
+                }
+                MsgType::GetTimeline(_) => {
+                    unimplemented!();
+                }
+                _ => {
+                    unimplemented!();
+                }
+            }
+        }
+
+        //arena.reset();
+        Ok(())
     }
 
     #[inline]

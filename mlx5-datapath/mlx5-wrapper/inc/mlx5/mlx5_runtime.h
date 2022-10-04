@@ -241,6 +241,13 @@ void custom_mlx5_inline_udp_hdr(struct custom_mlx5_per_thread_context *per_threa
  * */
 void custom_mlx5_inline_packet_id(struct custom_mlx5_per_thread_context *per_thread_context,  uint32_t packet_id);
 
+/* Gets the next dpseg */
+struct mlx5_wqe_data_seg *custom_mlx5_advance_dpseg(struct custom_mlx5_per_thread_context *per_thread_context, struct mlx5_wqe_data_seg *dpseg);
+
+/* Gets the next completion*/
+struct custom_mlx5_transmission_info *custom_mlx5_advance_completion_info(struct custom_mlx5_per_thread_context *per_thread_context,
+                struct custom_mlx5_transmission_info *transmission_info);
+
 /*
  * add_dpseg - Adds next dpseg into this transmission.
  * Arguments:

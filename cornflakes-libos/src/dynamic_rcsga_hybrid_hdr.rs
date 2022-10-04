@@ -189,6 +189,23 @@ where
         vec![0u8; self.total_header_size(false, false)]
     }
 
+    fn iterate_over_entries<F>(
+        &self,
+        _copy_context: &mut CopyContext<'arena, D>,
+        _header_len: usize,
+        _header_buffer: &mut [u8],
+        _constant_header_offset: usize,
+        _dynamic_header_offset: usize,
+        _cur_entry_ptr: &mut usize,
+        _datapath_callback: &mut F,
+        _callback_state: &mut D::CallbackEntryState,
+    ) -> Result<usize>
+    where
+        F: FnMut(&D::DatapathMetadata, &mut D::CallbackEntryState) -> Result<()>,
+    {
+        unimplemented!();
+    }
+
     fn inner_serialize<'a>(
         &self,
         datapath: &mut D,
@@ -405,6 +422,57 @@ where
     }
 
     #[inline]
+    fn iterate_over_entries<F>(
+        &self,
+        _copy_context: &mut CopyContext<'arena, D>,
+        header_len: usize,
+        header_buffer: &mut [u8],
+        constant_header_offset: usize,
+        _dynamic_header_offset: usize,
+        cur_entry_ptr: &mut usize,
+        datapath_callback: &mut F,
+        callback_state: &mut D::CallbackEntryState,
+    ) -> Result<usize>
+    where
+        F: FnMut(&D::DatapathMetadata, &mut D::CallbackEntryState) -> Result<()>,
+    {
+        match self {
+            CFBytes::RefCounted(metadata) => {
+                // call the datapath callback on this metadata
+                datapath_callback(&metadata, callback_state)?;
+                let offset_to_write = *cur_entry_ptr;
+                let object_len = metadata.as_ref().len();
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                obj_ref.write_size(object_len as u32);
+                obj_ref.write_offset(offset_to_write as u32);
+                *cur_entry_ptr += object_len;
+                Ok(object_len)
+            }
+            CFBytes::Copied(copy_context_ref) => {
+                //copy_context.check(&copy_context_ref)?;
+                // write in the offset and length into the correct location in the header buffer
+                let offset_to_write = copy_context_ref.total_offset() + header_len;
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                obj_ref.write_size(copy_context_ref.len() as u32);
+                obj_ref.write_offset(offset_to_write as u32);
+                tracing::debug!(
+                    offset_to_write = offset_to_write,
+                    size = copy_context_ref.len(),
+                    copy_context_total_offset = copy_context_ref.total_offset(),
+                    header_buffer_len = header_buffer.len(),
+                    "Reached inner serialize for cf bytes"
+                );
+                Ok(copy_context_ref.len())
+            }
+            CFBytes::Raw(_raw_ref) => {
+                // TODO: better to just remove the "raw pointer" option or keep this as
+                // unreachable?
+                unreachable!();
+            }
+        }
+    }
+
+    #[inline]
     fn inner_serialize<'a>(
         &self,
         datapath: &mut D,
@@ -426,12 +494,18 @@ where
             }
             CFBytes::Copied(copy_context_ref) => {
                 // check the copy_context against the copy context ref
-                copy_context.check(&copy_context_ref)?;
+                //copy_context.check(&copy_context_ref)?;
                 // write in the offset and length into the correct location in the header buffer
                 let offset_to_write = copy_context_ref.total_offset() + header_buffer.len();
                 let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
                 obj_ref.write_size(copy_context_ref.len() as u32);
                 obj_ref.write_offset(offset_to_write as u32);
+                tracing::debug!(
+                    constant_header_offset,
+                    offset_to_write,
+                    len = copy_context_ref.len(),
+                    "Filling in dpseg for copy context cf bytes"
+                );
             }
             CFBytes::Raw(raw_ref) => {
                 // copy into the copy context
@@ -621,6 +695,51 @@ where
     }
 
     #[inline]
+    fn iterate_over_entries<F>(
+        &self,
+        copy_context: &mut CopyContext<'arena, D>,
+        header_len: usize,
+        header_buffer: &mut [u8],
+        constant_header_offset: usize,
+        _dynamic_header_offset: usize,
+        cur_entry_ptr: &mut usize,
+        datapath_callback: &mut F,
+        callback_state: &mut D::CallbackEntryState,
+    ) -> Result<usize>
+    where
+        F: FnMut(&D::DatapathMetadata, &mut D::CallbackEntryState) -> Result<()>,
+    {
+        match self {
+            CFString::RefCounted(metadata) => {
+                // call the datapath callback on this metadata
+                datapath_callback(&metadata, callback_state)?;
+                let offset_to_write = *cur_entry_ptr;
+                let object_len = metadata.as_ref().len();
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                obj_ref.write_size(object_len as u32);
+                obj_ref.write_offset(offset_to_write as u32);
+                *cur_entry_ptr += object_len;
+                Ok(object_len)
+            }
+            CFString::Copied(copy_context_ref) => {
+                // check the copy_context against the copy context ref
+                copy_context.check(&copy_context_ref)?;
+                // write in the offset and length into the correct location in the header buffer
+                let offset_to_write = copy_context_ref.total_offset() + header_len;
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                obj_ref.write_size(copy_context_ref.len() as u32);
+                obj_ref.write_offset(offset_to_write as u32);
+                Ok(copy_context_ref.len())
+            }
+            CFString::Raw(_raw_ref) => {
+                // TODO: better to just remove the "raw pointer" option or keep this as
+                // unreachable?
+                unreachable!();
+            }
+        }
+    }
+
+    #[inline]
     fn inner_serialize<'a>(
         &self,
         datapath: &mut D,
@@ -741,10 +860,14 @@ where
 {
     #[inline]
     pub fn init(num: usize, arena: &'arena bumpalo::Bump) -> VariableList<'arena, T, D> {
+        let entries = bumpalo::collections::Vec::from_iter_in(
+            std::iter::repeat(T::new_in(arena)).take(num),
+            arena,
+        );
         VariableList {
             num_space: num,
             num_set: 0,
-            elts: bumpalo::collections::Vec::with_capacity_in(num, arena),
+            elts: entries,
             _phantom_data: PhantomData,
         }
     }
@@ -756,7 +879,11 @@ where
 
     #[inline]
     pub fn append(&mut self, val: T) {
-        self.elts.push(val);
+        if self.elts.len() == self.num_set {
+            self.elts.push(val);
+        } else {
+            self.elts[self.num_set] = val;
+        }
         self.num_set += 1;
     }
 
@@ -858,6 +985,77 @@ where
         }
 
         true
+    }
+
+    #[inline]
+    fn iterate_over_entries<F>(
+        &self,
+        copy_context: &mut CopyContext<'arena, D>,
+        header_len: usize,
+        header_buffer: &mut [u8],
+        constant_header_offset: usize,
+        dynamic_header_offset: usize,
+        cur_entry_ptr: &mut usize,
+        datapath_callback: &mut F,
+        callback_state: &mut D::CallbackEntryState,
+    ) -> Result<usize>
+    where
+        F: FnMut(&D::DatapathMetadata, &mut D::CallbackEntryState) -> Result<()>,
+    {
+        {
+            let mut forward_pointer = MutForwardPointer(header_buffer, constant_header_offset);
+            forward_pointer.write_size(self.num_set as u32);
+            forward_pointer.write_offset(dynamic_header_offset as u32);
+        }
+
+        tracing::debug!(
+            num_set = self.num_set,
+            dynamic_offset = dynamic_header_offset,
+            num_set = self.num_set,
+            "Writing in forward pointer at position {}",
+            constant_header_offset
+        );
+
+        let mut ret = 0;
+        let mut cur_dynamic_off = dynamic_header_offset + self.dynamic_header_start();
+        for (i, elt) in self.elts.iter().take(self.num_set).enumerate() {
+            if elt.dynamic_header_size() != 0 {
+                let mut forward_offset = MutForwardPointer(
+                    header_buffer,
+                    dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
+                );
+                // TODO: might be unnecessary
+                forward_offset.write_size(elt.dynamic_header_size() as u32);
+                forward_offset.write_offset(cur_dynamic_off as u32);
+                ret += elt.iterate_over_entries(
+                    copy_context,
+                    header_len,
+                    header_buffer,
+                    cur_dynamic_off,
+                    cur_dynamic_off + elt.dynamic_header_start(),
+                    cur_entry_ptr,
+                    datapath_callback,
+                    callback_state,
+                )?;
+            } else {
+                tracing::debug!(
+                    constant = dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
+                    "Calling inner serialize recursively in list inner serialize"
+                );
+                ret += elt.iterate_over_entries(
+                    copy_context,
+                    header_len,
+                    header_buffer,
+                    dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
+                    cur_dynamic_off,
+                    cur_entry_ptr,
+                    datapath_callback,
+                    callback_state,
+                )?;
+            }
+            cur_dynamic_off += elt.dynamic_header_size();
+        }
+        Ok(ret)
     }
 
     #[inline]

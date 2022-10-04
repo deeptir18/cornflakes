@@ -6,11 +6,12 @@ use super::{
 use cornflakes_libos::{
     allocator::{MemoryPoolAllocator, MempoolID},
     datapath::{Datapath, DatapathBufferOps, InlineMode, MetadataOps, ReceivedPkt},
+    dynamic_rcsga_hybrid_hdr::HybridArenaRcSgaHdr,
     dynamic_sga_hdr::SgaHeaderRepr,
     mem::PGSIZE_2MB,
     utils::AddressInfo,
-    ArenaDatapathSga, ArenaOrderedRcSga, ArenaOrderedSga, ConnID, MsgID, OrderedRcSga, OrderedSga,
-    RcSga, RcSge, Sga,
+    ArenaDatapathSga, ArenaOrderedRcSga, ArenaOrderedSga, ConnID, CopyContext, MsgID, OrderedRcSga,
+    OrderedSga, RcSga, RcSge, Sga,
 };
 
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
@@ -572,6 +573,8 @@ pub struct Mlx5Connection {
     first_ctrl_seg: *mut mlx5_wqe_ctrl_seg,
     /// Array of mbuf metadatas to store while finishing serialization
     mbuf_metadatas: [Option<MbufMetadata>; 32],
+    /// header buffer to use while posting entries
+    header_buffer: Vec<u8>,
 }
 
 impl Mlx5Connection {
@@ -1428,6 +1431,34 @@ impl Mlx5Connection {
         }
     }
 
+    fn cornflakes_obj_shape(
+        &self,
+        header_len: usize,
+        num_copy_entries: usize,
+        num_zero_copy_entries: usize,
+    ) -> (usize, usize) {
+        match self.inline_mode {
+            InlineMode::Nothing => (0, 1 + num_copy_entries + num_zero_copy_entries),
+            InlineMode::PacketHeader => {
+                if header_len > 0 {
+                    (
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                        1 + num_copy_entries + num_zero_copy_entries,
+                    )
+                } else {
+                    (
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                        num_copy_entries + num_zero_copy_entries,
+                    )
+                }
+            }
+            InlineMode::ObjectHeader => (
+                cornflakes_libos::utils::TOTAL_HEADER_SIZE + header_len,
+                num_copy_entries + num_zero_copy_entries,
+            ),
+        }
+    }
+
     // TODO: doesn't work when there's more then 1 MTU of copied stuff
     fn arena_datapath_sga_shape(
         &self,
@@ -1532,6 +1563,7 @@ impl Mlx5Connection {
         }
     }
 
+    #[inline]
     fn wqes_required_protobuf<T>(&self, proto: &T) -> usize
     where
         T: protobuf::Message,
@@ -1543,6 +1575,7 @@ impl Mlx5Connection {
         }
     }
 
+    #[inline]
     fn wqes_required_sga_with_copy(&self, sga: &ArenaOrderedSga) -> usize {
         let (inline_len, num_segs) = self.sga_with_copy_shape(sga);
         unsafe {
@@ -1843,6 +1876,8 @@ impl Datapath for Mlx5Connection {
 
     type DatapathMetadata = MbufMetadata;
 
+    type CallbackEntryState = (*mut mlx5_wqe_data_seg, *mut custom_mlx5_transmission_info);
+
     type PerThreadContext = Mlx5PerThreadContext;
 
     type DatapathSpecificParams = Mlx5DatapathSpecificParams;
@@ -2073,6 +2108,7 @@ impl Datapath for Mlx5Connection {
             recv_mbufs: RecvMbufArray::new(RECEIVE_BURST_SIZE),
             first_ctrl_seg: ptr::null_mut(),
             mbuf_metadatas: Default::default(),
+            header_buffer: vec![0u8; Self::max_packet_size()],
         })
     }
 
@@ -2656,9 +2692,6 @@ impl Datapath for Mlx5Connection {
         }
 
         let (inline_len, _num_segs, num_wqes_required) = {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("protobuf filling in ctrl and ether seg");
-
             let (inline_len, num_segs) = self.protobuf_shape(object);
             let num_octowords =
                 unsafe { custom_mlx5_num_octowords(inline_len as _, num_segs as _) };
@@ -2710,12 +2743,7 @@ impl Datapath for Mlx5Connection {
             unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
         tracing::debug!("Allocation size: {}", allocation_size);
         if allocation_size > 0 {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("Copying stuff");
-
             let mut data_buffer = {
-                #[cfg(feature = "profiler")]
-                perftools::timer!("allocating stuff to copy into");
                 match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
@@ -2733,8 +2761,6 @@ impl Datapath for Mlx5Connection {
             }
             if !inlined_obj_hdr {
                 // copy protobuf object into datapath buffer
-                #[cfg(feature = "profiler")]
-                perftools::timer!("Copying protobuf data into packet");
                 let mutable_slice = data_buffer.mutable_slice(offset, offset + data_len)?;
                 let mut coded_output_stream = protobuf::CodedOutputStream::bytes(mutable_slice);
                 object.write_to(&mut coded_output_stream)?;
@@ -2949,9 +2975,6 @@ impl Datapath for Mlx5Connection {
                     as usize;
         }
         let (inline_len, _num_segs, num_wqes_required) = {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("ordered sga and filling in ctrl and ether seg");
-
             let (inline_len, num_segs) = self.single_buffer_shape(buf);
             let num_octowords =
                 unsafe { custom_mlx5_num_octowords(inline_len as _, num_segs as _) };
@@ -2997,12 +3020,7 @@ impl Datapath for Mlx5Connection {
             unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
         tracing::debug!("Allocation size: {}", allocation_size);
         if allocation_size > 0 {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("Copying stuff");
-
             let mut data_buffer = {
-                #[cfg(feature = "profiler")]
-                perftools::timer!("allocating stuff to copy into");
                 match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
@@ -3014,8 +3032,6 @@ impl Datapath for Mlx5Connection {
                 self.copy_hdr(&mut data_buffer, conn_id, msg_id, buf.len())?;
             }
             if !inlined_obj_hdr {
-                #[cfg(feature = "profiler")]
-                perftools::timer!("Copying buffer");
                 ensure!(
                     data_buffer.write(buf)? == buf.len(),
                     "Could not copy whole buffer into allocated buffer"
@@ -3249,6 +3265,263 @@ impl Datapath for Mlx5Connection {
                 self.first_ctrl_seg = ptr::null_mut();
             }
         }
+        Ok(())
+    }
+
+    fn queue_cornflakes_obj<'arena>(
+        &mut self,
+        msg_id: MsgID,
+        conn_id: ConnID,
+        copy_context: &mut CopyContext<'arena, Self>,
+        cornflakes_obj: impl HybridArenaRcSgaHdr<'arena, Self>,
+        end_batch: bool,
+    ) -> Result<()>
+    where
+        Self: Sized,
+    {
+        #[cfg(feature = "profiler")]
+        perftools::timer!("queue cornflakes obj");
+        tracing::debug!(msg_id, conn_id, end_batch, "Queue cornflakes obj");
+        let mut curr_available_wqes: usize =
+            unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                as usize;
+
+        let num_zero_copy_entries = cornflakes_obj.num_zero_copy_scatter_gather_entries();
+        let mut num_copy_entries = copy_context.len();
+        if copy_context.data_len() == 0 {
+            // doesn't work when there is a "raw" cf bytes
+            num_copy_entries = 0;
+        }
+        let header_len = cornflakes_obj.total_header_size(false, false);
+        let (inline_len, total_num_entries) =
+            self.cornflakes_obj_shape(header_len, num_copy_entries, num_zero_copy_entries);
+        let num_required = unsafe {
+            custom_mlx5_num_wqes_required(custom_mlx5_num_octowords(
+                inline_len as _,
+                total_num_entries as _,
+            )) as usize
+        };
+        tracing::debug!(
+            inline_len,
+            total_num_entries,
+            num_required,
+            "Number of wqes needed for posting"
+        );
+        while num_required > curr_available_wqes {
+            if self.first_ctrl_seg != ptr::null_mut() {
+                if unsafe {
+                    custom_mlx5_post_transmissions(
+                        self.thread_context.get_context_ptr(),
+                        self.first_ctrl_seg,
+                    ) != 0
+                } {
+                    bail!("Failed to post transmissions so far");
+                } else {
+                    self.first_ctrl_seg = ptr::null_mut();
+                }
+            }
+            self.poll_for_completions()?;
+            curr_available_wqes =
+                unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                    as usize;
+        }
+
+        // fill in hdr segments
+        let num_octowords =
+            unsafe { custom_mlx5_num_octowords(inline_len as _, total_num_entries as _) };
+        tracing::debug!(
+            inline_len,
+            total_num_entries,
+            num_octowords,
+            num_required,
+            "Header info"
+        );
+        let ctrl_seg = unsafe {
+            custom_mlx5_fill_in_hdr_segment(
+                self.thread_context.get_context_ptr(),
+                num_octowords as _,
+                num_required as _,
+                inline_len as _,
+                total_num_entries as _,
+                MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
+            )
+        };
+        if ctrl_seg.is_null() {
+            bail!("Error posting header segment for sga");
+        }
+
+        if self.first_ctrl_seg == ptr::null_mut() {
+            self.first_ctrl_seg = ctrl_seg;
+        }
+
+        // first, iterate over the entries to fill the headers
+        let mut ring_buffer_state = (
+            unsafe {
+                custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), inline_len as _)
+            },
+            unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) },
+        );
+        tracing::debug!("Ring buffer state: {:?}", ring_buffer_state);
+
+        let first_copy_dpseg = ring_buffer_state.0;
+        let first_copy_completion = ring_buffer_state.1;
+        let mut entries_to_skip = num_copy_entries;
+        // if not inlining anything, or need to write the packet header, add 1
+        if (header_len > 0 && self.inline_mode != InlineMode::ObjectHeader)
+            || (self.inline_mode == InlineMode::Nothing)
+        {
+            entries_to_skip += 1;
+        }
+        tracing::debug!("Entries to skip: {}", entries_to_skip);
+        for _ in 0..entries_to_skip {
+            ring_buffer_state.0 = unsafe {
+                custom_mlx5_advance_dpseg(
+                    self.thread_context.get_context_ptr(),
+                    ring_buffer_state.0,
+                )
+            };
+            ring_buffer_state.1 = unsafe {
+                custom_mlx5_advance_completion_info(
+                    self.thread_context.get_context_ptr(),
+                    ring_buffer_state.1,
+                )
+            };
+        }
+        tracing::debug!("Ring buffer state after advancing: {:?}", ring_buffer_state);
+        // callback to post metadata onto the ring buffer
+        let mut callback = |metadata_mbuf: &MbufMetadata,
+                            ring_buffer_state: &mut (
+            *mut mlx5_wqe_data_seg,
+            *mut custom_mlx5_transmission_info,
+        )|
+         -> Result<()> {
+            let mut metadata_clone = metadata_mbuf.clone();
+            metadata_clone.increment_refcnt();
+            tracing::debug!(
+                len = metadata_mbuf.data_len(),
+                off = metadata_mbuf.offset(),
+                buf =? metadata_mbuf.as_ref().as_ptr(),
+                "posting dpseg in callback"
+            );
+            unsafe {
+                ring_buffer_state.0 = custom_mlx5_add_dpseg(
+                    self.thread_context.get_context_ptr(),
+                    ring_buffer_state.0,
+                    metadata_mbuf.data(),
+                    metadata_mbuf.mempool(),
+                    metadata_mbuf.offset() as _,
+                    metadata_mbuf.data_len() as _,
+                );
+                ring_buffer_state.1 = custom_mlx5_add_completion_info(
+                    self.thread_context.get_context_ptr(),
+                    ring_buffer_state.1,
+                    metadata_mbuf.data(),
+                    metadata_mbuf.mempool(),
+                );
+            }
+            Ok(())
+        };
+
+        // iterate over the cornflakes data structure, fill in the header
+        let mut cur_entry_ptr: usize = header_len + copy_context.data_len();
+        let data_len = cornflakes_obj.iterate_over_entries(
+            copy_context,
+            header_len,
+            self.header_buffer.as_mut_slice(),
+            0,
+            cornflakes_obj.dynamic_header_start(),
+            &mut cur_entry_ptr,
+            &mut callback,
+            &mut ring_buffer_state,
+        )? + header_len;
+        tracing::debug!("Data len: {:?} being recorded in header", data_len);
+        // reset ring buffer state
+        ring_buffer_state.0 = first_copy_dpseg;
+        ring_buffer_state.1 = first_copy_completion;
+
+        tracing::debug!("Reset ring buffer state: {:?}", ring_buffer_state);
+
+        // post the header
+        let (header_written, entry_idx) = self.inline_hdr_if_necessary(
+            conn_id,
+            msg_id,
+            inline_len,
+            data_len,
+            &self.header_buffer[0..header_len],
+        )?;
+
+        // now, allocate an mbuf if necessary for packet header and the object header
+        let inlined_obj_hdr = entry_idx == 1;
+        let allocation_size = (!inlined_obj_hdr as usize * header_len)
+            + (!header_written as usize * cornflakes_libos::utils::TOTAL_HEADER_SIZE);
+        tracing::debug!("Allocation size: {}", allocation_size);
+        if allocation_size > 0 {
+            #[cfg(feature = "profiler")]
+            perftools::timer!("Copying headers");
+
+            let mut data_buffer = {
+                #[cfg(feature = "profiler")]
+                perftools::timer!("allocating stuff to copy into");
+                match self.allocator.allocate_tx_buffer()? {
+                    Some(buf) => buf,
+                    None => {
+                        bail!("No tx mempools to allocate outgoing packet");
+                    }
+                }
+            };
+            if !header_written {
+                self.copy_hdr(&mut data_buffer, conn_id, msg_id, data_len)?;
+            }
+            if !inlined_obj_hdr {
+                ensure!(
+                    data_buffer.write(&self.header_buffer[0..header_len])? == header_len,
+                    "Failed to copy full object header into data buffer"
+                );
+            }
+
+            // turn the data buffer into metadata and post it
+            let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
+
+            let (curr_dpseg, curr_completion) = self.post_mbuf_metadata(
+                &mut metadata_mbuf,
+                ring_buffer_state.0,
+                ring_buffer_state.1,
+            );
+            ring_buffer_state.0 = curr_dpseg;
+            ring_buffer_state.1 = curr_completion;
+        }
+
+        // now, copy the context
+        if copy_context.data_len() > 0 {
+            for serialization_copy_buf in copy_context.copy_buffers_slice().iter() {
+                let buffer = serialization_copy_buf.get_buffer();
+                let mut metadata_mbuf = MbufMetadata::from_buf(buffer);
+                let (curr_dpseg, curr_completion) = self.post_mbuf_metadata(
+                    &mut metadata_mbuf,
+                    ring_buffer_state.0,
+                    ring_buffer_state.1,
+                );
+                ring_buffer_state.0 = curr_dpseg;
+                ring_buffer_state.1 = curr_completion;
+            }
+        }
+
+        // finish the transmission
+        unsafe {
+            custom_mlx5_finish_single_transmission(
+                self.thread_context.get_context_ptr(),
+                num_required as _,
+            );
+        }
+
+        if end_batch {
+            if !self.first_ctrl_seg.is_null() {
+                let _ = self.post_curr_transmissions(Some(self.first_ctrl_seg));
+                self.poll_for_completions()?;
+                self.first_ctrl_seg = ptr::null_mut();
+            }
+        }
+
         Ok(())
     }
 

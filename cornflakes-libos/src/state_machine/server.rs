@@ -25,6 +25,7 @@ pub trait ServerSM {
         &mut self,
         _pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
         _datapath: &mut Self::Datapath,
+        _arena: &mut bumpalo::Bump,
     ) -> Result<()> {
         unimplemented!();
     }
@@ -172,14 +173,11 @@ pub trait ServerSM {
                         self.process_requests_rc_sga(pkts, datapath)?;
                     }
                     PushBufType::OrderedSga => {
-                        #[cfg(feature = "profiler")]
-                        perftools::timer!("App process requests ordered sga");
                         self.process_requests_ordered_sga(pkts, datapath)?;
                     }
                     PushBufType::Object => {
-                        #[cfg(feature = "profiler")]
-                        perftools::timer!("App process requests object");
-                        self.process_requests_object(pkts, datapath)?;
+                        self.process_requests_object(pkts, datapath, &mut arena)?;
+                        arena.reset();
                     }
                     PushBufType::ArenaOrderedSga => {
                         self.process_requests_arena_ordered_sga(pkts, datapath, &mut arena)?;

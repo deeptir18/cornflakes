@@ -1066,6 +1066,8 @@ impl Datapath for DpdkConnection {
 
     type DatapathMetadata = RteMbufMetadata;
 
+    type CallbackEntryState = ();
+
     type PerThreadContext = DpdkPerThreadContext;
 
     type DatapathSpecificParams = DpdkDatapathSpecificParams;

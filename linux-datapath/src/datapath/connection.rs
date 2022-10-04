@@ -266,6 +266,8 @@ impl Datapath for LinuxConnection {
 
     type DatapathMetadata = ByteBuffer;
 
+    type CallbackEntryState = ();
+
     type PerThreadContext = LinuxPerThreadContext;
 
     type DatapathSpecificParams = LinuxDatapathSpecificParams;

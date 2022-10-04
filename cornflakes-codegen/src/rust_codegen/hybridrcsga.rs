@@ -602,6 +602,10 @@ fn add_header_repr(
     compiler.add_newline()?;
 
     add_equality_func(fd, compiler, msg_info)?;
+    compiler.add_newline()?;
+
+    add_iterate_func(fd, compiler, msg_info)?;
+    compiler.add_newline()?;
 
     add_serialization_func(fd, compiler, msg_info)?;
     compiler.add_newline()?;
@@ -707,6 +711,97 @@ fn add_equality_func(
 
     compiler.pop_context()?;
 
+    Ok(())
+}
+
+fn add_iterate_func(
+    fd: &ProtoReprInfo,
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+) -> Result<()> {
+    let func_context = FunctionContext::new_with_lifetime(
+        "iterate_over_entries",
+        false,
+        vec![
+            FunctionArg::SelfArg,
+            FunctionArg::new_arg(
+                "copy_context",
+                ArgInfo::ref_mut_arg(
+                    &format!("CopyContext<'arena, {}>", fd.get_datapath_trait_key()),
+                    None,
+                ),
+            ),
+            FunctionArg::new_arg("header_len", ArgInfo::owned("usize")),
+            FunctionArg::new_arg("header_buffer", ArgInfo::ref_mut_arg("[u8]", None)),
+            FunctionArg::new_arg("constant_header_offset", ArgInfo::owned("usize")),
+            FunctionArg::new_arg("dynamic_header_offset", ArgInfo::owned("usize")),
+            FunctionArg::new_arg("cur_entry_ptr", ArgInfo::ref_mut_arg("usize", None)),
+            FunctionArg::new_arg("datapath_callback", ArgInfo::ref_mut_arg("F", None)),
+            FunctionArg::new_arg(
+                "callback_state",
+                ArgInfo::ref_mut_arg(
+                    &format!("{}::CallbackEntryState", fd.get_datapath_trait_key()),
+                    None,
+                ),
+            ),
+        ],
+        "Result<usize>",
+        "F",
+        "F: FnMut(&D::DatapathMetadata, &mut D::CallbackEntryState) -> Result<()>",
+    );
+
+    compiler.add_context(Context::Function(func_context))?;
+
+    // copy bitmap
+    compiler.add_func_call(
+        Some("self".to_string()),
+        "serialize_bitmap",
+        vec![
+            "header_buffer".to_string(),
+            "constant_header_offset".to_string(),
+        ],
+        false,
+    )?;
+
+    let constant_off_mut = msg_info.constant_fields_left(-1) > 1;
+    compiler.add_def_with_let(
+        constant_off_mut,
+        None,
+        "cur_constant_offset",
+        "constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length()",
+    )?;
+
+    compiler.add_newline()?;
+
+    let dynamic_fields_off_mut = msg_info.dynamic_fields_left(-1, true, fd.get_message_map())? > 1;
+    compiler.add_def_with_let(
+        dynamic_fields_off_mut,
+        None,
+        "cur_dynamic_offset",
+        "dynamic_header_offset",
+    )?;
+
+    let string_or_bytes_fields_left = msg_info.num_string_or_bytes_fields_left(-1)?;
+    let dynamic_fields_left = msg_info.dynamic_fields_left(-1, true, fd.get_message_map())?;
+    let ret_mut = (string_or_bytes_fields_left + dynamic_fields_left) >= 1;
+    compiler.add_def_with_let(ret_mut, None, "ret", "0")?;
+
+    for field_idx in 0..msg_info.num_fields() {
+        let field_info = msg_info.get_field_from_id(field_idx as i32)?;
+        compiler.add_newline()?;
+        let loop_context = LoopContext::new(vec![LoopBranch::ifbranch(&format!(
+            "self.get_bitmap_field({}, {})",
+            field_info.get_bitmap_idx_str(true),
+            field_info.get_u32_bitmap_offset_str(true),
+        ))]);
+        compiler.add_context(Context::Loop(loop_context))?;
+        add_serialization_iteration_for_field(fd, compiler, msg_info, &field_info)?;
+        compiler.pop_context()?;
+        compiler.add_newline()?;
+    }
+
+    compiler.add_return_val("Ok(ret)", false)?;
+    compiler.pop_context()?; // function context for serialize
     Ok(())
 }
 
@@ -865,6 +960,126 @@ fn add_deserialization_func(
     compiler.pop_context()?; // function context for serialize
     Ok(())
 }
+
+fn add_serialization_iteration_for_field(
+    fd: &ProtoReprInfo,
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+    field_info: &FieldInfo,
+) -> Result<()> {
+    if field_info.is_list() {
+        match &field_info.0.typ {
+            FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint32
+            | FieldType::Uint64
+            | FieldType::Float => {
+                bail!("List<int or float> not implemented yet");
+            }
+            FieldType::String | FieldType::Bytes | FieldType::MessageOrEnum(_) => {
+                compiler.add_func_call_with_plus_equals(
+                    "ret",
+                    Some(format!("self.{}", field_info.get_name())),
+                    "iterate_over_entries",
+                    vec![
+                        "copy_context".to_string(),
+                        "header_len".to_string(),
+                        "header_buffer".to_string(),
+                        "cur_constant_offset".to_string(),
+                        "cur_dynamic_offset".to_string(),
+                        "cur_entry_ptr".to_string(),
+                        "datapath_callback".to_string(),
+                        "callback_state".to_string(),
+                    ],
+                    true,
+                )?;
+            }
+            _ => {
+                bail!("Field type not supported: {:?}", &field_info.0.typ);
+            }
+        }
+    } else {
+        match &field_info.0.typ {
+            FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint32
+            | FieldType::Uint64
+            | FieldType::Float => {
+                let rust_type = &field_info.get_base_type_str()?;
+                let field_size = &field_info.get_header_size_str(true, true)?;
+                compiler.add_line(&format!("LittleEndian::write_{}(&mut header_buffer[cur_constant_offset..(cur_constant_offset + {})], self.{});", rust_type, field_size, &field_info.get_name()))?;
+            }
+            FieldType::String | FieldType::Bytes => {
+                compiler.add_func_call_with_plus_equals(
+                    "ret",
+                    Some(format!("self.{}", field_info.get_name())),
+                    "iterate_over_entries",
+                    vec![
+                        "copy_context".to_string(),
+                        "header_len".to_string(),
+                        "header_buffer".to_string(),
+                        "cur_constant_offset".to_string(),
+                        "cur_dynamic_offset".to_string(),
+                        "cur_entry_ptr".to_string(),
+                        "datapath_callback".to_string(),
+                        "callback_state".to_string(),
+                    ],
+                    true,
+                )?;
+            }
+            FieldType::MessageOrEnum(_) => {
+                compiler.add_func_call(
+                    None,
+                    "write_size_and_offset",
+                    vec![
+                        "cur_constant_offset".to_string(),
+                        "0".to_string(),
+                        "cur_dynamic_offset".to_string(),
+                        "header".to_string(),
+                    ],
+                    false,
+                )?;
+                compiler.add_func_call_with_plus_equals(
+                    "ret",
+                    Some(format!("self.{}", field_info.get_name())),
+                    "iterate_over_entries",
+                    vec![
+                        "copy_context".to_string(),
+                        "header_len".to_string(),
+                        "header_buffer".to_string(),
+                        "constant_header_offset".to_string(),
+                        "dynamic_header_offset".to_string(),
+                        "cur_entry_ptr".to_string(),
+                        "datapath_callback".to_string(),
+                        "callback_state".to_string(),
+                    ],
+                    true,
+                )?;
+            }
+            _ => {
+                bail!("Field type not supported: {:?}", &field_info.0.typ);
+            }
+        }
+    }
+    compiler.add_newline()?;
+    if msg_info.constant_fields_left(field_info.get_idx()) > 0 {
+        let field_size = &field_info.get_header_size_str(true, true)?;
+        compiler.add_plus_equals("cur_constant_offset", field_size)?;
+    }
+
+    if msg_info.dynamic_fields_left(field_info.get_idx(), true, fd.get_message_map())? > 0 {
+        if field_info.is_dynamic(true, fd.get_message_map())? {
+            // modify cur_dynamic_ptr and cur_dynamic_offset
+            compiler.add_plus_equals(
+                "cur_dynamic_offset",
+                &format!("self.{}.dynamic_header_size()", &field_info.get_name()),
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 fn add_serialization_for_field(
     fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
