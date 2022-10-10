@@ -17,7 +17,7 @@ use cornflakes_libos::{
     datapath::{Datapath, PushBufType, ReceivedPkt},
     state_machine::server::ServerSM,
 };
-use flatbuffers::{get_root, FlatBufferBuilder, WIPOffset};
+use flatbuffers::{root, FlatBufferBuilder, WIPOffset};
 use kv_api::cf_kv_fbs;
 #[cfg(feature = "profiler")]
 use perftools;
@@ -48,7 +48,7 @@ where
         pkt: &ReceivedPkt<D>,
         builder: &mut FlatBufferBuilder,
     ) -> Result<()> {
-        let get_request = get_root::<cf_kv_fbs::GetReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+        let get_request = root::<cf_kv_fbs::GetReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
         let value = match kv_server.get(get_request.key().unwrap()) {
             Some(v) => v,
             None => {
@@ -80,7 +80,7 @@ where
         datapath: &mut D,
         builder: &mut FlatBufferBuilder,
     ) -> Result<()> {
-        let put_req = get_root::<cf_kv_fbs::PutReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+        let put_req = root::<cf_kv_fbs::PutReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
         kv_server.insert_with_copies(
             put_req.key().unwrap(),
             put_req.val().unwrap(),
@@ -102,8 +102,8 @@ where
         let getm_request = {
             #[cfg(feature = "profiler")]
             perftools::timer!("deserialize");
-            get_root::<cf_kv_fbs::GetMReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
-        };
+            root::<cf_kv_fbs::GetMReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
+        }?;
         let keys = getm_request.keys().unwrap();
         let args_vec_res: Result<Vec<cf_kv_fbs::ValueArgs>> = keys
             .iter()
@@ -148,7 +148,7 @@ where
         datapath: &mut D,
         builder: &mut FlatBufferBuilder,
     ) -> Result<()> {
-        let putm_request = get_root::<cf_kv_fbs::PutMReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+        let putm_request = root::<cf_kv_fbs::PutMReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
         let keys = putm_request.keys().unwrap();
         let vals = putm_request.vals().unwrap();
         for (key, value) in keys.iter().zip(vals.iter()) {
@@ -170,8 +170,7 @@ where
         pkt: &ReceivedPkt<D>,
         builder: &mut FlatBufferBuilder,
     ) -> Result<()> {
-        let getlist_request =
-            get_root::<cf_kv_fbs::GetListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+        let getlist_request = root::<cf_kv_fbs::GetListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
         let key = getlist_request.key().unwrap();
         let vals = match list_kv_server.get(key) {
             Some(v) => v,
@@ -206,8 +205,7 @@ where
         datapath: &mut D,
         builder: &mut FlatBufferBuilder,
     ) -> Result<()> {
-        let putlist_request =
-            get_root::<cf_kv_fbs::PutListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+        let putlist_request = root::<cf_kv_fbs::PutListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
         let key = putlist_request.key().unwrap();
         let values = putlist_request
             .vals()
@@ -332,7 +330,7 @@ where
                 }
                 MsgType::AddUser => {
                     let add_user =
-                        get_root::<cf_kv_fbs::AddUser>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+                        root::<cf_kv_fbs::AddUser>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
                     let keys = add_user.keys().unwrap();
                     let vals = add_user.vals().unwrap();
                     let value = self.kv_server.get(keys.get(0)).unwrap();
@@ -353,9 +351,8 @@ where
                     self.builder.finish(add_user_response, None);
                 }
                 MsgType::FollowUnfollow => {
-                    let follow_unfollow = get_root::<cf_kv_fbs::FollowUnfollow>(
-                        &pkt.seg(0).as_ref()[REQ_TYPE_SIZE..],
-                    );
+                    let follow_unfollow =
+                        root::<cf_kv_fbs::FollowUnfollow>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
                     let keys = follow_unfollow.keys().unwrap();
                     let args_vec_res: Result<Vec<cf_kv_fbs::ValueArgs>> = keys
                         .iter()
@@ -396,7 +393,7 @@ where
                 MsgType::PostTweet => {
                     // 3 gets, 5 puts
                     let post_tweet =
-                        get_root::<cf_kv_fbs::PostTweet>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+                        root::<cf_kv_fbs::PostTweet>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
                     let keys = post_tweet.keys().unwrap();
                     let args_vec_res: Result<Vec<cf_kv_fbs::ValueArgs>> = keys
                         .iter()
@@ -441,7 +438,7 @@ where
                 }
                 MsgType::GetTimeline(_) => {
                     let get_timeline_request =
-                        get_root::<cf_kv_fbs::GetTimeline>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..]);
+                        root::<cf_kv_fbs::GetTimeline>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
                     let keys = get_timeline_request.keys().unwrap();
                     let args_vec_res: Result<Vec<cf_kv_fbs::ValueArgs>> = keys
                         .iter()
@@ -505,7 +502,7 @@ where
     }
 
     fn deserialize_get_response(&self, buf: &[u8]) -> Result<Vec<u8>> {
-        let get_resp = get_root::<cf_kv_fbs::GetResp>(buf);
+        let get_resp = root::<cf_kv_fbs::GetResp>(buf)?;
         match get_resp.val() {
             Some(x) => {
                 return Ok(x.to_vec());
@@ -517,7 +514,7 @@ where
     }
 
     fn deserialize_getm_response(&self, buf: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let getm_resp = get_root::<cf_kv_fbs::GetMResp>(buf);
+        let getm_resp = root::<cf_kv_fbs::GetMResp>(buf)?;
         match getm_resp.vals() {
             Some(x) => {
                 return Ok(x
@@ -532,7 +529,7 @@ where
     }
 
     fn deserialize_getlist_response(&self, buf: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let getlist_resp = get_root::<cf_kv_fbs::GetListResp>(buf);
+        let getlist_resp = root::<cf_kv_fbs::GetListResp>(buf)?;
         match getlist_resp.vals() {
             Some(x) => {
                 return Ok(x
@@ -547,7 +544,7 @@ where
     }
 
     fn check_add_user_num_values(&self, buf: &[u8]) -> Result<usize> {
-        let add_user_resp = get_root::<cf_kv_fbs::AddUserResponse>(buf);
+        let add_user_resp = root::<cf_kv_fbs::AddUserResponse>(buf)?;
         match add_user_resp.first_value() {
             Some(_) => return Ok(1),
             None => return Ok(0),
@@ -555,7 +552,7 @@ where
     }
 
     fn check_follow_unfollow_num_values(&self, buf: &[u8]) -> Result<usize> {
-        let follow_unfollow_resp = get_root::<cf_kv_fbs::FollowUnfollowResponse>(buf);
+        let follow_unfollow_resp = root::<cf_kv_fbs::FollowUnfollowResponse>(buf)?;
         match follow_unfollow_resp.original_vals() {
             Some(x) => return Ok(x.len()),
             None => return Ok(0),
@@ -563,7 +560,7 @@ where
     }
 
     fn check_post_tweet_num_values(&self, buf: &[u8]) -> Result<usize> {
-        let post_tweet_resp = get_root::<cf_kv_fbs::PostTweetResponse>(buf);
+        let post_tweet_resp = root::<cf_kv_fbs::PostTweetResponse>(buf)?;
         match post_tweet_resp.vals() {
             Some(x) => return Ok(x.len()),
             None => return Ok(0),
@@ -571,7 +568,7 @@ where
     }
 
     fn check_get_timeline_num_values(&self, buf: &[u8]) -> Result<usize> {
-        let get_timeline_resp = get_root::<cf_kv_fbs::GetTimelineResponse>(buf);
+        let get_timeline_resp = root::<cf_kv_fbs::GetTimelineResponse>(buf)?;
         match get_timeline_resp.vals() {
             Some(x) => return Ok(x.len()),
             None => return Ok(0),

@@ -21,7 +21,7 @@ if [ "$PRIMARY" = "y" ]; then
 fi
 cd flatbuffers
 if [ "$PRIMARY" = "y" ]; then
-    git checkout v1.12.0
+    git checkout v22.9.24
     cmake -G "Unix Makefiles"
     make
 fi
