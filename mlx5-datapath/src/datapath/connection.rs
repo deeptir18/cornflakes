@@ -171,6 +171,10 @@ impl Mlx5Buffer {
         }
         Ok(buf)
     }
+
+    pub fn set_len(&mut self, len: usize) {
+        self.data_len = len;
+    }
 }
 
 impl DatapathBufferOps for Mlx5Buffer {
@@ -3422,73 +3426,120 @@ impl Datapath for Mlx5Connection {
             Ok(())
         };
 
-        // iterate over the cornflakes data structure, fill in the header
         let mut cur_entry_ptr: usize = header_len + copy_context.data_len();
-        let data_len = cornflakes_obj.iterate_over_entries(
-            copy_context,
-            header_len,
-            self.header_buffer.as_mut_slice(),
-            0,
-            cornflakes_obj.dynamic_header_start(),
-            &mut cur_entry_ptr,
-            &mut callback,
-            &mut ring_buffer_state,
-        )? + header_len;
-        tracing::debug!("Data len: {:?} being recorded in header", data_len);
-        // reset ring buffer state
-        ring_buffer_state.0 = first_copy_dpseg;
-        ring_buffer_state.1 = first_copy_completion;
-
-        tracing::debug!("Reset ring buffer state: {:?}", ring_buffer_state);
-
-        // post the header
-        let (header_written, entry_idx) = self.inline_hdr_if_necessary(
-            conn_id,
-            msg_id,
-            inline_len,
-            data_len,
-            &self.header_buffer[0..header_len],
-        )?;
-
-        // now, allocate an mbuf if necessary for packet header and the object header
-        let inlined_obj_hdr = entry_idx == 1;
-        let allocation_size = (!inlined_obj_hdr as usize * header_len)
-            + (!header_written as usize * cornflakes_libos::utils::TOTAL_HEADER_SIZE);
-        tracing::debug!("Allocation size: {}", allocation_size);
-        if allocation_size > 0 {
-            #[cfg(feature = "profiler")]
-            perftools::timer!("Copying headers");
-
-            let mut data_buffer = {
-                #[cfg(feature = "profiler")]
-                perftools::timer!("allocating stuff to copy into");
-                match self.allocator.allocate_tx_buffer()? {
-                    Some(buf) => buf,
-                    None => {
-                        bail!("No tx mempools to allocate outgoing packet");
+        match self.inline_mode {
+            InlineMode::Nothing => {
+                let mut allocated_header_buffer = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("allocating stuff to copy into");
+                    match self.allocator.allocate_tx_buffer()? {
+                        Some(buf) => buf,
+                        None => {
+                            bail!("No tx mempools to allocate outgoing packet");
+                        }
                     }
-                }
-            };
-            if !header_written {
-                self.copy_hdr(&mut data_buffer, conn_id, msg_id, data_len)?;
-            }
-            if !inlined_obj_hdr {
-                ensure!(
-                    data_buffer.write(&self.header_buffer[0..header_len])? == header_len,
-                    "Failed to copy full object header into data buffer"
+                };
+                let data_len = cornflakes_obj.iterate_over_entries(
+                    copy_context,
+                    header_len,
+                    allocated_header_buffer.mutable_slice(
+                        cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE,
+                        cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE + header_len,
+                    )?,
+                    0,
+                    cornflakes_obj.dynamic_header_start(),
+                    &mut cur_entry_ptr,
+                    &mut callback,
+                    &mut ring_buffer_state,
+                )? + header_len;
+
+                // copy the packet header into the beginning of the buffer
+                self.copy_hdr(&mut allocated_header_buffer, conn_id, msg_id, data_len)?;
+                allocated_header_buffer
+                    .set_len(header_len + cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE);
+                // reset ring buffer state
+                ring_buffer_state.0 = first_copy_dpseg;
+                ring_buffer_state.1 = first_copy_completion;
+                // turn the data buffer into metadata and post it
+                let mut metadata_mbuf = MbufMetadata::from_buf(allocated_header_buffer);
+
+                let (curr_dpseg, curr_completion) = self.post_mbuf_metadata(
+                    &mut metadata_mbuf,
+                    ring_buffer_state.0,
+                    ring_buffer_state.1,
                 );
+                ring_buffer_state.0 = curr_dpseg;
+                ring_buffer_state.1 = curr_completion;
             }
+            InlineMode::PacketHeader => {
+                let mut allocated_header_buffer = {
+                    #[cfg(feature = "profiler")]
+                    perftools::timer!("allocating stuff to copy into");
+                    match self.allocator.allocate_tx_buffer()? {
+                        Some(buf) => buf,
+                        None => {
+                            bail!("No tx mempools to allocate outgoing packet");
+                        }
+                    }
+                };
+                let data_len = cornflakes_obj.iterate_over_entries(
+                    copy_context,
+                    header_len,
+                    allocated_header_buffer.mutable_slice(0, header_len)?,
+                    0,
+                    cornflakes_obj.dynamic_header_start(),
+                    &mut cur_entry_ptr,
+                    &mut callback,
+                    &mut ring_buffer_state,
+                )? + header_len;
+                // inline (just) packet header
+                let _ = self.inline_hdr_if_necessary(
+                    conn_id,
+                    msg_id,
+                    inline_len,
+                    data_len,
+                    &allocated_header_buffer.as_ref()[0..header_len],
+                )?;
+                allocated_header_buffer.set_len(header_len);
+                // reset ring buffer state
+                ring_buffer_state.0 = first_copy_dpseg;
+                ring_buffer_state.1 = first_copy_completion;
+                // turn the data buffer into metadata and post it
+                let mut metadata_mbuf = MbufMetadata::from_buf(allocated_header_buffer);
 
-            // turn the data buffer into metadata and post it
-            let mut metadata_mbuf = MbufMetadata::from_buf(data_buffer);
+                let (curr_dpseg, curr_completion) = self.post_mbuf_metadata(
+                    &mut metadata_mbuf,
+                    ring_buffer_state.0,
+                    ring_buffer_state.1,
+                );
+                ring_buffer_state.0 = curr_dpseg;
+                ring_buffer_state.1 = curr_completion;
+            }
+            InlineMode::ObjectHeader => {
+                // fill in cornflakes object, and then inline the header
+                let data_len = cornflakes_obj.iterate_over_entries(
+                    copy_context,
+                    header_len,
+                    &mut self.header_buffer.as_mut_slice()[0..header_len],
+                    0,
+                    cornflakes_obj.dynamic_header_start(),
+                    &mut cur_entry_ptr,
+                    &mut callback,
+                    &mut ring_buffer_state,
+                )? + header_len;
+                // inline packet header and object header
+                let _ = self.inline_hdr_if_necessary(
+                    conn_id,
+                    msg_id,
+                    inline_len,
+                    data_len,
+                    &self.header_buffer[0..header_len],
+                )?;
 
-            let (curr_dpseg, curr_completion) = self.post_mbuf_metadata(
-                &mut metadata_mbuf,
-                ring_buffer_state.0,
-                ring_buffer_state.1,
-            );
-            ring_buffer_state.0 = curr_dpseg;
-            ring_buffer_state.1 = curr_completion;
+                // reset the dpseg
+                ring_buffer_state.0 = first_copy_dpseg;
+                ring_buffer_state.1 = first_copy_completion;
+            }
         }
 
         // now, copy the context
