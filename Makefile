@@ -5,15 +5,29 @@ all: build
 
 # TODO: make it so that if mlx5 drivers are not present on this machine, it only
 # tries to build the dpdk version of things
+comma:= ,
+empty:=
+space:= $(empty) $(empty)
 
-CARGOFLAGS = 
+CARGOFLAGS ?=
+CARGOFEATURES =
 ifneq ($(DEBUG), y)
 	CARGOFLAGS += --release
 endif
 
+ifeq ($(CONFIG_MLX5), y)
+	CARGOFEATURES +=mlx5
+endif
+
+
+ifeq ($(PROFILER), y)
+	CARGOFEATURES +=profiler
+endif
+
+CARGOFEATURES := $(subst $(space),$(comma),$(CARGOFEATURES))
 
 build: mlx5-datapath
-	cargo b $(CARGOFLAGS)
+	cargo b $(CARGOFLAGS) --features $(CARGOFEATURES)
 
 .PHONY: mlx5-datapath mlx5-netperf scatter-gather-bench
 

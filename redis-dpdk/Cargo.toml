@@ -17,7 +17,7 @@ structopt-derive="0.2.16"
 cornflakes-libos = { path = "../cornflakes-libos" }
 cornflakes-utils = { path = "../cornflakes-utils" }
 cornflakes-codegen = { path = "../cornflakes-codegen" }
-dpdk-datapath = { path = "../dpdk-datapath" }
+dpdk-datapath = { path = "../dpdk-datapath", optional = true}
 redis-common = { path = "../redis-common" }
 libc = "0.2.1"
 
@@ -25,7 +25,7 @@ libc = "0.2.1"
 cornflakes-codegen = { path = "../cornflakes-codegen" }
 
 [features]
-default = ["mlx5"]
+default = []
 mlx5 = ["dpdk-datapath/mlx5"]
-profiler = ["cornflakes-libos/profiler"]
+profiler = ["cornflakes-libos/profiler", "dpdk-datapath/profiler"]
 

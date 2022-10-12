@@ -24,7 +24,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.*"
 rand = "0.8.*"
 rand_distr = "0.4.1"
-perftools = {git = "https://github.com/demikernel/perftools", rev = "3f3f11b", optional = true}
+demikernel = {git = "https://github.com/demikernel/demikernel", version = "1", features = ["profiler"], optional = true}
 itertools = "0.10.2"
 bitmaps = "3.2.0"
 bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }
@@ -36,8 +36,6 @@ tracing-error = "*"
 rand = "0.7.3"
 
 [features]
-default = ["mlx5"]
-mlx5 = []
-timers = []
-profiler = ["perftools"]
+default = []
+profiler = ["demikernel"]
 

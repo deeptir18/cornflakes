@@ -13,16 +13,16 @@ structopt-derive="0.2.16"
 cornflakes-libos = { path = "../cornflakes-libos" }
 cornflakes-utils = { path = "../cornflakes-utils" }
 cornflakes-codegen = { path = "../cornflakes-codegen" }
-affinity = "0.1.1"
-dpdk-datapath = { path = "../dpdk-datapath" }
-mlx5-datapath = { path = "../mlx5-datapath" }
+affinity = "0.1.2"
+dpdk-datapath = { path = "../dpdk-datapath", optional = true }
+mlx5-datapath = { path = "../mlx5-datapath", optional = true }
 linux-datapath = { path = "../linux-datapath" }
 
 [build-dependencies]
 cornflakes-codegen = { path = "../cornflakes-codegen" }
 
 [features]
-default = ["mlx5"]
+default = []
 mlx5 = ["dpdk-datapath/mlx5"]
-profiler = ["cornflakes-libos/profiler"]
+profiler = ["cornflakes-libos/profiler", "dpdk-datapath/profiler", "mlx5-datapath/profiler"]
 

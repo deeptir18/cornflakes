@@ -12,7 +12,7 @@ eui48 = "1.0.1"
 tracing-subscriber = "0.2.17"
 cornflakes-libos = { path = "../cornflakes-libos" }
 cornflakes-utils = { path = "../cornflakes-utils" }
-perftools = {git = "https://github.com/demikernel/perftools", rev = "3f3f11b", optional = true}
+demikernel = {git = "https://github.com/demikernel/demikernel", version = "1", features = ["profiler"], optional = true}
 yaml-rust = "0.4.3"
 hashbrown = "0.11.*"
 bytes = "1.1.0"
@@ -25,5 +25,5 @@ cc = "1.0.63"
 [features]
 default = []
 mlx5 = []
-profiler = ["perftools"]
+profiler = ["demikernel"]
 

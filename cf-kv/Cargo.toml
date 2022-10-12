@@ -24,9 +24,9 @@ capnp = { version = "0.13.6", features = ["unaligned"] }
 flatbuffers = "2.1.2"
 protobuf = "3.0.3"
 hashbrown = "0.11.*"
-affinity = "0.1.1"
+affinity = "0.1.2"
 cxx = "1.0"
-perftools = {git = "https://github.com/demikernel/perftools", rev = "3f3f11b", optional = true }
+demikernel = {git = "https://github.com/demikernel/demikernel", version = "1", features = ["profiler"], optional = true}
 rand = "0.8.*"
 bitmaps = "3.2.0"
 bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }
@@ -45,8 +45,8 @@ tracing-error = "*"
 cornflakes-utils = { path = "../cornflakes-utils" }
 
 [features]
-default = ["mlx5"]
-mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath", "dpdk-datapath"]
-profiler = ["cornflakes-libos/profiler", "perftools"]
+default = []
+mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath", "dpdk-datapath", "mlx5-datapath/mlx5"]
+profiler = ["cornflakes-libos/profiler", "demikernel", "dpdk-datapath/profiler", "mlx5-datapath/profiler"]
 
 

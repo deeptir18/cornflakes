@@ -7,7 +7,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-affinity = "0.1.1"
+affinity = "0.1.2"
 color-eyre = "0.5"
 tracing = "*"
 tracing-subscriber = "0.2.17"
@@ -17,13 +17,17 @@ cornflakes-libos = { path = "../cornflakes-libos" }
 cornflakes-utils = { path = "../cornflakes-utils" }
 mlx5-datapath = { path = "../mlx5-datapath", optional = true }
 dpdk-datapath = { path = "../dpdk-datapath", optional = true }
-perftools = {git = "https://github.com/demikernel/perftools", rev = "3f3f11b", optional = true }
+demikernel = {git = "https://github.com/demikernel/demikernel", version = "1", features = ["profiler"], optional = true}
 bytes = "1.0.1"
 rand = "0.7.3"
 rand_distr = "0.3.0"
 
 [features]
-default = ["mlx5"]
-mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath", "dpdk-datapath"]
-profiler = ["cornflakes-libos/profiler", "perftools"]
+default = []
+mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath", "dpdk-datapath", "mlx5-datapath/mlx5"]
+profiler = ["cornflakes-libos/profiler", "demikernel", "dpdk-datapath/profiler", "dpdk-datapath/profiler"]
+
+[[bin]]
+name = "dpdk_sg_client"
+required-features = ["mlx5"]
 
