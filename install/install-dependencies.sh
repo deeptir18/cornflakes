@@ -31,7 +31,7 @@ sudo apt-get -y install build-essential cmake gcc libudev-dev libnl-3-dev libnl-
 sudo pip3 install meson # when I tried installing meson without sudo, I can't find it in the path
 pip3 install colorama gitpython tqdm parse
 pip3 install setuptools_rust # and then you need to install this
-pip3 install fabric # and try this again
+pip3 install fabric==2.6.0 # and try this again
 pip3 install pyelftools
 pip3 install numpy pandas torch
 pip3 install agenda toml
