@@ -49,4 +49,21 @@ default = []
 mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath", "dpdk-datapath", "mlx5-datapath/mlx5"]
 profiler = ["cornflakes-libos/profiler", "demikernel", "dpdk-datapath/profiler", "mlx5-datapath/profiler"]
 
+[[bin]]
+name = "ycsb_dpdk"
+required-features = ["mlx5"]
+
+[[bin]]
+name = "ycsb_mlx5"
+required-features = ["mlx5"]
+
+[[bin]]
+name = "retwis_dpdk"
+required-features = ["mlx5"]
+
+[[bin]]
+name = "retwis_mlx5"
+required-features = ["mlx5"]
+
+
 
