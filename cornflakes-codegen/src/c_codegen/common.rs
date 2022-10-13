@@ -141,6 +141,33 @@ impl ArgType {
     }
 }
 
+/// Convert the struct into a box and do not send back to the caller.
+pub fn add_free_function(
+    compiler: &mut SerializationCompiler,
+    ty: &str,
+    ty_suffix: &str,
+) -> Result<()> {
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("self_", "*const ::std::os::raw::c_void")),
+    ];
+    let func_context = FunctionContext::new_extern_c(
+        &format!("{}_free", ty),
+        true,
+        args,
+        false,
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_unsafe_def_with_let(
+        false,
+        None,
+        "_",
+        &format!("Box::from_raw(self_ as *mut {}{})", ty, ty_suffix),
+    )?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+    Ok(())
+}
+
 /// Determine whether we need to add wrapper functions for CFString, CFBytes,
 /// or VariableList<T> parameterized by some type T. Then add them.
 pub fn add_cornflakes_structs(

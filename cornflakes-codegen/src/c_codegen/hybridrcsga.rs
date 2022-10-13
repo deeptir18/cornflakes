@@ -21,6 +21,8 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
     add_arena_allocate(compiler, datapath)?;
     compiler.add_newline()?;
     add_cornflakes_structs(fd, compiler, datapath)?;
+    compiler.add_newline()?;
+    add_copy_context_functions(compiler, datapath)?;
 
     // For each message type: add basic constructors, getters and setters, and
     // header trait functions.
@@ -201,6 +203,51 @@ fn add_arena_allocate(
 //     )?;
 //     Ok(())
 // }
+
+fn add_copy_context_functions(
+    compiler: &mut SerializationCompiler,
+    datapath: &str,
+) -> Result<()> {
+
+    ////////////////////////////////////////////////////////////////////////////
+    // CopyContext_new
+    add_extern_c_wrapper_function(
+        compiler,
+        "CopyContext_new",
+        "CopyContext",
+        "new",
+        None,
+        vec![
+            ("arena", ArgType::Ref { inner_ty: "bumpalo::Bump".to_string() }),
+            ("datapath", ArgType::RefMut { inner_ty: datapath.to_string() }),
+        ],
+        Some(ArgType::VoidPtr { inner_ty: "CopyContext".to_string() }),
+        true,
+    )?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // CopyContext_reset
+    add_extern_c_wrapper_function(
+        compiler,
+        "CopyContext_reset",
+        &format!("CopyContext<{}>", datapath),
+        "reset",
+        Some(SelfArgType::Mut),
+        vec![("datapath", ArgType::RefMut { inner_ty: datapath.to_string() })],
+        None,
+        true,
+    )?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // CopyContext_free
+    common::add_free_function(
+        compiler,
+        "CopyContext",
+        &format!("<{}>", datapath),
+    )?;
+
+    Ok(())
+}
 
 /// Determine whether we need to add wrapper functions for CFString, CFBytes,
 /// or VariableList<T> parameterized by some type T. Then add them.
