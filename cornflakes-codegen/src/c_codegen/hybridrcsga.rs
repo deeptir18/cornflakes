@@ -29,19 +29,27 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
     for message in fd.get_repr().messages.iter() {
         compiler.add_newline()?;
         let msg_info = MessageInfo(message.clone());
+        compiler.add_newline()?;
+        add_new_in(compiler, &msg_info, datapath)?;
+        compiler.add_newline()?;
         common::add_impl(fd, compiler, &msg_info, Some(datapath), true)?;
+        compiler.add_newline()?;
+        add_dynamic_rcsga_hybrid_header_repr(compiler, &msg_info, datapath)?;
+        compiler.add_newline()?;
+        add_queue_cornflakes_obj_function(compiler, &msg_info, datapath)?;
         // compiler.add_newline()?;
         // add_rcsga_header_repr(compiler, &msg_info, datapath)?;
         // compiler.add_newline()?;
         // add_shared_rcsga_header_repr(compiler, &msg_info, datapath)?;
     }
+
     Ok(())
 }
 
 fn add_hybrid_rcsga_dependencies(fd: &ProtoReprInfo, compiler: &mut
         SerializationCompiler) -> Result<()> {
     compiler.add_dependency("bumpalo")?;
-    compiler.add_dependency("cornflakes_libos::CopyContext")?;
+    compiler.add_dependency("cornflakes_libos::{datapath::Datapath, CopyContext}")?;
     compiler.add_dependency("cornflakes_libos::{ArenaOrderedSga, ArenaOrderedRcSga}")?;
     compiler.add_dependency("cornflakes_libos::dynamic_rcsga_hybrid_hdr::*")?;
     compiler.add_dependency("mlx5_datapath::datapath::connection::Mlx5Connection")?;
@@ -137,6 +145,74 @@ fn add_arena_allocate(
             inner_ty: format!("ArenaOrderedRcSga<{}>", datapath),
         }),
         false,
+    )?;
+    Ok(())
+}
+
+fn add_new_in(
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+    datapath: &str,
+) -> Result<()> {
+    add_extern_c_wrapper_function(
+        compiler,
+        &format!("{}_new_in<'arena, 'registered: 'arena>", msg_info.get_name()),
+        &format!("{}::<'arena, 'registered, {}>", &msg_info.get_name(), datapath),
+        "new_in",
+        None,
+        vec![("arena", ArgType::Ref { inner_ty: "bumpalo::Bump".to_string() })],
+        Some(ArgType::VoidPtr { inner_ty: msg_info.get_name() }),
+        false,
+    )?;
+    Ok(())
+}
+
+fn add_dynamic_rcsga_hybrid_header_repr(
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+    datapath: &str,
+) -> Result<()> {
+    // // add deserialize function
+    // add_extern_c_wrapper_function(
+    //     compiler,
+    //     &format!("{}_deserialize", msg_info.get_name()),
+    //     &msg_info.get_name(),
+    //     "deserialize",
+    //     Some(SelfArgType::Mut),
+    //     vec![
+
+    //     ],
+    //     None,
+    //     true,
+    // )?;
+    Ok(())
+}
+
+fn add_queue_cornflakes_obj_function(
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+    datapath: &str,
+) -> Result<()> {
+    add_extern_c_wrapper_function(
+        compiler,
+        &format!("{}_{}_queue_cornflakes_obj<'arena>", datapath,
+            msg_info.get_name()),
+        datapath,
+        "queue_cornflakes_obj",
+        Some(SelfArgType::Mut),
+        vec![
+            ("msg_id", ArgType::Rust { string: "u32".to_string() }),
+            ("conn_id", ArgType::Rust { string: "usize".to_string() }),
+            ("copy_context", ArgType::RefMut {
+                inner_ty: format!("CopyContext<'arena, {}>", datapath),
+            }),
+            ("cornflakes_obj", ArgType::VoidPtr {
+                inner_ty: format!("{}<{}>", msg_info.get_name(), datapath),
+            }),
+            ("end_batch", ArgType::Rust { string: "bool".to_string() }),
+        ],
+        None,
+        true,
     )?;
     Ok(())
 }
