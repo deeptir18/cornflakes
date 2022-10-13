@@ -82,6 +82,7 @@ where
         kv_server: &'kv KVServer<D>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
+        copy_context: &mut CopyContext<'arena, D>,
         arena: &'arena bumpalo::Bump,
     ) -> Result<()>
     where
@@ -104,16 +105,14 @@ where
         let mut get_resp = kv_serializer_hybrid::GetResp::new_in(arena);
         get_resp.set_id(get_req.get_id());
 
-        // initialize copy context
-        let mut copy_context = CopyContext::new(arena, datapath)?;
         get_resp.set_val(dynamic_rcsga_hybrid_hdr::CFBytes::new(
             value.as_ref(),
             datapath,
-            &mut copy_context,
+            copy_context,
         )?);
 
         // now serialize and send object
-        datapath.queue_cornflakes_obj(msg_id, conn_id, &mut copy_context, get_resp, end_batch)?;
+        datapath.queue_cornflakes_obj(msg_id, conn_id, copy_context, get_resp, end_batch)?;
         Ok(())
     }
 
@@ -503,6 +502,7 @@ where
             );
             match msg_type {
                 MsgType::Get => {
+                    copy_context.reset(datapath)?;
                     self.serializer.handle_get_serialize_and_send(
                         pkt.msg_id(),
                         pkt.conn_id(),
@@ -510,6 +510,7 @@ where
                         &self.kv_server,
                         &pkt,
                         datapath,
+                        &mut copy_context,
                         &arena,
                     )?;
                 }

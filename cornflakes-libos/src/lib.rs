@@ -2085,6 +2085,10 @@ where
                 self.copy_buffers[i] = serialization_copy_buf;
             }
         }
+        tracing::debug!(
+            "Reset copy context to have buffers {}",
+            self.copy_buffers.len()
+        );
         self.current_length = 0;
         Ok(())
     }
