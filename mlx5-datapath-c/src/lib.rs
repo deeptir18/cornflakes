@@ -161,6 +161,27 @@ pub extern "C" fn Mlx5Connection_pop(
 }
 
 #[no_mangle]
+pub extern "C" fn Mlx5Connection_pop_raw_packets(
+    conn: *mut ::std::os::raw::c_void,
+    n: *mut usize,
+) -> *mut *mut ::std::os::raw::c_void {
+    let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
+    let mut pkts = conn_box
+        .pop()
+        .unwrap()
+        .into_iter()
+        .map(|pkt| Box::into_raw(Box::new(pkt)) as *mut ::std::os::raw::c_void)
+        .collect::<Vec<*mut ::std::os::raw::c_void>>();
+    Box::into_raw(conn_box);
+    unsafe {
+        *n = pkts.len();
+    }
+    let ptr = pkts.as_mut_ptr();
+    Box::into_raw(Box::new(pkts)); // should we return a ptr to the ptr?
+    ptr
+}
+
+#[no_mangle]
 pub extern "C" fn Mlx5Connection_push_ordered_sgas(
     conn: *mut ::std::os::raw::c_void,
     n: usize,

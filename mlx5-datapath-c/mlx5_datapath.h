@@ -22,6 +22,8 @@ void Mlx5Connection_add_memory_pool(void *conn, uintptr_t buf_size, uintptr_t mi
 
 struct ReceivedPkt *Mlx5Connection_pop(void *conn, uintptr_t *n);
 
+void **Mlx5Connection_pop_raw_packets(void *conn, uintptr_t *n);
+
 void Mlx5Connection_push_ordered_sgas(void *conn,
                                       uintptr_t n,
                                       uint32_t *msg_ids,

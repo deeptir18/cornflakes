@@ -23,6 +23,8 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
     add_cornflakes_structs(fd, compiler, datapath)?;
     compiler.add_newline()?;
     add_copy_context_functions(compiler, datapath)?;
+    compiler.add_newline()?;
+    add_received_pkt_functions(compiler, datapath)?;
 
     // For each message type: add basic constructors, getters and setters, and
     // header trait functions.
@@ -49,8 +51,8 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
 fn add_hybrid_rcsga_dependencies(fd: &ProtoReprInfo, compiler: &mut
         SerializationCompiler) -> Result<()> {
     compiler.add_dependency("bumpalo")?;
-    compiler.add_dependency("cornflakes_libos::{datapath::Datapath, CopyContext}")?;
-    compiler.add_dependency("cornflakes_libos::{ArenaOrderedSga, ArenaOrderedRcSga}")?;
+    compiler.add_dependency("cornflakes_libos::datapath::{Datapath, ReceivedPkt}")?;
+    compiler.add_dependency("cornflakes_libos::{ArenaOrderedSga, ArenaOrderedRcSga, CopyContext}")?;
     compiler.add_dependency("cornflakes_libos::dynamic_rcsga_hybrid_hdr::*")?;
     compiler.add_dependency("mlx5_datapath::datapath::connection::Mlx5Connection")?;
 
@@ -172,19 +174,23 @@ fn add_dynamic_rcsga_hybrid_header_repr(
     msg_info: &MessageInfo,
     datapath: &str,
 ) -> Result<()> {
-    // // add deserialize function
-    // add_extern_c_wrapper_function(
-    //     compiler,
-    //     &format!("{}_deserialize", msg_info.get_name()),
-    //     &msg_info.get_name(),
-    //     "deserialize",
-    //     Some(SelfArgType::Mut),
-    //     vec![
-
-    //     ],
-    //     None,
-    //     true,
-    // )?;
+    // add deserialize function
+    add_extern_c_wrapper_function(
+        compiler,
+        &format!("{}_deserialize", msg_info.get_name()),
+        &format!("{}<{}>", msg_info.get_name(), datapath),
+        "deserialize",
+        Some(SelfArgType::Mut),
+        vec![
+            ("pkt", ArgType::Ref {
+                inner_ty: format!("ReceivedPkt<{}>", datapath),
+            }),
+            ("offset", ArgType::Rust { string: "usize".to_string() }),
+            ("arena", ArgType::Ref { inner_ty: "bumpalo::Bump".to_string() }),
+        ],
+        None,
+        true,
+    )?;
     Ok(())
 }
 
@@ -319,6 +325,124 @@ fn add_copy_context_functions(
     common::add_free_function(
         compiler,
         "CopyContext",
+        &format!("<{}>", datapath),
+    )?;
+
+    Ok(())
+}
+
+fn add_received_pkt_functions(
+    compiler: &mut SerializationCompiler,
+    datapath: &str,
+) -> Result<()> {
+
+    ////////////////////////////////////////////////////////////////////////////
+    // ReceivedPkt_msg_type
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("pkt", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::ret_arg("u16")),
+    ];
+    let func_context = FunctionContext::new_extern_c("ReceivedPkt_msg_type",
+        true, args, false);
+    compiler.add_context(Context::Function(func_context))?;
+    let box_from_raw =
+        format!("Box::from_raw(pkt as *mut ReceivedPkt<{}>)", datapath);
+    compiler.add_unsafe_def_with_let(false, None, "pkt", &box_from_raw)?;
+    compiler.add_def_with_let(false, None, "seg", "pkt.seg(0).as_ref()")?;
+    compiler.add_def_with_let(false, None, "msg_type",
+        "(seg[1] as u16) | ((seg[0] as u16) << 8)")?;
+    compiler.add_unsafe_set("return_ptr", "msg_type")?;
+    compiler.add_func_call(None, "Box::into_raw", vec!["pkt".to_string()], false)?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // ReceivedPkt_size
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("pkt", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::ret_arg("u16")),
+    ];
+    let func_context = FunctionContext::new_extern_c("ReceivedPkt_size",
+        true, args, false);
+    compiler.add_context(Context::Function(func_context))?;
+    let box_from_raw =
+        format!("Box::from_raw(pkt as *mut ReceivedPkt<{}>)", datapath);
+    compiler.add_unsafe_def_with_let(false, None, "pkt", &box_from_raw)?;
+    compiler.add_def_with_let(false, None, "seg", "pkt.seg(0).as_ref()")?;
+    compiler.add_def_with_let(false, None, "size",
+        "(seg[3] as u16) | ((seg[2] as u16) << 8)")?;
+    compiler.add_unsafe_set("return_ptr", "size")?;
+    compiler.add_func_call(None, "Box::into_raw", vec!["pkt".to_string()], false)?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // ReceivedPkt_data
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("pkt", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::ret_arg("*const ::std::os::raw::c_uchar")),
+    ];
+    let func_context = FunctionContext::new_extern_c("ReceivedPkt_data",
+        true, args, false);
+    compiler.add_context(Context::Function(func_context))?;
+    let box_from_raw =
+        format!("Box::from_raw(pkt as *mut ReceivedPkt<{}>)", datapath);
+    compiler.add_unsafe_def_with_let(false, None, "pkt", &box_from_raw)?;
+    compiler.add_def_with_let(false, None, "value", "pkt.seg(0).as_ref().as_ptr()")?;
+    compiler.add_unsafe_set("return_ptr", "value")?;
+    compiler.add_func_call(None, "Box::into_raw", vec!["pkt".to_string()], false)?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // ReceivedPkt_data_len
+    let args = vec![
+        FunctionArg::CArg(CArgInfo::arg("pkt", "*const ::std::os::raw::c_void")),
+        FunctionArg::CArg(CArgInfo::ret_arg("usize")),
+    ];
+    let func_context = FunctionContext::new_extern_c("ReceivedPkt_data_len",
+        true, args, false);
+    compiler.add_context(Context::Function(func_context))?;
+    let box_from_raw =
+        format!("Box::from_raw(pkt as *mut ReceivedPkt<{}>)", datapath);
+    compiler.add_unsafe_def_with_let(false, None, "pkt", &box_from_raw)?;
+    compiler.add_def_with_let(false, None, "value", "pkt.seg(0).as_ref().len()")?;
+    compiler.add_unsafe_set("return_ptr", "value")?;
+    compiler.add_func_call(None, "Box::into_raw", vec!["pkt".to_string()], false)?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // ReceivedPkt_msg_id
+    add_extern_c_wrapper_function(
+        compiler,
+        "ReceivedPkt_msg_id",
+        &format!("ReceivedPkt<{}>", datapath),
+        "msg_id",
+        Some(SelfArgType::Value),
+        vec![],
+        Some(ArgType::Rust { string: "u32".to_string() }),
+        false,
+    )?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // ReceivedPkt_conn_id
+    add_extern_c_wrapper_function(
+        compiler,
+        "ReceivedPkt_conn_id",
+        &format!("ReceivedPkt<{}>", datapath),
+        "conn_id",
+        Some(SelfArgType::Value),
+        vec![],
+        Some(ArgType::Rust { string: "usize".to_string() }),
+        false,
+    )?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // ReceivedPkt_free
+    common::add_free_function(
+        compiler,
+        "ReceivedPkt",
         &format!("<{}>", datapath),
     )?;
 
