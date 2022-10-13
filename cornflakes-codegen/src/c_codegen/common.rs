@@ -489,10 +489,7 @@ pub fn add_extern_c_wrapper_function(
                 "unsafe {{ *Box::from_raw({} as *mut {}) }}",
                 arg_name, inner_ty,
             ),
-            ArgType::Ref { inner_ty } => format!(
-                "unsafe {{ Box::from_raw({} as *mut {}) }}",
-                arg_name, inner_ty,
-            ),
+            ArgType::Ref { inner_ty } => format!("{} as *const {}", arg_name, inner_ty),
             ArgType::RefMut { inner_ty } => format!("{} as *mut {}", arg_name, inner_ty,),
             ArgType::Buffer => format!(
                 "unsafe {{ std::slice::from_raw_parts({}, {}_len) }}",
@@ -507,7 +504,7 @@ pub fn add_extern_c_wrapper_function(
         .iter()
         .enumerate()
         .map(|(i, (_, arg_ty))| match arg_ty {
-            ArgType::Ref { .. } => format!("&arg{}", i),
+            ArgType::Ref { .. } => format!("unsafe {{ &*arg{} }}", i),
             ArgType::RefMut { .. } => format!("unsafe {{ &mut *arg{} }}", i),
             _ => format!("arg{}", i),
         })
@@ -589,35 +586,6 @@ pub fn add_extern_c_wrapper_function(
         .to_string();
         compiler.add_func_call(None, "Box::into_raw", vec![arg_name], false)?;
     }
-    for (i, (_, arg_ty)) in raw_args.iter().enumerate() {
-        match arg_ty {
-            ArgType::Rust { .. } => {
-                continue;
-            }
-            ArgType::Bytes { .. } => {
-                continue;
-            }
-            ArgType::String { .. } => {
-                continue;
-            }
-            ArgType::VoidPtr { .. } => {
-                continue;
-            }
-            ArgType::Ref { .. } => {
-                compiler.add_func_call(None, "Box::into_raw", vec![format!("arg{}", i)], false)?;
-            }
-            ArgType::RefMut { .. } => {
-                continue;
-            }
-            ArgType::List { .. } => {
-                continue;
-            }
-            ArgType::Buffer => {
-                continue;
-            }
-        };
-    }
-
     if use_error_code {
         compiler.add_line("0")?;
     }
@@ -651,15 +619,18 @@ pub fn add_default_impl(
     Ok(())
 }
 
-pub fn add_impl(
-    fd: &ProtoReprInfo,
+pub fn add_new(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
     datapath: Option<&str>,
+    lifetimes: bool,
 ) -> Result<()> {
-    compiler.add_newline()?;
     let struct_name = match datapath {
-        Some(datapath) => format!("{}::<{}>", &msg_info.get_name(), datapath),
+        Some(d) => if lifetimes {
+            format!("{}::<'arena, 'registered, {}>", &msg_info.get_name(), d)
+        } else {
+            format!("{}::<{}>", &msg_info.get_name(), d)
+        }
         None => msg_info.get_name(),
     };
     add_extern_c_wrapper_function(
@@ -674,10 +645,21 @@ pub fn add_impl(
         }),
         false,
     )?;
+    Ok(())
+}
 
+pub fn add_impl(
+    fd: &ProtoReprInfo,
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+    datapath: Option<&str>,
+    lifetimes: bool,
+) -> Result<()> {
+    compiler.add_newline()?;
     for field in msg_info.get_fields().iter() {
         let field_info = FieldInfo(field.clone());
-        add_field_methods(fd, compiler, msg_info, &field_info, datapath)?;
+        add_field_methods(fd, compiler, msg_info, &field_info, datapath,
+            lifetimes)?;
     }
     Ok(())
 }
@@ -688,42 +670,52 @@ pub fn add_field_methods(
     msg_info: &MessageInfo,
     field: &FieldInfo,
     datapath: Option<&str>,
+    lifetimes: bool,
 ) -> Result<()> {
+    let struct_name = match datapath {
+        Some(d) => if lifetimes {
+            format!("{}::<'arena, 'registered, {}>", &msg_info.get_name(), d)
+        } else {
+            format!("{}::<{}>", &msg_info.get_name(), d)
+        }
+        None => msg_info.get_name(),
+    };
+
     // add has_x, get_x, set_x
     compiler.add_newline()?;
-    add_has(compiler, msg_info, field, datapath)?;
+    add_has(compiler, msg_info, field, struct_name.clone(), lifetimes)?;
     compiler.add_newline()?;
-    add_get(fd, compiler, msg_info, field, datapath)?;
+    add_get(fd, compiler, msg_info, field, struct_name.clone(), datapath, lifetimes)?;
     compiler.add_newline()?;
-    add_set(fd, compiler, msg_info, field, datapath)?;
+    add_set(fd, compiler, msg_info, field, struct_name.clone(), datapath, lifetimes)?;
     compiler.add_newline()?;
 
     // if field is a list or a nested struct, add get_mut_x
     if field.is_list() || field.is_nested_msg() {
-        add_get_mut(fd, compiler, msg_info, field, datapath)?;
+        add_get_mut(fd, compiler, msg_info, field, struct_name.clone(), datapath, lifetimes)?;
     }
 
     // if field is list, add init_x
     if field.is_list() {
-        add_list_init(compiler, msg_info, field, datapath)?;
+        add_list_init(compiler, msg_info, field, struct_name.clone(), lifetimes)?;
     }
     Ok(())
 }
+
+const LIFETIMES_STRING: &'static str = "<'arena, 'registered: 'arena>";
 
 pub fn add_has(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
     field: &FieldInfo,
-    datapath: Option<&str>,
+    struct_name: String,
+    lifetimes: bool,
 ) -> Result<()> {
-    let struct_name = match datapath {
-        Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
-        None => msg_info.get_name(),
-    };
     let func_name = format!("has_{}", field.get_name());
+    let lifetimes = if lifetimes { LIFETIMES_STRING } else { "" };
     add_extern_c_wrapper_function(
         compiler,
-        &format!("{}_{}", msg_info.get_name(), &func_name),
+        &format!("{}_{}{}", msg_info.get_name(), &func_name, lifetimes),
         &struct_name,
         &func_name,
         Some(SelfArgType::Value),
@@ -741,7 +733,9 @@ pub fn add_get(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
     field: &FieldInfo,
+    struct_name: String,
     datapath: Option<&str>,
+    lifetimes: bool,
 ) -> Result<()> {
     let return_type = {
         let ty = ArgType::new(fd, field, datapath)?;
@@ -752,14 +746,11 @@ pub fn add_get(
             ty => ty,
         }
     };
-    let struct_name = match datapath {
-        Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
-        None => msg_info.get_name(),
-    };
+    let lifetimes = if lifetimes { LIFETIMES_STRING } else { "" };
     let func_name = format!("get_{}", field.get_name());
     add_extern_c_wrapper_function(
         compiler,
-        &format!("{}_{}", msg_info.get_name(), &func_name),
+        &format!("{}_{}{}", msg_info.get_name(), &func_name, lifetimes),
         &struct_name,
         &func_name,
         Some(SelfArgType::Value),
@@ -777,7 +768,9 @@ pub fn add_get_mut(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
     field: &FieldInfo,
+    struct_name: String,
     datapath: Option<&str>,
+    lifetimes: bool,
 ) -> Result<()> {
     let return_type = {
         let ty = ArgType::new(fd, field, datapath)?;
@@ -788,14 +781,11 @@ pub fn add_get_mut(
             ty => ty,
         }
     };
-    let struct_name = match datapath {
-        Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
-        None => msg_info.get_name(),
-    };
+    let lifetimes = if lifetimes { LIFETIMES_STRING } else { "" };
     let func_name = format!("get_mut_{}", field.get_name());
     add_extern_c_wrapper_function(
         compiler,
-        &format!("{}_{}", msg_info.get_name(), &func_name),
+        &format!("{}_{}{}", msg_info.get_name(), &func_name, lifetimes),
         &struct_name,
         &func_name,
         Some(SelfArgType::Mut),
@@ -811,18 +801,17 @@ pub fn add_set(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
     field: &FieldInfo,
+    struct_name: String,
     datapath: Option<&str>,
+    lifetimes: bool,
 ) -> Result<()> {
     let field_name = field.get_name();
     let field_type = ArgType::new(fd, field, datapath)?;
-    let struct_name = match datapath {
-        Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
-        None => msg_info.get_name(),
-    };
+    let lifetimes = if lifetimes { LIFETIMES_STRING } else { "" };
     let func_name = format!("set_{}", field.get_name());
     add_extern_c_wrapper_function(
         compiler,
-        &format!("{}_{}", msg_info.get_name(), &func_name),
+        &format!("{}_{}{}", msg_info.get_name(), &func_name, lifetimes),
         &struct_name,
         &func_name,
         Some(SelfArgType::Mut),
@@ -837,24 +826,29 @@ pub fn add_list_init(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
     field: &FieldInfo,
-    datapath: Option<&str>,
+    struct_name: String,
+    lifetimes: bool,
 ) -> Result<()> {
-    let struct_name = match datapath {
-        Some(datapath) => format!("{}<{}>", msg_info.get_name(), datapath),
-        None => msg_info.get_name(),
+    let args = {
+        let mut args = vec![
+            ("num", ArgType::Rust { string: "usize".to_string() }),
+        ];
+        if lifetimes {
+            args.push((
+                "arena",
+                ArgType::Ref { inner_ty: "bumpalo::Bump".to_string() },
+            ));
+        }
+        args
     };
+    let lifetimes = if lifetimes { LIFETIMES_STRING } else { "" };
     add_extern_c_wrapper_function(
         compiler,
-        &format!("{}_init_{}", msg_info.get_name(), field.get_name()),
+        &format!("{}_init_{}{}", msg_info.get_name(), field.get_name(), lifetimes),
         &struct_name,
         &format!("init_{}", field.get_name()),
         Some(SelfArgType::Mut),
-        vec![(
-            "num",
-            ArgType::Rust {
-                string: "usize".to_string(),
-            },
-        )],
+        args,
         None,
         false,
     )?;

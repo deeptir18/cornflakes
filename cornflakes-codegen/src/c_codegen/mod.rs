@@ -7,6 +7,7 @@ use color_eyre::eyre::{Result, WrapErr};
 use std::{str, fs, path::Path};
 
 mod common;
+mod hybridrcsga;
 mod rcsga;
 mod sga;
 
@@ -126,6 +127,10 @@ fn gen_c_code(repr: &ProtoReprInfo, src_folder: &Path, options: CompileOptions) 
         }
         HeaderType::RcSga => {
             rcsga::compile(repr, &mut compiler).wrap_err("RcSga codegen failed to generate code.")?;
+        }
+        HeaderType::HybridRcSga => {
+            hybridrcsga::compile(repr, &mut compiler).wrap_err("HybridRcSga
+                codegen failed to generate code.")?;
         }
         ty => unimplemented!("unimplemented header type: {:?}", ty)
     }

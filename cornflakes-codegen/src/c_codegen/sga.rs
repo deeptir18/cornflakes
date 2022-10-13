@@ -20,7 +20,9 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
         let msg_info = MessageInfo(message.clone());
         add_default_impl(compiler, &msg_info, None)?;
         compiler.add_newline()?;
-        add_impl(fd, compiler, &msg_info, None)?;
+        add_new(compiler, &msg_info, None, false)?;
+        compiler.add_newline()?;
+        add_impl(fd, compiler, &msg_info, None, false)?;
         compiler.add_newline()?;
         add_sga_header_repr(compiler, &msg_info)?;
         compiler.add_newline()?;
