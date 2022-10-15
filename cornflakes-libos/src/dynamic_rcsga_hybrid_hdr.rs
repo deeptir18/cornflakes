@@ -79,7 +79,7 @@ where
     const NUM_U32_BITMAPS: usize;
 
     /// New 'default'
-    fn new_in(arena: &'arena bumpalo::Bump) -> Self
+    fn new_in(arena: &'arena bumpalo2::Bump) -> Self
     where
         Self: Sized;
 
@@ -222,16 +222,16 @@ where
         &self,
         datapath: &mut D,
         mut copy_context: CopyContext<'a, D>,
-        arena: &'a bumpalo::Bump,
+        arena: &'a bumpalo2::Bump,
     ) -> Result<ArenaDatapathSga<'a, D>> {
         tracing::debug!("Serializing into sga");
         let mut owned_hdr = {
             let size = self.total_header_size(false, true);
-            bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
+            bumpalo2::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
         let header_buffer = owned_hdr.as_mut_slice();
         let num_zero_copy_entries = self.num_zero_copy_scatter_gather_entries();
-        let mut zero_copy_entries = bumpalo::collections::Vec::from_iter_in(
+        let mut zero_copy_entries = bumpalo2::collections::Vec::from_iter_in(
             std::iter::repeat(D::DatapathMetadata::default()).take(num_zero_copy_entries),
             arena,
         );
@@ -260,7 +260,7 @@ where
         buf: &D::DatapathMetadata,
         header_offset: usize,
         buffer_offset: usize,
-        arena: &'arena bumpalo::Bump,
+        arena: &'arena bumpalo2::Bump,
     ) -> Result<()>;
 
     #[inline]
@@ -268,7 +268,7 @@ where
         &mut self,
         pkt: &ReceivedPkt<D>,
         offset: usize,
-        arena: &'arena bumpalo::Bump,
+        arena: &'arena bumpalo2::Bump,
     ) -> Result<()> {
         // Right now, for deserialize we assume one contiguous buffer
         let metadata = pkt.seg(0);
@@ -383,7 +383,7 @@ where
     const NUM_U32_BITMAPS: usize = 0;
 
     #[inline]
-    fn new_in(_arena: &'arena bumpalo::Bump) -> Self
+    fn new_in(_arena: &'arena bumpalo2::Bump) -> Self
     where
         Self: Sized,
     {
@@ -525,7 +525,7 @@ where
         buf: &D::DatapathMetadata,
         header_offset: usize,
         buffer_offset: usize,
-        _arena: &'arena bumpalo::Bump,
+        _arena: &'arena bumpalo2::Bump,
     ) -> Result<()> {
         let mut new_metadata = buf.clone();
         let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
@@ -655,7 +655,7 @@ where
     const NUM_U32_BITMAPS: usize = 0;
 
     #[inline]
-    fn new_in(_arena: &'arena bumpalo::Bump) -> Self
+    fn new_in(_arena: &'arena bumpalo2::Bump) -> Self
     where
         Self: Sized,
     {
@@ -785,7 +785,7 @@ where
         buf: &D::DatapathMetadata,
         header_offset: usize,
         buffer_offset: usize,
-        _arena: &'arena bumpalo::Bump,
+        _arena: &'arena bumpalo2::Bump,
     ) -> Result<()> {
         let mut new_metadata = buf.clone();
         let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
@@ -806,7 +806,7 @@ where
 {
     num_space: usize,
     num_set: usize,
-    elts: bumpalo::collections::Vec<'arena, T>,
+    elts: bumpalo2::collections::Vec<'arena, T>,
     _phantom_data: PhantomData<D>,
 }
 
@@ -847,7 +847,7 @@ where
         VariableList {
             num_space: 0,
             num_set: 0,
-            elts: bumpalo::collections::Vec::default(),
+            elts: bumpalo2::collections::Vec::default(),
             _phantom_data: PhantomData,
         }
     }
@@ -859,8 +859,8 @@ where
     D: Datapath,
 {
     #[inline]
-    pub fn init(num: usize, arena: &'arena bumpalo::Bump) -> VariableList<'arena, T, D> {
-        let entries = bumpalo::collections::Vec::from_iter_in(
+    pub fn init(num: usize, arena: &'arena bumpalo2::Bump) -> VariableList<'arena, T, D> {
+        let entries = bumpalo2::collections::Vec::from_iter_in(
             std::iter::repeat(T::new_in(arena)).take(num),
             arena,
         );
@@ -920,14 +920,14 @@ where
     const NUM_U32_BITMAPS: usize = 0;
 
     #[inline]
-    fn new_in(arena: &'arena bumpalo::Bump) -> Self
+    fn new_in(arena: &'arena bumpalo2::Bump) -> Self
     where
         Self: Sized,
     {
         VariableList {
             num_space: 0,
             num_set: 0,
-            elts: bumpalo::collections::Vec::new_in(arena),
+            elts: bumpalo2::collections::Vec::new_in(arena),
             _phantom_data: PhantomData,
         }
     }
@@ -1123,14 +1123,14 @@ where
         buffer: &D::DatapathMetadata,
         constant_offset: usize,
         buffer_offset: usize,
-        arena: &'arena bumpalo::Bump,
+        arena: &'arena bumpalo2::Bump,
     ) -> Result<()> {
         let forward_pointer = ForwardPointer(buffer.as_ref(), constant_offset + buffer_offset);
         let size = forward_pointer.get_size() as usize;
         let dynamic_offset = forward_pointer.get_offset() as usize;
 
         self.num_set = size;
-        //self.elts = bumpalo::vec![in &arena; T::new_in(arena); size];
+        //self.elts = bumpalo2::vec![in &arena; T::new_in(arena); size];
         if self.elts.len() < size {
             self.elts.resize(size, T::new_in(arena));
         }

@@ -1046,12 +1046,12 @@ where
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ArenaOrderedSga<'a> {
-    pub entries: bumpalo::collections::Vec<'a, Sge<'a>>,
-    pub offsets: bumpalo::collections::Vec<'a, usize>,
+    pub entries: bumpalo2::collections::Vec<'a, Sge<'a>>,
+    pub offsets: bumpalo2::collections::Vec<'a, usize>,
     pub header_offsets: usize,
     length: usize,
     num_copy_entries: usize,
-    hdr: bumpalo::collections::Vec<'a, u8>,
+    hdr: bumpalo2::collections::Vec<'a, u8>,
 }
 
 impl<'a> ArenaOrderedSga<'a> {
@@ -1088,17 +1088,17 @@ impl<'a> ArenaOrderedSga<'a> {
         buf
     }
 
-    pub fn allocate(num_entries: usize, arena: &'a bumpalo::Bump) -> ArenaOrderedSga<'a> {
+    pub fn allocate(num_entries: usize, arena: &'a bumpalo2::Bump) -> ArenaOrderedSga<'a> {
         ArenaOrderedSga {
-            entries: bumpalo::collections::Vec::from_iter_in(
+            entries: bumpalo2::collections::Vec::from_iter_in(
                 std::iter::repeat(Sge::default()).take(num_entries),
                 arena,
             ),
-            offsets: bumpalo::collections::Vec::with_capacity_zeroed_in(num_entries, arena),
+            offsets: bumpalo2::collections::Vec::with_capacity_zeroed_in(num_entries, arena),
             header_offsets: 0,
             length: 0,
             num_copy_entries: 0,
-            hdr: bumpalo::collections::Vec::new_in(&arena),
+            hdr: bumpalo2::collections::Vec::new_in(&arena),
         }
     }
 
@@ -1155,7 +1155,7 @@ impl<'a> ArenaOrderedSga<'a> {
         self.entries.iter()
     }
 
-    pub fn set_hdr(&mut self, vec: bumpalo::collections::Vec<'a, u8>) {
+    pub fn set_hdr(&mut self, vec: bumpalo2::collections::Vec<'a, u8>) {
         self.hdr = vec;
     }
 
@@ -2049,7 +2049,7 @@ pub struct CopyContext<'a, D>
 where
     D: datapath::Datapath,
 {
-    pub copy_buffers: bumpalo::collections::Vec<'a, SerializationCopyBuf<D>>,
+    pub copy_buffers: bumpalo2::collections::Vec<'a, SerializationCopyBuf<D>>,
     threshold: usize,
     current_length: usize,
 }
@@ -2089,11 +2089,11 @@ where
         Ok(())
     }
     #[inline]
-    pub fn new(arena: &'a bumpalo::Bump, datapath: &mut D) -> Result<Self> {
+    pub fn new(arena: &'a bumpalo2::Bump, datapath: &mut D) -> Result<Self> {
         #[cfg(feature = "profiler")]
         perftools::timer!("Allocate new copy context");
         Ok(CopyContext {
-            copy_buffers: bumpalo::collections::Vec::with_capacity_in(1, arena),
+            copy_buffers: bumpalo2::collections::Vec::with_capacity_in(1, arena),
             threshold: datapath.get_copying_threshold(),
             current_length: 0,
         })
@@ -2166,9 +2166,9 @@ where
     // buffers user has copied into
     copy_context: CopyContext<'a, D>,
     // zero copy entries
-    zero_copy_entries: bumpalo::collections::Vec<'a, D::DatapathMetadata>,
+    zero_copy_entries: bumpalo2::collections::Vec<'a, D::DatapathMetadata>,
     // actual hdr
-    header: bumpalo::collections::Vec<'a, u8>,
+    header: bumpalo2::collections::Vec<'a, u8>,
 }
 
 impl<'a, D> ArenaDatapathSga<'a, D>
@@ -2177,8 +2177,8 @@ where
 {
     pub fn new(
         copy_context: CopyContext<'a, D>,
-        zero_copy_entries: bumpalo::collections::Vec<'a, D::DatapathMetadata>,
-        header: bumpalo::collections::Vec<'a, u8>,
+        zero_copy_entries: bumpalo2::collections::Vec<'a, D::DatapathMetadata>,
+        header: bumpalo2::collections::Vec<'a, u8>,
     ) -> Self {
         ArenaDatapathSga {
             copy_context: copy_context,
@@ -2226,12 +2226,12 @@ pub struct ArenaOrderedRcSga<'a, D>
 where
     D: datapath::Datapath,
 {
-    pub entries: bumpalo::collections::Vec<'a, RcSge<'a, D>>,
-    pub offsets: bumpalo::collections::Vec<'a, usize>,
+    pub entries: bumpalo2::collections::Vec<'a, RcSge<'a, D>>,
+    pub offsets: bumpalo2::collections::Vec<'a, usize>,
     pub header_offsets: usize,
     length: usize,
     num_copy_entries: usize,
-    hdr: bumpalo::collections::Vec<'a, u8>,
+    hdr: bumpalo2::collections::Vec<'a, u8>,
 }
 
 impl<'a, D> ArenaOrderedRcSga<'a, D>
@@ -2275,17 +2275,17 @@ where
     }
 
     #[inline]
-    pub fn allocate(num_entries: usize, arena: &'a bumpalo::Bump) -> ArenaOrderedRcSga<'a, D> {
+    pub fn allocate(num_entries: usize, arena: &'a bumpalo2::Bump) -> ArenaOrderedRcSga<'a, D> {
         ArenaOrderedRcSga {
-            entries: bumpalo::collections::Vec::from_iter_in(
+            entries: bumpalo2::collections::Vec::from_iter_in(
                 std::iter::repeat(RcSge::default()).take(num_entries),
                 arena,
             ),
-            offsets: bumpalo::collections::Vec::with_capacity_zeroed_in(num_entries, arena),
+            offsets: bumpalo2::collections::Vec::with_capacity_zeroed_in(num_entries, arena),
             header_offsets: 0,
             length: 0,
             num_copy_entries: 0,
-            hdr: bumpalo::collections::Vec::new_in(&arena),
+            hdr: bumpalo2::collections::Vec::new_in(&arena),
         }
     }
 
@@ -2349,7 +2349,7 @@ where
     }
 
     #[inline]
-    pub fn set_hdr(&mut self, vec: bumpalo::collections::Vec<'a, u8>) {
+    pub fn set_hdr(&mut self, vec: bumpalo2::collections::Vec<'a, u8>) {
         self.hdr = vec;
     }
 

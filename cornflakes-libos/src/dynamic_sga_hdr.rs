@@ -457,7 +457,7 @@ pub trait SgaHeaderRepr<'obj> {
     fn partially_serialize_into_arena_sga<'sge>(
         &self,
         ordered_sga: &mut ArenaOrderedSga<'sge>,
-        arena: &'sge bumpalo::Bump,
+        arena: &'sge bumpalo2::Bump,
     ) -> Result<()>
     where
         'obj: 'sge,
@@ -466,7 +466,7 @@ pub trait SgaHeaderRepr<'obj> {
             #[cfg(feature = "profiler")]
             perftools::timer!("alloc hdr");
             let size = self.total_header_size(false, true);
-            bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
+            bumpalo2::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
         tracing::debug!("Header size: {}", owned_hdr.len());
         let header_buffer = owned_hdr.as_mut_slice();
@@ -481,7 +481,7 @@ pub trait SgaHeaderRepr<'obj> {
         &self,
         ordered_sga: &mut ArenaOrderedSga<'sge>,
         datapath: &D,
-        arena: &'sge bumpalo::Bump,
+        arena: &'sge bumpalo2::Bump,
         with_copy: bool,
     ) -> Result<()>
     where
@@ -492,7 +492,7 @@ pub trait SgaHeaderRepr<'obj> {
             #[cfg(feature = "profiler")]
             perftools::timer!("alloc hdr");
             let size = self.total_header_size(false, true);
-            bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
+            bumpalo2::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
         tracing::debug!("Header size: {}", owned_hdr.len());
         let header_buffer = owned_hdr.as_mut_slice();

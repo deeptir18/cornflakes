@@ -30,7 +30,7 @@ cxx = "1.0"
 demikernel = {git = "https://github.com/demikernel/demikernel", version = "1", features = ["profiler"], optional = true}
 rand = "0.8.*"
 bitmaps = "3.2.0"
-bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }
+bumpalo2 = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }
 redis = "0.21.5"
 zipf = "7.0.0"
 

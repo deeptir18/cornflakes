@@ -462,7 +462,7 @@ where
     fn partially_serialize_into_arena_sga<'sge>(
         &self,
         ordered_sga: &mut ArenaOrderedRcSga<'sge, D>,
-        arena: &'sge bumpalo::Bump,
+        arena: &'sge bumpalo2::Bump,
     ) -> Result<()>
     where
         'obj: 'sge,
@@ -471,7 +471,7 @@ where
             #[cfg(feature = "profiler")]
             perftools::timer!("alloc hdr");
             let size = self.total_header_size(false, false);
-            bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
+            bumpalo2::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
         let header_buffer = owned_hdr.as_mut_slice();
         self.partially_serialize_into_arena_sga_with_hdr(header_buffer, ordered_sga)?;
@@ -483,7 +483,7 @@ where
     fn serialize_into_arena_sga<'sge>(
         &self,
         ordered_sga: &mut ArenaOrderedRcSga<'sge, D>,
-        arena: &'sge bumpalo::Bump,
+        arena: &'sge bumpalo2::Bump,
         datapath: &D,
         with_copy: bool,
     ) -> Result<()>
@@ -494,7 +494,7 @@ where
             #[cfg(feature = "profiler")]
             perftools::timer!("alloc hdr");
             let size = self.total_header_size(false, false);
-            bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
+            bumpalo2::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
         let header_buffer = owned_hdr.as_mut_slice();
         self.serialize_into_arena_sga_with_hdr(header_buffer, ordered_sga, datapath, with_copy)?;

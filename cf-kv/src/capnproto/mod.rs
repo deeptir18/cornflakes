@@ -246,7 +246,7 @@ where
     mempool_ids: Vec<MempoolID>,
     serializer: CapnprotoSerializer<D>,
     push_buf_type: PushBufType,
-    arena: bumpalo::Bump,
+    arena: bumpalo2::Bump,
 }
 
 impl<D> CapnprotoKVServer<D>
@@ -273,7 +273,7 @@ where
             mempool_ids: mempool_ids,
             push_buf_type: push_buf_type,
             serializer: CapnprotoSerializer::new(zero_copy_puts),
-            arena: bumpalo::Bump::with_capacity(
+            arena: bumpalo2::Bump::with_capacity(
                 ArenaOrderedSga::arena_size(
                     D::batch_size(),
                     D::max_packet_size(),
@@ -478,7 +478,7 @@ where
                 }
             }
 
-            let mut framing_vec = bumpalo::collections::Vec::with_capacity_zeroed_in(
+            let mut framing_vec = bumpalo2::collections::Vec::with_capacity_zeroed_in(
                 FRAMING_ENTRY_SIZE * (1 + builder.get_segments_for_output().len()),
                 &self.arena,
             );
@@ -529,7 +529,7 @@ where
 
 fn fill_in_context<'arena, T>(
     builder: &Builder<T>,
-    framing: &mut bumpalo::collections::Vec<'arena, u8>,
+    framing: &mut bumpalo2::collections::Vec<'arena, u8>,
 ) where
     T: Allocator,
 {

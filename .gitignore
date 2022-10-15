@@ -12,6 +12,7 @@ mlx5-datapath/mlx5-wrapper/build/*
 ds-echo/c/server
 cf-kv/c/kv-sga-cornflakes-c
 ds-echo/c/echo-dynamic-sga-c
+cornflakes-libos/src/bin/*
 
 experiments/main/__pycache__
 scatter-gather-bench/build/
