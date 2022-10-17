@@ -16,11 +16,13 @@ from tqdm import tqdm
 from main import connection
 import agenda
 import threading
+import pandas as pd
 
 def extend_with_serialization_parameters(parser):
     parser.add_argument("-pbt", "--push_buf_type",
                                 dest="buf_mode",
-                                choices=["singlebuf", "arenaorderedsga"],
+                                choices=["singlebuf",
+                                    "arenaorderedsga", "object"],
                                 required=True)
     parser.add_argument("-inline", "--inline_mode",
                                 dest="inline_mode",
@@ -50,7 +52,7 @@ class ExtraSerializationParameters(object):
             self.buf_mode = buf_mode
         else:
             if self.serialization == "cornflakes-dynamic" or self.serialization == "cornflakes1c-dynamic":
-                self.buf_mode = "arenaorderedrcsga"
+                self.buf_mode = "object"
             else:
                 self.buf_mode = "singlebuf"
 
@@ -60,7 +62,7 @@ class ExtraSerializationParameters(object):
             if self.serialization == "cornflakes-dynamic" or self.serialization == "cornflakes1c-dynamic":
                 self.inline_mode = "objectheader"
             else:
-                self.inline_mode = "packetheader"
+                self.inline_mode = "nothing"
 
         if max_sg_segments != None:
             self.max_sg_segments = max_sg_segments
@@ -307,8 +309,14 @@ class Experiment(metaclass=abc.ABCMeta):
                     utils.warn("Analysis for iteration {} did not exist and failed to rerun".format(str(iteration)))
                     continue
             
+            if not(os.path.exists(analysis_path)):
+                host_type_map = self.get_machine_config()["host_types"]
+                program_args_map = self.get_program_args(self.get_exp_config())
+                client_file_list = self.get_client_file_list(program_args_map, host_type_map)
+                iteration.calculate_iteration_stats(local_folder, client_file_list, False)
+            
             iteration_df = iteration.read_analysis_log(folder_path)
-            df.append(iteration_df, ignore_index = True)
+            df = pd.concat([df, iteration_df], ignore_index = True)
         # write to logfile
         df.to_csv(str(folder_path/logfile))
 
@@ -391,7 +399,8 @@ class Experiment(metaclass=abc.ABCMeta):
             ret = ""
             # append optional skip info about this trial to the skip
             self.append_to_skip_info(total_args, iteration, folder_path)
-            time.sleep(2)
+            if not total_args.pprint:
+                time.sleep(2)
 
     def execute(self, parser, namespace):
         total_args = self.add_specific_args(parser, namespace)
@@ -479,12 +488,9 @@ class Iteration(metaclass=abc.ABCMeta):
             
     # returns dataframe representing the data
     def read_analysis_log(self, local_folder):
-        analysis_file = Path(self.get_folder_name(local_folder) /
-        "analysis.log")
-        if not(os.path.exists(analysis_file)):
-            return pd.DataFrame()
-        else:
-            return pd.read_csv(analysis_file)
+        analysis_path = self.get_folder_name(local_folder) /\
+                "analysis.log"
+        return pd.read_csv(analysis_path)
 
     def calculate_iteration_stats(self, local_folder,
             client_file_list, print_stats):
@@ -553,7 +559,7 @@ class Iteration(metaclass=abc.ABCMeta):
 
         analysis_path = Path(local_folder) / "analysis.log"
         with open(str(analysis_path), "w") as f:
-            f.write(",".join(self.get_csv_header()))
+            f.write(",".join(self.get_csv_header()) + os.linesep)
             f.write(format_string + os.linesep)
             f.close()
         if print_stats:
@@ -674,12 +680,15 @@ class Iteration(metaclass=abc.ABCMeta):
             host_addr = machine_config["hosts"][host]["addr"]
             key = machine_config["key"]
             user = machine_config["user"]               
-            connection_wrapper = connection.ConnectionWrapper(
+            try:
+                connection_wrapper = connection.ConnectionWrapper(
                                         addr = host_addr,
                                         user = user,
                                         port = 22,
                                         key = key)
-            connections[host] = connection_wrapper
+                connections[host] = connection_wrapper
+            except:
+                return False
                 
             # for this host, create the remote temporary folder
             remote_tmp_path = self.get_folder_name(machine_config["hosts"][host]["tmp_folder"])
@@ -688,10 +697,12 @@ class Iteration(metaclass=abc.ABCMeta):
         
         # populate  program args
         for program_name in programs:
+            utils.info("Configuring program: ", program_name)
             program = programs[program_name]
             program_hosts = self.get_program_hosts(program_name,
                     host_type_map)
             for host in program_hosts:
+                utils.info("Configuring host: ", host)
                 # populate program args
                 program_args = self.get_program_args(host,
                                                      machine_config,
@@ -743,7 +754,6 @@ class Iteration(metaclass=abc.ABCMeta):
                             "res_map": status_dict,
                             "res_key": (program_name, host)
                             }
-
         # function to check whether a certain program can be started
         def is_ready(other_program_name):
             other_program = programs[other_program_name]
@@ -800,6 +810,7 @@ class Iteration(metaclass=abc.ABCMeta):
                 continue
             ct += 1
         
+        # wait for input
         if not(server_failed):
             clients = [threading.Thread(
             target = run_client,
@@ -847,18 +858,19 @@ class Iteration(metaclass=abc.ABCMeta):
                     any_failed = True
 
         if not(any_failed):
-            for program_name in programs:
-                program = programs[program_name]
-                program_hosts = self.get_program_hosts(program_name, host_type_map)
-                # transfer all logs locally
-                for host in program_hosts:
-                    program_args = program_args_map[(program_name, host)]
-                    program_args_copy = copy.deepcopy(program_args)
-                    for filetype, filename in program["log"].items():
-                        remote_file = filename.format(**program_args)
-                        program_args_copy["folder"] = local_results_path
-                        local_file = filename.format(**program_args_copy)
-                        connections[host].get(remote_file, local_file)
+            if not pprint:
+                for program_name in programs:
+                    program = programs[program_name]
+                    program_hosts = self.get_program_hosts(program_name, host_type_map)
+                    # transfer all logs locally
+                    for host in program_hosts:
+                        program_args = program_args_map[(program_name, host)]
+                        program_args_copy = copy.deepcopy(program_args)
+                        for filetype, filename in program["log"].items():
+                            remote_file = filename.format(**program_args)
+                            program_args_copy["folder"] = local_results_path
+                            local_file = filename.format(**program_args_copy)
+                            connections[host].get(remote_file, local_file)
 
         # delete all files, even if stuff has failed
         for host in program_host_list:
@@ -898,8 +910,43 @@ class Iteration(metaclass=abc.ABCMeta):
         # run analysis
         if not pprint:
             self.calculate_iteration_stats(
-                    local_results_path,                        client_file_list, print_stats)
+                    local_results_path, client_file_list, print_stats)
         return True
+
+    def get_program_args_map(self, exp_config):
+        programs = exp_config["programs"]
+        program_args_map = {}
+        for program_name in programs:
+            utils.info("Configuring program: ", program_name)
+            program = programs[program_name]
+            program_hosts = self.get_program_hosts(program_name,
+                    host_type_map)
+            for host in program_hosts:
+                utils.info("Configuring host: ", host)
+                # populate program args
+                program_args = self.get_program_args(host,
+                                                     machine_config,
+                                                     program_name,
+                                                     programs)
+                program_args["cornflakes_dir"] = machine_config["hosts"][host]["cornflakes_dir"]
+                program_args["config_file"] = machine_config["hosts"][host]["config_file"]
+                program_args["folder"] = self.get_folder_name(host_tmp)
+                program_args["local_folder"] = local_results_path
+                program_args["host"] = host
+                program_args["time"] = exp_time
+                program_args_map[(program_name, host)] = program_args
+
+    def get_client_file_list(self, program_args_map, host_type_map):
+        client_list = self.get_program_hosts("start_client",
+                    host_type_map)
+        client_file_list = []
+        for host in client_list:
+            program_args = program_args_map[("start_client", host)]
+            program_args_copy = copy.deepcopy(program_args)
+            program_args_copy["folder"] = local_results_path
+            client_file_list.append(programs["start_client"]["log"]["results"].format(**program_args_copy))
+        return client_file_list
+        
 
 def run_client(cxn, kwargs):
     cxn.run(**kwargs)

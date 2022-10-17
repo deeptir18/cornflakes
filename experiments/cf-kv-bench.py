@@ -10,14 +10,11 @@ import time
 import pandas as pd
 import numpy as np
 STRIP_THRESHOLD = 0.03
-NUM_CLIENTS = 2
-NUM_THREADS = 4
-rates = [6250, 10000, 12500, 18750, 25000, 30000, 35000, 45000, 50000, 55000,
-         60000, 65000, 75000, 85000, 95000, 105000, 115000, 125000, 130000,
-         135000]
-
-# SIZES_TO_LOOP = [256, 512, 1024, 2048, 4096]
-SIZES_TO_LOOP = [4096, 4096]
+NUM_CLIENTS = 1
+NUM_THREADS = 16
+max_rates = {(1,1): 100000, (2, 2): 75000, (4,4): 50000, (8,8): (25000)}
+rate_percentages = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.95, 1.00]
+SIZES_TO_LOOP = [4096, 512]
 NUM_VALUES_TO_LOOP = [1, 2, 4, 8]
 NUM_KEYS_TO_LOOP = [1, 2, 4, 8]
 SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cornflakes1c-dynamic",
@@ -337,19 +334,21 @@ class KVBench(runner.Experiment):
             ret = []
             for trial in range(utils.NUM_TRIALS):
                 for serialization in SERIALIZATION_LIBRARIES:
-                    for rate in rates:
-                        client_rates = [(rate, NUM_CLIENTS)]
+                    for rate_percentage in rate_percentages:
                         num_threads = NUM_THREADS
                         for total_size in SIZES_TO_LOOP:
                             for num_values in NUM_VALUES_TO_LOOP:
                                 for num_keys in NUM_KEYS_TO_LOOP:
                                     if num_keys != num_values:
-                                        if num_keys != 1:
-                                            continue
-                                        size = int(total_size / num_values)
-                                        size_str = "UniformOverSizes-{}".format(
-                                            size)
-                                        it = KVIteration(client_rates,
+                                        continue
+                                    max_rate = max_rates[(num_keys,num_values)]
+                                    rate = int(float(max_rate) *
+                                                rate_percentage)
+                                    client_rates = [(rate, NUM_CLIENTS)]
+                                    size = int(total_size / num_values)
+                                    size_str = "UniformOverSizes-{}".format(size)
+                                    extra_serialization_params = runner.ExtraSerializationParameters(serialization)
+                                    it = KVIteration(client_rates,
                                                          size,
                                                          size_str,
                                                          num_keys,
@@ -358,8 +357,9 @@ class KVBench(runner.Experiment):
                                                          total_args.load_trace,
                                                          total_args.access_trace,
                                                          num_threads,
+                                                         extra_serialization_params,
                                                          trial=trial)
-                                        ret.append(it)
+                                    ret.append(it)
             return ret
 
     def add_specific_args(self, parser, namespace):
@@ -425,8 +425,9 @@ class KVBench(runner.Experiment):
             "avg,median,p99,p999"
 
     def run_summary_analysis(self, df, out, serialization, num_values, size):
+        print(df)
         filtered_df = df[(df["serialization"] == serialization) &
-                         (df["value_size"] == size) &
+                         (df["avg_size"] == size) &
                          (df["num_values"] == num_values)]
         total_size = int(size * num_values)
         print(serialization, num_values, size)
@@ -438,7 +439,7 @@ class KVBench(runner.Experiment):
         # just find maximum achieved rate across all rates
         # group by array size, num segments, segment size,  # average
         clustered_df = filtered_df.groupby(["serialization",
-                                            "value_size", "num_values",
+                                            "avg_size", "num_values",
                                            "offered_load_pps",
                                             "offered_load_gbps"],
                                            as_index=False).agg(

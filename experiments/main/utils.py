@@ -12,8 +12,8 @@ import json
 import numpy as np
 import torch
 
-NUM_TRIALS = 1
-NUM_RETRIES = 0
+NUM_TRIALS = 5
+NUM_RETRIES = 5
 
 PERCENT_ACHIEVED_CUTOFF = 0.98
 DEFAULT_HISTOGRAM_PRECISION = 1000

@@ -25,19 +25,28 @@ plot_type <- args[5]
 # cut out all data where the percentachieved is less than .95
 # d <- subset(d, percent_achieved_rate > .95)
 
-labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cereal" = "Cereal", "cornflakes-dynamic" = "Cornflakes (Hardware SG)", "cornflakes1c-dynamic" = "Cornflakes (1 Software Copy)")
+labels <- c("capnproto" = "Capnproto", 
+            "protobuf" = "Protobuf", 
+            "flatbuffers" = "Flatbuffers", 
+            "cornflakes1c-dynamic" = "Cornflakes (Always Copy)",
+            "cornflakes-dynamic" = "Cornflakes")
 
-shape_values <- c('protobuf' = 7, 'cereal' = 4, 'capnproto' = 18, 'flatbuffers' = 17, 'cornflakes1c-dynamic' = 15, 'cornflakes-dynamic' = 19)
-#size_values <- c('protobuf' = 4, 'cereal' = 4, 'capnproto' = 3.5, 'flatbuffers' = 2.5, 'cornflakes-dynamic' = 3.5, 'cornflakes1c-dynamic' = 2.5)
+shape_values <- c('capnproto' = 18, 
+                  'protobuf' = 8, 
+                  'flatbuffers' = 17, 
+                  'cornflakes1c-dynamic' = 15, 
+                  'cornflakes-dynamic' = 19)
+color_values <- c('capnproto' = '#e7298a',
+                  'protobuf' = '#e6ab02',
+                  'flatbuffers' = '#7570b3',
+                  'cornflakes1c-dynamic' = '#d95f02',
+                  'cornflakes-dynamic' = '#1b9e77')
 
-color_values <- c('cornflakes-dynamic' = '#1b9e77', 
-                    'cornflakes1c-dynamic' = '#d95f02',
-                    'flatbuffers' = '#7570b3',
-                    'capnproto' = '#e7298a',
-                    'cereal' = '#66a61e',
-                    'protobuf' = '#e6ab02')
-
-d$serialization <- factor(d$serialization, levels = c('cereal', 'flatbuffers', 'capnproto', 'protobuf', 'cornflakes1c-dynamic', 'cornflakes-dynamic'))
+d$serialization <- factor(d$serialization, levels = c('capnproto', 
+                                                      'protobuf', 
+                                                      'flatbuffers', 
+                                                      'cornflakes1c-dynamic', 
+                                                      'cornflakes-dynamic'))
 
 base_plot <- function(data, metric) {
     # data <- subset(data, sdp99 < 300)
@@ -60,7 +69,7 @@ base_p99_plot <- function(data, y_cutoff) {
                         shape = serialization,
                         ymin = mp99 - sdp99,
                         ymax = mp99 + sdp99)) +
-            coord_cartesian(ylim=c(0, y_cutoff), xlim=c(0, 32)) +
+            coord_cartesian(ylim=c(0, y_cutoff)) +
     labs(x = "Achieved Load (Gbps)", y = "p99 Latency (µs)")
     return(plot)
 }
@@ -138,22 +147,19 @@ tput_plot <- function(data) {
     y_axis <- "Highest Achieved\nLoad (Gbps)"
     y_min = "maxtputgbps - maxtputgbpssd"
     y_max = "maxtputgbps + maxtputgbpssd"
-    data$serialization <- factor(data$serialization, levels = c("capnproto", "flatbuffers", "cornflakes1c-dynamic", "cornflakes-dynamic"))
+    data$serialization <- factor(data$serialization, levels = c("capnproto", "flatbuffers", "protobuf", "cornflakes1c-dynamic", "cornflakes-dynamic"))
     plot <- ggplot(data,
                     aes_string(x = "factor(num_values)",
                         y=y_name,
                         fill = "serialization")) +
                    expand_limits(y = 0) +
-            geom_point(size = 3, stroke=0.2, position=position_dodge(0.3), stat="identity", aes(color=serialization, shape=serialization,fill=serialization, size=serialization)) +
-            geom_bar(position=position_dodge(0.3), stat="identity", width = 0.05) +
+            geom_point(size = 3, stroke=0.2, position=position_dodge(0.5), stat="identity", aes(color=serialization, shape=serialization,fill=serialization, size=serialization)) +
+            geom_bar(position=position_dodge(0.5), stat="identity", width = 0.05) +
             guides(colour=guide_legend(nrow=2, byrow=TRUE),
-                   #fill=guide_legend(nrow=2, byrow=TRUE),
                    shape=guide_legend(nrow=2, byrow=TRUE)) +
-                   #size=guide_legend(nrow=2,byrow=TRUE)) +
             scale_color_manual(values = color_values ,labels = labels) +
-            scale_fill_manual(values = color_values, labels = labels, guide = FALSE) +
+            scale_fill_manual(values = color_values, labels = labels, guide = "none") +
             scale_shape_manual(values = shape_values, labels = labels) +
-            # scale_size_manual(values = size_values, labels = labels) +
             scale_y_continuous(expand = expansion(mult = c(0, .2))) +
             labs(x = "Number of Batched Gets", y = y_axis) +
             theme_light() +
@@ -174,8 +180,8 @@ tput_plot <- function(data) {
 }
 
 
-d$total_size = d$value_size * d$num_values;
-summarized <- ddply(d, c("serialization", "total_size", "value_size", "num_values", "offered_load_pps", "offered_load_gbps"), summarise,
+d$total_size = d$avg_size * d$num_values;
+summarized <- ddply(d, c("serialization", "total_size", "avg_size", "num_values", "offered_load_pps", "offered_load_gbps"), summarise,
                         mavg = mean(avg),
                         mp99 = mean(p99),
                         avgmedian = mean(median),
@@ -203,7 +209,6 @@ if (plot_type == "full") {
 } else if (plot_type == "summary") {
     size_arg <- strtoi(args[6])
     d_postprocess <- subset(d_postprocess, total_size == size_arg)
-    print(d_postprocess)
     plot <- tput_plot(d_postprocess)
     print(plot_pdf)
     ggsave("tmp.pdf", width=5, height=2)
