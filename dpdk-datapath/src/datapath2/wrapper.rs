@@ -16,7 +16,7 @@ use std::{
 };
 
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel::perftools;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct MempoolPtr(pub *mut rte_mempool);
@@ -1072,9 +1072,10 @@ pub fn dpdk_register_extmem(
     // need to map physical addresses for each virtual region
 
     // if using mellanox, need to retrieve the lkey for this pinned memory
-    let mut ibv_mr: *mut ::std::os::raw::c_void = ptr::null_mut();
+    let mut _ibv_ptr: *mut ::std::os::raw::c_void = ptr::null_mut();
     #[cfg(feature = "mlx5")]
     {
+        let mut ibv_mr = _ibv_ptr;
         // TODO: currently, only calling for port 0
         ibv_mr = dpdk_call!(mlx5_manual_reg_mr_callback(
             0,
@@ -1085,16 +1086,17 @@ pub fn dpdk_register_extmem(
         if ibv_mr.is_null() {
             bail!("Manual memory registration failed.");
         }
+        _ibv_ptr = ibv_mr;
     }
 
-    Ok(ibv_mr)
+    Ok(_ibv_ptr)
 }
 
 #[inline]
-pub fn dpdk_unregister_extmem(metadata: &mem::MmapMetadata) -> Result<()> {
+pub fn dpdk_unregister_extmem(_metadata: &mem::MmapMetadata) -> Result<()> {
     #[cfg(feature = "mlx5")]
     {
-        dpdk_call!(mlx5_manual_dereg_mr_callback(metadata.get_ibv_mr()));
+        dpdk_call!(mlx5_manual_dereg_mr_callback(_metadata.get_ibv_mr()));
     }
     Ok(())
 }

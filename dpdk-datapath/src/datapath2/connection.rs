@@ -22,7 +22,7 @@ use std::{
 use tracing::warn;
 
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel::perftools;
 
 const MAX_ENTRIES: usize = 60;
 const PROCESSING_TIMER: &str = "E2E_PROCESSING_TIME";

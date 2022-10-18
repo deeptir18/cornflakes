@@ -34,7 +34,7 @@ use timing::HistogramWrapper;
 use utils::AddressInfo;
 
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel::perftools::profiler;
 #[cfg(feature = "profiler")]
 const PROFILER_DEPTH: usize = 10;
 
@@ -1108,7 +1108,7 @@ impl<'a> ArenaOrderedSga<'a> {
 
     pub fn finish_offsets(&mut self) {
         #[cfg(feature = "profiler")]
-        perftools::timer!("fill in sga offsets");
+        timer!("fill in sga offsets");
         let mut cur_dynamic_offset = self.header_offsets;
 
         for (sge, offset) in self
@@ -2075,7 +2075,7 @@ where
     #[inline]
     pub fn reset(&mut self, datapath: &mut D) -> Result<()> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Reset copy context");
+        timer!("Reset copy context");
         if self.copy_buffers.len() == 0 {
             let serialization_copy_buf = SerializationCopyBuf::new(datapath)?;
             self.copy_buffers.push(serialization_copy_buf);
@@ -2095,7 +2095,7 @@ where
     #[inline]
     pub fn new(arena: &'a bumpalo::Bump, datapath: &mut D) -> Result<Self> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Allocate new copy context");
+        timer!("Allocate new copy context");
         Ok(CopyContext {
             copy_buffers: bumpalo::collections::Vec::with_capacity_in(1, arena),
             threshold: datapath.get_copying_threshold(),
@@ -2134,7 +2134,7 @@ where
     #[inline]
     pub fn copy(&mut self, buf: &[u8], datapath: &mut D) -> Result<CopyContextRef<D>> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Copy in copy context");
+        timer!("Copy in copy context");
         let current_length = self.current_length;
         let mut copy_buffers_len = self.copy_buffers.len();
         let mut last_buf = &mut self.copy_buffers[copy_buffers_len - 1];
@@ -2301,7 +2301,7 @@ where
     #[inline]
     pub fn finish_offsets(&mut self) {
         #[cfg(feature = "profiler")]
-        perftools::timer!("fill in sga offsets");
+        timer!("fill in sga offsets");
         let mut cur_dynamic_offset = self.header_offsets;
 
         for (rc_sge, offset) in self
@@ -3449,7 +3449,7 @@ pub trait ServerSM {
         let mut _requests_processed = 0;
         loop {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Run state machine loop");
+            timer!("Run state machine loop");
 
             #[cfg(feature = "profiler")]
             {

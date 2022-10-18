@@ -33,7 +33,7 @@ use std::{
 use yaml_rust::{Yaml, YamlLoader};
 
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel::perftools;
 
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 const COMPLETION_BUDGET: usize = 32;

@@ -33,3 +33,11 @@ default = []
 mlx5 = []
 profiler = ["demikernel"]
 
+[[bin]]
+name = "dpdk_echo"
+required-features = ["mlx5"]
+
+[[bin]]
+name = "fast_echo"
+required-features = ["mlx5"]
+

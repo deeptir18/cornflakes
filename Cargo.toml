@@ -12,9 +12,6 @@ members = ["cornflakes-codegen",
             "linux-datapath-c",
             "dpdk-datapath",
             "sg-bench-client",
-            "redis-dpdk",
-            "redis-common",
-            "redis-mlx5",
             "simple-echo"]
             #"data-shuffle"]
 

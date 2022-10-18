@@ -17,10 +17,10 @@ use cornflakes_libos::{
     datapath::{Datapath, PushBufType, ReceivedPkt},
     state_machine::server::ServerSM,
 };
+#[cfg(feature = "profiler")]
+use demikernel::perftools;
 use flatbuffers::{root, FlatBufferBuilder, WIPOffset};
 use kv_api::cf_kv_fbs;
-#[cfg(feature = "profiler")]
-use perftools;
 use std::marker::PhantomData;
 
 pub struct FlatbuffersSerializer<D>
@@ -101,7 +101,7 @@ where
     ) -> Result<()> {
         let getm_request = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("deserialize");
+            perftools::profiler::timer!("deserialize");
             root::<cf_kv_fbs::GetMReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
         }?;
         let keys = getm_request.keys().unwrap();
@@ -110,7 +110,7 @@ where
             .map(|key| {
                 let v = {
                     #[cfg(feature = "profiler")]
-                    perftools::timer!("got value");
+                    perftools::profiler::timer!("got value");
                     match kv_server.get(key) {
                         Some(v) => v,
                         None => {
@@ -120,7 +120,7 @@ where
                 };
                 {
                     #[cfg(feature = "profiler")]
-                    perftools::timer!("append value");
+                    perftools::profiler::timer!("append value");
                     Ok(cf_kv_fbs::ValueArgs {
                         data: Some(builder.create_vector_direct::<u8>(v.as_ref())),
                     })

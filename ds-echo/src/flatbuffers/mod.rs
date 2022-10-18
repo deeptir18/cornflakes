@@ -19,7 +19,7 @@ use echo_api::*;
 use flatbuffers::{root, FlatBufferBuilder, WIPOffset};
 
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel::perftools;
 use std::marker::PhantomData;
 
 pub struct FlatbuffersSerializer<'fbb, D>

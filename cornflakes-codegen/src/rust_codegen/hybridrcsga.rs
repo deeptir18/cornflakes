@@ -1035,7 +1035,7 @@ fn add_serialization_iteration_for_field(
                         "cur_constant_offset".to_string(),
                         "0".to_string(),
                         "cur_dynamic_offset".to_string(),
-                        "header".to_string(),
+                        "header_buffer".to_string(),
                     ],
                     false,
                 )?;
@@ -1140,7 +1140,7 @@ fn add_serialization_for_field(
                     false,
                 )?;
                 compiler.add_func_call(Some(format!("self.{}", &field_info.get_name())), "inner_serialize", vec![
-                    "datapath".to_string(), "header".to_string(), "cur_dynamic_offset".to_string(), format!("cur_dynamic_offset + self.{}.dynamic_header_start()", field_info.get_name()), format!("&mut zero_copy_scatter_gather_entries[cur_sge_idx..(cur_sge_idx + self.{}.num_zero_copy_scatter_gather_entries())]", field_info.get_name()),
+                    "datapath".to_string(), "header".to_string(), "cur_dynamic_offset".to_string(), format!("cur_dynamic_offset + self.{}.dynamic_header_start()", field_info.get_name()), "copy_context".to_string(), format!("&mut zero_copy_scatter_gather_entries[cur_sge_idx..(cur_sge_idx + self.{}.num_zero_copy_scatter_gather_entries())]", field_info.get_name()),
                 "ds_offset".to_string()],
                 true)?;
                 used_sge_idx = true;
@@ -1244,7 +1244,7 @@ fn add_deserialization_for_field(
                     "inner_deserialize",
                     vec![
                         "buffer".to_string(),
-                        "read_size_and_offset(cur_constant_offset, buffer)?.1".to_string(),
+                        "read_size_and_offset::<D>(cur_constant_offset, buffer)?.1".to_string(),
                         "buffer_offset".to_string(),
                         "arena".to_string(),
                     ],

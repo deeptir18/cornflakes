@@ -147,9 +147,14 @@ impl ProtoReprInfo {
             FieldType::Bytes => "CFBytes::default()".to_string(),
             FieldType::RefCountedString => "CFString::default()".to_string(),
             FieldType::RefCountedBytes => "CFBytes::default()".to_string(),
-            FieldType::MessageOrEnum(msg_name) => {
-                format!("{}::default()", msg_name)
-            }
+            FieldType::MessageOrEnum(msg_name) => match self.hybrid_mode {
+                true => {
+                    format!("{}::new_in(arena)", msg_name)
+                }
+                false => {
+                    format!("{}::default()", msg_name)
+                }
+            },
             _ => {
                 bail!("FieldType {:?} not supported by compiler", field.0.typ);
             }

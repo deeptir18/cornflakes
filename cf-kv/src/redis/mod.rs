@@ -4,7 +4,7 @@ use redis;
 use super::ClientSerializer;
 use color_eyre::eyre::Result;
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel::perftools;
 use std::marker::PhantomData;
 
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
@@ -66,18 +66,19 @@ where
         Ok(data.len())
     }
 
-    fn serialize_put(&self, buf: &mut [u8], key: &str, value: &str, _datapath: &D) -> Result<usize> {
+    fn serialize_put(
+        &self,
+        buf: &mut [u8],
+        key: &str,
+        value: &str,
+        _datapath: &D,
+    ) -> Result<usize> {
         let data = redis::cmd("SET").arg(key).arg(value).get_packed_command();
         buf[0..data.len()].copy_from_slice(&data);
         Ok(data.len())
     }
 
-    fn serialize_getm(
-        &self,
-        buf: &mut [u8],
-        keys: &Vec<String>,
-        _datapath: &D,
-    ) -> Result<usize> {
+    fn serialize_getm(&self, buf: &mut [u8], keys: &Vec<String>, _datapath: &D) -> Result<usize> {
         let data = {
             let mut cmd = redis::cmd("MGET");
             let mut cmd_ref = &mut cmd;

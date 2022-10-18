@@ -1,3 +1,10 @@
+pub mod echo_messages_hybrid {
+    #![allow(unused_variables)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_upper_case_globals)]
+    #![allow(non_snake_case)]
+    include!(concat!(env!("OUT_DIR"), "/echo_dynamic_hybrid.rs"));
+}
 pub mod echo_messages_sga {
     #![allow(non_camel_case_types)]
     #![allow(non_upper_case_globals)]
@@ -18,12 +25,14 @@ use cornflakes_libos::{
     datapath::{Datapath, PushBufType, ReceivedPkt},
     dynamic_rcsga_hdr,
     dynamic_rcsga_hdr::RcSgaHeaderRepr,
+    dynamic_rcsga_hybrid_hdr,
+    dynamic_rcsga_hybrid_hdr::HybridArenaRcSgaHdr,
     state_machine::server::ServerSM,
-    ArenaOrderedRcSga,
+    ArenaOrderedRcSga, CopyContext,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel::perftools;
 use std::marker::PhantomData;
 
 pub struct CornflakesSerializer<D>
@@ -59,6 +68,163 @@ where
     type Datapath = D;
     fn push_buf_type(&self) -> PushBufType {
         self.push_buf_type
+    }
+
+    #[inline]
+    fn process_requests_object(
+        &mut self,
+        sga: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        datapath: &mut Self::Datapath,
+        arena: &mut bumpalo::Bump,
+    ) -> Result<()> {
+        let end = sga.len();
+        let mut copy_context = CopyContext::new(arena, datapath)?;
+        for (i, pkt) in sga.into_iter().enumerate() {
+            copy_context.reset(datapath)?;
+            let end_batch = i == (end - 1);
+            let message_type = read_message_type(&pkt)?;
+            match message_type {
+                SimpleMessageType::Single => {
+                    let mut single_deser = echo_messages_hybrid::SingleBufferCF::new_in(arena);
+                    let mut single_ser = echo_messages_hybrid::SingleBufferCF::new_in(arena);
+                    {
+                        #[cfg(feature = "profiler")]
+                        perftools::timer!("Deserialize pkt");
+                        single_deser.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                    }
+                    {
+                        #[cfg(feature = "profiler")]
+                        perftools::timer!("Set message");
+                        single_ser.set_message(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                            single_deser.get_message().as_ref(),
+                            datapath,
+                            &mut copy_context,
+                        )?);
+                        tracing::debug!(set_msg =? single_ser.get_message().as_ref());
+                    }
+                    datapath.queue_cornflakes_obj(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        &mut copy_context,
+                        single_ser,
+                        end_batch,
+                    )?;
+                }
+                SimpleMessageType::List(_list_elts) => {
+                    let mut list_deser =
+                        echo_messages_hybrid::ListCF::<Self::Datapath>::new_in(arena);
+                    let mut list_ser =
+                        echo_messages_hybrid::ListCF::<Self::Datapath>::new_in(arena);
+                    list_deser.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+
+                    list_ser.init_messages(list_deser.get_messages().len(), arena);
+                    let messages = list_ser.get_mut_messages();
+                    for elt in list_deser.get_messages().iter() {
+                        messages.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                            elt.as_ref(),
+                            datapath,
+                            &mut copy_context,
+                        )?);
+                    }
+
+                    datapath.queue_cornflakes_obj(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        &mut copy_context,
+                        list_ser,
+                        end_batch,
+                    )?;
+                }
+                SimpleMessageType::Tree(tree_depth) => match tree_depth {
+                    TreeDepth::One => {
+                        let mut tree_deser = echo_messages_hybrid::Tree1LCF::new_in(arena);
+                        tree_deser.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                        let tree_ser = deserialize_from_tree1l(
+                            &tree_deser,
+                            datapath,
+                            &mut copy_context,
+                            arena,
+                        )?;
+                        datapath.queue_cornflakes_obj(
+                            pkt.msg_id(),
+                            pkt.conn_id(),
+                            &mut copy_context,
+                            tree_ser,
+                            end_batch,
+                        )?;
+                    }
+                    TreeDepth::Two => {
+                        let mut tree_deser = echo_messages_hybrid::Tree2LCF::new_in(arena);
+                        tree_deser.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                        let tree_ser = deserialize_from_tree2l(
+                            &tree_deser,
+                            datapath,
+                            &mut copy_context,
+                            arena,
+                        )?;
+                        datapath.queue_cornflakes_obj(
+                            pkt.msg_id(),
+                            pkt.conn_id(),
+                            &mut copy_context,
+                            tree_ser,
+                            end_batch,
+                        )?;
+                    }
+                    TreeDepth::Three => {
+                        let mut tree_deser = echo_messages_hybrid::Tree3LCF::new_in(arena);
+                        tree_deser.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                        let tree_ser = deserialize_from_tree3l(
+                            &tree_deser,
+                            datapath,
+                            &mut copy_context,
+                            arena,
+                        )?;
+                        datapath.queue_cornflakes_obj(
+                            pkt.msg_id(),
+                            pkt.conn_id(),
+                            &mut copy_context,
+                            tree_ser,
+                            end_batch,
+                        )?;
+                    }
+                    TreeDepth::Four => {
+                        let mut tree_deser = echo_messages_hybrid::Tree4LCF::new_in(arena);
+                        tree_deser.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                        let tree_ser = deserialize_from_tree4l(
+                            &tree_deser,
+                            datapath,
+                            &mut copy_context,
+                            arena,
+                        )?;
+                        datapath.queue_cornflakes_obj(
+                            pkt.msg_id(),
+                            pkt.conn_id(),
+                            &mut copy_context,
+                            tree_ser,
+                            end_batch,
+                        )?;
+                    }
+                    TreeDepth::Five => {
+                        let mut tree_deser = echo_messages_hybrid::Tree5LCF::new_in(arena);
+                        tree_deser.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                        let tree_ser = deserialize_from_tree5l(
+                            &tree_deser,
+                            datapath,
+                            &mut copy_context,
+                            arena,
+                        )?;
+                        datapath.queue_cornflakes_obj(
+                            pkt.msg_id(),
+                            pkt.conn_id(),
+                            &mut copy_context,
+                            tree_ser,
+                            end_batch,
+                        )?;
+                    }
+                },
+            }
+        }
+        Ok(())
     }
 
     fn process_requests_arena_ordered_sga(
@@ -275,6 +441,148 @@ where
     }
 }
 
+fn deserialize_from_tree5l<'arena, 'obj, D>(
+    input: &'obj echo_messages_hybrid::Tree5LCF<'obj, D>,
+    datapath: &mut D,
+    copy_context: &mut CopyContext<'arena, D>,
+    arena: &'arena bumpalo::Bump,
+) -> Result<echo_messages_hybrid::Tree5LCF<'obj, D>>
+where
+    D: Datapath,
+{
+    let mut output = echo_messages_hybrid::Tree5LCF::new_in(arena);
+    output.set_left(deserialize_from_tree4l(
+        input.get_left(),
+        datapath,
+        copy_context,
+        arena,
+    )?);
+    output.set_right(deserialize_from_tree4l(
+        input.get_right(),
+        datapath,
+        copy_context,
+        arena,
+    )?);
+    Ok(output)
+}
+
+fn deserialize_from_tree4l<'arena, 'obj, D>(
+    input: &'obj echo_messages_hybrid::Tree4LCF<'obj, D>,
+    datapath: &mut D,
+    copy_context: &mut CopyContext<'arena, D>,
+    arena: &'arena bumpalo::Bump,
+) -> Result<echo_messages_hybrid::Tree4LCF<'obj, D>>
+where
+    D: Datapath,
+{
+    let mut output = echo_messages_hybrid::Tree4LCF::new_in(arena);
+    output.set_left(deserialize_from_tree3l(
+        input.get_left(),
+        datapath,
+        copy_context,
+        arena,
+    )?);
+    output.set_right(deserialize_from_tree3l(
+        input.get_right(),
+        datapath,
+        copy_context,
+        arena,
+    )?);
+    Ok(output)
+}
+
+fn deserialize_from_tree3l<'arena, 'obj, D>(
+    input: &'obj echo_messages_hybrid::Tree3LCF<'obj, D>,
+    datapath: &mut D,
+    copy_context: &mut CopyContext<'arena, D>,
+    arena: &'arena bumpalo::Bump,
+) -> Result<echo_messages_hybrid::Tree3LCF<'obj, D>>
+where
+    D: Datapath,
+{
+    let mut output = echo_messages_hybrid::Tree3LCF::new_in(arena);
+    output.set_left(deserialize_from_tree2l(
+        input.get_left(),
+        datapath,
+        copy_context,
+        arena,
+    )?);
+    output.set_right(deserialize_from_tree2l(
+        input.get_right(),
+        datapath,
+        copy_context,
+        arena,
+    )?);
+    Ok(output)
+}
+
+fn deserialize_from_tree2l<'arena, 'obj, D>(
+    input: &'obj echo_messages_hybrid::Tree2LCF<'obj, D>,
+    datapath: &mut D,
+    copy_context: &mut CopyContext<'arena, D>,
+    arena: &'arena bumpalo::Bump,
+) -> Result<echo_messages_hybrid::Tree2LCF<'obj, D>>
+where
+    D: Datapath,
+{
+    let mut output = echo_messages_hybrid::Tree2LCF::new_in(arena);
+    output.set_left(deserialize_from_tree1l(
+        input.get_left(),
+        datapath,
+        copy_context,
+        arena,
+    )?);
+    output.set_right(deserialize_from_tree1l(
+        input.get_right(),
+        datapath,
+        copy_context,
+        arena,
+    )?);
+    Ok(output)
+}
+
+fn deserialize_from_tree1l<'arena, 'obj, D>(
+    input: &'obj echo_messages_hybrid::Tree1LCF<'obj, D>,
+    datapath: &mut D,
+    copy_context: &mut CopyContext<'arena, D>,
+    arena: &'arena bumpalo::Bump,
+) -> Result<echo_messages_hybrid::Tree1LCF<'obj, D>>
+where
+    D: Datapath,
+{
+    let mut output = echo_messages_hybrid::Tree1LCF::new_in(arena);
+    output.set_left(deserialize_from_single(
+        input.get_left(),
+        datapath,
+        copy_context,
+        arena,
+    )?);
+    output.set_right(deserialize_from_single(
+        input.get_right(),
+        datapath,
+        copy_context,
+        arena,
+    )?);
+    Ok(output)
+}
+
+fn deserialize_from_single<'arena, 'obj, D>(
+    input: &echo_messages_hybrid::SingleBufferCF<'obj, D>,
+    datapath: &mut D,
+    copy_context: &mut CopyContext<'arena, D>,
+    arena: &'arena bumpalo::Bump,
+) -> Result<echo_messages_hybrid::SingleBufferCF<'obj, D>>
+where
+    D: Datapath,
+{
+    let mut output = echo_messages_hybrid::SingleBufferCF::new_in(arena);
+    output.set_message(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+        input.get_message().as_ref(),
+        datapath,
+        copy_context,
+    )?);
+    Ok(output)
+}
 fn deserialize_from_pkt_tree5l_sga<'obj, D>(
     input: &'obj echo_messages_rcsga::Tree5LCF<'obj, D>,
     datapath: &D,

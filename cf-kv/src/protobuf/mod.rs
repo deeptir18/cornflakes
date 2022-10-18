@@ -20,7 +20,7 @@ use cornflakes_libos::{
     state_machine::server::ServerSM,
 };
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel::perftools;
 use protobuf::{CodedOutputStream, Message};
 use std::marker::PhantomData;
 
@@ -93,7 +93,7 @@ where
     ) -> Result<kv_messages::GetMResp> {
         let getm_request = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Deserialize pkt");
+            perftools::profiler::timer!("Deserialize pkt");
             kv_messages::GetMReq::parse_from_bytes(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
                 .wrap_err("Failed to deserialize proto GetMReq")?
         };
@@ -101,7 +101,7 @@ where
         for key in getm_request.keys.iter() {
             let value = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Get value");
+                perftools::profiler::timer!("Get value");
                 match kv_server.get(&key.as_str()) {
                     Some(v) => v,
                     None => {
@@ -111,7 +111,7 @@ where
             };
             {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("append value");
+                perftools::profiler::timer!("append value");
                 vals.push(value.as_ref().to_vec());
             }
         }

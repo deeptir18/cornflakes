@@ -1,5 +1,5 @@
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel::perftools;
 #[cfg(feature = "profiler")]
 const PROFILER_DEPTH: usize = 10;
 use super::super::{
@@ -132,7 +132,7 @@ pub trait ServerSM {
                 Self::Datapath::batch_size(),
                 Self::Datapath::max_packet_size(),
                 Self::Datapath::max_scatter_gather_entries(),
-            ) * 100,
+            ) * 1000,
         );
 
         loop {

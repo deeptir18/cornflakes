@@ -11,7 +11,7 @@ use cornflakes_libos::{
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
 
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel::perftools;
 use std::marker::PhantomData;
 const FRAMING_ENTRY_SIZE: usize = 8;
 

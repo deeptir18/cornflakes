@@ -7,7 +7,7 @@ use cornflakes_libos::{
     ConnID, MsgID, OrderedSga, RcSga, RcSge, Sga, Sge,
 };
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel::perftools;
 use std::marker::PhantomData;
 
 pub struct SimpleEchoServer<D>
