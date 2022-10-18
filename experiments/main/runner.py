@@ -77,7 +77,7 @@ class ExtraSerializationParameters(object):
             if self.serialization == "cornflakes-dynamic":
                 self.copy_threshold = 0
             else:
-                self.copy_threshold = "infinity"
+                self.copy_threshold = "1000000000" # basically infinity
 
     def fill_in_args(self, ret, program_name):
         ret["library"] = self.serialization
