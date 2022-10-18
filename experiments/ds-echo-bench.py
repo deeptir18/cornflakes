@@ -6,13 +6,14 @@ import os
 import parse
 import subprocess as sh
 import copy
+import time
 import pandas as pd
 import numpy as np
 STRIP_THRESHOLD = 0.03
 
 # SIZES_TO_LOOP = [1024, 2048, 4096, 8192]
-NUM_THREADS = 4
-NUM_CLIENTS = 2
+NUM_THREADS = 16
+NUM_CLIENTS = 1
 NUM_CLIENTS_MOTIVATION = 3
 SIZES_TO_LOOP = [512, 4096]
 MESSAGE_TYPES = ["single"]
@@ -35,39 +36,15 @@ MOTIVATION_MESSAGE_TYPE = "list-2"
 MOTIVATION_SIZES_TO_LOOP = [1024, 4096]
 
 
-def parse_client_time_and_pkts(line):
-    line_split = line.split("High level sending stats ")[1]
-    fmt = parse.compile("sent={} received={}"
-                        " retries={} unique_sent={} total_time={}")
-    sent, recved, retries, unique_set, total_time = fmt.parse(
-        line_split)
-    return (sent, recved, retries, total_time)
-
-
-def parse_log_info(log):
-    if not(os.path.exists(log)):
-        utils.warn("Path {} does not exist.".format(log))
-        return {}
-    ret = {}
-    with open(log, 'r') as f:
-        raw_lines = f.readlines()
-        lines = [line.strip() for line in raw_lines]
-        for line in lines:
-            if "High level sending stats" in line:
-                (sent, recved, retries, total_time) = parse_client_time_and_pkts(line)
-                ret["sent"] = sent
-                ret["recved"] = recved
-                ret["retries"] = retries
-                ret["total_time"] = total_time
-        return ret
-
-
 class EchoBenchIteration(runner.Iteration):
-    def __init__(self, client_rates, size,
-                 serialization, message_type,
-                 num_threads,
-                 trial=None,
-                 ref_counting=True):
+    def __init__(self, 
+                    client_rates, 
+                    size,
+                    serialization, 
+                    message_type,
+                    num_threads,
+                    extra_serialization_params,
+                    trial=None):
         """
         Arguments:
         * client_rates: Mapping from {int, int} specifying rates and how many
@@ -79,6 +56,9 @@ class EchoBenchIteration(runner.Iteration):
         * message_type: Type of data structure to echo.
         mode is used. For cornflakes, one of first two must be enabled.
         zero-copy send from zero-copy receive.
+        * num_threads: Number of threads to use in iteration.
+        * extra_serialization_params: Serialization specific parameters
+        (inlining, buffer type).
         """
         self.client_rates = client_rates
         self.size = size
@@ -86,8 +66,60 @@ class EchoBenchIteration(runner.Iteration):
         self.message_type = message_type
         self.trial = trial
         self.num_threads = num_threads
-        self.ref_counting = ref_counting
+        self.extra_serialization_params = extra_serialization_params
 
+    def __str__(self):
+        return "Iteration info: client rates: {}, " \
+            "value size: {}, " \
+            "message type: {}, "\
+            "serialization: {}, " \
+            "num_threads: {}, " \
+            "extra serialization_params: {}, "\
+            "trial: {}".format(self.get_client_rate_string(),
+                               self.get_size_string(),
+                               self.message_type,
+                               self.serialization,
+                               self.num_threads,
+                               str(self.extra_serialization_params),
+                               self.get_trial_string())
+
+    def hash(self):
+        # hash every argument EXCEPT for client rates
+        args = [self.size, self.serialization, self.num_threads, self.trial,
+                str(self.extra_serialization_params)]
+    def get_iteration_params(self):
+        """
+        Returns array of parameters for this experiment.
+        """
+        params = ["serialization", "size", "message_type", "num_threads",
+                "num_clients", "offered_load_pps", "offered_load_gbps"]
+        params.extend(self.extra_serialization_params.get_iteration_params())
+        return params
+
+    def get_iteration_avg_message_size(self):
+        return self.size
+
+    def get_iteration_params_values(self):
+        offered_load_pps = 0
+        for info in self.client_rates:
+            rate = info[0]
+            num = info[1]
+            offered_load_pps += rate * num * self.num_threads
+        # convert to gbps
+        offered_load_gbps = utils.get_tput_gbps(offered_load_pps,
+                self.size)
+        ret = {
+                "serialization": self.serialization,
+                "size": self.size,
+                "message_type": self.message_type,
+                "num_threads": self.num_threads,
+                "num_clients": self.get_num_clients(),
+                "offered_load_pps": offered_load_pps,
+                "offered_load_gbps": offered_load_gbps,
+                }
+        ret.update(self.extra_serialization_params.get_iteration_params_values())
+        return ret
+    
     def get_num_threads(self):
         return self.num_threads
 
@@ -105,12 +137,12 @@ class EchoBenchIteration(runner.Iteration):
 
     def set_trial(self, trial):
         self.trial = trial
-
-    def get_ref_counting(self):
-        return self.ref_counting
-
+    
     def get_num_threads_string(self):
         return "{}_threads".format(self.num_threads)
+
+    def get_size_str(self):
+        return "size_{}".format(self.size)
 
     def get_client_rate_string(self):
         # 2@300000,1@100000 implies 2 clients at 300000 pkts / sec and 1 at
@@ -123,14 +155,6 @@ class EchoBenchIteration(runner.Iteration):
                 ret += ","
             ret += "{}@{}".format(num, rate)
         return ret
-
-    def get_relevant_hosts(self, programs_metadata, program):
-        if program == "start_server":
-            return programs_metadata["hosts"]
-        elif program == "start_client":
-            return self.get_iteration_clients(programs_metadata["hosts"])
-        else:
-            utils.debug("Passed in unknown program name: {}".format(program))
 
     def get_iteration_clients(self, possible_hosts):
         total_hosts = 0
@@ -157,58 +181,21 @@ class EchoBenchIteration(runner.Iteration):
     def get_size_string(self):
         return "size_{}".format(self.size)
 
-    def ref_counting_string(self):
-        return "ref_counting_{}".format(self.ref_counting)
-
     def get_trial_string(self):
         if self.trial == None:
             utils.error("TRIAL IS NOT SET FOR ITERATION.")
             exit(1)
         return "trial_{}".format(self.trial)
 
-    def __str__(self):
-        return "Iteration info: client rates: {}, "\
-            "size: {}, " \
-            "serialization: {}, " \
-            "message_type: {}, " \
-            "num_threads: {}, " \
-            "ref counting: {}," \
-            "trial: {}".format(self.get_client_rate_string(),
-                               self.get_size_string(),
-                               self.serialization,
-                               self.message_type,
-                               self.num_threads,
-                               self.ref_counting,
-                               self.get_trial_string())
-
-    def get_serialization_folder(self, high_level_folder):
-        path = Path(high_level_folder)
-        return path / self.serialization
-
     def get_parent_folder(self, high_level_folder):
         path = Path(high_level_folder)
         return path / self.serialization / self.message_type /\
             self.get_size_string() / self.get_client_rate_string() /\
-            self.get_num_threads_string() / self.ref_counting_string()
+            self.get_num_threads_string()
 
     def get_folder_name(self, high_level_folder):
         return self.get_parent_folder(high_level_folder) / self.get_trial_string()
 
-    def get_hosts(self, program, programs_metadata):
-        ret = []
-        if program == "start_server":
-            return [programs_metadata[program]["hosts"][0]]
-        elif program == "start_client":
-            options = programs_metadata[program]["hosts"]
-            return self.get_iteration_clients(options)
-        else:
-            utils.error("Unknown program name: {}".format(program))
-            exit(1)
-        return ret
-
-    def find_client_id(self, client_options, host):
-        # TODO: what if this doesn't work
-        return client_options.index(host)
 
     def get_num_clients(self):
         total_hosts = 0
@@ -217,53 +204,37 @@ class EchoBenchIteration(runner.Iteration):
         return total_hosts
 
     def get_program_args(self,
-                         folder,
-                         program,
                          host,
                          config_yaml,
-                         programs_metadata,
-                         exp_time):
+                         program,
+                         programs_metadata):
         ret = {}
-        ret["cornflakes_dir"] = config_yaml["cornflakes_dir"]
-        ret["config_file"] = config_yaml["config_file"]
         ret["size"] = "{}".format(self.size)
-        ret["library"] = self.serialization
-        ret["client-library"] = self.serialization
         ret["message"] = self.message_type
-        ret["folder"] = str(folder)
-
-        if ret["library"] == "cornflakes-dynamic":
-            ret["client-library"] = "cornflakes1c-dynamic"
-        elif ret["library"] == "cornflakes-fixed":
-            ret["client-library"] = "cornflakes1c-fixed"
-
+        ret["library"] = self.serialization
+        ret["client_library"] = self.serialization
+        self.extra_serialization_params.fill_in_args(ret, program)
+        host_type_map = config_yaml["host_types"]
+        server_host = host_type_map["server"][0]
         if program == "start_server":
-            if not(self.ref_counting):
-                ret["no_ref_counting"] = " --no_ref_counting"
-            else:
-                ret["no_ref_counting"] = ""
+            ret["server_ip"] = config_yaml["hosts"][host]["ip"]
+            ret["mode"] = "server"
         elif program == "start_client":
+            ret["mode"] = "client"
+
             # calculate client rate
             host_options = self.get_iteration_clients(
-                programs_metadata[program]["hosts"])
+                    host_type_map["client"])
             rate = self.find_rate(host_options, host)
             ret["rate"] = rate
             ret["num_threads"] = self.num_threads
-            ret["num_machines"] = self.get_num_clients()
-            ret["machine_id"] = self.find_client_id(host_options, host)
-
             # calculate server host
-            server_host = programs_metadata["start_server"]["hosts"][0]
-            ret["server_ip"] = config_yaml["hosts"][server_host]["ip"]
-
-            # exp time
-            ret["time"] = exp_time
-            ret["host"] = host
+            ret["server_ip"] =  config_yaml["hosts"][server_host]["ip"]
+            ret["client_ip"] = config_yaml["hosts"][host]["ip"]
         else:
             utils.error("Unknown program name: {}".format(program))
             exit(1)
         return ret
-
 
 class EchoBench(runner.Experiment):
     def __init__(self, exp_yaml, config_yaml):
@@ -275,10 +246,12 @@ class EchoBench(runner.Experiment):
 
     def experiment_name(self):
         return self.exp
+    
+    def skip_iteration(self, total_args, iteration):
+        return False
 
-    def get_git_directories(self):
-        directory = self.config_yaml["cornflakes_dir"]
-        return [directory]
+    def append_to_skip_info(self, total_args, iteration, higher_level_folder):
+        return
 
     def get_iterations(self, total_args):
         if total_args.exp_type == "individual":
@@ -288,12 +261,17 @@ class EchoBench(runner.Experiment):
                                     self.config_yaml["max_clients"]))
                 exit(1)
             client_rates = [(total_args.rate, total_args.num_clients)]
+            extra_serialization_params = runner.ExtraSerializationParameters(total_args.serialization,
+                                                total_args.buf_mode,
+                                                total_args.inline_mode,
+                                                total_args.max_sg_segments,
+                                                total_args.copy_threshold)
             it = EchoBenchIteration(client_rates,
                                     total_args.size,
                                     total_args.serialization,
                                     total_args.message_type,
                                     total_args.num_threads,
-                                    ref_counting=not(total_args.no_ref_counting))
+                                    extra_serialization_params)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             if total_args.analysis_only or total_args.graph_only:
@@ -312,8 +290,7 @@ class EchoBench(runner.Experiment):
             if total_args.loop_mode == "eval":
                 for trial in range(utils.NUM_TRIALS):
                     for serialization in SERIALIZATION_LIBRARIES:
-                        for rate in rates:
-                            client_rate = [(rate, NUM_CLIENTS)]
+                        for rate_percentage in rate_percentages:
                             num_threads = NUM_THREADS
                             for size in SIZES_TO_LOOP:
                                 for message_type in MESSAGE_TYPES:
@@ -321,40 +298,27 @@ class EchoBench(runner.Experiment):
                                             and message_type == "tree-5"\
                                             and (serialization == "cornflakes-dynamic" or serialization == "cornflakes-1cdynamic"):
                                         continue
-                                    it = EchoBenchIteration(client_rate,
+                                    max_rate = max_rates[size]
+                                    rate = int(float(max_rate) *
+                                            rate_percentage)
+                                    client_rates = [(rate, NUM_CLIENTS)]
+                                    extra_serialization_params = runner.ExtraSerializationParameters(serialization)
+                                    it = EchoBenchIteration(client_rates,
                                                             size,
                                                             serialization,
                                                             message_type,
                                                             num_threads,
-                                                            trial=trial,
-                                                            ref_counting=not(total_args.no_ref_counting))
+                                                            extra_serialization_params,
+                                                            trial=trial)
                                     ret.append(it)
             elif total_args.loop_mode == "motivation":
-                for trial in range(utils.NUM_TRIALS):
-                    for serialization in MOTIVATION_SERIALIZATION_LIBRARIES:
-                        for rate in rates:
-                            client_rate = [(rate, NUM_CLIENTS_MOTIVATION)]
-                            num_threads = NUM_THREADS
-                            message_type = MOTIVATION_MESSAGE_TYPE
-                            for size in MOTIVATION_SIZES_TO_LOOP:
-                                it = EchoBenchIteration(client_rate,
-                                                        size,
-                                                        serialization,
-                                                        message_type,
-                                                        num_threads,
-                                                        trial=trial,
-                                                        ref_counting=not(total_args.no_ref_counting))
-                                ret.append(it)
+                pass
             return ret
 
     def add_specific_args(self, parser, namespace):
         parser.add_argument("-l", "--logfile",
                             help="logfile name",
                             default="latencies.log")
-        parser.add_argument("-nrc", "--no_ref_counting",
-                            dest="no_ref_counting",
-                            action='store_true',
-                            help="Turn off reference counting in server.")
         if namespace.exp_type == "individual":
             parser.add_argument("-nt", "--num_threads",
                                 dest="num_threads",
@@ -382,6 +346,8 @@ class EchoBench(runner.Experiment):
                                 dest="serialization",
                                 choices=ALL_SERIALIZATION_LIBRARIES,
                                 required=True)
+            # extra serialization related parser arguments
+            runner.extend_with_serialization_parameters(parser) 
         else:
             parser.add_argument("-lm", "--loop_mode",
                                 dest="loop_mode",
@@ -396,13 +362,6 @@ class EchoBench(runner.Experiment):
 
     def get_machine_config(self):
         return self.config_yaml
-
-    def get_logfile_header(self):
-        return "serialization,refcounting,message_type,size,"\
-            "offered_load_pps,offered_load_gbps,"\
-            "achieved_load_pps,achieved_load_gbps,"\
-            "percent_achieved_rate,total_retries,"\
-            "avg,median,p99,p999"
 
     def run_summary_analysis(self, df, out, size, message_type, serialization):
         filtered_df = df[(df["serialization"] == serialization) &
@@ -450,6 +409,7 @@ class EchoBench(runner.Experiment):
                   str(std_achieved_gbps) + os.linesep)
 
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
+        # TODO: add post processing based on buffer type
         if total_args.loop_mode == "motivation":
             return
         # need to determine: just knee of curve for each situation
@@ -466,117 +426,6 @@ class EchoBench(runner.Experiment):
                     self.run_summary_analysis(
                         df, out, size, message_type, serialization)
         out.close()
-
-    def run_analysis_individual_trial(self,
-                                      higher_level_folder,
-                                      program_metadata,
-                                      iteration,
-                                      print_stats=False):
-        exp_folder = iteration.get_folder_name(higher_level_folder)
-
-        # parse stdout logs
-        total_offered_load_pps = 0
-        total_offered_load_gbps = 0
-        total_achieved_load_gbps = 0
-        total_achieved_load_pps = 0
-        total_retries = 0
-        client_latency_lists = []
-        clients = iteration.get_iteration_clients(
-            program_metadata["start_client"]["hosts"])
-
-        num_threads = iteration.get_num_threads()
-
-        for host in clients:
-            args = {"folder": str(exp_folder), "host": host}
-            thread_file = "{folder}/{host}.threads.log".format(**args)
-            for thread in range(iteration.get_num_threads()):
-                args["thread"] = thread  # replace thread number
-                latency_log = "{folder}/{host}.latency-t{thread}.log".format(
-                    **args)
-                latencies = utils.parse_latency_log(
-                    latency_log, STRIP_THRESHOLD)
-                if latencies == []:
-                    utils.warn(
-                        "Error parsing latency log {}".format(latency_log))
-                    return ""
-                client_latency_lists.append(latencies)
-
-                thread_info = utils.read_threads_json(thread_file, thread)
-
-                host_offered_load_pps = float(thread_info["offered_load_pps"])
-                host_offered_load_gbps = float(
-                    thread_info["offered_load_gbps"])
-                total_offered_load_pps += host_offered_load_pps
-                total_offered_load_gbps += host_offered_load_gbps
-
-                host_achieved_load_pps = float(
-                    thread_info["achieved_load_pps"])
-                host_achieved_load_gbps = float(
-                    thread_info["achieved_load_gbps"])
-                total_achieved_load_pps += host_achieved_load_pps
-                total_achieved_load_gbps += host_achieved_load_gbps
-
-                # convert to microseconds
-                host_p99 = utils.p99_func(latencies) / 1000.0
-                host_p999 = utils.p999_func(latencies) / 1000.0
-                host_median = utils.median_func(latencies) / 1000.0
-                host_avg = utils.mean_func(latencies) / 1000.0
-
-                # add retries
-                retries = int(thread_info["retries"])
-                total_retries += retries
-
-                if print_stats:
-                    utils.info("Client {}, Thread {}: "
-                               "offered load: {:.4f} req/s | {:.4f} Gbps, "
-                               "achieved load: {:.4f} req/s | {:.4f} Gbps, "
-                               "percentage achieved rate: {:.4f}, "
-                               "retries: {}, "
-                               "avg latency: {: .4f} \u03BCs, p99: {: .4f} \u03BCs, p999:"
-                               "{: .4f} \u03BCs, median: {: .4f} \u03BCs".format(
-                                   host, thread, host_offered_load_pps, host_offered_load_gbps,
-                                   host_achieved_load_pps, host_achieved_load_gbps,
-                                   float(host_achieved_load_pps /
-                                         host_offered_load_pps),
-                                   retries,
-                                   host_avg, host_p99, host_p999, host_median))
-
-        sorted_latencies = utils.sort_latency_lists(client_latency_lists)
-        median = utils.median_func(sorted_latencies) / float(1000)
-        p99 = utils.p99_func(sorted_latencies) / float(1000)
-        p999 = utils.p999_func(sorted_latencies) / float(1000)
-        avg = utils.mean_func(sorted_latencies) / float(1000)
-
-        if print_stats:
-            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, "  \
-                "achieved load: {:.4f} req/s | {:.4f} Gbps, " \
-                "percentage achieved rate: {:.4f}," \
-                "retries: {}, " \
-                "avg latency: {:.4f} \u03BCs, p99: {:.4f} \u03BCs, p999: {:.4f}" \
-                "\u03BCs, median: {:.4f} \u03BCs".format(
-                    total_offered_load_pps, total_offered_load_gbps,
-                    total_achieved_load_pps, total_achieved_load_gbps,
-                    float(total_achieved_load_pps / total_offered_load_pps),
-                    total_retries,
-                    avg, p99, p999, median)
-            utils.info("Total Stats: ", total_stats)
-        percent_acheived_load = float(total_achieved_load_pps /
-                                      total_offered_load_pps)
-        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(iteration.get_serialization(),
-                                                                      iteration.get_ref_counting(),
-                                                                      iteration.get_message_type(),
-                                                                      iteration.get_size(),
-                                                                      total_offered_load_pps,
-                                                                      total_offered_load_gbps,
-                                                                      total_achieved_load_pps,
-                                                                      total_achieved_load_gbps,
-                                                                      percent_acheived_load,
-                                                                      total_retries,
-                                                                      avg,
-                                                                      median,
-                                                                      p99,
-                                                                      p999)
-        return csv_line
 
     def graph_results(self, args, folder, logfile, post_process_logfile):
         cornflakes_repo = self.config_yaml["cornflakes_dir"]

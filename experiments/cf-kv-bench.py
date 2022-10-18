@@ -21,8 +21,6 @@ SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cornflakes1c-dynamic",
                            "capnproto", "flatbuffers", "protobuf"]
 
 
-# TODO: for now. for baselines inline packet header, for cornflakes, inline
-# object header
 class KVIteration(runner.Iteration):
     def __init__(self,
                  client_rates,
@@ -67,7 +65,7 @@ class KVIteration(runner.Iteration):
     def hash(self):
         # hashes every argument EXCEPT for client rates.
         args = [self.size_distr, self.num_keys, self.serialization,
-                self.num_threads, self.num_values,  self.trial, slef.load_trace,
+                self.num_threads, self.num_values,  self.trial, self.load_trace,
                 self.access_trace, str(self.extra_serialization_params)]
 
     def get_iteration_params(self):
@@ -160,21 +158,6 @@ class KVIteration(runner.Iteration):
             ret += "{}@{}".format(num, rate)
         return ret
 
-    def get_host_list(self, host_type_map):
-        ret = []
-        if "server" in host_type_map:
-            ret.extend(host_type_map["server"])
-        if "client" in host_type_map:
-            ret.extend(self.get_iteration_clients(host_type_map["client"]))
-        return ret
-    
-    def get_program_hosts(self, program_name, host_type_map):
-        ret = []
-        if program_name == "start_server":
-            return host_type_map["server"]
-        elif program_name == "start_client":
-            return self.get_iteration_clients(host_type_map["client"]) 
-
     def get_num_clients(self):
         total_hosts = 0
         for i in self.client_rates:
@@ -187,9 +170,6 @@ class KVIteration(runner.Iteration):
             total_hosts += i[1]
         return possible_hosts[0:total_hosts]
 
-    def find_client_id(self, client_options, host):
-        # TODO: what if this doesn't work
-        return client_options.index(host)
 
     def find_rate(self, client_options, host):
         rates = []
@@ -221,18 +201,6 @@ class KVIteration(runner.Iteration):
 
     def get_folder_name(self, high_level_folder):
         return self.get_parent_folder(high_level_folder) / self.get_trial_string()
-
-    def get_hosts(self, program, programs_metadata):
-        ret = []
-        if program == "start_server":
-            return [programs_metadata[program]["hosts"][0]]
-        elif program == "start_client":
-            options = programs_metadata[program]["hosts"]
-            return self.get_iteration_clients(options)
-        else:
-            utils.error("Unknown program name: {}".format(program))
-            exit(1)
-        return ret
 
     def get_program_args(self,
                          host,
@@ -417,13 +385,6 @@ class KVBench(runner.Experiment):
     def get_machine_config(self):
         return self.config_yaml
 
-    def get_logfile_header(self):
-        return "serialization,value_size,num_keys,num_values,"\
-            "offered_load_pps,offered_load_gbps,"\
-            "achieved_load_pps,achieved_load_gbps,"\
-            "percent_achieved_rate,total_retries,"\
-            "avg,median,p99,p999"
-
     def run_summary_analysis(self, df, out, serialization, num_values, size):
         print(df)
         filtered_df = df[(df["serialization"] == serialization) &
@@ -474,6 +435,7 @@ class KVBench(runner.Experiment):
 
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
         # need to determine knee of the curve for each situation
+        # TODO: add post processing based on buffer type
         header_str = "serialization,total_size,num_values,"\
             "maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd,percentachieved" + os.linesep
         folder_path = Path(total_args.folder)

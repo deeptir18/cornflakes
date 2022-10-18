@@ -30,8 +30,7 @@ def extend_with_serialization_parameters(parser):
                                     "objectheader"],
                                 required=True)
     parser.add_argument("-ct", "--copy_threshold",
-                                dest="copy_threshold",
-                                default = "infinity")
+                                dest="copy_threshold")
     parser.add_argument("-maxseg", "--max_sg_segments",
                                 dest="max_sg_segments",
                                 default=1,
@@ -455,6 +454,41 @@ class Iteration(metaclass=abc.ABCMeta):
         """
         return
 
+    def get_host_list(self, host_type_map):
+        """
+        Get list of all hosts involved in running this program, for client and
+        server program
+        """
+        ret = []
+        if "server" in host_type_map:
+            ret.extend(host_type_map["server"])
+        if "client" in host_type_map:
+            ret.extend(self.get_iteration_clients(host_type_map["client"]))
+        return ret
+    
+    def get_hosts(self, program, programs_metadata):
+        ret = []
+        if program == "start_server":
+            return [programs_metadata[program]["hosts"][0]]
+        elif program == "start_client":
+            options = programs_metadata[program]["hosts"]
+            return self.get_iteration_clients(options)
+        else:
+            utils.error("Unknown program name: {}".format(program))
+            exit(1)
+        return ret
+    def find_client_id(self, client_options, host):
+        # TODO: what if this doesn't work
+        return client_options.index(host)
+    
+    def get_program_hosts(self, program_name, host_type_map):
+        ret = []
+        if program_name == "start_server":
+            return host_type_map["server"]
+        elif program_name == "start_client":
+            return self.get_iteration_clients(host_type_map["client"]) 
+    
+
     def get_program_version_info(self, host_cornflakes_dir, host, cxn):
         ret = {}
         res = cxn.run("git branch", 
@@ -567,8 +601,8 @@ class Iteration(metaclass=abc.ABCMeta):
                                "\t- offered load: {:.4f} req/s | {:.4f} Gbps\n"
                                "\t- achieved load: {:.4f} req/s | {:.4f} Gbps\n"
                                "\t- percentage achieved rate: {:.4f}\n"
-                               "\t- avg latency: {: .4f}"
-                               "\u03BCs\n\t- median: {:"
+                               "\t- avg latency: {:.4f}"
+                               " \u03BCs\n\t- median: {:"
                                ".4f} \u03BCs\n\t- p99: {: .4f}"
                                "\u03BCs\n\t- p999:"
                                "{: .4f} \u03BCs".format(
@@ -588,20 +622,6 @@ class Iteration(metaclass=abc.ABCMeta):
 
     @ abc.abstractmethod
     def get_folder_name(self, high_level_folder):
-        return
-
-    @abc.abstractmethod
-    def get_host_list(self, host_type_map):
-        """
-        Returns list of all hosts this program needs to make connections
-        with.
-        """
-        return
-    @abc.abstractmethod
-    def get_program_hosts(self, program_name, host_type_map):
-        """
-        Returns list of hosts based on program_name.
-        """
         return
 
     @ abc.abstractmethod
