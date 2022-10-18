@@ -25,7 +25,7 @@ use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::mem;
 
 pub const RX_MEMPOOL_DATA_PGSIZE: usize = mem::PGSIZE_2MB;
-pub const RX_MEMPOOL_DATA_LEN: usize = 8192;
+pub const RX_MEMPOOL_DATA_LEN: usize = 16384;
 pub const RX_MEMPOOL_MIN_NUM_ITEMS: usize = 8192;
 
 pub fn align_up(x: usize, align_size: usize) -> usize {
