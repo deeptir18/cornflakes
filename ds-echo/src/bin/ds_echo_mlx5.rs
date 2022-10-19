@@ -6,6 +6,7 @@ use cornflakes_utils::{global_debug_init, AppMode, SerializationType};
 use ds_echo::{
     capnproto::{CapnprotoEchoClient, CapnprotoSerializer},
     cornflakes_dynamic::{CornflakesEchoClient, CornflakesSerializer},
+    echo::{RawEcho, RawEchoClient},
     flatbuffers::{FlatbuffersEchoClient, FlatbuffersSerializer},
     get_equal_fields,
     protobuf::{ProtobufEchoClient, ProtobufSerializer},
@@ -35,6 +36,9 @@ fn main() -> Result<()> {
             SerializationType::Protobuf => {
                 run_server!(ProtobufSerializer<Mlx5Connection>, Mlx5Connection, opt);
             }
+            SerializationType::IdealBaseline => {
+                run_server!(RawEcho<Mlx5Connection>, Mlx5Connection, opt);
+            }
             _ => {
                 unimplemented!();
             }
@@ -51,6 +55,11 @@ fn main() -> Result<()> {
             }
             SerializationType::Protobuf => {
                 run_client!(ProtobufEchoClient, Mlx5Connection, opt);
+            }
+            SerializationType::IdealBaseline
+            | SerializationType::OneCopyBaseline
+            | SerializationType::TwoCopyBaseline => {
+                run_client!(RawEchoClient, Mlx5Connection, opt);
             }
             _ => {
                 unimplemented!();

@@ -13,6 +13,14 @@ pub trait ServerSM {
 
     fn push_buf_type(&self) -> PushBufType;
 
+    fn process_requests_echo(
+        &mut self,
+        _pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
+    ) -> Result<()> {
+        unimplemented!();
+    }
+
     fn process_requests_ordered_sga(
         &mut self,
         _pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
@@ -181,6 +189,9 @@ pub trait ServerSM {
                     }
                     PushBufType::ArenaOrderedSga => {
                         self.process_requests_arena_ordered_sga(pkts, datapath, &mut arena)?;
+                    }
+                    PushBufType::Echo => {
+                        self.process_requests_echo(pkts, datapath)?;
                     }
                 }
             }

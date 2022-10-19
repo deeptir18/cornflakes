@@ -11,22 +11,15 @@ import pandas as pd
 import numpy as np
 STRIP_THRESHOLD = 0.03
 
-# SIZES_TO_LOOP = [1024, 2048, 4096, 8192]
+SIZES_TO_LOOP = [512, 4096]
 NUM_THREADS = 16
 NUM_CLIENTS = 1
-NUM_CLIENTS_MOTIVATION = 3
-SIZES_TO_LOOP = [512, 4096]
 MESSAGE_TYPES = ["single"]
-MESSAGE_TYPES.extend(["list-2", "list-4", "list-8",
-                     "tree-2", "tree-1", "tree-3"])
-rates = [2500, 5000, 10000, 15000, 25000, 35000, 45000, 55000,
-         65000, 75000, 85000, 95000, 105000, 115000, 125000,
-         135000, 145000, 155000, 165000,
-         175000, 185000, 200000, 220000, 240000, 280000, 300000, 320000, 360000, 400000]
-SERIALIZATION_LIBRARIES = ["cornflakes-dynamic",  # "cereal", "capnproto", "protobuf",
-                           # "flatbuffers",  # "cornflakes-fixed",
-                           # "cornflakes1c-fixed"]  # "cornflakes1c-fixed", "protobuf", "capnproto",
-                           "cornflakes1c-dynamic"]
+
+MESSAGE_TYPES.extend(["list-2", "list-4", "list-8", "list-16"])
+max_rates = {4096: 120000, 2048: 180000, 1024: 200000, 512: 300000 }
+rate_percentages = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.95, 1.00]
+SERIALIZATION_LIBRARIES = ["cornflakes-dynamic",  "protobuf", "flatbuffers", "capnproto", "cornflakes1c-dynamic"]
 MOTIVATION_SERIALIZATION_LIBRARIES = ["ideal", "onecopy", "twocopy",
                                       "flatbuffers", "capnproto", "cereal", "protobuf"]
 ALL_SERIALIZATION_LIBRARIES = [

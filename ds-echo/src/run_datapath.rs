@@ -132,6 +132,12 @@ fn is_cf(opt: &DsEchoOpt) -> bool {
         || opt.serialization == SerializationType::CornflakesOneCopyDynamic
 }
 
+fn is_echo(opt: &DsEchoOpt) -> bool {
+    opt.serialization == SerializationType::IdealBaseline
+        || opt.serialization == SerializationType::OneCopyBaseline
+        || opt.serialization == SerializationType::TwoCopyBaseline
+}
+
 pub fn is_baseline(opt: &DsEchoOpt) -> bool {
     !(opt.serialization == SerializationType::CornflakesOneCopyDynamic
         || opt.serialization == SerializationType::CornflakesDynamic)
@@ -139,7 +145,9 @@ pub fn is_baseline(opt: &DsEchoOpt) -> bool {
 
 pub fn check_opt(opt: &mut DsEchoOpt) -> Result<()> {
     if !is_cf(opt) && opt.push_buf_type != PushBufType::SingleBuf {
-        bail!("For non-cornflakes serialization, push buf type must be single buffer.");
+        if !is_echo(opt) && opt.push_buf_type != PushBufType::Echo {
+            bail!("For non-cornflakes serialization, push buf type must be single buffer.");
+        }
     }
 
     if opt.serialization == SerializationType::CornflakesOneCopyDynamic {

@@ -7,6 +7,7 @@ use dpdk_datapath::datapath::connection::DpdkConnection;
 use ds_echo::{
     capnproto::{CapnprotoEchoClient, CapnprotoSerializer},
     cornflakes_dynamic::{CornflakesEchoClient, CornflakesSerializer},
+    echo::{RawEcho, RawEchoClient},
     flatbuffers::{FlatbuffersEchoClient, FlatbuffersSerializer},
     get_equal_fields,
     protobuf::{ProtobufEchoClient, ProtobufSerializer},
@@ -35,6 +36,9 @@ fn main() -> Result<()> {
             SerializationType::Protobuf => {
                 run_server!(ProtobufSerializer<DpdkConnection>, DpdkConnection, opt);
             }
+            SerializationType::IdealBaseline => {
+                run_server!(RawEcho<DpdkConnection>, DpdkConnection, opt);
+            }
             _ => {
                 unimplemented!();
             }
@@ -51,6 +55,11 @@ fn main() -> Result<()> {
             }
             SerializationType::Protobuf => {
                 run_client!(ProtobufEchoClient, DpdkConnection, opt);
+            }
+            SerializationType::IdealBaseline
+            | SerializationType::OneCopyBaseline
+            | SerializationType::TwoCopyBaseline => {
+                run_client!(RawEchoClient, DpdkConnection, opt);
             }
             _ => {
                 unimplemented!();

@@ -664,7 +664,6 @@ class Iteration(metaclass=abc.ABCMeta):
 
         # map from a program id to the actual process
         program_counter = 0
-        manager = mp.Manager()
         # status of each (program_name, host)
         status_dict = {}
         # map of hosts -> connections
@@ -672,9 +671,6 @@ class Iteration(metaclass=abc.ABCMeta):
 
         # map of (program_name, host) -> program_args
         program_args_map = {}
-
-        # map of (program_name, host) -> multiprocessing targets
-        proc_map = {}
 
         # program commands
         program_cmds = {}

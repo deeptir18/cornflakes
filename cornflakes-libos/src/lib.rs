@@ -2075,14 +2075,13 @@ where
     pub fn reset(&mut self, datapath: &mut D) -> Result<()> {
         #[cfg(feature = "profiler")]
         demikernel::timer!("Reset copy context");
+        if self.data_len() == 0 {
+            return Ok(());
+        }
         if self.copy_buffers.len() == 0 {
             let serialization_copy_buf = SerializationCopyBuf::new(datapath)?;
             self.copy_buffers.push(serialization_copy_buf);
         } else {
-            // if nothing was copied don't need to reset copy context
-            if self.data_len() == 0 {
-                return Ok(());
-            }
             for i in 0..self.copy_buffers.len() {
                 let serialization_copy_buf = SerializationCopyBuf::new(datapath)?;
                 self.copy_buffers[i] = serialization_copy_buf;
