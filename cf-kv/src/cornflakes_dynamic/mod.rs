@@ -36,8 +36,6 @@ use super::{
     REQ_TYPE_SIZE,
 };
 use color_eyre::eyre::{bail, Result};
-#[cfg(feature = "profiler")]
-use demikernel::perftools;
 use std::marker::PhantomData;
 
 pub struct CornflakesSerializer<D>
@@ -198,7 +196,7 @@ where
         let mut getm_req = kv_serializer_hybrid::GetMReq::new_in(arena);
         {
             #[cfg(feature = "profiler")]
-            perftools::profiler::timer!("Deserialize pkt");
+            demikernel::timer!("Deserialize pkt");
             getm_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
         }
         let mut getm_resp = kv_serializer_hybrid::GetMResp::new_in(arena);
@@ -208,7 +206,7 @@ where
             let value = {
                 tracing::debug!("Key bytes: {:?}", key);
                 #[cfg(feature = "profiler")]
-                perftools::profiler::timer!("got value");
+                demikernel::timer!("got value");
                 match kv_server.get(key.to_str()?) {
                     Some(v) => v,
                     None => {
@@ -224,7 +222,7 @@ where
             );
             {
                 #[cfg(feature = "profiler")]
-                perftools::profiler::timer!("append value");
+                demikernel::timer!("append value");
                 vals.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
                     value.as_ref(),
                     datapath,
@@ -253,7 +251,7 @@ where
         let mut getm_req = kv_serializer_hybrid::GetMReq::new_in(arena);
         {
             #[cfg(feature = "profiler")]
-            perftools::profiler::timer!("Deserialize pkt");
+            demikernel::timer!("Deserialize pkt");
             getm_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
         }
         let mut getm_resp = kv_serializer_hybrid::GetMResp::new_in(arena);
@@ -264,7 +262,7 @@ where
             let value = {
                 tracing::debug!("Key bytes: {:?}", key);
                 #[cfg(feature = "profiler")]
-                perftools::profiler::timer!("got value");
+                demikernel::timer!("got value");
                 match kv_server.get(key.to_str()?) {
                     Some(v) => v,
                     None => {
@@ -280,7 +278,7 @@ where
             );
             {
                 #[cfg(feature = "profiler")]
-                perftools::profiler::timer!("append value");
+                demikernel::timer!("append value");
                 vals.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
                     value.as_ref(),
                     datapath,
@@ -293,7 +291,7 @@ where
 
         let datapath_sga = {
             #[cfg(feature = "profiler")]
-            perftools::profiler::timer!("serialize sga");
+            demikernel::timer!("serialize sga");
             getm_resp.serialize_into_arena_datapath_sga(datapath, copy_context, arena)
         }?;
         Ok(datapath_sga)
@@ -646,7 +644,7 @@ where
                 }
                 MsgType::AddUser => {
                     #[cfg(feature = "profiler")]
-                    perftools::profiler::timer!("Handle add user");
+                    demikernel::timer!("Handle add user");
                     let mut add_user = AddUser::<D>::new();
                     add_user.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
 
@@ -723,7 +721,7 @@ where
                 }
                 MsgType::FollowUnfollow => {
                     #[cfg(feature = "profiler")]
-                    perftools::profiler::timer!("Handle follow unfollow");
+                    demikernel::timer!("Handle follow unfollow");
                     let mut follow_unfollow = FollowUnfollow::<D>::new();
                     follow_unfollow.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
 
@@ -816,7 +814,7 @@ where
                 }
                 MsgType::PostTweet => {
                     #[cfg(feature = "profiler")]
-                    perftools::profiler::timer!("Handle post tweet");
+                    demikernel::timer!("Handle post tweet");
                     let mut post_tweet = PostTweet::<D>::new();
                     post_tweet.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
 
@@ -944,7 +942,7 @@ where
                 }
                 MsgType::GetTimeline(_) => {
                     #[cfg(feature = "profiler")]
-                    perftools::profiler::timer!("Handle get timeline");
+                    demikernel::timer!("Handle get timeline");
                     let mut get_timeline = GetTimeline::<D>::new();
                     get_timeline.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
 

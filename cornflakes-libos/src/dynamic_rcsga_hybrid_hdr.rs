@@ -7,9 +7,6 @@ use byteorder::{ByteOrder, LittleEndian};
 use color_eyre::eyre::{Result, WrapErr};
 use std::{default::Default, marker::PhantomData, ops::Index, slice::Iter, str};
 
-#[cfg(feature = "profiler")]
-use demikernel::perftools;
-
 #[inline]
 pub fn write_size_and_offset(write_offset: usize, size: usize, offset: usize, buffer: &mut [u8]) {
     let mut forward_pointer = MutForwardPointer(buffer, write_offset);
@@ -1070,7 +1067,7 @@ where
         ds_offset: &mut usize,
     ) -> Result<()> {
         #[cfg(feature = "profiler")]
-        perftools::profiler::timer!("List inner serialize");
+        demikernel::timer!("List inner serialize");
         tracing::debug!("List inner serialize");
 
         {

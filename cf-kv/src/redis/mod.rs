@@ -3,8 +3,6 @@ use redis;
 
 use super::ClientSerializer;
 use color_eyre::eyre::Result;
-#[cfg(feature = "profiler")]
-use demikernel::perftools;
 use std::marker::PhantomData;
 
 #[derive(Debug, Default, PartialEq, Eq, Clone)]

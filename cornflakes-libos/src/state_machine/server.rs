@@ -83,7 +83,7 @@ pub trait ServerSM {
 
         loop {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Run state machine loop");
+            demikernel::timer!("Run state machine loop");
 
             #[cfg(feature = "profiler")]
             {
@@ -104,7 +104,7 @@ pub trait ServerSM {
 
             let pkts = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Datapath pop");
+                demikernel::timer!("Datapath pop");
                 datapath.pop()?
             };
             if pkts.len() > 0 {
@@ -137,7 +137,7 @@ pub trait ServerSM {
 
         loop {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Run state machine loop");
+            demikernel::timer!("Run state machine loop");
 
             #[cfg(feature = "profiler")]
             {
@@ -158,7 +158,7 @@ pub trait ServerSM {
 
             let pkts = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Datapath pop");
+                demikernel::timer!("Datapath pop");
                 datapath.pop()?
             };
             if pkts.len() > 0 {

@@ -32,9 +32,6 @@ use std::{
 };
 use yaml_rust::{Yaml, YamlLoader};
 
-#[cfg(feature = "profiler")]
-use demikernel::perftools;
-
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 const COMPLETION_BUDGET: usize = 32;
 const RECEIVE_BURST_SIZE: usize = 32;
@@ -708,7 +705,7 @@ impl Mlx5Connection {
 
     fn zero_copy_seg(&self, seg: &[u8]) -> bool {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Zero copy seg function");
+        demikernel::timer!("Zero copy seg function");
         return seg.len() >= self.copying_threshold && self.is_registered(seg);
     }
 
@@ -2646,7 +2643,7 @@ impl Datapath for Mlx5Connection {
         let _num_wqes_used_so_far = 0;
         let mut obj = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("iterator next");
+            demikernel::timer!("iterator next");
             objects.next()
         };
 
@@ -2667,7 +2664,7 @@ impl Datapath for Mlx5Connection {
         T: protobuf::Message,
     {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Queue protobuf message");
+        demikernel::timer!("Queue protobuf message");
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
@@ -2836,7 +2833,7 @@ impl Datapath for Mlx5Connection {
         }
         let (inline_len, _num_segs, num_wqes_required) = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Ordered sga and filling in ctrl and ether seg");
+            demikernel::timer!("Ordered sga and filling in ctrl and ether seg");
 
             let (inline_len, num_segs) = self.sga_with_copy_shape(&sga);
             let num_octowords =
@@ -2891,11 +2888,11 @@ impl Datapath for Mlx5Connection {
         tracing::debug!("Allocation size: {}", allocation_size);
         if allocation_size > 0 {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Copying stuff");
+            demikernel::timer!("Copying stuff");
 
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("allocating stuff to copy into");
+                demikernel::timer!("allocating stuff to copy into");
                 match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
@@ -2950,7 +2947,7 @@ impl Datapath for Mlx5Connection {
         end_batch: bool,
     ) -> Result<()> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Queue single buffer with copy");
+        demikernel::timer!("Queue single buffer with copy");
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
@@ -3072,7 +3069,7 @@ impl Datapath for Mlx5Connection {
         end_batch: bool,
     ) -> Result<()> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("queue ordered rcsga");
+        demikernel::timer!("queue ordered rcsga");
 
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
@@ -3083,7 +3080,7 @@ impl Datapath for Mlx5Connection {
 
         let num_required = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Calculating wqes required for sga");
+            demikernel::timer!("Calculating wqes required for sga");
             self.wqes_required_ordered_rcsga(&ordered_sga)
         };
 
@@ -3107,7 +3104,7 @@ impl Datapath for Mlx5Connection {
         }
         let (inline_len, _num_segs, num_wqes_required) = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Ordered sga and filling in ctrl and ether seg");
+            demikernel::timer!("Ordered sga and filling in ctrl and ether seg");
 
             let (inline_len, num_segs) = self.ordered_rcsga_shape(&ordered_sga);
             let num_octowords =
@@ -3163,11 +3160,11 @@ impl Datapath for Mlx5Connection {
         tracing::debug!("Allocation size: {}", allocation_size);
         if allocation_size > 0 {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Copying stuff");
+            demikernel::timer!("Copying stuff");
 
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("allocating stuff to copy into");
+                demikernel::timer!("allocating stuff to copy into");
                 match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
@@ -3188,7 +3185,7 @@ impl Datapath for Mlx5Connection {
             }
             {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Copying copy buffers");
+                demikernel::timer!("Copying copy buffers");
                 for seg in ordered_sga.iter().take(first_zero_copy_seg) {
                     tracing::debug!("Writing into slice [{}, {}]", offset, offset + seg.len());
                     let dst = data_buffer.mutable_slice(offset, offset + seg.len())?;
@@ -3209,7 +3206,7 @@ impl Datapath for Mlx5Connection {
         // rest are zero-copy segments
         {
             #[cfg(feature = "profiler")]
-            perftools::timer!("process zero copy buffers");
+            demikernel::timer!("process zero copy buffers");
             for mbuf_metadata in ordered_sga
                 .iter()
                 .skip(first_zero_copy_seg)
@@ -3284,7 +3281,7 @@ impl Datapath for Mlx5Connection {
         Self: Sized,
     {
         #[cfg(feature = "profiler")]
-        perftools::timer!("queue cornflakes obj");
+        demikernel::timer!("queue cornflakes obj");
         tracing::debug!(msg_id, conn_id, end_batch, "Queue cornflakes obj");
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
@@ -3431,7 +3428,7 @@ impl Datapath for Mlx5Connection {
             InlineMode::Nothing => {
                 let mut allocated_header_buffer = {
                     #[cfg(feature = "profiler")]
-                    perftools::timer!("allocating stuff to copy into");
+                    demikernel::timer!("allocating stuff to copy into");
                     match self.allocator.allocate_tx_buffer()? {
                         Some(buf) => buf,
                         None => {
@@ -3474,7 +3471,7 @@ impl Datapath for Mlx5Connection {
             InlineMode::PacketHeader => {
                 let mut allocated_header_buffer = {
                     #[cfg(feature = "profiler")]
-                    perftools::timer!("allocating stuff to copy into");
+                    demikernel::timer!("allocating stuff to copy into");
                     match self.allocator.allocate_tx_buffer()? {
                         Some(buf) => buf,
                         None => {
@@ -3583,7 +3580,7 @@ impl Datapath for Mlx5Connection {
     ) -> Result<()> {
         tracing::debug!(msg_id = sga.0, conn_id = sga.1, ordered_sga =? sga.2, "Sending sga");
         #[cfg(feature = "profiler")]
-        perftools::timer!("queue arena datapath sga");
+        demikernel::timer!("queue arena datapath sga");
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
@@ -3593,7 +3590,7 @@ impl Datapath for Mlx5Connection {
 
         let num_required = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Calculating wqes required for sga");
+            demikernel::timer!("Calculating wqes required for sga");
             self.wqes_required_arena_datapath_sga(&arena_datapath_sga)
         };
 
@@ -3617,7 +3614,7 @@ impl Datapath for Mlx5Connection {
         }
         let (inline_len, num_wqes_required) = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Ordered sga and filling in ctrl and ether seg");
+            demikernel::timer!("Ordered sga and filling in ctrl and ether seg");
 
             let (inline_len, num_segs) = self.arena_datapath_sga_shape(&arena_datapath_sga);
             let num_octowords =
@@ -3672,11 +3669,11 @@ impl Datapath for Mlx5Connection {
         tracing::debug!("Allocation size: {}", allocation_size);
         if allocation_size > 0 {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Copying stuff");
+            demikernel::timer!("Copying stuff");
 
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("allocating stuff to copy into");
+                demikernel::timer!("allocating stuff to copy into");
                 match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
@@ -3758,7 +3755,7 @@ impl Datapath for Mlx5Connection {
     ) -> Result<()> {
         tracing::debug!(msg_id = sga.0, conn_id = sga.1, ordered_sga =? sga.2, "Sending sga");
         #[cfg(feature = "profiler")]
-        perftools::timer!("queue arena ordered rcsga");
+        demikernel::timer!("queue arena ordered rcsga");
 
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
@@ -3769,7 +3766,7 @@ impl Datapath for Mlx5Connection {
 
         let num_required = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Calculating wqes required for sga");
+            demikernel::timer!("Calculating wqes required for sga");
             self.wqes_required_arena_ordered_rcsga(&ordered_sga)
         };
 
@@ -3793,7 +3790,7 @@ impl Datapath for Mlx5Connection {
         }
         let (inline_len, _num_segs, num_wqes_required) = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Ordered sga and filling in ctrl and ether seg");
+            demikernel::timer!("Ordered sga and filling in ctrl and ether seg");
 
             let (inline_len, num_segs) = self.arena_ordered_rcsga_shape(&ordered_sga);
             let num_octowords =
@@ -3849,11 +3846,11 @@ impl Datapath for Mlx5Connection {
         tracing::debug!("Allocation size: {}", allocation_size);
         if allocation_size > 0 {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Copying stuff");
+            demikernel::timer!("Copying stuff");
 
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("allocating stuff to copy into");
+                demikernel::timer!("allocating stuff to copy into");
                 match self.allocator.allocate_tx_buffer()? {
                     Some(buf) => buf,
                     None => {
@@ -3873,7 +3870,7 @@ impl Datapath for Mlx5Connection {
             }
             {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Copying copy buffers");
+                demikernel::timer!("Copying copy buffers");
                 for seg in ordered_sga.iter().take(first_zero_copy_seg) {
                     ensure!(
                         data_buffer.write(seg.addr())? == seg.len(),
@@ -3892,7 +3889,7 @@ impl Datapath for Mlx5Connection {
         // rest are zero-copy segments
         {
             #[cfg(feature = "profiler")]
-            perftools::timer!("process zero copy buffers");
+            demikernel::timer!("process zero copy buffers");
             for mbuf_metadata in ordered_sga
                 .iter()
                 .skip(first_zero_copy_seg)
@@ -3967,7 +3964,7 @@ impl Datapath for Mlx5Connection {
         end_batch: bool,
     ) -> Result<()> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("queue arena ordered sga");
+        demikernel::timer!("queue arena ordered sga");
 
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
@@ -3980,7 +3977,7 @@ impl Datapath for Mlx5Connection {
         let mbuf_metadatas = &mut self.mbuf_metadatas;
         {
             #[cfg(feature = "profiler")]
-            perftools::timer!("finish serialization");
+            demikernel::timer!("finish serialization");
             ordered_sga.reorder_by_size_and_registration_and_finish_serialization(
                 allocator,
                 self.copying_threshold,
@@ -3991,7 +3988,7 @@ impl Datapath for Mlx5Connection {
 
         let num_required = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Calculating wqes required for sga");
+            demikernel::timer!("Calculating wqes required for sga");
             self.wqes_required_arena_ordered_sga(&ordered_sga)
         };
 
@@ -4015,7 +4012,7 @@ impl Datapath for Mlx5Connection {
         }
         let (inline_len, _num_segs, num_wqes_required) = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Ordered sga and filling in ctrl and ether seg");
+            demikernel::timer!("Ordered sga and filling in ctrl and ether seg");
 
             let (inline_len, num_segs) = self.arena_ordered_sga_shape(&ordered_sga);
             let num_octowords =
@@ -4071,11 +4068,11 @@ impl Datapath for Mlx5Connection {
         tracing::debug!("Allocation size: {}", allocation_size);
         if allocation_size > 0 {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Copying stuff");
+            demikernel::timer!("Copying stuff");
 
             let mut data_buffer = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("allocating stuff to copy into");
+                demikernel::timer!("allocating stuff to copy into");
                 match self.allocator.allocate_tx_buffer()? {
                     Some(metadata) => metadata,
                     None => {
@@ -4096,7 +4093,7 @@ impl Datapath for Mlx5Connection {
             }
             {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Copying copy buffers");
+                demikernel::timer!("Copying copy buffers");
                 for seg in ordered_sga.iter().take(first_zero_copy_seg) {
                     tracing::debug!("Writing into slice [{}, {}]", offset, offset + seg.len());
                     let dst = data_buffer.mutable_slice(offset, offset + seg.len())?;
@@ -4116,7 +4113,7 @@ impl Datapath for Mlx5Connection {
         // rest are zero-copy segments
         {
             #[cfg(feature = "profiler")]
-            perftools::timer!("process zero copy buffers");
+            demikernel::timer!("process zero copy buffers");
             for mbuf_metadata_option in self
                 .mbuf_metadatas
                 .iter_mut()
@@ -4186,7 +4183,7 @@ impl Datapath for Mlx5Connection {
         mut sgas: impl Iterator<Item = Result<(MsgID, ConnID, ArenaOrderedSga<'sge>)>>,
     ) -> Result<()> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Push arena sgas iterator func");
+        demikernel::timer!("Push arena sgas iterator func");
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
@@ -4196,22 +4193,22 @@ impl Datapath for Mlx5Connection {
         let mut _sent = 0;
         let mut obj = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("iterator next");
+            demikernel::timer!("iterator next");
             sgas.next()
         };
         while let Some(res) = obj {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Processing per sga loop");
+            demikernel::timer!("Processing per sga loop");
             let (msg_id, conn_id, ordered_sga) = res?;
 
             let num_required = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Calculating wqes required for sga");
+                demikernel::timer!("Calculating wqes required for sga");
                 self.wqes_required_arena_ordered_sga(&ordered_sga)
             };
             while (num_wqes_used_so_far + num_required) > curr_available_wqes {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Checking for available wqes");
+                demikernel::timer!("Checking for available wqes");
                 if first_ctrl_seg != ptr::null_mut() {
                     if unsafe {
                         custom_mlx5_post_transmissions(
@@ -4232,7 +4229,7 @@ impl Datapath for Mlx5Connection {
             }
             let (inline_len, _num_segs, num_wqes_required) = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Ordered sga and filling in ctrl and ether seg");
+                demikernel::timer!("Ordered sga and filling in ctrl and ether seg");
 
                 num_wqes_used_so_far += num_required;
                 let (inline_len, num_segs) = self.arena_ordered_sga_shape(&ordered_sga);
@@ -4289,11 +4286,11 @@ impl Datapath for Mlx5Connection {
             tracing::debug!("Allocation size: {}", allocation_size);
             if allocation_size > 0 {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Copying stuff");
+                demikernel::timer!("Copying stuff");
 
                 let mut data_buffer = {
                     #[cfg(feature = "profiler")]
-                    perftools::timer!("allocating stuff to copy into");
+                    demikernel::timer!("allocating stuff to copy into");
                     match self.allocator.allocate_tx_buffer()? {
                         Some(buf) => buf,
                         None => {
@@ -4331,7 +4328,7 @@ impl Datapath for Mlx5Connection {
             // rest are zero-copy segments
             for seg in ordered_sga.iter().skip(first_zero_copy_seg) {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("work per zero copy sga");
+                demikernel::timer!("work per zero copy sga");
                 let curr_seg = seg.addr();
                 tracing::debug!(seg =? seg.addr().as_ptr(), "Cur posting seg");
 
@@ -4357,7 +4354,7 @@ impl Datapath for Mlx5Connection {
             _sent += 1;
             obj = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("iterator next");
+                demikernel::timer!("iterator next");
                 sgas.next()
             };
         }
@@ -4375,7 +4372,7 @@ impl Datapath for Mlx5Connection {
         mut sgas: impl Iterator<Item = Result<(MsgID, ConnID, OrderedSga<'sge>)>>,
     ) -> Result<()> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Push sgas iterator func");
+        demikernel::timer!("Push sgas iterator func");
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
@@ -4385,22 +4382,22 @@ impl Datapath for Mlx5Connection {
         let mut _sent = 0;
         let mut obj = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("iterator next");
+            demikernel::timer!("iterator next");
             sgas.next()
         };
         while let Some(res) = obj {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Processing per sga loop");
+            demikernel::timer!("Processing per sga loop");
             let (msg_id, conn_id, ordered_sga) = res?;
 
             let num_required = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Calculating wqes required for sga");
+                demikernel::timer!("Calculating wqes required for sga");
                 self.wqes_required_ordered_sga(&ordered_sga)
             };
             while (num_wqes_used_so_far + num_required) > curr_available_wqes {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Checking for available wqes");
+                demikernel::timer!("Checking for available wqes");
                 if first_ctrl_seg != ptr::null_mut() {
                     if unsafe {
                         custom_mlx5_post_transmissions(
@@ -4421,7 +4418,7 @@ impl Datapath for Mlx5Connection {
             }
             let (inline_len, _num_segs, num_wqes_required) = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Ordered sga and filling in ctrl and ether seg");
+                demikernel::timer!("Ordered sga and filling in ctrl and ether seg");
 
                 num_wqes_used_so_far += num_required;
                 let (inline_len, num_segs) = self.ordered_sga_shape(&ordered_sga);
@@ -4478,11 +4475,11 @@ impl Datapath for Mlx5Connection {
             tracing::debug!("Allocation size: {}", allocation_size);
             if allocation_size > 0 {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Copying stuff");
+                demikernel::timer!("Copying stuff");
 
                 let mut data_buffer = {
                     #[cfg(feature = "profiler")]
-                    perftools::timer!("allocating stuff to copy into");
+                    demikernel::timer!("allocating stuff to copy into");
                     match self.allocator.allocate_tx_buffer()? {
                         Some(buf) => buf,
                         None => {
@@ -4525,7 +4522,7 @@ impl Datapath for Mlx5Connection {
                 .skip(first_zero_copy_seg)
             {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("work per zero copy sga");
+                demikernel::timer!("work per zero copy sga");
                 let curr_seg = seg.addr();
                 tracing::debug!(seg =? seg.addr().as_ptr(), "Cur posting seg");
 
@@ -4551,7 +4548,7 @@ impl Datapath for Mlx5Connection {
             _sent += 1;
             obj = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("iterator next");
+                demikernel::timer!("iterator next");
                 sgas.next()
             };
         }
@@ -4727,7 +4724,7 @@ impl Datapath for Mlx5Connection {
 
     fn is_registered(&self, buf: &[u8]) -> bool {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Is registered function");
+        demikernel::timer!("Is registered function");
         self.allocator.is_registered(buf)
     }
 

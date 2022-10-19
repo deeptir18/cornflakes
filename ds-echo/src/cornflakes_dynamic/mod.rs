@@ -31,8 +31,6 @@ use cornflakes_libos::{
     ArenaOrderedRcSga, CopyContext,
 };
 use cornflakes_utils::{SimpleMessageType, TreeDepth};
-#[cfg(feature = "profiler")]
-use demikernel::perftools;
 use std::marker::PhantomData;
 
 pub struct CornflakesSerializer<D>
@@ -89,12 +87,12 @@ where
                     let mut single_ser = echo_messages_hybrid::SingleBufferCF::new_in(arena);
                     {
                         #[cfg(feature = "profiler")]
-                        perftools::timer!("Deserialize pkt");
+                        demikernel::timer!("Deserialize pkt");
                         single_deser.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
                     }
                     {
                         #[cfg(feature = "profiler")]
-                        perftools::timer!("Set message");
+                        demikernel::timer!("Set message");
                         single_ser.set_message(dynamic_rcsga_hybrid_hdr::CFBytes::new(
                             single_deser.get_message().as_ref(),
                             datapath,
@@ -247,12 +245,12 @@ where
                     tracing::debug!(len = pkt.data_len(), "Incoming packet length");
                     {
                         #[cfg(feature = "profiler")]
-                        perftools::timer!("Deserialize pkt");
+                        demikernel::timer!("Deserialize pkt");
                         single_deser.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
                     }
                     {
                         #[cfg(feature = "profiler")]
-                        perftools::timer!("Set message");
+                        demikernel::timer!("Set message");
                         tracing::debug!(get_msg =? single_deser.get_message().as_bytes());
                         single_ser.set_message(dynamic_rcsga_hdr::CFBytes::new(
                             single_deser.get_message().as_bytes(),
@@ -262,12 +260,12 @@ where
                     }
                     let mut ordered_sga = {
                         #[cfg(feature = "profiler")]
-                        perftools::timer!("Allocate sga");
+                        demikernel::timer!("Allocate sga");
                         ArenaOrderedRcSga::allocate(single_ser.num_scatter_gather_entries(), &arena)
                     };
                     {
                         #[cfg(feature = "profiler")]
-                        perftools::timer!("Serialize into sga");
+                        demikernel::timer!("Serialize into sga");
                         single_ser.serialize_into_arena_sga(
                             &mut ordered_sga,
                             &arena,
@@ -293,7 +291,7 @@ where
 
                     let mut ordered_sga = {
                         #[cfg(feature = "profiler")]
-                        perftools::timer!("Allocate arena sga");
+                        demikernel::timer!("Allocate arena sga");
                         ArenaOrderedRcSga::allocate(list_ser.num_scatter_gather_entries(), &arena)
                     };
                     list_ser.serialize_into_arena_sga(

@@ -26,7 +26,7 @@ protobuf = "3.0.3"
 hashbrown = "0.11.*"
 affinity = "0.1.2"
 cxx = "1.0"
-demikernel = {git = "https://github.com/demikernel/demikernel", version = "1", features = ["profiler"], optional = true}
+demikernel = {git = "https://github.com/deeptir18/demikernel", branch = "perftools_public", version = "1", features = ["profiler"], optional = true}
 rand = "0.8.*"
 bitmaps = "3.2.0"
 bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }

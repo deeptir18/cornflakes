@@ -6,8 +6,6 @@ use cornflakes_libos::{
     state_machine::server::ServerSM,
     ConnID, MsgID, OrderedSga, RcSga, RcSge, Sga, Sge,
 };
-#[cfg(feature = "profiler")]
-use demikernel::perftools;
 use std::marker::PhantomData;
 
 pub struct SimpleEchoServer<D>
@@ -52,7 +50,7 @@ where
         let outgoing_sgas_iterator = pkts.iter().map(|pkt| {
             let sge_results: Result<Vec<Sge>> = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Collect sge references");
+                demikernel::timer!("Collect sge references");
                 self.range_vec.iter().map(|range| {
                 tracing::debug!("Getting contiguous slice out of received pkt [{}, {}]", range.0, range.0 + range.1);
                 match pkt.contiguous_slice(range.0, range.1) {
@@ -66,7 +64,7 @@ where
 
             let sga = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Allocate sga");
+                demikernel::timer!("Allocate sga");
                 Sga::with_entries(sge_results?)
             };
             let num_copy_entries = sga.iter().take_while(|seg| !(seg.len() > datapath.get_copying_threshold())).count();
@@ -75,7 +73,7 @@ where
         });
         {
             #[cfg(feature = "profiler")]
-            perftools::timer!("push iterator");
+            demikernel::timer!("push iterator");
             datapath
                 .push_ordered_sgas_iterator(outgoing_sgas_iterator)
                 .wrap_err("Failed to push sgas")?;

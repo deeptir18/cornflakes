@@ -17,7 +17,7 @@ cornflakes-libos = { path = "../cornflakes-libos" }
 cornflakes-utils = { path = "../cornflakes-utils" }
 mlx5-datapath = { path = "../mlx5-datapath", optional = true }
 dpdk-datapath = { path = "../dpdk-datapath", optional = true }
-demikernel = {git = "https://github.com/demikernel/demikernel", version = "1", features = ["profiler"], optional = true}
+demikernel = {git = "https://github.com/deeptir18/demikernel", version = "1", branch = "perftools_public", features = ["profiler"], optional = true}
 bytes = "1.0.1"
 rand = "0.7.3"
 rand_distr = "0.3.0"
