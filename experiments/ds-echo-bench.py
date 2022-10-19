@@ -19,7 +19,8 @@ MESSAGE_TYPES = ["single"]
 MESSAGE_TYPES.extend(["list-2", "list-4", "list-8", "list-16"])
 max_rates = {4096: 120000, 2048: 180000, 1024: 200000, 512: 300000 }
 rate_percentages = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.95, 1.00]
-SERIALIZATION_LIBRARIES = ["cornflakes-dynamic",  "protobuf", "flatbuffers", "capnproto", "cornflakes1c-dynamic"]
+SERIALIZATION_LIBRARIES = ["cornflakes-dynamic",  "protobuf", "flatbuffers",
+        "capnproto", "cornflakes1c-dynamic", "ideal"]
 MOTIVATION_SERIALIZATION_LIBRARIES = ["ideal", "onecopy", "twocopy",
                                       "flatbuffers", "capnproto", "cereal", "protobuf"]
 ALL_SERIALIZATION_LIBRARIES = [
@@ -337,7 +338,7 @@ class EchoBench(runner.Experiment):
                                 default=1)
             parser.add_argument("-ser", "--serialization",
                                 dest="serialization",
-                                choices=ALL_SERIALIZATION_LIBRARIES,
+                                choices=SERIALIZATION_LIBRARIES,
                                 required=True)
             # extra serialization related parser arguments
             runner.extend_with_serialization_parameters(parser) 

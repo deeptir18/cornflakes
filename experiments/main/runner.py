@@ -22,7 +22,7 @@ def extend_with_serialization_parameters(parser):
     parser.add_argument("-pbt", "--push_buf_type",
                                 dest="buf_mode",
                                 choices=["singlebuf",
-                                    "arenaorderedsga", "object"],
+                                    "arenaorderedsga", "object", "echo"],
                                 required=True)
     parser.add_argument("-inline", "--inline_mode",
                                 dest="inline_mode",
@@ -52,6 +52,8 @@ class ExtraSerializationParameters(object):
         else:
             if self.serialization == "cornflakes-dynamic" or self.serialization == "cornflakes1c-dynamic":
                 self.buf_mode = "object"
+            elif self.serialization == "ideal":
+                self.buf_mode = "echo"
             else:
                 self.buf_mode = "singlebuf"
 

@@ -2519,6 +2519,14 @@ impl Datapath for Mlx5Connection {
                 // ASSUMES THAT THE PACKET HAS A FULL HEADER TO FLIP
                 unsafe {
                     flip_headers(received_pkt.seg(0).data());
+                    tracing::debug!(
+                        num_segs,
+                        num_octowords,
+                        num_wqes_required,
+                        data =? received_pkt.seg(0).data,
+                        offset = received_pkt.seg(0).offset,
+                        "Echoing received packet"
+                    );
                     let ctrl_seg = custom_mlx5_fill_in_hdr_segment(
                         self.thread_context.get_context_ptr(),
                         num_octowords as _,
@@ -2542,8 +2550,8 @@ impl Datapath for Mlx5Connection {
                             curr_dpseg,
                             seg.data(),
                             seg.mempool(),
-                            seg.offset() as _,
-                            seg.data_len() as _,
+                            0,
+                            (seg.data_len() + cornflakes_libos::utils::TOTAL_HEADER_SIZE) as _,
                         );
 
                         curr_completion = custom_mlx5_add_completion_info(

@@ -120,6 +120,9 @@ pub trait ServerSM {
                     PushBufType::SingleBuf => {
                         self.process_requests_single_buf(pkts, datapath)?;
                     }
+                    PushBufType::Echo => {
+                        self.process_requests_echo(pkts, datapath)?;
+                    }
                     _ => {
                         unreachable!();
                     }
