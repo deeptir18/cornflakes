@@ -9,7 +9,7 @@
 #define PORT_NUM 1
 
 #define MAX_INLINE_DATA 256
-#define RQ_NUM_DESC			256
+#define RQ_NUM_DESC			1024
 #define SQ_NUM_DESC			128
 
 #define SQ_CLEAN_THRESH			32

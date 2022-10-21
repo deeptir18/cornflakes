@@ -3521,6 +3521,8 @@ impl Datapath for Mlx5Connection {
                 ring_buffer_state.1 = curr_completion;
             }
             InlineMode::ObjectHeader => {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("Cornflakes iterate over entries and fill in header");
                 // fill in cornflakes object, and then inline the header
                 let data_len = cornflakes_obj.iterate_over_entries(
                     copy_context,
