@@ -38,7 +38,7 @@ struct ForwardPointer<'a>(&'a [u8], usize);
 impl<'a> ForwardPointer<'a> {
     #[inline]
     pub fn get_size(&self) -> u32 {
-        LittleEndian::read_u32(&self.0[self.1..(self.1 + 34)])
+        LittleEndian::read_u32(&self.0[self.1..(self.1 + 4)])
     }
 
     #[inline]

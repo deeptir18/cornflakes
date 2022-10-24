@@ -80,7 +80,6 @@ where
         kv_server: &'kv KVServer<D>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
-        copy_context: &mut CopyContext<'arena, D>,
         arena: &'arena bumpalo::Bump,
     ) -> Result<()>
     where
@@ -101,16 +100,17 @@ where
             value.as_ref().len()
         );
         let mut get_resp = kv_serializer_hybrid::GetResp::new_in(arena);
+        let mut copy_context = CopyContext::new(arena, datapath)?;
         get_resp.set_id(get_req.get_id());
 
         get_resp.set_val(dynamic_rcsga_hybrid_hdr::CFBytes::new(
             value.as_ref(),
             datapath,
-            copy_context,
+            &mut copy_context,
         )?);
 
         // now serialize and send object
-        datapath.queue_cornflakes_obj(msg_id, conn_id, copy_context, get_resp, end_batch)?;
+        datapath.queue_cornflakes_obj(msg_id, conn_id, &mut copy_context, get_resp, end_batch)?;
         Ok(())
     }
 
@@ -187,7 +187,6 @@ where
         kv_server: &'kv KVServer<D>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
-        copy_context: &mut CopyContext<'arena, D>,
         arena: &'arena bumpalo::Bump,
     ) -> Result<()>
     where
@@ -200,6 +199,7 @@ where
             getm_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
         }
         let mut getm_resp = kv_serializer_hybrid::GetMResp::new_in(arena);
+        let mut copy_context = CopyContext::new(arena, datapath)?;
         getm_resp.init_vals(getm_req.get_keys().len(), arena);
         let vals = getm_resp.get_mut_vals();
         for key in getm_req.get_keys().iter() {
@@ -226,7 +226,7 @@ where
                 vals.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
                     value.as_ref(),
                     datapath,
-                    copy_context,
+                    &mut copy_context,
                 )?);
             }
         }
@@ -234,7 +234,7 @@ where
         tracing::debug!("Finished setting all pointers");
         tracing::debug!("Sending back {:?}", getm_resp);
 
-        datapath.queue_cornflakes_obj(msg_id, conn_id, copy_context, getm_resp, end_batch)?;
+        datapath.queue_cornflakes_obj(msg_id, conn_id, &mut copy_context, getm_resp, end_batch)?;
         Ok(())
     }
 
@@ -488,7 +488,6 @@ where
         arena: &mut bumpalo::Bump,
     ) -> Result<()> {
         let end = sga.len();
-        let mut copy_context = CopyContext::new(arena, datapath)?;
         for (i, pkt) in sga.into_iter().enumerate() {
             let end_batch = i == (end - 1);
             let msg_type = MsgType::from_packet(&pkt)?;
@@ -500,7 +499,6 @@ where
             );
             match msg_type {
                 MsgType::Get => {
-                    copy_context.reset(datapath)?;
                     self.serializer.handle_get_serialize_and_send(
                         pkt.msg_id(),
                         pkt.conn_id(),
@@ -508,7 +506,6 @@ where
                         &self.kv_server,
                         &pkt,
                         datapath,
-                        &mut copy_context,
                         &arena,
                     )?;
                 }
@@ -516,7 +513,6 @@ where
                     unimplemented!();
                 }
                 MsgType::GetM(_size) => {
-                    copy_context.reset(datapath)?;
                     self.serializer.handle_getm_serialize_and_send(
                         pkt.msg_id(),
                         pkt.conn_id(),
@@ -524,7 +520,6 @@ where
                         &self.kv_server,
                         &pkt,
                         datapath,
-                        &mut copy_context,
                         arena,
                     )?;
                 }
@@ -546,16 +541,318 @@ where
                     unimplemented!();
                 }
                 MsgType::AddUser => {
-                    unimplemented!();
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("Handle add user");
+                    let mut add_user = kv_serializer_hybrid::AddUser::<D>::new_in(arena);
+                    add_user.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+
+                    let mut add_user_response =
+                        kv_serializer_hybrid::AddUserResponse::<D>::new_in(arena);
+                    let mut copy_context = CopyContext::new(arena, datapath)?;
+                    match self.serializer.zero_copy_puts() {
+                        true => {
+                            let value = self
+                                .zero_copy_put_kv_server
+                                .remove(add_user.get_keys()[0].to_str()?)
+                                .unwrap();
+                            // will increment the reference count of value, or copy into the copy
+                            // context
+                            add_user_response.set_first_value(
+                                dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                                    value.as_ref(),
+                                    datapath,
+                                    &mut copy_context,
+                                )?,
+                            );
+                            for (key, value) in
+                                add_user.get_keys().iter().zip(add_user.get_values().iter())
+                            {
+                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                    key.to_str()?,
+                                    value.as_ref(),
+                                    &pkt,
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                    true,
+                                )?;
+                            }
+                            datapath.queue_cornflakes_obj(
+                                pkt.msg_id(),
+                                pkt.conn_id(),
+                                &mut copy_context,
+                                add_user_response,
+                                end_batch,
+                            )?;
+                        }
+                        false => {
+                            let value = self
+                                .kv_server
+                                .remove(add_user.get_keys()[0].to_str()?)
+                                .unwrap();
+                            add_user_response.set_first_value(
+                                dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                                    value.as_ref(),
+                                    datapath,
+                                    &mut copy_context,
+                                )?,
+                            );
+                            for (key, value) in
+                                add_user.get_keys().iter().zip(add_user.get_values().iter())
+                            {
+                                self.kv_server.insert_with_copies(
+                                    key.to_str()?,
+                                    value.as_ref(),
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                )?;
+                            }
+                            datapath.queue_cornflakes_obj(
+                                pkt.msg_id(),
+                                pkt.conn_id(),
+                                &mut copy_context,
+                                add_user_response,
+                                end_batch,
+                            )?;
+                        }
+                    }
                 }
                 MsgType::FollowUnfollow => {
-                    unimplemented!();
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("Handle follow unfollow");
+                    let mut follow_unfollow =
+                        kv_serializer_hybrid::FollowUnfollow::<D>::new_in(arena);
+                    follow_unfollow.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                    tracing::debug!("Deserialized follow unfollow: {:?}", follow_unfollow);
+                    let mut follow_unfollow_response =
+                        kv_serializer_hybrid::FollowUnfollowResponse::<D>::new_in(arena);
+                    let mut copy_context = CopyContext::new(arena, datapath)?;
+                    follow_unfollow_response.init_original_values(2, arena);
+                    let response_vals = follow_unfollow_response.get_mut_original_values();
+                    match self.serializer.zero_copy_puts() {
+                        true => {
+                            for (cf_key, value) in follow_unfollow
+                                .get_keys()
+                                .iter()
+                                .zip(follow_unfollow.get_values().iter())
+                                .take(2)
+                            {
+                                let key = cf_key.to_str()?;
+                                let old_value = self.zero_copy_put_kv_server.remove(key).unwrap();
+                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                    key,
+                                    value.as_ref(),
+                                    &pkt,
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                    true,
+                                )?;
+                                response_vals.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                                    old_value.as_ref(),
+                                    datapath,
+                                    &mut copy_context,
+                                )?);
+                            }
+                            datapath.queue_cornflakes_obj(
+                                pkt.msg_id(),
+                                pkt.conn_id(),
+                                &mut copy_context,
+                                follow_unfollow_response,
+                                end_batch,
+                            )?;
+                        }
+                        false => {
+                            for (cf_key, value) in follow_unfollow
+                                .get_keys()
+                                .iter()
+                                .zip(follow_unfollow.get_values().iter())
+                                .take(2)
+                            {
+                                let key = cf_key.to_str()?;
+                                let old_value = self.kv_server.remove(key).unwrap();
+                                self.kv_server.insert_with_copies(
+                                    key,
+                                    value.as_ref(),
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                )?;
+                                response_vals.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                                    old_value.as_ref(),
+                                    datapath,
+                                    &mut copy_context,
+                                )?);
+                            }
+                            datapath.queue_cornflakes_obj(
+                                pkt.msg_id(),
+                                pkt.conn_id(),
+                                &mut copy_context,
+                                follow_unfollow_response,
+                                end_batch,
+                            )?;
+                        }
+                    }
                 }
                 MsgType::PostTweet => {
-                    unimplemented!();
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("Handle post tweet");
+                    let mut post_tweet = kv_serializer_hybrid::PostTweet::<D>::new_in(arena);
+                    post_tweet.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+
+                    let mut post_tweet_response =
+                        kv_serializer_hybrid::PostTweetResponse::<D>::new_in(arena);
+                    let mut copy_context = CopyContext::new(arena, datapath)?;
+                    post_tweet_response.init_values(3, arena);
+                    let response_vals = post_tweet_response.get_mut_values();
+                    match self.serializer.zero_copy_puts() {
+                        true => {
+                            for (cf_key, value) in post_tweet
+                                .get_keys()
+                                .iter()
+                                .zip(post_tweet.get_values().iter())
+                                .take(3)
+                            {
+                                let key = cf_key.to_str()?;
+                                let old_value = self.zero_copy_put_kv_server.remove(key).unwrap();
+                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                    key,
+                                    value.as_ref(),
+                                    &pkt,
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                    true,
+                                )?;
+                                response_vals.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                                    old_value.as_ref(),
+                                    datapath,
+                                    &mut copy_context,
+                                )?);
+                            }
+                            for (cf_key, value) in post_tweet
+                                .get_keys()
+                                .iter()
+                                .zip(post_tweet.get_values().iter())
+                                .skip(3)
+                                .take(2)
+                            {
+                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                    cf_key.to_str()?,
+                                    value.as_ref(),
+                                    &pkt,
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                    true,
+                                )?;
+                            }
+                            datapath.queue_cornflakes_obj(
+                                pkt.msg_id(),
+                                pkt.conn_id(),
+                                &mut copy_context,
+                                post_tweet_response,
+                                end_batch,
+                            )?;
+                        }
+                        false => {
+                            for (cf_key, value) in post_tweet
+                                .get_keys()
+                                .iter()
+                                .zip(post_tweet.get_values().iter())
+                                .take(3)
+                            {
+                                let key = cf_key.to_str()?;
+                                let old_value = self.kv_server.remove(key).unwrap();
+                                self.kv_server.insert_with_copies(
+                                    key,
+                                    value.as_ref(),
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                )?;
+                                response_vals.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                                    old_value.as_ref(),
+                                    datapath,
+                                    &mut copy_context,
+                                )?);
+                            }
+                            for (cf_key, value) in post_tweet
+                                .get_keys()
+                                .iter()
+                                .zip(post_tweet.get_values().iter())
+                                .skip(3)
+                                .take(2)
+                            {
+                                self.kv_server.insert_with_copies(
+                                    cf_key.to_str()?,
+                                    value.as_ref(),
+                                    datapath,
+                                    &mut self.mempool_ids,
+                                )?;
+                            }
+
+                            datapath.queue_cornflakes_obj(
+                                pkt.msg_id(),
+                                pkt.conn_id(),
+                                &mut copy_context,
+                                post_tweet_response,
+                                end_batch,
+                            )?;
+                        }
+                    }
                 }
                 MsgType::GetTimeline(_) => {
-                    unimplemented!();
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("Handle get timeline");
+                    let mut get_timeline = kv_serializer_hybrid::GetTimeline::<D>::new_in(arena);
+                    get_timeline.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+
+                    let mut get_timeline_response =
+                        kv_serializer_hybrid::GetTimelineResponse::<D>::new_in(arena);
+                    let mut copy_context = CopyContext::new(arena, datapath)?;
+                    get_timeline_response.init_values(get_timeline.get_keys().len(), arena);
+                    let response_vals = get_timeline_response.get_mut_values();
+                    for (_i, key) in get_timeline.get_keys().iter().enumerate() {
+                        let cf_bytes = match self.serializer.zero_copy_puts() {
+                            true => {
+                                let val = self.zero_copy_put_kv_server.get(key.to_str()?).unwrap();
+                                tracing::debug!(
+                                    msg_id = pkt.msg_id(),
+                                    conn_id = pkt.conn_id(),
+                                    key_idx = _i,
+                                    "Get timeline val size {}",
+                                    val.as_ref().len()
+                                );
+                                dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                                    val.as_ref(),
+                                    datapath,
+                                    &mut copy_context,
+                                )?
+                            }
+                            false => {
+                                let val = self.kv_server.get(key.to_str()?).unwrap();
+                                tracing::debug!(
+                                    msg_id = pkt.msg_id(),
+                                    conn_id = pkt.conn_id(),
+                                    key_idx = _i,
+                                    "Get timeline val size {}",
+                                    val.as_ref().len()
+                                );
+                                dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                                    val.as_ref(),
+                                    datapath,
+                                    &mut copy_context,
+                                )?
+                            }
+                        };
+                        response_vals.append(cf_bytes);
+                    }
+                    tracing::debug!(
+                        "Sending back get timeline response with msg id {}",
+                        pkt.msg_id()
+                    );
+                    datapath.queue_cornflakes_obj(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        &mut copy_context,
+                        get_timeline_response,
+                        end_batch,
+                    )?;
                 }
                 _ => {
                     unimplemented!();

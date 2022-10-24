@@ -2051,6 +2051,7 @@ where
     pub copy_buffers: bumpalo::collections::Vec<'a, SerializationCopyBuf<D>>,
     threshold: usize,
     current_length: usize,
+    remaining: usize,
 }
 
 impl<'a, D> CopyContext<'a, D>
@@ -2072,29 +2073,6 @@ where
     }
 
     #[inline]
-    pub fn reset(&mut self, datapath: &mut D) -> Result<()> {
-        #[cfg(feature = "profiler")]
-        demikernel::timer!("Reset copy context");
-        if self.data_len() == 0 {
-            return Ok(());
-        }
-        if self.copy_buffers.len() == 0 {
-            let serialization_copy_buf = SerializationCopyBuf::new(datapath)?;
-            self.copy_buffers.push(serialization_copy_buf);
-        } else {
-            for i in 0..self.copy_buffers.len() {
-                let serialization_copy_buf = SerializationCopyBuf::new(datapath)?;
-                self.copy_buffers[i] = serialization_copy_buf;
-            }
-        }
-        tracing::debug!(
-            "Reset copy context to have buffers {}",
-            self.copy_buffers.len()
-        );
-        self.current_length = 0;
-        Ok(())
-    }
-    #[inline]
     pub fn new(arena: &'a bumpalo::Bump, datapath: &mut D) -> Result<Self> {
         #[cfg(feature = "profiler")]
         demikernel::timer!("Allocate new copy context");
@@ -2102,6 +2080,7 @@ where
             copy_buffers: bumpalo::collections::Vec::with_capacity_in(1, arena),
             threshold: datapath.get_copying_threshold(),
             current_length: 0,
+            remaining: 0,
         })
     }
 
@@ -2122,7 +2101,9 @@ where
 
     #[inline]
     pub fn push(&mut self, datapath: &mut D) -> Result<()> {
-        self.copy_buffers.push(SerializationCopyBuf::new(datapath)?);
+        let buf = SerializationCopyBuf::new(datapath)?;
+        self.remaining = buf.remaining();
+        self.copy_buffers.push(buf);
         Ok(())
     }
 
@@ -2137,15 +2118,14 @@ where
     pub fn copy(&mut self, buf: &[u8], datapath: &mut D) -> Result<CopyContextRef<D>> {
         #[cfg(feature = "profiler")]
         demikernel::timer!("Copy in copy context");
-        let current_length = self.current_length;
-        let mut copy_buffers_len = self.copy_buffers.len();
-        let mut last_buf = &mut self.copy_buffers[copy_buffers_len - 1];
-        if last_buf.remaining() < buf.len() {
-            self.push(datapath)?;
-            copy_buffers_len += 1;
-            last_buf = &mut self.copy_buffers[copy_buffers_len - 1]
-        }
 
+        let current_length = self.current_length;
+        // TODO: doesn't work if buffer is > than an MTU
+        if self.remaining < buf.len() {
+            self.push(datapath)?;
+        }
+        let copy_buffers_len = self.copy_buffers.len();
+        let last_buf = &mut self.copy_buffers[copy_buffers_len - 1];
         let current_offset = last_buf.len();
         let written = last_buf.write(buf)?;
         if written != buf.len() {
@@ -2155,6 +2135,7 @@ where
             );
         }
         self.current_length += written;
+        self.remaining -= written;
         return Ok(last_buf.copy_context_ref(
             copy_buffers_len - 1,
             current_offset,

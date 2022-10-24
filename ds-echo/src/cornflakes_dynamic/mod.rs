@@ -78,7 +78,6 @@ where
         let end = sga.len();
         let mut copy_context = CopyContext::new(arena, datapath)?;
         for (i, pkt) in sga.into_iter().enumerate() {
-            copy_context.reset(datapath)?;
             let end_batch = i == (end - 1);
             let message_type = read_message_type(&pkt)?;
             match message_type {
