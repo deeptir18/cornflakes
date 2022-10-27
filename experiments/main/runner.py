@@ -13,6 +13,7 @@ from collections import defaultdict
 import time
 import copy
 from tqdm import tqdm
+from invoke import UnexpectedExit
 from main import connection
 import agenda
 import threading
@@ -612,9 +613,63 @@ class Iteration(metaclass=abc.ABCMeta):
     def create_folder(self, high_level_folder):
         folder_name = self.get_folder_name(high_level_folder)
         folder_name.mkdir(parents=True, exist_ok=True)
+        os.chmod(folder_name, 0o777)
+
     def delete_folder(self, high_level_folder):
         folder_name = self.get_folder_name(high_level_folder)
         shutil.rmtree(folder_name)
+
+    def new_connection(self, host, machine_config):
+        host_addr = machine_config["hosts"][host]["ip"]
+        #print(machine_config['hosts'][host])
+        key = machine_config["key"]
+        user = machine_config["user"]
+        cxn = Connection(host=host_addr,
+                         user=user,
+                         port=22,
+                         connect_kwargs={"key_filename": key})
+        return cxn
+
+    def kill_remote_process(self, cmd, host, machine_config):
+        key = machine_config["key"]
+        user = machine_config["user"]
+        host_addr = machine_config["hosts"][host]["addr"]
+
+        ssh_command = "ssh -i {} {}@{} '{}'".format(key, user, host_addr, cmd)
+        print("Killing with command:", ssh_command)
+        sh.run(ssh_command, timeout=10, shell=True)
+
+    def run_cmd_sudo(self, cmd, host, machine_config, fail_ok=False, return_dict=None, proc_counter=None):
+        cxn = self.new_connection(host, machine_config)
+        print('Host and config:', host, machine_config)
+        res = None
+        err = False
+        try:
+            res = cxn.sudo(cmd, hide=False)
+            # utils.warn("Ran command: {}".format(cmd))
+            # res.stdout.strip()
+            if return_dict is not None and proc_counter is not None:
+                return_dict[proc_counter] = True
+            return
+        except UnexpectedExit as e:
+            print('Unexpected exit on run sudo:', e.result.__dict__)
+            if e.result.exited >= 0:
+                err = True
+            # else: assume killed by our own kill_cmd. (TODO)
+        except Exception as e2:
+            print('Exception on run sudo:', e2)
+            err = True
+
+        if err:
+            if not fail_ok:
+                utils.error(
+                    "Failed to run cmd {} on host {}.".format(cmd, host))
+                if return_dict is not None and proc_counter is not None:
+                    return_dict[proc_counter] = False
+                return
+            if return_dict is not None and proc_counter is not None:
+                return_dict[proc_counter] = True
+                return
 
     def run(self, local_results, exp_config, machine_config, pprint,
             use_perf=False, print_stats = False):

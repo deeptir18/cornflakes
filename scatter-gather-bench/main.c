@@ -47,6 +47,22 @@
 #include <rte_malloc.h>
 #include <rte_thash.h>
 
+/* From caladan: inc/base/byteorder.h */
+static inline uint32_t __bswap32(uint32_t val)
+{
+#ifdef HAS_BUILTIN_BSWAP
+	return __builtin_bswap32(val);
+#else
+	return (((val & 0x000000ffUL) << 24) |
+		((val & 0x0000ff00UL) << 8) |
+		((val & 0x00ff0000UL) >> 8) |
+		((val & 0xff000000UL) >> 24));
+#endif
+}
+
+#define cpu_to_be32(x)	(__bswap32(x))
+#define hton32(x) (cpu_to_be32(x))
+
 /* Replace a string.
  * Taken from: https://www.geeksforgeeks.org/c-program-replace-word-text-another-given-word/
  * Function to replace a string with another
@@ -110,7 +126,7 @@ typedef unsigned long virtaddr_t;
 /******************************************/
 /******************************************/
 static __thread int thread_id = 0;
-#define MAX_ITERATIONS 8000000
+#define MAX_ITERATIONS 80000000
 static char* latency_log = NULL;
 static char *threads_log = NULL;
 static int has_threads_log = 0;
@@ -141,7 +157,8 @@ typedef struct ClientRequest
 } __attribute__((packed)) ClientRequest;
 
 static void add_latency(Latency_Dist_t *dist, uint64_t latency) {
-    static __thread int thread_id;
+  //  printf("In add latency, %ld\n", latency);
+  static __thread int thread_id;
     dist->latencies[dist->total_count] = latency;
     dist->total_count++;
     if (dist->total_count > MAX_ITERATIONS) {
@@ -223,7 +240,10 @@ static void dump_latencies(Latency_Dist_t *dist, float total_time, size_t messag
     float achieved_rate_gbps = (float)(dist->total_count) / (float)total_time * (float)(message_size) * 8.0 / (float)1e9;
     float percent_rate = achieved_rate_gbps / rate_gbps;
     if (has_latency_log) {
+      printf("Writing to latency log %s\n", latency_log);
         write_latency_log(latency_log, dist, client_id);
+    } else {
+      printf("No latency log specified\n");
     }
     free((void *)arr);
     statistics->min = dist->min;
@@ -251,10 +271,11 @@ typedef struct Packet_Map_t
 
 static void add_latency_to_map(Packet_Map_t *map, uint64_t rtt, uint32_t id) {
     static __thread int thread_id;
+    //printf("[add_latency_to_map] Adding %ld %d\n", rtt, id);
     map->rtts[map->total_count] = rtt;
     map->ids[map->total_count] = id;
     map->total_count++;
-    if (map->total_count > (MAX_ITERATIONS * 32)) {
+    if (map->total_count > (MAX_ITERATIONS)) {
         printf("[add_latency_to_map] ERROR: Overflow in Packet map");
     }
 }
@@ -451,8 +472,8 @@ static uint32_t segment_size = 256;
 static uint32_t seconds = 1;
 static uint32_t rate = 500000; // in packets / second
 static uint32_t intersend_time;
-static unsigned int client_port = 12345;
-static unsigned int server_port = 12345;
+static unsigned int client_port = 50000;
+static unsigned int server_port = 50000;
 static struct rte_mempool *tx_mbuf_pools[MAX_THREADS];
 static struct rte_mempool *rx_mbuf_pools[MAX_THREADS];
 static struct rte_mempool *extbuf_pools[MAX_THREADS];
@@ -735,7 +756,7 @@ static void custom_pkt_init_whole(struct rte_mempool *mp __attribute__((unused))
 }
 
 static int parse_args(int argc, char *argv[]) {
-    static __thread int thread_id;
+  static __thread int thread_id;
     long tmp;
     int has_server_ip = 0;
     int has_port = 0;
@@ -752,6 +773,7 @@ static int parse_args(int argc, char *argv[]) {
         {"server_ip", optional_argument,       0,  's' },
         {"log", optional_argument, 0, 'l'},
         {"port", optional_argument, 0,  'p' },
+        {"client_port", optional_argument, 0,  'y' },
         {"server_mac",   optional_argument, 0,  'c' },
         {"segment_size",   optional_argument, 0,  'z' },
         {"time",   optional_argument, 0,  't' },
@@ -771,7 +793,7 @@ static int parse_args(int argc, char *argv[]) {
         {0,           0,                 0,  0   }
     };
     int long_index = 0;
-    while ((opt = getopt_long(argc, argv,"m:i:s:l:p:c:z:t:r:n:a:k:b:x:q:v:w:d:e:f:",
+    while ((opt = getopt_long(argc, argv,"m:i:s:l:p:c:z:t:r:n:a:k:b:x:q:v:w:d:e:f:y:",
                    long_options, &long_index )) != -1) {
         switch (opt) {
             case 'm':
@@ -881,6 +903,9 @@ static int parse_args(int argc, char *argv[]) {
             case 'f':
                 echo_mode = 1;
                 break;
+	    case 'y':
+	      client_port = atoi(optarg);
+	      break;
             default: print_usage();
                  exit(EXIT_FAILURE);
         }
@@ -1185,12 +1210,11 @@ static int global_init(size_t num_queues) {
     our_dpdk_port_id = port_id;
     rte_eth_macaddr_get(our_dpdk_port_id, &my_eth);
     printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-			(unsigned)our_dpdk_port_id,
-			my_eth.addr_bytes[0], my_eth.addr_bytes[1],
-			my_eth.addr_bytes[2], my_eth.addr_bytes[3],
-			my_eth.addr_bytes[4], my_eth.addr_bytes[5]);
-
+	   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
+	   (unsigned)our_dpdk_port_id,
+	   my_eth.addr_bytes[0], my_eth.addr_bytes[1],
+	   my_eth.addr_bytes[2], my_eth.addr_bytes[3],
+	   my_eth.addr_bytes[4], my_eth.addr_bytes[5]);
 
     if (rte_lcore_count() > 1) {
         printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
@@ -1432,16 +1456,23 @@ static uint32_t compute_flow_affinity(uint32_t local_ip,
                                         size_t num_queues)
 {
     static __thread int thread_id;
-	const uint8_t *rss_key = (uint8_t *)sym_rss_key;
+    const uint8_t *rss_key = (uint8_t *)sym_rss_key;
 
-	uint32_t input_tuple[] = {
-        //local_ip, remote_ip, local_port | remote_port << 16
-        remote_ip, local_ip, remote_port | local_port << 16
-	};
+    uint32_t i, j, map, ret = 0, input_tuple[] = {
+      remote_ip, local_ip, local_port | remote_port << 16
+    };
 
-    uint32_t ret = rte_softrss((uint32_t *)&input_tuple, ARRAY_SIZE(input_tuple),
-         (const uint8_t *)rss_key);
-	return ret % (uint32_t)num_queues;
+    /* From caladan - implementation of rte_softrss */
+    for (j = 0; j < ARRAY_SIZE(input_tuple); j++) {
+      for (map = input_tuple[j]; map;	map &= (map - 1)) {
+	i = (uint32_t)__builtin_ctz(map);
+	ret ^= hton32(((const uint32_t *)rss_key)[j]) << (31 - i) |
+	  (uint32_t)((uint64_t)(hton32(((const uint32_t *)rss_key)[j + 1])) >>
+		     (i + 1));
+      }
+    }
+    
+    return ret % (uint32_t)num_queues;
 }
 
 void find_ip_and_pair(uint16_t queue_id,
@@ -1458,7 +1489,7 @@ void find_ip_and_pair(uint16_t queue_id,
                                 start_port,
                                 remote_port,
                                 num_queues) != (uint32_t)queue_id) {
-        start_ip[3] += 1;
+      start_port += 1;
     }
     *ip = MAKE_IP_ADDR(start_ip[0], start_ip[1], start_ip[2], start_ip[3]);
     *port = start_port;
@@ -1477,7 +1508,7 @@ static void * do_client(void *client) {
     find_ip_and_pair((uint16_t)client_id,
                       num_client_threads,
                       server_ip, 
-                      server_port, 
+		      server_port, 
                       starting_octets, 
                       client_port,
                       &our_client_ip, 
@@ -1573,6 +1604,7 @@ static void * do_client(void *client) {
             if (rte_get_timer_cycles_() > (start_time + seconds * rte_get_timer_hz_())) {
                 break;
             }
+
             nb_rx = rte_eth_rx_burst_(our_dpdk_port_id, (uint16_t)client_id, pkts, BURST_SIZE);
             if (nb_rx == 0) {
                 if (rte_get_timer_cycles() > (last_sent + wait_time)) {
@@ -2142,4 +2174,5 @@ main(int argc, char **argv)
     }
 
 	return 0;
+
 }

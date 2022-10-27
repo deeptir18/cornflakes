@@ -100,7 +100,7 @@ def parse_log_info(log):
 class ScatterGatherIteration(runner.Iteration):
     def __init__(self, client_rates, segment_size,
                  num_segments, with_copy, as_one, num_threads, trial=None,
-                 array_size=8192, busy_cycles=0, recv_pkt_size=0, echo_mode=False):
+                 array_size=8192, busy_cycles=0, recv_pkt_size=0, echo_mode=False, num_cores=1):
         """
         Arguments:
         * client_rates: Mapping from {int, int} specifying rates and how many
@@ -121,6 +121,7 @@ class ScatterGatherIteration(runner.Iteration):
         self.busy_cycles = busy_cycles
         self.recv_pkt_size = recv_pkt_size
         self.echo_mode = echo_mode
+        self.num_cores = num_cores
 
     def hash(self):
         args = [self.segment_size, self.num_segments, self.with_copy,
@@ -165,6 +166,9 @@ class ScatterGatherIteration(runner.Iteration):
     def get_echo_mode(self):
         return self.echo_mode
 
+    def get_num_cores(self):
+        return self.num_cores
+        
     def get_busy_cycles(self):
         return self.busy_cycles
 
@@ -204,6 +208,9 @@ class ScatterGatherIteration(runner.Iteration):
     def get_total_size(self):
         return self.num_segments * self.segment_size
 
+    def get_num_cores_string(self):
+        return "server_cores_{:d}".format(self.num_cores)
+    
     def get_client_rate_string(self):
         # 2@300000,1@100000 implies 2 clients at 300000 pkts / sec and 1 at
         # 100000 pkts / sec
@@ -332,7 +339,8 @@ class ScatterGatherIteration(runner.Iteration):
             self.get_recv_pkt_size_string() /\
             self.get_busy_cycles_string() /\
             self.get_client_rate_string() / self.get_num_threads_string() / \
-            self.get_with_copy_string()
+            self.get_with_copy_string() / \
+            self.get_num_cores_string()
 
     def get_folder_name(self, high_level_folder):
         return self.get_parent_folder(high_level_folder) / self.get_trial_string()
@@ -386,6 +394,7 @@ class ScatterGatherIteration(runner.Iteration):
                 ret["segment_size"] = self.segment_size
                 ret["num_segments"] = self.num_segments
         ret["cornflakes_dir"] = config_yaml["cornflakes_dir"]
+        ret["top_dir"] = config_yaml["top_dir"]
         ret["folder"] = str(folder)
         if (self.echo_mode):
             ret["echo_str"] = " --echo_mode"
@@ -396,7 +405,7 @@ class ScatterGatherIteration(runner.Iteration):
                 ret["read_pkt_str"] = " --read_incoming_packet"
             else:
                 ret["read_pkt_str"] = ""
-            pass
+            ret['num_cores'] = "{:d}".format(self.num_cores)
         elif program == "start_client":
             if (self.recv_pkt_size != 0):
                 ret["send_packet_size_str"] = " --has_send_packet_size --send_packet_size={}".format(
@@ -492,7 +501,8 @@ class ScatterGather(runner.Experiment):
                                         array_size=total_args.array_size,
                                         busy_cycles=total_args.busy_cycles,
                                         recv_pkt_size=total_args.recv_size,
-                                        echo_mode=total_args.echo)
+                                        echo_mode=total_args.echo,
+                                        num_cores=total_args.num_cores)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             it.set_trial(num_trials_finished)
@@ -652,6 +662,11 @@ class ScatterGather(runner.Experiment):
                             type=int,
                             default=0,
                             help="Busy cycles in us")
+        parser.add_argument("-k", "--num_cores",
+                            dest="num_cores",
+                            type=int,
+                            default=1,
+                            help="Number of server cores")
         if namespace.exp_type == "individual":
             parser.add_argument("-r", "--rate",
                                 dest="rate",
@@ -683,7 +698,7 @@ class ScatterGather(runner.Experiment):
                                 dest="looping_variable",
                                 choices=["array_total_size", "total_size",
                                          "num_segments", "recv_size",
-                                         "total_segment_cross"],
+                                         "total_segment_cross", "num_cores"],
                                 default="array_total_size",
                                 help="What variable to loop over")
         args = parser.parse_args(namespace=namespace)
@@ -839,6 +854,124 @@ class ScatterGather(runner.Experiment):
             utils.warn(
                 "Failed to run plot command: {}".format(args))
             exit(1)
+
+    def run_analysis_individual_trial(self,
+                                      higher_level_folder,
+                                      program_metadata,
+                                      iteration,
+                                      print_stats=False):
+        exp_folder = iteration.get_folder_name(higher_level_folder)
+        # parse each client log
+        # parse stdout logs
+        total_offered_load_pps = 0
+        total_offered_load_gbps = 0
+        total_achieved_load_gbps = 0
+        total_achieved_load_pps = 0
+        total_retries = 0
+        client_latency_lists = []
+        clients = iteration.get_iteration_clients(
+            program_metadata["start_client"]["hosts"])
+
+        num_threads = iteration.get_num_threads()
+        num_clients = iteration.get_num_clients()
+
+        for host in clients:
+            args = {"folder": str(exp_folder), "host": host}
+            thread_file = "{folder}/{host}.threads.log".format(**args)
+            for thread in range(iteration.get_num_threads()):
+                args["thread"] = thread  # replace thread number
+                latency_log = "{folder}/{host}.latency-t{thread}.log".format(
+                    **args)
+                latencies = utils.parse_latency_log(latency_log,
+                                                    STRIP_THRESHOLD)
+                if len(latencies) == 0:
+                    utils.warn(
+                        "Error parsing latency log {}".format(latency_log))
+                    return ""
+                client_latency_lists.append(latencies)
+
+                thread_info = utils.read_threads_json(thread_file, thread)
+
+                host_offered_load_pps = float(thread_info["offered_load_pps"])
+                host_offered_load_gbps = float(
+                    thread_info["offered_load_gbps"])
+                total_offered_load_pps += host_offered_load_pps
+                total_offered_load_gbps += host_offered_load_gbps
+
+                host_achieved_load_pps = float(
+                    thread_info["achieved_load_pps"])
+                host_achieved_load_gbps = float(
+                    thread_info["achieved_load_gbps"])
+                total_achieved_load_pps += host_achieved_load_pps
+                total_achieved_load_gbps += host_achieved_load_gbps
+
+                # add retries
+                retries = int(thread_info["retries"])
+                total_retries += retries
+
+                if print_stats:
+                    # convert to microseconds
+                    host_p99 = utils.p99_func(latencies) / 1000.0
+                    host_p999 = utils.p999_func(latencies) / 1000.0
+                    host_median = utils.median_func(latencies) / 1000.0
+                    host_avg = utils.mean_func(latencies) / 1000.0
+                    utils.info("Client {}, Thread {}: "
+                               "offered load: {:.4f} req/s | {:.4f} Gbps, "
+                               "achieved load: {:.4f} req/s | {:.4f} Gbps, "
+                               "percentage achieved rate: {:.4f}, "
+                               "retries: {}, "
+                               "avg latency: {: .4f} \u03BCs, p99: {: .4f} \u03BCs, p999:"
+                               "{: .4f} \u03BCs, median: {: .4f} \u03BCs".format(
+                                   host, thread, host_offered_load_pps, host_offered_load_gbps,
+                                   host_achieved_load_pps, host_achieved_load_gbps,
+                                   float(host_achieved_load_pps /
+                                         host_offered_load_pps),
+                                   retries,
+                                   host_avg, host_p99, host_p999, host_median))
+
+        sorted_latencies = utils.sort_latency_lists(client_latency_lists)
+        median = utils.median_func(sorted_latencies) / float(1000)
+        p99 = utils.p99_func(sorted_latencies) / float(1000)
+        p999 = utils.p999_func(sorted_latencies) / float(1000)
+        avg = utils.mean_func(sorted_latencies) / float(1000)
+
+        if print_stats:
+            total_stats = "offered load: {:.4f} req/s | {:.4f} Gbps, "\
+                "achieved load: {:.4f} req/s | {:.4f} Gbps, "\
+                "percentage achieved rate: {:.4f},"\
+                "retries: {}, "\
+                "avg latency: {:.4f} \u03BCs, p99: {:.4f} \u03BCs, p999: {:.4f}"\
+                "\u03BCs, median: {:.4f} \u03BCs".format(
+                    total_offered_load_pps, total_offered_load_gbps,
+                    total_achieved_load_pps, total_achieved_load_gbps,
+                    float(total_achieved_load_pps / total_offered_load_pps),
+                    total_retries,
+                    avg, p99, p999, median)
+            utils.info("Total Stats: ", total_stats)
+        percent_acheived_load = float(total_achieved_load_pps /
+                                      total_offered_load_pps)
+
+        csv_line = "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}".format(
+            iteration.get_num_cores(),
+            iteration.get_segment_size(),
+            iteration.get_num_segments(),
+            iteration.get_with_copy(),
+            iteration.get_as_one(),
+            iteration.get_array_size(),
+            iteration.get_busy_cycles(),
+            iteration.get_recv_pkt_size(),
+            iteration.get_num_threads(),
+            iteration.get_num_clients(),
+            total_offered_load_pps,
+            total_offered_load_gbps,
+            total_achieved_load_pps,
+            total_achieved_load_gbps,
+            percent_acheived_load,
+            avg * 1000,
+            median * 1000,
+            p99 * 1000,
+            p999 * 1000)
+        return csv_line
 
     def graph_results(self, total_args, folder, logfile,
                       post_process_logfile):
