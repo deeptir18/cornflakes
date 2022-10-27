@@ -58,7 +58,7 @@ pub enum MsgType {
 
 impl MsgType {
     /// Reads first four bytes of packet to determine message type.
-    fn from_packet<D: Datapath>(packet: &ReceivedPkt<D>) -> Result<Self> {
+    pub fn from_packet<D: Datapath>(packet: &ReceivedPkt<D>) -> Result<Self> {
         let buf = &packet.seg(0).as_ref();
         let msg_type = &buf[0..2];
         let size = &buf[2..4];
@@ -259,6 +259,10 @@ where
         self.map.insert(key, datapath_buffer);
         Ok(())
     }
+
+    pub fn keys(&self) -> Vec<String> {
+        self.map.keys().cloned().collect::<Vec<String>>()
+    }
 }
 
 pub fn allocate_and_copy_into_datapath_buffer<D>(
@@ -345,6 +349,10 @@ where
             .collect();
         self.map.insert(key.to_string(), datapath_buffers?);
         Ok(())
+    }
+
+    pub fn keys(&self) -> Vec<String> {
+        self.map.keys().cloned().collect::<Vec<String>>()
     }
 }
 

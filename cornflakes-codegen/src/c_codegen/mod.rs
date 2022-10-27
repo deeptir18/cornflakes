@@ -1,10 +1,10 @@
 use super::{
-    Language,
-    header_utils::ProtoReprInfo, CompileOptions, HeaderType,
+    header_utils::ProtoReprInfo,
     rust_codegen::{self, Context, FunctionContext, SerializationCompiler},
+    CompileOptions, HeaderType, Language,
 };
 use color_eyre::eyre::{Result, WrapErr};
-use std::{str, fs, path::Path};
+use std::{fs, path::Path, str};
 
 mod common;
 mod hybridrcsga;
@@ -39,20 +39,31 @@ fn gen_build_rs(repr: &ProtoReprInfo, package_folder: &Path) -> Result<()> {
 
     let func_context = FunctionContext::new("main", false, vec![], "");
     compiler.add_context(Context::Function(func_context))?;
-    compiler.add_def_with_let(false, None, "cargo_manifest_dir",
+    compiler.add_def_with_let(
+        false,
+        None,
+        "cargo_manifest_dir",
         "env::var(\"CARGO_MANIFEST_DIR\").unwrap()",
     )?;
-    compiler.add_def_with_let(false, None, "output_file", &format!(
-        "PathBuf::from(&cargo_manifest_dir).join(\"{}.h\").display().to_string()",
-        repr.get_repr().package,
-    ))?;
-    compiler.add_def_with_let(false, None, "config",
-        "Config { language: cbindgen::Language::C, ..Default::default() }"
+    compiler.add_def_with_let(
+        false,
+        None,
+        "output_file",
+        &format!(
+            "PathBuf::from(&cargo_manifest_dir).join(\"{}.h\").display().to_string()",
+            repr.get_repr().package,
+        ),
+    )?;
+    compiler.add_def_with_let(
+        false,
+        None,
+        "config",
+        "Config { language: cbindgen::Language::C, ..Default::default() }",
     )?;
     compiler.add_line(
         "cbindgen::generate_with_config(&cargo_manifest_dir, config) \
         .unwrap() \
-        .write_to_file(&output_file);"
+        .write_to_file(&output_file);",
     )?;
     compiler.pop_context()?;
     compiler.flush(&package_folder.join("build.rs"))?;
@@ -88,6 +99,7 @@ fn gen_cargo_toml(repr: &ProtoReprInfo, package_folder: &Path) -> Result<()> {
     compiler.add_line("cornflakes-libos = { path = \"../../../cornflakes-libos\" }")?;
     compiler.add_line("cornflakes-codegen = { path = \"../../../cornflakes-codegen\" }")?;
     compiler.add_line("mlx5-datapath = { path = \"../../../mlx5-datapath\" }")?;
+    compiler.add_line("cf-kv = { path = \"../../../cf-kv\" }")?;
     // TODO: rcsga only
     compiler.add_line("bumpalo = { git = \"https://github.com/deeptir18/bumpalo\", features = [\"collections\"] }")?;
     compiler.add_newline()?;
@@ -105,11 +117,15 @@ fn gen_cargo_toml(repr: &ProtoReprInfo, package_folder: &Path) -> Result<()> {
 }
 
 fn gen_rust_code(repr: &ProtoReprInfo, src_folder: &Path, options: &CompileOptions) -> Result<()> {
-    rust_codegen::compile(repr, src_folder.to_str().unwrap(), CompileOptions {
-        needs_datapath_param: false,
-        header_type: options.header_type,
-        language: Language::Rust,
-    })?;
+    rust_codegen::compile(
+        repr,
+        src_folder.to_str().unwrap(),
+        CompileOptions {
+            needs_datapath_param: false,
+            header_type: options.header_type,
+            language: Language::Rust,
+        },
+    )?;
     Ok(())
 }
 
@@ -126,13 +142,16 @@ fn gen_c_code(repr: &ProtoReprInfo, src_folder: &Path, options: CompileOptions) 
             sga::compile(repr, &mut compiler).wrap_err("Sga codegen failed to generate code.")?;
         }
         HeaderType::RcSga => {
-            rcsga::compile(repr, &mut compiler).wrap_err("RcSga codegen failed to generate code.")?;
+            rcsga::compile(repr, &mut compiler)
+                .wrap_err("RcSga codegen failed to generate code.")?;
         }
         HeaderType::HybridRcSga => {
-            hybridrcsga::compile(repr, &mut compiler).wrap_err("HybridRcSga
-                codegen failed to generate code.")?;
+            hybridrcsga::compile(repr, &mut compiler).wrap_err(
+                "HybridRcSga
+                codegen failed to generate code.",
+            )?;
         }
-        ty => unimplemented!("unimplemented header type: {:?}", ty)
+        ty => unimplemented!("unimplemented header type: {:?}", ty),
     }
     compiler.flush(&src_folder.join("lib.rs"))?;
     Ok(())
