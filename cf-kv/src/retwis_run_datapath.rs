@@ -265,8 +265,6 @@ pub struct RetwisOpt {
         default_value = "5-15-30-50"
     )]
     pub retwis_distribution: RetwisRequestDistribution,
-    #[structopt(long = "non_refcounted", help = "Non refcounted version of cornflakes")]
-    pub non_refcounted: bool,
     #[structopt(
         long = "ready_file",
         help = "File to indicate server is ready to receive requests"
