@@ -3448,8 +3448,8 @@ impl Datapath for Mlx5Connection {
                     copy_context,
                     header_len,
                     allocated_header_buffer.mutable_slice(
-                        cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE,
-                        cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE + header_len,
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE + header_len,
                     )?,
                     0,
                     cornflakes_obj.dynamic_header_start(),
@@ -3461,7 +3461,7 @@ impl Datapath for Mlx5Connection {
                 // copy the packet header into the beginning of the buffer
                 self.copy_hdr(&mut allocated_header_buffer, conn_id, msg_id, data_len)?;
                 allocated_header_buffer
-                    .set_len(header_len + cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE);
+                    .set_len(header_len + cornflakes_libos::utils::TOTAL_HEADER_SIZE);
                 // reset ring buffer state
                 ring_buffer_state.0 = first_copy_dpseg;
                 ring_buffer_state.1 = first_copy_completion;

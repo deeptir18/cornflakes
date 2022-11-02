@@ -37,6 +37,8 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
         add_dynamic_rcsga_hybrid_header_repr(compiler, &msg_info, datapath)?;
         compiler.add_newline()?;
         add_queue_cornflakes_obj_function(compiler, &msg_info, datapath)?;
+        compiler.add_newline()?;
+        add_free(compiler, &msg_info, datapath)?;
         // compiler.add_newline()?;
         // add_rcsga_header_repr(compiler, &msg_info, datapath)?;
         // compiler.add_newline()?;
@@ -279,6 +281,18 @@ fn add_queue_cornflakes_obj_function(
     Ok(())
 }
 
+fn add_free(
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+    datapath: &str,
+) -> Result<()> {
+    common::add_free_function(
+        compiler,
+        &format!("{}", msg_info.get_name()),
+        &format!("<{}>", datapath),
+    )?;
+    Ok(())
+}
 // fn add_rcsga_header_repr(
 //     compiler: &mut SerializationCompiler,
 //     msg_info: &MessageInfo,

@@ -64,7 +64,7 @@ int custom_mlx5_process_completions(struct custom_mlx5_per_thread_context *per_t
         cqe = &cqes[v->cq_head & (cq->cqe_cnt - 1)];
         opcode = custom_mlx5_cqe_status(cqe, cq->cqe_cnt, v->cq_head);
         if (opcode == MLX5_CQE_INVALID) {
-            NETPERF_DEBUG_RATE_LIMITED("Invalid cqe for cqe # %u, syndrome: %d", v->cq_head, custom_mlx5_get_error_syndrome(cqe));
+            NETPERF_DEBUG("Invalid cqe for cqe # %u, syndrome: %d", v->cq_head, custom_mlx5_get_error_syndrome(cqe));
             break;
         }
 

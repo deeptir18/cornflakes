@@ -2,9 +2,14 @@ use cornflakes_libos::{
     datapath::{Datapath, InlineMode},
     {ArenaOrderedRcSga, OrderedSga},
 };
-use cornflakes_utils::AppMode;
+use cornflakes_utils::{global_debug_init_env, AppMode};
 use mlx5_datapath::datapath::connection::Mlx5Connection;
 use std::{ffi::CStr, net::Ipv4Addr, str::FromStr};
+
+#[no_mangle]
+pub extern "C" fn Mlx5_global_debug_init() {
+    global_debug_init_env().unwrap();
+}
 
 fn convert_c_char(ptr: *const ::std::os::raw::c_char) -> String {
     let cstr: &CStr = unsafe { CStr::from_ptr(ptr) };

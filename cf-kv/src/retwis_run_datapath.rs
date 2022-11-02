@@ -24,7 +24,7 @@ macro_rules! run_server_retwis(
 
         // init retwis load generator
         let load_generator = RetwisServerLoader::new($opt.num_keys, $opt.key_size, $opt.value_size_generator);
-        let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, $opt.zero_copy_puts, $opt.non_refcounted)?;
+        let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, $opt.zero_copy_puts, false)?;
         kv_server.init(&mut connection)?;
         kv_server.write_ready($opt.ready_file.clone())?;
         if is_baseline {

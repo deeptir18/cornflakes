@@ -4,7 +4,13 @@ use hashbrown::HashMap;
 use std::{fs::read_to_string, net::Ipv4Addr, path::Path, str::FromStr};
 use tracing::Level;
 use tracing_subscriber;
-use tracing_subscriber::{filter::LevelFilter, FmtSubscriber};
+use tracing_subscriber::{
+    filter::{EnvFilter, LevelFilter},
+    fmt,
+    layer::SubscriberExt,
+    util::SubscriberInitExt,
+    FmtSubscriber,
+};
 use yaml_rust::{Yaml, YamlLoader};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -342,6 +348,14 @@ impl std::str::FromStr for TraceLevel {
             x => bail!("unknown TRACE level {:?}", x),
         })
     }
+}
+
+pub fn global_debug_init_env() -> Result<()> {
+    color_eyre::install()?;
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+    Ok(())
 }
 
 pub fn global_debug_init(trace_level: TraceLevel) -> Result<()> {

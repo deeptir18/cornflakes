@@ -109,6 +109,7 @@ where
         Ok(data.len())
     }
 
+    // TODO: handle get list as lrange 0 to -1?
     fn serialize_get_list(&self, _buf: &mut [u8], _key: &str, _datapath: &D) -> Result<usize> {
         unimplemented!()
     }
