@@ -30,15 +30,15 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
         compiler.add_newline()?;
         let msg_info = MessageInfo(message.clone());
         compiler.add_newline()?;
-        add_new_in(compiler, &msg_info, datapath)?;
+        add_new_in(fd, compiler, &msg_info, datapath)?;
         compiler.add_newline()?;
         common::add_impl(fd, compiler, &msg_info, Some(datapath), true)?;
         compiler.add_newline()?;
-        add_dynamic_rcsga_hybrid_header_repr(compiler, &msg_info, datapath)?;
+        add_dynamic_rcsga_hybrid_header_repr(fd, compiler, &msg_info, datapath)?;
         compiler.add_newline()?;
-        add_queue_cornflakes_obj_function(compiler, &msg_info, datapath)?;
+        add_queue_cornflakes_obj_function(fd, compiler, &msg_info, datapath)?;
         compiler.add_newline()?;
-        add_free(compiler, &msg_info, datapath)?;
+        add_free(fd, compiler, &msg_info, datapath)?;
         // compiler.add_newline()?;
         // add_rcsga_header_repr(compiler, &msg_info, datapath)?;
         // compiler.add_newline()?;
@@ -159,21 +159,19 @@ fn add_arena_allocate(compiler: &mut SerializationCompiler, datapath: &str) -> R
 }
 
 fn add_new_in(
+    fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
     datapath: &str,
 ) -> Result<()> {
+    let lifetimes = msg_info.get_function_params(fd)?.join(",");
+    let type_annotations = msg_info
+        .get_type_params_with_lifetime_ffi(true, fd, datapath)?
+        .join(",");
     add_extern_c_wrapper_function(
         compiler,
-        &format!(
-            "{}_new_in<'arena, 'registered: 'arena>",
-            msg_info.get_name()
-        ),
-        &format!(
-            "{}::<'arena, 'registered, {}>",
-            &msg_info.get_name(),
-            datapath
-        ),
+        &format!("{}_new_in<{}>", msg_info.get_name(), lifetimes,),
+        &format!("{}::<{}>", &msg_info.get_name(), type_annotations,),
         "new_in",
         None,
         vec![(
@@ -191,15 +189,19 @@ fn add_new_in(
 }
 
 fn add_dynamic_rcsga_hybrid_header_repr(
+    fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
     datapath: &str,
 ) -> Result<()> {
-    // add deserialize function
+    let lifetimes = msg_info.get_function_params(fd)?.join(",");
+    let type_annotations = msg_info
+        .get_type_params_with_lifetime_ffi(true, fd, datapath)?
+        .join(",");
     add_extern_c_wrapper_function(
         compiler,
-        &format!("{}_deserialize", msg_info.get_name()),
-        &format!("{}<{}>", msg_info.get_name(), datapath),
+        &format!("{}_deserialize<{}>", msg_info.get_name(), lifetimes),
+        &format!("{}::<{}>", msg_info.get_name(), type_annotations),
         "deserialize",
         Some(SelfArgType::Mut),
         vec![
@@ -229,16 +231,27 @@ fn add_dynamic_rcsga_hybrid_header_repr(
 }
 
 fn add_queue_cornflakes_obj_function(
+    fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
     datapath: &str,
 ) -> Result<()> {
+    let mut lifetime_annotations = msg_info.get_function_params(fd)?;
+    let type_annotations = msg_info
+        .get_type_params_with_lifetime_ffi(true, fd, datapath)?
+        .join(",");
+    if !(lifetime_annotations.contains(&"'arena".to_string())) {
+        // arena needed for copy context
+        lifetime_annotations.push("'arena".to_string());
+    }
+    let lifetimes = lifetime_annotations.join(",");
     add_extern_c_wrapper_function(
         compiler,
         &format!(
-            "{}_{}_queue_cornflakes_obj<'arena>",
+            "{}_{}_queue_cornflakes_obj<{}>",
             datapath,
-            msg_info.get_name()
+            msg_info.get_name(),
+            lifetimes,
         ),
         datapath,
         "queue_cornflakes_obj",
@@ -265,7 +278,7 @@ fn add_queue_cornflakes_obj_function(
             (
                 "cornflakes_obj",
                 ArgType::VoidPtr {
-                    inner_ty: format!("{}<{}>", msg_info.get_name(), datapath),
+                    inner_ty: format!("{}<{}>", msg_info.get_name(), type_annotations),
                 },
             ),
             (
@@ -282,14 +295,20 @@ fn add_queue_cornflakes_obj_function(
 }
 
 fn add_free(
+    fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
     datapath: &str,
 ) -> Result<()> {
+    let lifetimes = msg_info.get_function_params(fd)?.join(",");
+    let type_annotations = msg_info
+        .get_type_params_with_lifetime_ffi(true, fd, datapath)?
+        .join(",");
     common::add_free_function(
         compiler,
         &format!("{}", msg_info.get_name()),
-        &format!("<{}>", datapath),
+        &format!("<{}>", type_annotations),
+        &lifetimes,
     )?;
     Ok(())
 }
@@ -386,7 +405,7 @@ fn add_copy_context_functions(compiler: &mut SerializationCompiler, datapath: &s
     )?;
 
     // CopyContext_free
-    common::add_free_function(compiler, "CopyContext", &format!("<{}>", datapath))?;
+    common::add_free_function(compiler, "CopyContext", &format!("<{}>", datapath), "")?;
 
     Ok(())
 }
@@ -848,7 +867,7 @@ fn add_received_pkt_functions(compiler: &mut SerializationCompiler, datapath: &s
 
     ////////////////////////////////////////////////////////////////////////////
     // ReceivedPkt_free
-    common::add_free_function(compiler, "ReceivedPkt", &format!("<{}>", datapath))?;
+    common::add_free_function(compiler, "ReceivedPkt", &format!("<{}>", datapath), "")?;
 
     Ok(())
 }
