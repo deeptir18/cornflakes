@@ -1278,7 +1278,7 @@ impl Datapath for DpdkConnection {
 
         // disable rx/tx flow control
         // TODO: why?
-
+/*
         let mut fc_conf: MaybeUninit<rte_eth_fc_conf> = MaybeUninit::zeroed();
         dpdk_check_not_errored!(rte_eth_dev_flow_ctrl_get(
             datapath_params.get_physical_port()?,
@@ -1291,7 +1291,7 @@ impl Datapath for DpdkConnection {
             datapath_params.get_physical_port()?,
             fc_conf.as_mut_ptr()
         ));
-
+*/
         wait_for_link_status_up(datapath_params.get_physical_port()?)?;
 
         Ok(ret)

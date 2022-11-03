@@ -307,7 +307,7 @@ void set_checksums_(struct rte_mbuf *pkt) {
 }
 
 uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **tx_pkts, uint16_t nb_pkts) {
-    /*for (uint16_t i = 0; i < nb_pkts; i++) {
+    for (uint16_t i = 0; i < nb_pkts; i++) {
         struct rte_mbuf *first_mbuf = tx_pkts[i];
         printf("First packet addr: %p\n", first_mbuf);
         printf("[rte_eth_tx_burst_] first mbuf num segs: %u\n", first_mbuf->nb_segs);
@@ -339,7 +339,7 @@ uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf 
             eth_hdr->dst_addr.addr_bytes[2], eth_hdr->dst_addr.addr_bytes[3],
             eth_hdr->dst_addr.addr_bytes[4], eth_hdr->dst_addr.addr_bytes[5]);
         printf("[rte_eth_tx_burst_] Queue: %u, Scp IP: %u, dst IP: %u, checksum: %u, udp data len: %u, ID: %u\n", queue_id, ipv4->src_addr, ipv4->dst_addr, ipv4->hdr_checksum, ntohs(udp->dgram_len), *id_ptr);
-    }*/
+    }
     return rte_eth_tx_burst(port_id, queue_id, tx_pkts, nb_pkts);
 }
 
@@ -694,7 +694,7 @@ void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) 
     port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS | RTE_ETH_MQ_RX_RSS_FLAG;
     port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
     port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
-    port_conf.rx_adv_conf.rss_conf.rss_hf = RTE_ETH_RSS_UDP | RTE_ETH_RSS_IP;
+    port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_NONFRAG_IPV4_UDP;
     port_conf.txmode.offloads = RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM;
     port_conf.txmode.mq_mode = RTE_ETH_MQ_TX_NONE;
 
