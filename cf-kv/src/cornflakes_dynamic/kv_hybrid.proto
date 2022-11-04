@@ -14,6 +14,8 @@ message GetMReq {
 message GetListReq {
     uint32 id = 1;
     string key = 2;
+    int64 range_start = 3;
+    int64 range_end = 4;
 }
 
 message GetResp {

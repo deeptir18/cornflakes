@@ -753,7 +753,7 @@ fn add_received_pkt_functions(compiler: &mut SerializationCompiler, datapath: &s
         }
         MsgType::GetList(s) => {
         unsafe {
-            *return_ptr = 3;
+            *return_ptr = 4;
             *size_ptr = s;
             }
         }
