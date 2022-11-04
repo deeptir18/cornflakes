@@ -1463,6 +1463,8 @@ where
     fn serialize_get_list(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize> {
         let mut get = GetListReq::<D>::new();
         get.set_key(CFString::new_from_str(key));
+        get.set_range_start(0);
+        get.set_range_end(-1);
         get.serialize_into_buf(datapath, buf)
     }
 
