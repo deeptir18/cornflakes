@@ -4703,6 +4703,7 @@ impl Datapath for Mlx5Connection {
                 .check_received_pkt(i)
                 .wrap_err("Error receiving packets")?
             {
+                tracing::debug!(pkt_data =? received_pkt.seg(0).as_ref(), pkt_len = received_pkt.seg(0).as_ref().len(), "Received pkt");
                 ret.push(received_pkt);
             } else {
                 // free the mbuf

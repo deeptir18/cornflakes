@@ -794,6 +794,12 @@ pub fn add_get(
             ArgType::List { .. } => ArgType::Ref {
                 inner_ty: ty.to_cf_string(),
             },
+            ArgType::String { .. } => ArgType::Ref {
+                inner_ty: ty.to_cf_string(),
+            },
+            ArgType::Bytes { .. } => ArgType::Ref {
+                inner_ty: ty.to_cf_string(),
+            },
             ty => ty,
         }
     };
