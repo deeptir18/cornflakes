@@ -1465,7 +1465,16 @@ where
         get.set_key(CFString::new_from_str(key));
         get.set_range_start(0);
         get.set_range_end(-1);
-        get.serialize_into_buf(datapath, buf)
+        tracing::debug!(
+            "Serializing get list command: {:?}; total header size is: {}, dynamic header start is {}, has range start: {}, has range end: {}",
+            get,
+            get.total_header_size(false, false),
+            get.dynamic_header_start(),
+            get.has_range_start(), get.has_range_end(),
+        );
+        let size = get.serialize_into_buf(datapath, buf)?;
+        tracing::debug!("Serialized buffer: {:?}", &buf[0..size]);
+        Ok(size)
     }
 
     fn serialize_put_list(

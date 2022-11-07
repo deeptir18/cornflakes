@@ -591,6 +591,7 @@ impl DpdkConnection {
     }
 
     fn check_received_pkt(&mut self, i: usize) -> Result<Option<ReceivedPkt<Self>>> {
+        tracing::debug!("Checking received packet");
         let recv_mbuf = self.recv_mbufs[i];
         let eth_hdr = unsafe {
             mbuf_slice!(
