@@ -110,8 +110,14 @@ where
     }
 
     // TODO: handle get list as lrange 0 to -1?
-    fn serialize_get_list(&self, _buf: &mut [u8], _key: &str, _datapath: &D) -> Result<usize> {
-        unimplemented!()
+    fn serialize_get_list(&self, buf: &mut [u8], key: &str, _datapath: &D) -> Result<usize> {
+        let data = redis::cmd("LRANGE")
+            .arg(key)
+            .arg(0)
+            .arg(-1)
+            .get_packed_command();
+        buf[0..data.len()].copy_from_slice(&data);
+        Ok(data.len())
     }
 
     fn serialize_put_list(
