@@ -9,6 +9,10 @@ library(viridis)
 font_add_google("Fira Sans")
 showtext_auto()
 
+# TODO:
+# 1. Figure out why the legend ordering is not working properly
+# 2. For some results we might want to display packets per second. Figure out
+# how to programmatically do that when we want to.
 args <- commandArgs(trailingOnly=TRUE)
 # argument 1: data
 d <- read.csv(args[1], sep=",", header = TRUE)
@@ -25,28 +29,35 @@ plot_type <- args[5]
 # cut out all data where the percentachieved is less than .95
 # d <- subset(d, percent_achieved_rate > .95)
 
-labels <- c("capnproto" = "Capnproto", 
-            "protobuf" = "Protobuf", 
-            "flatbuffers" = "Flatbuffers", 
-            "cornflakes1c-dynamic" = "Cornflakes (Always Copy)",
-            "cornflakes-dynamic" = "Cornflakes")
+labels <- c('capnproto' = 'Capnproto', 
+            'protobuf' = 'Protobuf', 
+            'flatbuffers' = 'Flatbuffers', 
+            'redis' = 'Redis',
+            'cornflakes1c-dynamic' = 'Cornflakes (Always Copy)',
+            'cornflakes-dynamic' = 'Cornflakes')
 
 shape_values <- c('capnproto' = 18, 
                   'protobuf' = 8, 
                   'flatbuffers' = 17, 
+                  'redis' = 7,
                   'cornflakes1c-dynamic' = 15, 
                   'cornflakes-dynamic' = 19)
 color_values <- c('capnproto' = '#e7298a',
                   'protobuf' = '#e6ab02',
                   'flatbuffers' = '#7570b3',
+                  'redis' = '#66a61e',
                   'cornflakes1c-dynamic' = '#d95f02',
                   'cornflakes-dynamic' = '#1b9e77')
+levels <- c('capnproto', 'protobuf', 'flatbuffers', 'redis', 'cornflakes1c-dynamic', 'cornflakes-dynamic')
+# filter the serialization labels based on which are present in data
+unique_serialization_labels <- unique(c(d$serialization))
 
-d$serialization <- factor(d$serialization, levels = c('capnproto', 
-                                                      'protobuf', 
-                                                      'flatbuffers', 
-                                                      'cornflakes1c-dynamic', 
-                                                      'cornflakes-dynamic'))
+shape_values <- shape_values[c(unique_serialization_labels)]
+color_values <- color_values[c(unique_serialization_labels)]
+labels <- labels[c(unique_serialization_labels)]
+levels <- levels[c(unique_serialization_labels)]
+
+d$serialization <- factor(d$serialization, levels = levels)
 
 base_plot <- function(data, metric) {
     # data <- subset(data, sdp99 < 300)
@@ -108,6 +119,7 @@ label_plot <- function(plot) {
                   legend.text=element_text(size=11),
                   axis.title=element_text(size=11,face="plain", colour="#000000"),
                   axis.text=element_text(size=11, colour="#000000"),
+                  legend.title.align=0.5,
                   legend.margin=margin(0,0,0,0),
                     legend.box.margin=margin(-5,-10,-5,-10)) +
             guides(colour=guide_legend(nrow=2, byrow=TRUE),
@@ -140,14 +152,13 @@ full_plot <- function(data, metric) {
     return(plot)
 }
 
-tput_plot <- function(data) {
+tput_plot <- function(data, x_label) {
     y_name <- "maxtputgbps"
     y_label <- "round(maxtputgbps, 2)"
     y_label_height <- "maxtputgbps + maxtputgbpssd"
     y_axis <- "Highest Achieved\nLoad (Gbps)"
     y_min = "maxtputgbps - maxtputgbpssd"
     y_max = "maxtputgbps + maxtputgbpssd"
-    data$serialization <- factor(data$serialization, levels = c("capnproto", "flatbuffers", "protobuf", "cornflakes1c-dynamic", "cornflakes-dynamic"))
     plot <- ggplot(data,
                     aes_string(x = "factor(num_values)",
                         y=y_name,
@@ -157,11 +168,16 @@ tput_plot <- function(data) {
             geom_bar(position=position_dodge(0.5), stat="identity", width = 0.05) +
             guides(colour=guide_legend(nrow=2, byrow=TRUE),
                    shape=guide_legend(nrow=2, byrow=TRUE)) +
+          geom_text(position = position_dodge(0.5),
+                    aes(y=maxtputgbps + 6, label = round(maxtputgbps, 2)),
+                   size = 3,
+                   angle = 70) +
+                                  #vjust = -0.4, size=5.7, family = "Fira Sans", angle = 70)) +
             scale_color_manual(values = color_values ,labels = labels) +
             scale_fill_manual(values = color_values, labels = labels, guide = "none") +
             scale_shape_manual(values = shape_values, labels = labels) +
             scale_y_continuous(expand = expansion(mult = c(0, .2))) +
-            labs(x = "Number of Batched Gets", y = y_axis) +
+            labs(x = x_label, y = y_axis) +
             theme_light() +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
@@ -196,6 +212,8 @@ summarized <- ddply(d, c("serialization", "total_size", "avg_size", "num_values"
 # summarized$sdp99_percent = summarized$sdp99 / summarized$mp99
 # summarized <- subset(summarized, summarized$sdp99_percent < .25)
 
+
+
 if (plot_type == "full") {
     plot <- full_plot(summarized, metric)
     ggsave("tmp.pdf", width=9, height=9)
@@ -209,7 +227,7 @@ if (plot_type == "full") {
 } else if (plot_type == "summary") {
     size_arg <- strtoi(args[6])
     d_postprocess <- subset(d_postprocess, total_size == size_arg)
-    plot <- tput_plot(d_postprocess)
+    plot <- tput_plot(d_postprocess, args[7])
     print(plot_pdf)
     ggsave("tmp.pdf", width=5, height=2)
     embed_fonts("tmp.pdf", outfile=plot_pdf)

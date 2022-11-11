@@ -103,6 +103,10 @@ class ConnectionWrapper(Connection):
     def stop_background_binary(self, binary_name, quiet = False, sudo = False):
         stop_command = f"kill -9 `ps aux | grep {binary_name} | grep SCREEN | grep -v grep | awk '{{print $2}}'`"
         return self.run(stop_command, quiet = quiet, sudo = sudo)
+    
+    def stop_with_pkill(self, binary_name, quiet = False, sudo = False):
+        stop_command = f"pkill -9 {binary_name}"
+        return self.run(stop_command, quiet = quiet, sudo = sudo)
 
     def file_exists(self, fname):
         res = self.run(f"ls {fname}", quiet = True)

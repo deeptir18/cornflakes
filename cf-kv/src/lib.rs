@@ -368,7 +368,7 @@ where
         Some(buf) => Ok(buf),
         None => {
             mempool_ids.append(&mut datapath.add_memory_pool(size, MIN_MEMPOOL_SIZE)?);
-            tracing::debug!("Added mempool");
+            tracing::info!("Added mempool");
             match datapath.allocate(size)? {
                 Some(buf) => Ok(buf),
                 None => {

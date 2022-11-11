@@ -159,6 +159,9 @@ def get_basic_args():
                         dest="exp_config",
                         required=True,
                         help="experiment information.")
+    parser.add_argument("-lc", "--loop_config",
+                        dest="loop_config",
+                        help = "Looping information (required for loop experiment)")
     parser.add_argument("-pp", "--pprint",
                         dest="pprint",
                         help="Print out commands that will be run",
@@ -260,6 +263,23 @@ class Experiment(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def append_to_skip_info(self, total_args, iteration, higher_level_folder):
         """Updates skip info with this iteration"""
+        return
+    
+    def parse_max_rates(self, max_rates):
+        ret = {}
+        for config in max_rates:
+            named_tuple = self.parse_exp_info_string(config)
+            ret[named_tuple] = int(max_rates[config])
+        return ret
+
+
+    @abc.abstractmethod
+    def parse_exp_info_string(self, exp_string):
+        """
+        Parses string with exp_info of form:
+        num_values = 1, num_keys = 1, size = UniformOverSizes-4096
+        into a named tuple that is hashable.
+        """
         return
 
     @abc.abstractmethod
@@ -402,9 +422,18 @@ class Experiment(metaclass=abc.ABCMeta):
             self.append_to_skip_info(total_args, iteration, folder_path)
             if not total_args.pprint:
                 time.sleep(2)
-
+    def get_loop_yaml(self):
+        return self.loop_yaml
     def execute(self, parser, namespace):
         total_args = self.add_specific_args(parser, namespace)
+        if total_args.exp_type == "loop":
+            if total_args.loop_config is None:
+                utils.error("For experiment type loop, must provide loop config")
+                exit(1)
+            self.loop_yaml = yaml.load(Path(total_args.loop_config).read_text(),
+                    Loader = yaml.FullLoader)
+        else:
+            self.loop_yaml = {}
         iterations = self.get_iterations(total_args)
         utils.debug("Number of iterations: {}".format(len(iterations)))
         # run the experiment (s) and analysis
@@ -824,6 +853,7 @@ class Iteration(metaclass=abc.ABCMeta):
 
 
             while not(is_ready(program_name)):
+                utils.debug("NOT READY")
                 time.sleep(1)
                 continue
             ct += 1
@@ -850,6 +880,14 @@ class Iteration(metaclass=abc.ABCMeta):
                     sudo = True)
                 if res.exited != 0:
                     utils.warn("Failed to kill server: stdout: {} stderr: {}".format(res.stdout, res.stderr))
+                if "extra_stop" in program:
+                    res = connections[host].stop_with_pkill(
+                            program["binary_name"].format(**program_args),
+                            quiet = True,
+                            sudo = True)
+                    if res.exited != 0:
+                        utils.warn("Failed to kill server: stdout: {} stderr: {}".format(res.stdout, res.stderr))
+
 
         any_failed = server_failed
         if not(server_failed):
