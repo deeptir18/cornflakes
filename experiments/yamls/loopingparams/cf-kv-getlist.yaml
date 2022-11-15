@@ -7,6 +7,7 @@ value_sizes: ["UniformOverSizes-4096", "UniformOverSizes-512"]
 num_trials: 3 # Number of experiment trials
 serialization_libraries: ["cornflakes-dynamic", "cornflakes1c-dynamic", "capnproto", "flatbuffers", "protobuf"] # Serialization libraries
 summary_sizes: [4096, 512] # For graphing
+summary_x_axis: "Number of items per get"
 rate_percentages: [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.95, 1.00] # Rate percentages for single configuration
 max_rates: # Each experiment encompassed by a single throughput latency curve.
         "num_values = 1, num_keys = 1, size = UniformOverSizes-4096": 50000

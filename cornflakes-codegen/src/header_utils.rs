@@ -437,7 +437,7 @@ impl MessageInfo {
 
     pub fn get_type_params_with_lifetime_ffi(
         &self,
-        is_ref_counted: bool,
+        _is_ref_counted: bool,
         fd: &ProtoReprInfo,
         datapath: &str,
     ) -> Result<Vec<String>> {

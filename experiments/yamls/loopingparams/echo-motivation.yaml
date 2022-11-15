@@ -1,0 +1,12 @@
+num_threads: 16
+num_clients: 1
+serialization_libraries: ["capnproto", "protobuf", "flatbuffers", "twocopy", "onecopy", "manualzerocopy", "ideal"]
+rate_percentages: [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.95, 1.00] # Rate percentages for single configuration
+max_rates:
+    "message = single, total_size = 4096": 50000
+    "message = list-2, total_size = 4096": 50000
+    "message = list-4, total_size = 4096": 50000
+    "message = list-8, total_size = 4096": 50000
+
+
+

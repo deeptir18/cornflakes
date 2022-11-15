@@ -52,7 +52,10 @@ class ExtraSerializationParameters(object):
         else:
             if self.serialization == "cornflakes-dynamic" or self.serialization == "cornflakes1c-dynamic":
                 self.buf_mode = "object"
-            elif self.serialization == "ideal":
+            elif self.serialization == "ideal"\
+                    or self.serialization == "manualzerocopy"\
+                    or self.serialization == "onecopy"\
+                    or self.serialization == "twocopy":
                 self.buf_mode = "echo"
             else:
                 self.buf_mode = "singlebuf"

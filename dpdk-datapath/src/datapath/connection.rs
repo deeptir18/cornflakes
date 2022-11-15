@@ -634,6 +634,7 @@ impl DpdkConnection {
         ) {
             Ok(r) => r,
             Err(_) => {
+                tracing::debug!("IP hdr wrong");
                 return Ok(None);
             }
         };
@@ -653,6 +654,7 @@ impl DpdkConnection {
         ) {
             Ok(p) => p,
             Err(_) => {
+                tracing::debug!("UDP hdr wrong");
                 return Ok(None);
             }
         };

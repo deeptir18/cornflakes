@@ -666,13 +666,6 @@ impl Mlx5Connection {
             cornflakes_libos::utils::parse_msg_id(&slice)
         };
 
-        tracing::debug!(
-            msg_id = msg_id,
-            conn_id = conn_id,
-            data_len = data_len,
-            "Received "
-        );
-
         ensure!(
             data_len
                 == unsafe {
@@ -3378,34 +3371,37 @@ impl Datapath for Mlx5Connection {
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
 
-        let (num_octowords, num_required, inline_len, allocation_size) = match self.inline_mode {
-            InlineMode::Nothing => {
-                let num_octowords =
-                    unsafe { custom_mlx5_num_octowords(0, metadata_vec.len() as u64 + 1) };
-                let num_required = metadata_vec.len() + 1;
-                (
-                    num_octowords,
-                    num_required,
-                    0,
-                    cornflakes_libos::utils::TOTAL_HEADER_SIZE,
-                )
-            }
-            InlineMode::PacketHeader => {
-                let num_octowords = unsafe {
-                    custom_mlx5_num_octowords(
-                        cornflakes_libos::utils::TOTAL_HEADER_SIZE as u64,
-                        metadata_vec.len() as u64,
+        let (num_octowords, num_required, inline_len, allocation_size, num_segs) =
+            match self.inline_mode {
+                InlineMode::Nothing => {
+                    let num_segs = metadata_vec.len() + 1;
+                    let num_octowords = unsafe { custom_mlx5_num_octowords(0, num_segs as u64) };
+                    let num_required = unsafe { custom_mlx5_num_wqes_required(num_octowords as _) };
+                    (
+                        num_octowords,
+                        num_required,
+                        0,
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                        num_segs,
                     )
-                };
-                let num_required = metadata_vec.len();
-                let inline_len = cornflakes_libos::utils::TOTAL_HEADER_SIZE;
-                (num_octowords, num_required, inline_len, 0)
-            }
-            InlineMode::ObjectHeader => {
-                unimplemented!();
-            }
-        };
-        while num_required > curr_available_wqes {
+                }
+                InlineMode::PacketHeader => {
+                    let num_segs = metadata_vec.len();
+                    let num_octowords = unsafe {
+                        custom_mlx5_num_octowords(
+                            cornflakes_libos::utils::TOTAL_HEADER_SIZE as u64,
+                            num_segs as u64,
+                        )
+                    };
+                    let num_required = unsafe { custom_mlx5_num_wqes_required(num_octowords as _) };
+                    let inline_len = cornflakes_libos::utils::TOTAL_HEADER_SIZE;
+                    (num_octowords, num_required, inline_len, 0, num_segs)
+                }
+                InlineMode::ObjectHeader => {
+                    unimplemented!();
+                }
+            };
+        while num_required as usize > curr_available_wqes {
             if self.first_ctrl_seg != ptr::null_mut() {
                 if unsafe {
                     custom_mlx5_post_transmissions(
@@ -3430,7 +3426,7 @@ impl Datapath for Mlx5Connection {
                 num_octowords as _,
                 num_required as _,
                 0,
-                1,
+                num_segs as _,
                 MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
             )
         };
@@ -4921,7 +4917,6 @@ impl Datapath for Mlx5Connection {
                 .check_received_pkt(i)
                 .wrap_err("Error receiving packets")?
             {
-                tracing::debug!(pkt_data =? received_pkt.seg(0).as_ref(), pkt_len = received_pkt.seg(0).as_ref().len(), "Received pkt");
                 ret.push(received_pkt);
             } else {
                 // free the mbuf
