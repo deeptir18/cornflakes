@@ -34,6 +34,14 @@ impl DatapathBufferOps for MutableByteBuffer {
     fn get_mempool_id(&self) -> MempoolID {
         0
     }
+
+    fn set_len(&mut self, _len: usize) {
+        unimplemented!();
+    }
+
+    fn get_mutable_slice(&mut self, _start: usize, _len: usize) -> Result<&mut [u8]> {
+        unimplemented!();
+    }
 }
 
 impl MutableByteBuffer {

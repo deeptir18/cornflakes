@@ -6,9 +6,6 @@ use tracing::Level;
 use tracing_subscriber;
 use tracing_subscriber::{
     filter::{EnvFilter, LevelFilter},
-    fmt,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
     FmtSubscriber,
 };
 use yaml_rust::{Yaml, YamlLoader};
@@ -293,6 +290,8 @@ pub enum SerializationType {
     TwoCopyBaseline,
     /// Synthetic one-copy baseline,
     OneCopyBaseline,
+    /// Manual Zero-Copy baseline,
+    ManualZeroCopyBaseline,
     /// Synthetic Ideal Zero-Copy baseline.
     IdealBaseline,
 }
@@ -319,6 +318,9 @@ impl std::str::FromStr for SerializationType {
             | "Cornflakes1c-Dynamic" => SerializationType::CornflakesOneCopyDynamic,
             "onecopy" | "one-copy" | "ONECOPY" | "OneCopy" => SerializationType::OneCopyBaseline,
             "twocopy" | "two-copy" | "TWOCOPY" | "TwoCopy" => SerializationType::TwoCopyBaseline,
+            "manualzerocopy" | "manual-zerocopy" | "MANUALZEROCOPY" | "ManualZeroCopy" => {
+                SerializationType::ManualZeroCopyBaseline
+            }
             "ideal" | "Ideal" | "IDEAL" => SerializationType::IdealBaseline,
             x => {
                 bail!("{} serialization type unknown.", x);

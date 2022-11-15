@@ -84,6 +84,17 @@ impl DatapathBufferOps for DpdkBuffer {
     fn get_mempool_id(&self) -> MempoolID {
         self.mempool_id
     }
+
+    fn set_len(&mut self, len: usize) {
+        unsafe {
+            write_struct_field!(self.mbuf, data_len, len);
+        }
+    }
+
+    #[inline]
+    fn get_mutable_slice(&mut self, start: usize, len: usize) -> Result<&mut [u8]> {
+        self.mutable_slice(start, start + len)
+    }
 }
 
 impl DpdkBuffer {
