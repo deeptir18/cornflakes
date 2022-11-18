@@ -35,3 +35,4 @@ pip3 install fabric==2.6.0 # and try this again
 pip3 install pyelftools
 pip3 install numpy pandas torch
 pip3 install agenda toml
+pip3 install result
