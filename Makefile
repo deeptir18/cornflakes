@@ -35,11 +35,21 @@ redis: mlx5-datapath
 build: mlx5-datapath
 	cargo b $(CARGOFLAGS) --features $(CARGOFEATURES)
 
-.PHONY: mlx5-datapath mlx5-netperf scatter-gather-bench
+.PHONY: mlx5-datapath mlx5-netperf scatter-gather-bench ice-datapath
 
 # scatter-gather bench microbenchmark
 scatter-gather-bench:
 	PKG_CONFIG_PATH=$(mkfile_dir)dpdk-datapath/3rdparty/dpdk/build/lib/x86_64-linux-gnu/pkgconfig make -C scatter-gather-bench CONFIG_MLX5=$(CONFIG_MLX5) DEBUG=$(DEBUG) GDB=$(GDB)
+
+dpdk:
+	# apply DPDK patch to dpdk datapath submodule
+	git -C dpdk-datapath/3rdparty/dpdk apply ../dpdk-mlx.patch
+	# build dpdk datapath submodule
+	dpdk-datapath/3rdparty/build-dpdk.sh $(PWD)/dpdk-datapath/3rdparty/dpdk
+
+
+ice-datapath:
+	$(MAKE) -C ice-datapath/ice-wrapper DPDK_PATH=$(mkfile_dir)dpdk-datapath/3rdparty/dpdk
 
 mlx5-datapath:
 	$(MAKE) -C mlx5-datapath/mlx5-wrapper CONFIG_MLX5=$(CONFIG_MLX5) DEBUG=$(DEBUG) GDB=$(GDB)
@@ -54,6 +64,7 @@ clean:
 	$(MAKE) -C mlx5-datapath/mlx5-wrapper clean
 	$(MAKE) -C mlx5-netperf clean
 	$(MAKE) -C scatter-gather-bench clean
+	$(MAKE) -C ice-datapath/ice-wrapper clean
 	rm -rf dpdk-datapath/3rdparty/dpdk/build
 	rm -rf dpdk-datapath/3rdparty/dpdk/install
 	cargo clean
