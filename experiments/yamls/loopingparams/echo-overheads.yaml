@@ -1,7 +1,7 @@
 num_threads: 16
 num_trials: 1
 num_clients: 1
-serialization_libraries: ["capnproto", "protobuf", "flatbuffers", "cornflakes", "cornflakes1c-dynamic"]
+serialization_libraries: ["capnproto", "protobuf", "flatbuffers", "cornflakes-dynamic", "cornflakes1c-dynamic"]
 rate_percentages: [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, .350, 0.40, 0.45, 0.50,  0.55,  0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.0] # Rate percentages for single configuration
 max_rates:
     "message = single, total_size = 4096": 175000
