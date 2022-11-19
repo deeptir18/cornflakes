@@ -242,8 +242,9 @@ class EchoBench(runner.Experiment):
         message = {}, total_size = {}
         """
         try:
-            parse_result = parse.parse("message = {}, total_size = {:?}",
+            parse_result = parse.parse("message = {}, total_size = {:d}",
                     exp_string)
+
             return EchoInfo(parse_result[0], parse_result[1])
         except:
             utils.error("Error parsing exp_string: {}".format(exp_string))
@@ -296,9 +297,9 @@ class EchoBench(runner.Experiment):
                 for serialization in serialization_libraries:
                     for rate_percentage in rate_percentages:
                         for echoexp in max_rates_dict:
-                            max_rate = max_rates_dict[kvexp]
-                            messsage_type = echoexp.message
-                            size = echoexp.size
+                            max_rate = max_rates_dict[echoexp]
+                            message_type = echoexp.message
+                            size = echoexp.total_size
                             rate = int(float(max_rate) *
                                         rate_percentage)
                             client_rates = [(rate, num_clients)]
@@ -430,7 +431,7 @@ class EchoBench(runner.Experiment):
                 total_size = echoinfo.total_size
                 message_type = echoinfo.message
                 self.run_summary_analysis(
-                    df, out, size, message_type, serialization)
+                    df, out, total_size, message_type, serialization)
         out.close()
 
     def graph_results(self, args, folder, logfile, post_process_logfile):
@@ -462,48 +463,8 @@ class EchoBench(runner.Experiment):
                                metric, "full"]
             print(" ".join(total_plot_args))
             sh.run(total_plot_args)
+
         
-        # make individual plots
-        if args.loop_mode == "motivation":
-            for metric in metrics:
-                for size in MOTIVATION_SIZES_TO_LOOP:
-                    message_type = MOTIVATION_MESSAGE_TYPE
-                    individual_plot_path = plot_path / \
-                        "size_{}".format(size) / \
-                        "msg_{}".format(message_type)
-                    individual_plot_path.mkdir(parents=True, exist_ok=True)
-                    pdf = individual_plot_path /\
-                        "size_{}_msg_{}_{}.pdf".format(
-                            size, message_type, metric)
-                    total_plot_args = [str(plotting_script),
-                                       str(full_log),
-                                       str(post_process_log),
-                                       str(pdf),
-                                       metric, "motivation", message_type,
-                                       str(size)]
-                    utils.info("Running: {}".format(" ".join(total_plot_args)))
-
-                    sh.run(total_plot_args)
-
-        elif args.loop_mode == "eval":
-            # make summary plots
-            for size in SIZES_TO_LOOP:
-                for summary_type in ["tree-compare", "list-compare"]:
-                    individual_plot_path = plot_path / \
-                        "size_{}".format(size)
-                    individual_plot_path.mkdir(parents=True, exist_ok=True)
-                    pdf = individual_plot_path /\
-                        "size_{}_{}_tput.pdf".format(size, summary_type)
-                    total_plot_args = [str(plotting_script),
-                                       str(full_log),
-                                       str(post_process_log),
-                                       str(pdf),
-                                       "foo", summary_type, str(size)
-                                       ]
-                    utils.info("Running: {}".format(" ".join(total_plot_args)))
-                    sh.run(total_plot_args)
-            # just return here for now
-            
             for metric in metrics:
                 for echoexp in max_rates:
                     size = echoexp.total_size

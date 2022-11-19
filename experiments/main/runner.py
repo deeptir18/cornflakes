@@ -738,6 +738,8 @@ class Iteration(metaclass=abc.ABCMeta):
                                         key = key)
                 connections[host] = connection_wrapper
             except:
+                utils.warn("Failed to ssh")
+                time.sleep(60)
                 return False
                 
             # for this host, create the remote temporary folder

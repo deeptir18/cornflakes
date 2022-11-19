@@ -13,6 +13,8 @@ showtext_auto()
 # 1. Figure out why the legend ordering is not working properly
 # 2. For some results we might want to display packets per second. Figure out
 # how to programmatically do that when we want to.
+# subset d to be points where `percent_achieved_rate > .95`
+d <- d[ which(d$percent_achieved_rate > 0.95),]
 args <- commandArgs(trailingOnly=TRUE)
 # argument 1: data
 d <- read.csv(args[1], sep=",", header = TRUE)
