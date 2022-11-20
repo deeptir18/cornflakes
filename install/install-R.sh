@@ -5,3 +5,11 @@ sudo add-apt-repository 'deb https://cloud.r-project.org/bin/linux/ubuntu focal-
 sudo apt update -y
 sudo apt install r-base -y
 sudo -i R
+
+Rscript -e 'install.packages("ggplot2", repos="https://cloud.r-project.org")'
+Rscript -e 'install.packages("tidyr", repos="https://cloud.r-project.org")'
+Rscript -e 'install.packages("extrafont", repos="https://cloud.r-project.org")'
+Rscript -e 'install.packages("showtext", repos="https://cloud.r-project.org")'
+Rscript -e 'install.packages("viridis", repos="https://cloud.r-project.org")'
+
+
