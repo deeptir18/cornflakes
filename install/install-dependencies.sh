@@ -23,6 +23,7 @@ sudo apt-get install -y libhiredis-dev # for redis experiments
 sudo apt-get install -y libsystemd-dev pandoc cython
 sudo apt-get install -y build-essential cmake gcc libudev-dev libnl-3-dev libnl-route-3-dev ninja-build pkg-config valgrind python3-dev cython3 python3-docutils pandoc
 sudo apt-get install -y libnuma-dev
+sudo apt-get install -y libfreetype6-dev
 
 # Required for RDMA core (for mellanox datapath)
 sudo apt-get -y install build-essential cmake gcc libudev-dev libnl-3-dev libnl-route-3-dev ninja-build pkg-config valgrind python3-dev cython3 python3-docutils pandoc
