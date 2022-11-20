@@ -32,10 +32,18 @@ redis: mlx5-datapath
 	cd ../../..
 	CORNFLAKES_PATH=$(PWD) make -C redis -j
 
+kv: mlx5-datapath
+	cargo b --package cf-kv $(CARGOFLAGS)
+ds-echo: mlx5-datapath
+	cargo b --package ds-echo $(CARGOFLAGS)
+
+sg-bench:
+	cargo b --package sg-bench-client $(CARGOFLAGS)
+	
 build: mlx5-datapath
 	cargo b $(CARGOFLAGS) --features $(CARGOFEATURES)
 
-.PHONY: mlx5-datapath mlx5-netperf scatter-gather-bench ice-datapath
+.PHONY: mlx5-datapath mlx5-netperf scatter-gather-bench ice-datapath kv ds-echo sg-bench
 
 # scatter-gather bench microbenchmark
 scatter-gather-bench:
@@ -46,7 +54,6 @@ dpdk:
 	git -C dpdk-datapath/3rdparty/dpdk apply ../dpdk-mlx.patch
 	# build dpdk datapath submodule
 	dpdk-datapath/3rdparty/build-dpdk.sh $(PWD)/dpdk-datapath/3rdparty/dpdk
-
 
 ice-datapath:
 	$(MAKE) -C ice-datapath/ice-wrapper DPDK_PATH=$(mkfile_dir)dpdk-datapath/3rdparty/dpdk
