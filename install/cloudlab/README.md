@@ -48,8 +48,12 @@ The cloudlab setup script has four functions:
 ## Recommended way to install
 Note that for c6525-100g machines on cloudlab, iface name before mellanox
 install is `ens1f0` and is `ens1f0np0` after mellanox install.
+This script is going to generate the Cornflakes config file inside
+`args.mount_file/user/config/cluster_config.yaml`.
+
 0. If using a Cloudlab node as the experiment base, ensure that machine has
-   ssh access to the other machines
+   ssh access to the other machines.
+
 1. Install the basic dependencies:
 ```
 python3 setup-cloudlab.py \
