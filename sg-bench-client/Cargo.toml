@@ -23,7 +23,7 @@ rand_distr = "0.3.0"
 
 [features]
 default = []
-mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath", "dpdk-datapath", "mlx5-datapath/mlx5"]
+mlx5 = ["dpdk-datapath/mlx5", "dpdk-datapath"]
 profiler = ["cornflakes-libos/profiler", "demikernel", "dpdk-datapath/profiler", "dpdk-datapath/profiler"]
 
 [[bin]]
