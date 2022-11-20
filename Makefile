@@ -33,12 +33,12 @@ redis: mlx5-datapath
 	CORNFLAKES_PATH=$(PWD) make -C redis -j
 
 kv: mlx5-datapath
-	cargo b --package cf-kv $(CARGOFLAGS)
+	cargo b --package cf-kv $(CARGOFLAGS) --features $(CARGOFEATURES)
 ds-echo: mlx5-datapath
-	cargo b --package ds-echo $(CARGOFLAGS)
+	cargo b --package ds-echo $(CARGOFLAGS) --features $(CARGOFEATURES)
 
 sg-bench:
-	cargo b --package sg-bench-client $(CARGOFLAGS)
+	cargo b --package sg-bench-client $(CARGOFLAGS) --features $(CARGOFEATURES)
 	
 build: mlx5-datapath
 	cargo b $(CARGOFLAGS) --features $(CARGOFEATURES)
