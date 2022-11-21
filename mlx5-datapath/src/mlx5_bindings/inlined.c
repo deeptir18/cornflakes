@@ -87,7 +87,11 @@ void flip_headers_mlx5_(void *data) {
     struct eth_hdr *eth = (struct eth_hdr *)data;
     struct ip_hdr *ip = (struct ip_hdr *)((char *)data + sizeof(struct eth_hdr));
     struct udp_hdr *udp = (struct udp_hdr *)((char *)data + sizeof(struct eth_hdr) + sizeof(struct ip_hdr));
+    //uint32_t *id = (uint32_t *)((char *)data + sizeof(struct eth_hdr) + sizeof(struct ip_hdr) + sizeof(struct udp_hdr)); 
+    //printf("[flip_headers_] id: %u, data addr: %p\n", *id, (char *)data);
     
+     //printf("[flip_headers_] src eth before flip: %2x:%2x:%2x:%2x:%2x:%2x\n", eth->shost.addr[0], eth->shost.addr[1], eth->shost.addr[2], eth->shost.addr[3], eth->shost.addr[4], eth->shost.addr[5]);
+     //printf("[flip_headers_] dst eth before flip: %2x:%2x:%2x:%2x:%2x:%2x\n", eth->dhost.addr[0], eth->dhost.addr[1], eth->dhost.addr[2], eth->dhost.addr[3], eth->dhost.addr[4], eth->dhost.addr[5]);
     struct eth_addr tmp;
     custom_mlx5_rte_memcpy(&tmp, &eth->dhost, sizeof(struct eth_addr));
     custom_mlx5_rte_memcpy(&eth->dhost, &eth->shost, sizeof(struct eth_addr));
@@ -104,4 +108,6 @@ void flip_headers_mlx5_(void *data) {
     udp->src_port = tmp_udp;
     udp->chksum = 0;
     udp->chksum = custom_mlx5_get_chksum(udp);
+     //printf("[flip_headers_] src eth after flip: %2x:%2x:%2x:%2x:%2x:%2x\n", eth->shost.addr[0], eth->shost.addr[1], eth->shost.addr[2], eth->shost.addr[3], eth->shost.addr[4], eth->shost.addr[5]);
+     //printf("[flip_headers_] dst eth after flip: %2x:%2x:%2x:%2x:%2x:%2x\n", eth->dhost.addr[0], eth->dhost.addr[1], eth->dhost.addr[2], eth->dhost.addr[3], eth->dhost.addr[4], eth->dhost.addr[5]);
 }

@@ -11,8 +11,6 @@ use cornflakes_libos::{
     state_machine::server::ServerSM,
     ArenaOrderedSga, Sge,
 };
-#[cfg(feature = "profiler")]
-use perftools;
 use std::marker::PhantomData;
 const FRAMING_ENTRY_SIZE: usize = 8;
 

@@ -88,7 +88,7 @@ uint16_t custom_mlx5_mbuf_refcnt_read(struct custom_mlx5_mbuf *m) {
 }
 
 uint16_t custom_mlx5_mbuf_refcnt_update_or_free(struct custom_mlx5_mbuf *m, int16_t change) {
-    NETPERF_DEBUG("In refcnt update with mbuf %p, change %d", m, change);
+    NETPERF_INFO("In refcnt update with mbuf %p, change %d", m, change);
     if (m->indirect_mbuf_ptr != NULL) {
         // update refcnt of underlying mbuf
         uint16_t ret = custom_mlx5_direct_mbuf_refcnt_update_or_free(m->indirect_mbuf_ptr, change);

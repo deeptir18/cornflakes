@@ -1,5 +1,5 @@
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel::perftools;
 #[cfg(feature = "profiler")]
 const PROFILER_DEPTH: usize = 10;
 use super::super::{
@@ -12,6 +12,14 @@ pub trait ServerSM {
     type Datapath: Datapath;
 
     fn push_buf_type(&self) -> PushBufType;
+
+    fn process_requests_echo(
+        &mut self,
+        _pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
+    ) -> Result<()> {
+        unimplemented!();
+    }
 
     fn process_requests_ordered_sga(
         &mut self,
@@ -83,7 +91,7 @@ pub trait ServerSM {
 
         loop {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Run state machine loop");
+            demikernel::timer!("Run state machine loop");
 
             #[cfg(feature = "profiler")]
             {
@@ -104,13 +112,16 @@ pub trait ServerSM {
 
             let pkts = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Datapath pop");
+                demikernel::timer!("Datapath pop");
                 datapath.pop()?
             };
             if pkts.len() > 0 {
                 match self.push_buf_type() {
                     PushBufType::SingleBuf => {
                         self.process_requests_single_buf(pkts, datapath)?;
+                    }
+                    PushBufType::Echo => {
+                        self.process_requests_echo(pkts, datapath)?;
                     }
                     _ => {
                         unreachable!();
@@ -132,12 +143,12 @@ pub trait ServerSM {
                 Self::Datapath::batch_size(),
                 Self::Datapath::max_packet_size(),
                 Self::Datapath::max_scatter_gather_entries(),
-            ) * 100,
+            ) * 1000,
         );
 
         loop {
             #[cfg(feature = "profiler")]
-            perftools::timer!("Run state machine loop");
+            demikernel::timer!("Run state machine loop");
 
             #[cfg(feature = "profiler")]
             {
@@ -158,7 +169,7 @@ pub trait ServerSM {
 
             let pkts = {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("Datapath pop");
+                demikernel::timer!("Datapath pop");
                 datapath.pop()?
             };
             if pkts.len() > 0 {
@@ -181,6 +192,9 @@ pub trait ServerSM {
                     }
                     PushBufType::ArenaOrderedSga => {
                         self.process_requests_arena_ordered_sga(pkts, datapath, &mut arena)?;
+                    }
+                    PushBufType::Echo => {
+                        self.process_requests_echo(pkts, datapath)?;
                     }
                 }
             }

@@ -1,5 +1,6 @@
 pub mod capnproto;
 pub mod cornflakes_dynamic;
+pub mod echo;
 pub mod flatbuffers;
 pub mod protobuf;
 pub mod run_datapath;

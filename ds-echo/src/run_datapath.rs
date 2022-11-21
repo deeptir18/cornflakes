@@ -100,7 +100,7 @@ macro_rules! run_client (
 
                 client.init(&mut connection)?;
 
-                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut client, &mut connection, opt_clone.retries, opt_clone.total_time, opt_clone.logfile.clone(), opt_clone.rate, opt_clone.size, &schedule)
+                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut client, &mut connection, opt_clone.retries, opt_clone.total_time, opt_clone.logfile.clone(), opt_clone.rate, opt_clone.size, &schedule, opt_clone.num_threads as _)
             }));
         }
 
@@ -132,6 +132,12 @@ fn is_cf(opt: &DsEchoOpt) -> bool {
         || opt.serialization == SerializationType::CornflakesOneCopyDynamic
 }
 
+fn is_echo(opt: &DsEchoOpt) -> bool {
+    opt.serialization == SerializationType::IdealBaseline
+        || opt.serialization == SerializationType::OneCopyBaseline
+        || opt.serialization == SerializationType::TwoCopyBaseline
+}
+
 pub fn is_baseline(opt: &DsEchoOpt) -> bool {
     !(opt.serialization == SerializationType::CornflakesOneCopyDynamic
         || opt.serialization == SerializationType::CornflakesDynamic)
@@ -139,7 +145,9 @@ pub fn is_baseline(opt: &DsEchoOpt) -> bool {
 
 pub fn check_opt(opt: &mut DsEchoOpt) -> Result<()> {
     if !is_cf(opt) && opt.push_buf_type != PushBufType::SingleBuf {
-        bail!("For non-cornflakes serialization, push buf type must be single buffer.");
+        if !is_echo(opt) && opt.push_buf_type != PushBufType::Echo {
+            bail!("For non-cornflakes serialization, push buf type must be single buffer.");
+        }
     }
 
     if opt.serialization == SerializationType::CornflakesOneCopyDynamic {

@@ -1,16 +1,16 @@
 use super::{datapath::Datapath, mem};
 use ahash::AHashMap;
 use color_eyre::eyre::{bail, Result, WrapErr};
-use hashbrown::HashMap;
 #[cfg(feature = "profiler")]
-use perftools;
+use demikernel;
+use hashbrown::HashMap;
 use std::collections::HashSet;
 const TX_MEMPOOL_ID: u32 = 1;
 
 pub type MempoolID = u32;
 pub fn align_to_pow2(x: usize) -> usize {
     #[cfg(feature = "profiler")]
-    perftools::timer!("align to pow2");
+    demikernel::timer!("align to pow2");
     if x & (x - 1) == 0 {
         return x + (x == 0) as usize;
     }
@@ -138,6 +138,7 @@ where
         let mut mempools = HashMap::default();
         mempools.insert(0, rx_mempool);
 
+        tracing::info!("Address cache 2mb size: {}", address_cache_2mb.len());
         Ok(MemoryPoolAllocator {
             mempool_ids: HashMap::default(),
             mempools: mempools,
@@ -183,6 +184,7 @@ where
 
     #[inline]
     pub fn add_mempool(&mut self, size: usize, handle: M) -> Result<MempoolID> {
+        tracing::debug!("Adding mempool");
         // add the mempool into the address cache
         for page in handle.get_2mb_pages().into_iter() {
             self.address_cache_2mb

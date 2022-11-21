@@ -10,6 +10,8 @@ typedef struct ReceivedPkt {
   uintptr_t conn_id;
 } ReceivedPkt;
 
+void Mlx5_global_debug_init(void);
+
 void OrderedSga_allocate(uintptr_t size, void **return_ptr);
 
 void *Mlx5Connection_new(const char *config_file, const char *server_ip);
@@ -21,6 +23,8 @@ void Mlx5Connection_set_inline_mode(void *conn, uintptr_t inline_mode);
 void Mlx5Connection_add_memory_pool(void *conn, uintptr_t buf_size, uintptr_t min_elts);
 
 struct ReceivedPkt *Mlx5Connection_pop(void *conn, uintptr_t *n);
+
+void **Mlx5Connection_pop_raw_packets(void *conn, uintptr_t *n);
 
 void Mlx5Connection_push_ordered_sgas(void *conn,
                                       uintptr_t n,

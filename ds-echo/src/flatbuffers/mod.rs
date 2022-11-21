@@ -18,8 +18,6 @@ use cornflakes_utils::{SimpleMessageType, TreeDepth};
 use echo_api::*;
 use flatbuffers::{root, FlatBufferBuilder, WIPOffset};
 
-#[cfg(feature = "profiler")]
-use perftools;
 use std::marker::PhantomData;
 
 pub struct FlatbuffersSerializer<'fbb, D>

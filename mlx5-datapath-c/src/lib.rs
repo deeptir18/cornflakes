@@ -2,9 +2,14 @@ use cornflakes_libos::{
     datapath::{Datapath, InlineMode},
     {ArenaOrderedRcSga, OrderedSga},
 };
-use cornflakes_utils::AppMode;
+use cornflakes_utils::{global_debug_init_env, AppMode};
 use mlx5_datapath::datapath::connection::Mlx5Connection;
 use std::{ffi::CStr, net::Ipv4Addr, str::FromStr};
+
+#[no_mangle]
+pub extern "C" fn Mlx5_global_debug_init() {
+    global_debug_init_env().unwrap();
+}
 
 fn convert_c_char(ptr: *const ::std::os::raw::c_char) -> String {
     let cstr: &CStr = unsafe { CStr::from_ptr(ptr) };
@@ -151,6 +156,27 @@ pub extern "C" fn Mlx5Connection_pop(
             new_pkt
         })
         .collect::<Vec<ReceivedPkt>>();
+    Box::into_raw(conn_box);
+    unsafe {
+        *n = pkts.len();
+    }
+    let ptr = pkts.as_mut_ptr();
+    Box::into_raw(Box::new(pkts)); // should we return a ptr to the ptr?
+    ptr
+}
+
+#[no_mangle]
+pub extern "C" fn Mlx5Connection_pop_raw_packets(
+    conn: *mut ::std::os::raw::c_void,
+    n: *mut usize,
+) -> *mut *mut ::std::os::raw::c_void {
+    let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
+    let mut pkts = conn_box
+        .pop()
+        .unwrap()
+        .into_iter()
+        .map(|pkt| Box::into_raw(Box::new(pkt)) as *mut ::std::os::raw::c_void)
+        .collect::<Vec<*mut ::std::os::raw::c_void>>();
     Box::into_raw(conn_box);
     unsafe {
         *n = pkts.len();

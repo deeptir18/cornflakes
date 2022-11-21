@@ -15,9 +15,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(feature = "profiler")]
-use perftools;
-
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct MempoolPtr(pub *mut rte_mempool);
 unsafe impl Send for MempoolPtr {}
@@ -164,7 +161,7 @@ impl Pkt {
         splits_per_chunk: usize,
     ) -> Result<()> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Construct from sga with scatter-gather");
+        demikernel::timer!("Construct from sga with scatter-gather");
         // TODO: change this back
         // 1: allocate and add header mbuf
         mbufs[0][pkt_id] =
@@ -302,7 +299,7 @@ impl Pkt {
         splits_per_chunk: usize,
     ) -> Result<()> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Set sga payloads func");
+        demikernel::timer!("Set sga payloads func");
         let mut current_attached_idx = 0;
         for i in 0..sga.num_segments() {
             let cornptr = sga.index(i);
@@ -310,7 +307,7 @@ impl Pkt {
             match cornptr.buf_type() {
                 CornType::Registered => {
                     #[cfg(feature = "profiler")]
-                    perftools::timer!("Processing registered");
+                    demikernel::timer!("Processing registered");
                     current_attached_idx += 1;
                     self.set_external_payload(
                         mbufs,
@@ -329,7 +326,7 @@ impl Pkt {
                 }
                 CornType::Normal => {
                     #[cfg(feature = "profiler")]
-                    perftools::timer!("Processing copies");
+                    demikernel::timer!("Processing copies");
                     if current_attached_idx > 0 {
                         bail!("Sga cannot have owned buffers after borrowed buffers; all owned buffers must be at the front.");
                     }
@@ -383,7 +380,7 @@ impl Pkt {
         splits_per_chunk: usize,
     ) -> Result<()> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Set external payload func");
+        demikernel::timer!("Set external payload func");
 
         debug!("The mbuf idx we're changing: {}", idx);
         // check whether the payload is in one of the memzones, or an external region
@@ -1072,9 +1069,10 @@ pub fn dpdk_register_extmem(
     // need to map physical addresses for each virtual region
 
     // if using mellanox, need to retrieve the lkey for this pinned memory
-    let mut ibv_mr: *mut ::std::os::raw::c_void = ptr::null_mut();
+    let mut _ibv_ptr: *mut ::std::os::raw::c_void = ptr::null_mut();
     #[cfg(feature = "mlx5")]
     {
+        let mut ibv_mr = _ibv_ptr;
         // TODO: currently, only calling for port 0
         ibv_mr = dpdk_call!(mlx5_manual_reg_mr_callback(
             0,
@@ -1085,16 +1083,17 @@ pub fn dpdk_register_extmem(
         if ibv_mr.is_null() {
             bail!("Manual memory registration failed.");
         }
+        _ibv_ptr = ibv_mr;
     }
 
-    Ok(ibv_mr)
+    Ok(_ibv_ptr)
 }
 
 #[inline]
-pub fn dpdk_unregister_extmem(metadata: &mem::MmapMetadata) -> Result<()> {
+pub fn dpdk_unregister_extmem(_metadata: &mem::MmapMetadata) -> Result<()> {
     #[cfg(feature = "mlx5")]
     {
-        dpdk_call!(mlx5_manual_dereg_mr_callback(metadata.get_ibv_mr()));
+        dpdk_call!(mlx5_manual_dereg_mr_callback(_metadata.get_ibv_mr()));
     }
     Ok(())
 }

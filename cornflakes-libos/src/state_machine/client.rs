@@ -11,6 +11,10 @@ use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_utils::get_thread_latlog;
 use std::time::{Duration, Instant};
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 pub trait ClientSM {
     type Datapath: Datapath;
 
@@ -168,11 +172,17 @@ pub trait ClientSM {
         total_time: u64,
         time_out: impl Fn(usize) -> Duration,
         no_retries: bool,
+        num_threads: usize,
     ) -> Result<()> {
+        // wait for all threads to reach this function
+        let _ = GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
+        while GLOBAL_THREAD_COUNT.load(Ordering::SeqCst) != num_threads {}
+
         let freq = datapath.timer_hz(); // cycles per second
         let conn_id = datapath
             .connect(self.server_addr())
             .wrap_err("No more available connection IDs")?;
+
         let time_start = Instant::now();
         let mut idx = 0;
 
@@ -180,7 +190,7 @@ pub trait ClientSM {
         let mut deficit;
         let mut next = start;
         while let Some((id, msg)) = self.get_next_msg(&datapath)? {
-            if datapath.current_cycles() > (total_time * freq + start) {
+            if time_start.elapsed().as_secs() > total_time {
                 tracing::debug!("Total time done");
                 break;
             }
@@ -239,6 +249,7 @@ pub fn run_client_loadgen<D>(
     rate: u64,
     message_size: usize,
     schedule: &PacketSchedule,
+    num_threads: usize,
 ) -> Result<ThreadStats>
 where
     D: Datapath,
@@ -249,7 +260,14 @@ where
         false => no_retries_timeout,
     };
 
-    client.run_open_loop(connection, schedule, total_time, timeout, !retries)?;
+    client.run_open_loop(
+        connection,
+        schedule,
+        total_time,
+        timeout,
+        !retries,
+        num_threads,
+    )?;
     tracing::info!(thread = thread_id, "Finished running open loop");
 
     let exp_duration = start_run.elapsed().as_nanos();

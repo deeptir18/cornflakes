@@ -24,7 +24,7 @@ macro_rules! run_server_retwis(
 
         // init retwis load generator
         let load_generator = RetwisServerLoader::new($opt.num_keys, $opt.key_size, $opt.value_size_generator);
-        let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, $opt.zero_copy_puts, $opt.non_refcounted)?;
+        let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, $opt.zero_copy_puts, false)?;
         kv_server.init(&mut connection)?;
         kv_server.write_ready($opt.ready_file.clone())?;
         if is_baseline {
@@ -103,7 +103,7 @@ macro_rules! run_client_retwis(
 
                 kv_client.init(&mut connection)?;
 
-                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, size as _, &schedule)
+                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, size as _, &schedule, opt_clone.num_threads as _)
             }));
         }
 
@@ -265,8 +265,6 @@ pub struct RetwisOpt {
         default_value = "5-15-30-50"
     )]
     pub retwis_distribution: RetwisRequestDistribution,
-    #[structopt(long = "non_refcounted", help = "Non refcounted version of cornflakes")]
-    pub non_refcounted: bool,
     #[structopt(
         long = "ready_file",
         help = "File to indicate server is ready to receive requests"

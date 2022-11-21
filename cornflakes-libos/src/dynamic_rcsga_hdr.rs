@@ -11,9 +11,6 @@ use std::{
     slice::Iter, str,
 };
 
-#[cfg(feature = "profiler")]
-use perftools;
-
 #[inline]
 pub fn write_size_and_offset(write_offset: usize, size: usize, offset: usize, buffer: &mut [u8]) {
     let mut forward_pointer = MutForwardPointer(buffer, write_offset);
@@ -41,7 +38,7 @@ struct ForwardPointer<'a>(&'a [u8], usize);
 impl<'a> ForwardPointer<'a> {
     #[inline]
     pub fn get_size(&self) -> u32 {
-        LittleEndian::read_u32(&self.0[self.1..(self.1 + 34)])
+        LittleEndian::read_u32(&self.0[self.1..(self.1 + 4)])
     }
 
     #[inline]
@@ -276,7 +273,7 @@ where
         // recursive serialize each item
         {
             #[cfg(feature = "profiler")]
-            perftools::timer!("recursive serialization");
+            demikernel::timer!("recursive serialization");
             self.inner_serialize(
                 header_buffer,
                 0,
@@ -288,7 +285,7 @@ where
         // reorder entries according to size threshold and whether entries are registered.
         {
             #[cfg(feature = "profiler")]
-            perftools::timer!("reorder sga");
+            demikernel::timer!("reorder sga");
             ordered_sga.reorder_by_size_and_registration(datapath, &mut offsets)?;
             // reorder entries if current (zero-copy segments + 1) exceeds max zero-copy segments
         }
@@ -297,7 +294,7 @@ where
         // iterate over header, writing in forward pointers based on new ordering
         {
             #[cfg(feature = "profiler")]
-            perftools::timer!("fill in sga offsets");
+            demikernel::timer!("fill in sga offsets");
             for (sge, offset) in ordered_sga
                 .entries_slice(0, required_entries)
                 .iter()
@@ -325,7 +322,7 @@ where
     {
         let mut owned_hdr = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("alloc hdr");
+            demikernel::timer!("alloc hdr");
             self.alloc_hdr()
         };
         let header_buffer = owned_hdr.as_mut_slice();
@@ -366,7 +363,7 @@ where
         // recursive serialize each item
         {
             #[cfg(feature = "profiler")]
-            perftools::timer!("recursive serialization");
+            demikernel::timer!("recursive serialization");
             let entries = &mut ordered_sga.entries;
             let offsets = &mut ordered_sga.offsets;
             self.inner_serialize(
@@ -416,7 +413,7 @@ where
         // recursive serialize each item
         {
             #[cfg(feature = "profiler")]
-            perftools::timer!("recursive serialization");
+            demikernel::timer!("recursive serialization");
             let entries = &mut ordered_sga.entries;
             let offsets = &mut ordered_sga.offsets;
             self.inner_serialize(
@@ -431,7 +428,7 @@ where
             // reorder entries according to size threshold and whether entries are registered.
             {
                 #[cfg(feature = "profiler")]
-                perftools::timer!("reorder sga");
+                demikernel::timer!("reorder sga");
                 ordered_sga.reorder_by_size_and_registration(datapath, with_copy)?;
             }
         } else {
@@ -442,7 +439,7 @@ where
         // iterate over header, writing in forward pointers based on new ordering
         {
             #[cfg(feature = "profiler")]
-            perftools::timer!("fill in sga offsets");
+            demikernel::timer!("fill in sga offsets");
             for (sge, offset) in ordered_sga
                 .entries_slice(0, required_entries)
                 .iter()
@@ -469,7 +466,7 @@ where
     {
         let mut owned_hdr = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("alloc hdr");
+            demikernel::timer!("alloc hdr");
             let size = self.total_header_size(false, false);
             bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
@@ -492,7 +489,7 @@ where
     {
         let mut owned_hdr = {
             #[cfg(feature = "profiler")]
-            perftools::timer!("alloc hdr");
+            demikernel::timer!("alloc hdr");
             let size = self.total_header_size(false, false);
             bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
@@ -1541,7 +1538,7 @@ where
         'obj: 'sge,
     {
         #[cfg(feature = "profiler")]
-        perftools::timer!("List inner serialize");
+        demikernel::timer!("List inner serialize");
 
         {
             let mut forward_pointer = MutForwardPointer(header_buffer, constant_header_offset);

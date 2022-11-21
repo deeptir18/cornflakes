@@ -85,8 +85,9 @@ fn main() {
 
     // compile cornflakes dynamic
     let input_cf_path = echo_src_path.clone().join("cornflakes_dynamic");
-    let input_cf_file_sga = input_cf_path.clone().join("echo_dynamic_sga.proto");
+    let input_cf_file_hybrid = input_cf_path.clone().join("echo_dynamic_hybrid.proto");
     let input_cf_file_rcsga = input_cf_path.clone().join("echo_dynamic_rcsga.proto");
+    let input_cf_file_sga = input_cf_path.clone().join("echo_dynamic_sga.proto");
     // with ref counting
     match compile(
         input_cf_file_sga.as_path().to_str().unwrap(),
@@ -95,7 +96,7 @@ fn main() {
     ) {
         Ok(_) => {}
         Err(e) => {
-            panic!("Cornflakes dynamic sga failed: {:?}", e);
+            panic!("cornflakes dynamic sga failed: {:?}", e);
         }
     }
 
@@ -107,6 +108,18 @@ fn main() {
         Ok(_) => {}
         Err(e) => {
             panic!("Cornflakes dynamic rcsga codegen failed: {:?}", e);
+        }
+    }
+
+    // hybrid version of library
+    match compile(
+        input_cf_file_hybrid.as_path().to_str().unwrap(),
+        &out_dir,
+        CompileOptions::new_with_datapath_param(HeaderType::HybridRcSga, Language::Rust),
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("cornflakes dynamic sga failed: {:?}", e);
         }
     }
 

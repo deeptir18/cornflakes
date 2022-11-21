@@ -1,9 +1,6 @@
 use color_eyre::eyre::Result;
 use cornflakes_utils::{global_debug_init, AppMode, TraceLevel};
-use dpdk_datapath::{
-    datapath2::fast_echo::{do_client, do_server, MemoryMode},
-    dpdk_bindings,
-};
+use dpdk_datapath::datapath2::fast_echo::{do_client, do_server, MemoryMode};
 use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
@@ -77,7 +74,7 @@ fn main() -> Result<()> {
     global_debug_init(opt.trace_level)?;
     #[cfg(feature = "mlx5")]
     {
-        dpdk_bindings::load_mlx5_driver();
+        dpdk_datapath::dpdk_bindings::load_mlx5_driver();
     }
 
     match opt.mode {

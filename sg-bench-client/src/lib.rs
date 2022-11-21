@@ -8,8 +8,6 @@ use cornflakes_libos::{
     utils::AddressInfo,
     MsgID,
 };
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use std::marker::PhantomData;
 const DEFAULT_CHAR: u8 = 'c' as u8;
 const RESPONSE_DATA_OFF: usize = 12;
@@ -45,23 +43,6 @@ where
     _datapath: PhantomData<D>,
 }
 
-fn get_region_order(random_seed: usize, num_regions: usize) -> Result<Vec<usize>> {
-    let mut r = StdRng::seed_from_u64(random_seed as u64);
-    let mut indices: Vec<usize> = (0..num_regions).collect();
-    let mut ret: Vec<usize> = (0..num_regions).collect();
-    for i in 0usize..(num_regions - 1) {
-        let j: usize = i + (r.gen::<usize>() % (num_regions - i));
-        if i != j {
-            indices.swap(i, j);
-        }
-    }
-    for i in 1..num_regions {
-        ret[i - 1] = indices[i];
-    }
-    ret[num_regions - 1] = indices[0];
-    return Ok(ret);
-}
-
 fn get_starting_position(
     client_id: usize,
     thread_id: usize,
@@ -88,12 +69,12 @@ where
         num_segments: usize,
         array_size: usize,
         send_packet_size: usize,
-        random_seed: usize,
         max_num_requests: usize,
         thread_id: usize,
         client_id: usize,
         total_threads: usize,
         total_clients: usize,
+        region_order: Vec<usize>,
     ) -> Result<Self> {
         let mut server_payload_regions: Vec<Bytes> =
             vec![Bytes::default(); array_size / segment_size];
@@ -110,9 +91,6 @@ where
         // store bytes in each region for checking
         let mut requests: Vec<(Bytes, Vec<usize>)> = Vec::with_capacity(max_num_requests);
 
-        // 1) get cannonical order of regions based on random seed and pointer chasing
-        let region_order = get_region_order(random_seed, array_size / segment_size)?;
-
         // 2) based on this thread's thread id and client id, get "starting position" into the
         //    list
         let starting_offset = get_starting_position(
@@ -128,22 +106,21 @@ where
         }
 
         // (3) with starting position, num segments, construct the packet
+        let min_send_size = REQUEST_SEGLIST_OFFSET_PADDING_SIZE + 8 * num_segments;
         ensure!(
-            send_packet_size > REQUEST_SEGLIST_OFFSET_PADDING_SIZE + 8 * num_segments,
+            send_packet_size >= min_send_size,
             "Provided send packet size must be atleast segment length"
         );
-        let padding: Vec<u8> = match send_packet_size > 0 {
+        let padding: Vec<u8> = match send_packet_size > min_send_size {
             true => std::iter::repeat(0u8)
-                .take(send_packet_size - (REQUEST_SEGLIST_OFFSET_PADDING_SIZE + 8 * num_segments))
+                .take(send_packet_size - min_send_size)
                 .collect(),
             false => Vec::default(),
         };
         for _ in 0..max_num_requests {
             if send_packet_size != 0 {}
-            let mut bytes = match send_packet_size == 0 {
-                true => {
-                    BytesMut::with_capacity(REQUEST_SEGLIST_OFFSET_PADDING_SIZE + 8 * num_segments)
-                }
+            let mut bytes = match send_packet_size <= min_send_size {
+                true => BytesMut::with_capacity(min_send_size),
                 false => BytesMut::with_capacity(send_packet_size),
             };
             // write four bytes of 0 as the padding
@@ -153,7 +130,7 @@ where
             let mut segment_indices = Vec::with_capacity(num_segments);
             for _ in 0..num_segments {
                 cur_region_idx = region_order[cur_region_idx];
-                bytes.put_u64(cur_region_idx as u64);
+                bytes.put_u64_le(cur_region_idx as u64);
                 segment_indices.push(cur_region_idx);
             }
             bytes.put(padding.as_slice());
@@ -232,6 +209,7 @@ where
             (id as usize) < self.requests.len(),
             format!("Requests array doesn't have msg id # {}", id)
         );
+        tracing::debug!("Seg sequence: {:?}", &self.requests[id as usize].1);
         let bytes_to_send = &self.requests[id as usize].0;
         Ok(Some((id as u32, bytes_to_send)))
     }
@@ -244,7 +222,7 @@ where
         if cfg!(debug_assertions) {
             let expected_size = self.num_mbufs * self.segment_size + RESPONSE_DATA_OFF;
             ensure!(
-                sga.data_len() == expected_size,
+                (sga.data_len() == expected_size),
                 format!(
                     "Received sga id {} has length {}, expected {}",
                     sga.msg_id(),

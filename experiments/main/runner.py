@@ -17,11 +17,13 @@ from invoke import UnexpectedExit
 from main import connection
 import agenda
 import threading
+import pandas as pd
 
 def extend_with_serialization_parameters(parser):
     parser.add_argument("-pbt", "--push_buf_type",
                                 dest="buf_mode",
-                                choices=["singlebuf", "arenaorderedsga"],
+                                choices=["singlebuf",
+                                    "arenaorderedsga", "object", "echo"],
                                 required=True)
     parser.add_argument("-inline", "--inline_mode",
                                 dest="inline_mode",
@@ -29,8 +31,7 @@ def extend_with_serialization_parameters(parser):
                                     "objectheader"],
                                 required=True)
     parser.add_argument("-ct", "--copy_threshold",
-                                dest="copy_threshold",
-                                default = "infinity")
+                                dest="copy_threshold")
     parser.add_argument("-maxseg", "--max_sg_segments",
                                 dest="max_sg_segments",
                                 default=1,
@@ -51,7 +52,12 @@ class ExtraSerializationParameters(object):
             self.buf_mode = buf_mode
         else:
             if self.serialization == "cornflakes-dynamic" or self.serialization == "cornflakes1c-dynamic":
-                self.buf_mode = "arenaorderedrcsga"
+                self.buf_mode = "object"
+            elif self.serialization == "ideal"\
+                    or self.serialization == "manualzerocopy"\
+                    or self.serialization == "onecopy"\
+                    or self.serialization == "twocopy":
+                self.buf_mode = "echo"
             else:
                 self.buf_mode = "singlebuf"
 
@@ -61,7 +67,7 @@ class ExtraSerializationParameters(object):
             if self.serialization == "cornflakes-dynamic" or self.serialization == "cornflakes1c-dynamic":
                 self.inline_mode = "objectheader"
             else:
-                self.inline_mode = "packetheader"
+                self.inline_mode = "nothing"
 
         if max_sg_segments != None:
             self.max_sg_segments = max_sg_segments
@@ -77,7 +83,7 @@ class ExtraSerializationParameters(object):
             if self.serialization == "cornflakes-dynamic":
                 self.copy_threshold = 0
             else:
-                self.copy_threshold = "infinity"
+                self.copy_threshold = "1000000000" # basically infinity
 
     def fill_in_args(self, ret, program_name):
         ret["library"] = self.serialization
@@ -157,6 +163,9 @@ def get_basic_args():
                         dest="exp_config",
                         required=True,
                         help="experiment information.")
+    parser.add_argument("-lc", "--loop_config",
+                        dest="loop_config",
+                        help = "Looping information (required for loop experiment)")
     parser.add_argument("-pp", "--pprint",
                         dest="pprint",
                         help="Print out commands that will be run",
@@ -259,6 +268,23 @@ class Experiment(metaclass=abc.ABCMeta):
     def append_to_skip_info(self, total_args, iteration, higher_level_folder):
         """Updates skip info with this iteration"""
         return
+    
+    def parse_max_rates(self, max_rates):
+        ret = {}
+        for config in max_rates:
+            named_tuple = self.parse_exp_info_string(config)
+            ret[named_tuple] = int(max_rates[config])
+        return ret
+
+
+    @abc.abstractmethod
+    def parse_exp_info_string(self, exp_string):
+        """
+        Parses string with exp_info of form:
+        num_values = 1, num_keys = 1, size = UniformOverSizes-4096
+        into a named tuple that is hashable.
+        """
+        return
 
     @abc.abstractmethod
     def graph_results(self, total_args, folder, logfile):
@@ -308,8 +334,14 @@ class Experiment(metaclass=abc.ABCMeta):
                     utils.warn("Analysis for iteration {} did not exist and failed to rerun".format(str(iteration)))
                     continue
             
+            if not(os.path.exists(analysis_path)):
+                host_type_map = self.get_machine_config()["host_types"]
+                program_args_map = self.get_program_args(self.get_exp_config())
+                client_file_list = self.get_client_file_list(program_args_map, host_type_map)
+                iteration.calculate_iteration_stats(local_folder, client_file_list, False)
+            
             iteration_df = iteration.read_analysis_log(folder_path)
-            df.append(iteration_df, ignore_index = True)
+            df = pd.concat([df, iteration_df], ignore_index = True)
         # write to logfile
         df.to_csv(str(folder_path/logfile))
 
@@ -392,10 +424,20 @@ class Experiment(metaclass=abc.ABCMeta):
             ret = ""
             # append optional skip info about this trial to the skip
             self.append_to_skip_info(total_args, iteration, folder_path)
-            time.sleep(2)
-
+            if not total_args.pprint:
+                time.sleep(2)
+    def get_loop_yaml(self):
+        return self.loop_yaml
     def execute(self, parser, namespace):
         total_args = self.add_specific_args(parser, namespace)
+        if total_args.exp_type == "loop":
+            if total_args.loop_config is None:
+                utils.error("For experiment type loop, must provide loop config")
+                exit(1)
+            self.loop_yaml = yaml.load(Path(total_args.loop_config).read_text(),
+                    Loader = yaml.FullLoader)
+        else:
+            self.loop_yaml = {}
         iterations = self.get_iterations(total_args)
         utils.debug("Number of iterations: {}".format(len(iterations)))
         # run the experiment (s) and analysis
@@ -447,6 +489,41 @@ class Iteration(metaclass=abc.ABCMeta):
         """
         return
 
+    def get_host_list(self, host_type_map):
+        """
+        Get list of all hosts involved in running this program, for client and
+        server program
+        """
+        ret = []
+        if "server" in host_type_map:
+            ret.extend(host_type_map["server"])
+        if "client" in host_type_map:
+            ret.extend(self.get_iteration_clients(host_type_map["client"]))
+        return ret
+    
+    def get_hosts(self, program, programs_metadata):
+        ret = []
+        if program == "start_server":
+            return [programs_metadata[program]["hosts"][0]]
+        elif program == "start_client":
+            options = programs_metadata[program]["hosts"]
+            return self.get_iteration_clients(options)
+        else:
+            utils.error("Unknown program name: {}".format(program))
+            exit(1)
+        return ret
+    def find_client_id(self, client_options, host):
+        # TODO: what if this doesn't work
+        return client_options.index(host)
+    
+    def get_program_hosts(self, program_name, host_type_map):
+        ret = []
+        if program_name == "start_server":
+            return host_type_map["server"]
+        elif program_name == "start_client":
+            return self.get_iteration_clients(host_type_map["client"]) 
+    
+
     def get_program_version_info(self, host_cornflakes_dir, host, cxn):
         ret = {}
         res = cxn.run("git branch", 
@@ -473,19 +550,18 @@ class Iteration(metaclass=abc.ABCMeta):
 
     def read_key_from_analysis_log(self, folder_path, key):
         df = self.read_analysis_log(folder_path)
+        col = df[key]
+        print(df[key])
         try:
-            return df[key].iloc(0)
+            return col[0]
         except:
             raise ValueError("Could not read value of {} from df {}".format(key, df))
             
     # returns dataframe representing the data
     def read_analysis_log(self, local_folder):
-        analysis_file = Path(self.get_folder_name(local_folder) /
-        "analysis.log")
-        if not(os.path.exists(analysis_file)):
-            return pd.DataFrame()
-        else:
-            return pd.read_csv(analysis_file)
+        analysis_path = self.get_folder_name(local_folder) /\
+                "analysis.log"
+        return pd.read_csv(analysis_path)
 
     def calculate_iteration_stats(self, local_folder,
             client_file_list, print_stats):
@@ -554,7 +630,7 @@ class Iteration(metaclass=abc.ABCMeta):
 
         analysis_path = Path(local_folder) / "analysis.log"
         with open(str(analysis_path), "w") as f:
-            f.write(",".join(self.get_csv_header()))
+            f.write(",".join(self.get_csv_header()) + os.linesep)
             f.write(format_string + os.linesep)
             f.close()
         if print_stats:
@@ -562,8 +638,8 @@ class Iteration(metaclass=abc.ABCMeta):
                                "\t- offered load: {:.4f} req/s | {:.4f} Gbps\n"
                                "\t- achieved load: {:.4f} req/s | {:.4f} Gbps\n"
                                "\t- percentage achieved rate: {:.4f}\n"
-                               "\t- avg latency: {: .4f}"
-                               "\u03BCs\n\t- median: {:"
+                               "\t- avg latency: {:.4f}"
+                               " \u03BCs\n\t- median: {:"
                                ".4f} \u03BCs\n\t- p99: {: .4f}"
                                "\u03BCs\n\t- p999:"
                                "{: .4f} \u03BCs".format(
@@ -583,20 +659,6 @@ class Iteration(metaclass=abc.ABCMeta):
 
     @ abc.abstractmethod
     def get_folder_name(self, high_level_folder):
-        return
-
-    @abc.abstractmethod
-    def get_host_list(self, host_type_map):
-        """
-        Returns list of all hosts this program needs to make connections
-        with.
-        """
-        return
-    @abc.abstractmethod
-    def get_program_hosts(self, program_name, host_type_map):
-        """
-        Returns list of hosts based on program_name.
-        """
         return
 
     @ abc.abstractmethod
@@ -685,6 +747,8 @@ class Iteration(metaclass=abc.ABCMeta):
             * pprint - Instead of running, just print out command lines.
             * use_perf - Whether to use perf or not when running the server.
         """
+        # generate a random seed for this experiment
+        random_seed = int(time.time())
         programs = exp_config["programs"]
         exp_time = exp_config["time"]
 
@@ -693,7 +757,6 @@ class Iteration(metaclass=abc.ABCMeta):
 
         # map from a program id to the actual process
         program_counter = 0
-        manager = mp.Manager()
         # status of each (program_name, host)
         status_dict = {}
         # map of hosts -> connections
@@ -701,9 +764,6 @@ class Iteration(metaclass=abc.ABCMeta):
 
         # map of (program_name, host) -> program_args
         program_args_map = {}
-
-        # map of (program_name, host) -> multiprocessing targets
-        proc_map = {}
 
         # program commands
         program_cmds = {}
@@ -729,12 +789,17 @@ class Iteration(metaclass=abc.ABCMeta):
             host_addr = machine_config["hosts"][host]["addr"]
             key = machine_config["key"]
             user = machine_config["user"]               
-            connection_wrapper = connection.ConnectionWrapper(
+            try:
+                connection_wrapper = connection.ConnectionWrapper(
                                         addr = host_addr,
                                         user = user,
                                         port = 22,
                                         key = key)
-            connections[host] = connection_wrapper
+                connections[host] = connection_wrapper
+            except:
+                utils.warn("Failed to ssh")
+                time.sleep(60)
+                return False
                 
             # for this host, create the remote temporary folder
             remote_tmp_path = self.get_folder_name(machine_config["hosts"][host]["tmp_folder"])
@@ -743,11 +808,15 @@ class Iteration(metaclass=abc.ABCMeta):
         
         # populate  program args
         for program_name in programs:
+            utils.info("Configuring program: ", program_name)
             program = programs[program_name]
             program_hosts = self.get_program_hosts(program_name,
                     host_type_map)
             for host in program_hosts:
+                utils.info("Configuring host: ", host)
                 # populate program args
+                # NOTE: random seed should be the *same* across all client
+                # hosts
                 program_args = self.get_program_args(host,
                                                      machine_config,
                                                      program_name,
@@ -758,6 +827,7 @@ class Iteration(metaclass=abc.ABCMeta):
                 program_args["local_folder"] = local_results_path
                 program_args["host"] = host
                 program_args["time"] = exp_time
+                program_args["random_seed"] = random_seed
                 program_args_map[(program_name, host)] = program_args
 
                 program_cmd = program["start"].format(**program_args)
@@ -798,7 +868,6 @@ class Iteration(metaclass=abc.ABCMeta):
                             "res_map": status_dict,
                             "res_key": (program_name, host)
                             }
-
         # function to check whether a certain program can be started
         def is_ready(other_program_name):
             other_program = programs[other_program_name]
@@ -851,10 +920,12 @@ class Iteration(metaclass=abc.ABCMeta):
 
 
             while not(is_ready(program_name)):
+                utils.debug("NOT READY")
                 time.sleep(1)
                 continue
             ct += 1
         
+        # wait for input
         if not(server_failed):
             clients = [threading.Thread(
             target = run_client,
@@ -876,6 +947,14 @@ class Iteration(metaclass=abc.ABCMeta):
                     sudo = True)
                 if res.exited != 0:
                     utils.warn("Failed to kill server: stdout: {} stderr: {}".format(res.stdout, res.stderr))
+                if "extra_stop" in program:
+                    res = connections[host].stop_with_pkill(
+                            program["binary_name"].format(**program_args),
+                            quiet = True,
+                            sudo = True)
+                    if res.exited != 0:
+                        utils.warn("Failed to kill server: stdout: {} stderr: {}".format(res.stdout, res.stderr))
+
 
         any_failed = server_failed
         if not(server_failed):
@@ -902,18 +981,19 @@ class Iteration(metaclass=abc.ABCMeta):
                     any_failed = True
 
         if not(any_failed):
-            for program_name in programs:
-                program = programs[program_name]
-                program_hosts = self.get_program_hosts(program_name, host_type_map)
-                # transfer all logs locally
-                for host in program_hosts:
-                    program_args = program_args_map[(program_name, host)]
-                    program_args_copy = copy.deepcopy(program_args)
-                    for filetype, filename in program["log"].items():
-                        remote_file = filename.format(**program_args)
-                        program_args_copy["folder"] = local_results_path
-                        local_file = filename.format(**program_args_copy)
-                        connections[host].get(remote_file, local_file)
+            if not pprint:
+                for program_name in programs:
+                    program = programs[program_name]
+                    program_hosts = self.get_program_hosts(program_name, host_type_map)
+                    # transfer all logs locally
+                    for host in program_hosts:
+                        program_args = program_args_map[(program_name, host)]
+                        program_args_copy = copy.deepcopy(program_args)
+                        for filetype, filename in program["log"].items():
+                            remote_file = filename.format(**program_args)
+                            program_args_copy["folder"] = local_results_path
+                            local_file = filename.format(**program_args_copy)
+                            connections[host].get(remote_file, local_file)
 
         # delete all files, even if stuff has failed
         for host in program_host_list:
@@ -953,8 +1033,43 @@ class Iteration(metaclass=abc.ABCMeta):
         # run analysis
         if not pprint:
             self.calculate_iteration_stats(
-                    local_results_path,                        client_file_list, print_stats)
+                    local_results_path, client_file_list, print_stats)
         return True
+
+    def get_program_args_map(self, exp_config):
+        programs = exp_config["programs"]
+        program_args_map = {}
+        for program_name in programs:
+            utils.info("Configuring program: ", program_name)
+            program = programs[program_name]
+            program_hosts = self.get_program_hosts(program_name,
+                    host_type_map)
+            for host in program_hosts:
+                utils.info("Configuring host: ", host)
+                # populate program args
+                program_args = self.get_program_args(host,
+                                                     machine_config,
+                                                     program_name,
+                                                     programs)
+                program_args["cornflakes_dir"] = machine_config["hosts"][host]["cornflakes_dir"]
+                program_args["config_file"] = machine_config["hosts"][host]["config_file"]
+                program_args["folder"] = self.get_folder_name(host_tmp)
+                program_args["local_folder"] = local_results_path
+                program_args["host"] = host
+                program_args["time"] = exp_time
+                program_args_map[(program_name, host)] = program_args
+
+    def get_client_file_list(self, program_args_map, host_type_map):
+        client_list = self.get_program_hosts("start_client",
+                    host_type_map)
+        client_file_list = []
+        for host in client_list:
+            program_args = program_args_map[("start_client", host)]
+            program_args_copy = copy.deepcopy(program_args)
+            program_args_copy["folder"] = local_results_path
+            client_file_list.append(programs["start_client"]["log"]["results"].format(**program_args_copy))
+        return client_file_list
+        
 
 def run_client(cxn, kwargs):
     cxn.run(**kwargs)

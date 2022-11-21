@@ -84,6 +84,17 @@ impl DatapathBufferOps for DpdkBuffer {
     fn get_mempool_id(&self) -> MempoolID {
         self.mempool_id
     }
+
+    fn set_len(&mut self, len: usize) {
+        unsafe {
+            write_struct_field!(self.mbuf, data_len, len);
+        }
+    }
+
+    #[inline]
+    fn get_mutable_slice(&mut self, start: usize, len: usize) -> Result<&mut [u8]> {
+        self.mutable_slice(start, start + len)
+    }
 }
 
 impl DpdkBuffer {
@@ -292,7 +303,7 @@ impl MetadataOps for RteMbufMetadata {
     }
 
     fn data_len(&self) -> usize {
-        unsafe { access!(self.mbuf, data_len, usize) }
+        self.data_len
     }
 
     fn set_data_len_and_offset(&mut self, len: usize, offset: usize) -> Result<()> {
@@ -591,6 +602,7 @@ impl DpdkConnection {
     }
 
     fn check_received_pkt(&mut self, i: usize) -> Result<Option<ReceivedPkt<Self>>> {
+        tracing::debug!("Checking received packet");
         let recv_mbuf = self.recv_mbufs[i];
         let eth_hdr = unsafe {
             mbuf_slice!(
@@ -622,6 +634,7 @@ impl DpdkConnection {
         ) {
             Ok(r) => r,
             Err(_) => {
+                tracing::debug!("IP hdr wrong");
                 return Ok(None);
             }
         };
@@ -641,6 +654,7 @@ impl DpdkConnection {
         ) {
             Ok(p) => p,
             Err(_) => {
+                tracing::debug!("UDP hdr wrong");
                 return Ok(None);
             }
         };

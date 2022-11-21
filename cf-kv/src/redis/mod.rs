@@ -3,8 +3,6 @@ use redis;
 
 use super::ClientSerializer;
 use color_eyre::eyre::Result;
-#[cfg(feature = "profiler")]
-use perftools;
 use std::marker::PhantomData;
 
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
@@ -66,18 +64,19 @@ where
         Ok(data.len())
     }
 
-    fn serialize_put(&self, buf: &mut [u8], key: &str, value: &str, _datapath: &D) -> Result<usize> {
+    fn serialize_put(
+        &self,
+        buf: &mut [u8],
+        key: &str,
+        value: &str,
+        _datapath: &D,
+    ) -> Result<usize> {
         let data = redis::cmd("SET").arg(key).arg(value).get_packed_command();
         buf[0..data.len()].copy_from_slice(&data);
         Ok(data.len())
     }
 
-    fn serialize_getm(
-        &self,
-        buf: &mut [u8],
-        keys: &Vec<String>,
-        _datapath: &D,
-    ) -> Result<usize> {
+    fn serialize_getm(&self, buf: &mut [u8], keys: &Vec<String>, _datapath: &D) -> Result<usize> {
         let data = {
             let mut cmd = redis::cmd("MGET");
             let mut cmd_ref = &mut cmd;
@@ -110,8 +109,15 @@ where
         Ok(data.len())
     }
 
-    fn serialize_get_list(&self, _buf: &mut [u8], _key: &str, _datapath: &D) -> Result<usize> {
-        unimplemented!()
+    // TODO: handle get list as lrange 0 to -1?
+    fn serialize_get_list(&self, buf: &mut [u8], key: &str, _datapath: &D) -> Result<usize> {
+        let data = redis::cmd("LRANGE")
+            .arg(key)
+            .arg(0)
+            .arg(-1)
+            .get_packed_command();
+        buf[0..data.len()].copy_from_slice(&data);
+        Ok(data.len())
     }
 
     fn serialize_put_list(

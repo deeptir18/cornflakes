@@ -20,35 +20,50 @@ metric <- args[4]
 plot_type <- args[5]
 # argument 5: if individual -- message type
 # argument 6: if individual -- size (of message total)
-p99_x_cutoff <- 100
 
-labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cereal" = "Cereal", "cornflakes-dynamic" = "Cornflakes (Hardware SG)", "cornflakes1c-dynamic" = "Cornflakes (1 Software Copy)", "ideal" = "Peak Single-Core", "onecopy" = "One Copy", "twocopy" = "Two Copies")
+# subset d to be points where `percent_achieved_rate > .95`
+d <- d[ which(d$percent_achieved_rate > 0.95),]
+
+labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cornflakes-dynamic" = "Cornflakes (Hardware SG)", "cornflakes1c-dynamic" = "Cornflakes (1 Software Copy)", "ideal" = "Peak Single Core", "onecopy" = "One Copy", "twocopy" = "Two Copies", "manualzerocopy" = "Manual Zero Copy")
 
 
-shape_values <- c('protobuf' = 8, 'cereal' = 4, 'capnproto' = 18, 'flatbuffers' = 17, 'cornflakes1c-dynamic' = 15, 'cornflakes-dynamic' = 19, "ideal" = 20, "onecopy" = 1, "twocopy" = 10)
+shape_values <- c('protobuf' = 8, 'capnproto' = 18, 'flatbuffers' = 17, 'cornflakes1c-dynamic' = 15, 'cornflakes-dynamic' = 19, "ideal" = 20, "onecopy" = 1, "twocopy" = 10, "manualzerocopy" = 13)
 
 color_values <- c('cornflakes-dynamic' = '#1b9e77', 
                     'cornflakes1c-dynamic' = '#d95f02',
-                    "ideal" = '#333333',
-                    "onecopy" = '#666666',
-                    "twocopy" = "#999999",
+                    "ideal" = '#252525',
+                    "manualzerocopy" = "#636363",
+                    "onecopy" = '#969696',
+                    "twocopy" = "#cccccc",
                     'flatbuffers' = '#7570b3',
                     'capnproto' = '#e7298a',
-                    'cereal' = '#66a61e',
                     'protobuf' = '#e6ab02')
 options(width=10000)
+levels <- c('capnproto', 'protobuf', 'flatbuffers', 'twocopy', 'onecopy', 'manualzerocopy', 'ideal', 'foo')
 
-base_plot <- function(data, metric, x_cutoff) {
+# filter the serialization labels based on which are present in data
+unique_serialization_labels <- unique(c(d$serialization))
+print(unique_serialization_labels)
+print(levels[unique_serialization_labels])
+
+shape_values <- shape_values[c(unique_serialization_labels)]
+color_values <- color_values[c(unique_serialization_labels)]
+labels <- labels[c(unique_serialization_labels)]
+#levels <- levels[c(unique_serialization_labels)]
+
+d$serialization <- factor(d$serialization, levels = levels)
+
+base_plot <- function(data, metric ) {
     if (metric == "p99") {
-        base_plot <- base_p99_plot(data, 100.0, x_cutoff)
+        base_plot <- base_p99_plot(data, 100.0)
         base_plot <- label_plot(base_plot)
     } else if (metric == "median") {
-        base_plot <- base_median_plot(data, 50.0, x_cutoff)
+        base_plot <- base_median_plot(data, 50.0)
         base_plot <- label_plot(base_plot)
     }
 }
 
-base_p99_plot <- function(data, y_cutoff, x_cutoff) {
+base_p99_plot <- function(data, y_cutoff) {
     plot <- ggplot(data,
                     aes(x = maloadgbps,
                         y = mp99,
@@ -56,7 +71,7 @@ base_p99_plot <- function(data, y_cutoff, x_cutoff) {
                         shape = serialization,
                         ymin = mp99 - sdp99,
                         ymax = mp99 + sdp99)) +
-            coord_cartesian(ylim=c(0, y_cutoff), xlim=c(0, x_cutoff)) +
+            coord_cartesian(ylim=c(0, y_cutoff)) +
     labs(x = "Achieved Load (Gbps)", y = "p99 Latency (µs)")
     return(plot)
 }
@@ -88,7 +103,7 @@ label_plot <- function(plot) {
                   text = element_text(family="Fira Sans"),
                   legend.title = element_blank(),
                   legend.key.size = unit(2, 'mm'),
-                  legend.spacing.x = unit(0.3, 'cm'),
+                  #legend.spacing.x = unit(0.3, 'cm'),
                    legend.text=element_text(size=11),
                   legend.margin=margin(0,0,0,0),
                     legend.box.margin=margin(-5,-10,-5,-10),
@@ -102,18 +117,16 @@ individual_plot <- function(data, metric, total_size, msg_type) {
     print(total_size)
     if (total_size == 4096) {
         print("reaching x cutoff 4096")
-        p99_x_cutoff <- 30
     } else if (total_size == 512) {
         print("reaching x cutoff")
-        p99_x_cutoff <- 4
     }
-    plot <- base_plot(data, metric, p99_x_cutoff)
+    plot <- base_plot(data, metric)
     print(plot)
     return(plot)
 }
 
 full_plot <- function(data, metric) {
-    plot <- base_plot(data, metric, p99_x_cutoff) +
+    plot <- base_plot(data, metric) +
         facet_grid(message_type ~ size, scales="free") +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
@@ -133,7 +146,6 @@ tput_plot <- function(data) {
     y_axis <- "Highest Achieved\nLoad (Gbps)"
     y_min = "maxtputgbps - maxtputgbpssd"
     y_max = "maxtputgbps + maxtputgbpssd"
-    data$serialization <- factor(data$serialization, levels = c("cereal", "capnproto", "protobuf", "flatbuffers", "cornflakes1c-dynamic", "cornflakes-dynamic"))
     plot <- ggplot(data,
                     aes_string(x = "message_type",
                         y=y_name,
@@ -184,20 +196,12 @@ if (plot_type == "full") {
     plot <- full_plot(summarized, metric)
     ggsave("tmp.pdf", width=9, height=9)
     embed_fonts("tmp.pdf", outfile=plot_pdf)
-} else if (plot_type == "motivation") {
-    summarized$serialization <- factor(summarized$serialization, levels = c('cereal', 'flatbuffers', 'capnproto', 'protobuf', 'twocopy', 'onecopy', 'ideal'))
-    msg_type <- args[6]
-    size <- strtoi(args[7])
-    plot <- individual_plot(summarized, metric, size, msg_type)
-    ggsave("tmp.pdf", width=5, height=3)
-    embed_fonts("tmp.pdf", outfile=plot_pdf)
-
 } else if (plot_type == "individual") {
-    summarized$serialization <- factor(summarized$serialization, levels = c('cereal', 'flatbuffers', 'capnproto', 'protobuf', 'cornflakes1c-dynamic', 'cornflakes-dynamic'))
+    summarized$serialization <- factor(summarized$serialization, levels = levels)
     msg_type <- args[6]
     size <- strtoi(args[7])
     plot <- individual_plot(summarized, metric, size, msg_type)
-    ggsave("tmp.pdf", width=5, height=2)
+    ggsave("tmp.pdf", width=5.5, height=2)
     embed_fonts("tmp.pdf", outfile=plot_pdf)
 } else if (plot_type == "list-compare") {
     size_arg <- strtoi(args[6])

@@ -50,6 +50,7 @@ pub enum PushBufType {
     OrderedSga,
     Object,
     ArenaOrderedSga,
+    Echo,
 }
 
 impl FromStr for PushBufType {
@@ -66,6 +67,7 @@ impl FromStr for PushBufType {
             "arenaorderedsga" | "arena_ordered_sga" | "ArenaOrderedSga" | "ARENAORDEREDSGA" => {
                 Ok(PushBufType::ArenaOrderedSga)
             }
+            "echo" | "ECHO" | "Echo" => Ok(PushBufType::Echo),
             "object" | "OBJECT" | "Object" => Ok(PushBufType::Object),
             x => {
                 bail!("Unknown push buf type: {:?}", x);
@@ -222,6 +224,10 @@ pub trait DatapathBufferOps {
     fn set_mempool_id(&mut self, id: MempoolID);
 
     fn get_mempool_id(&self) -> MempoolID;
+
+    fn set_len(&mut self, len: usize);
+
+    fn get_mutable_slice(&mut self, start: usize, len: usize) -> Result<&mut [u8]>;
 }
 
 pub trait Datapath {
@@ -360,6 +366,28 @@ pub trait Datapath {
         _ordered_sgas: impl Iterator<Item = Result<(MsgID, ConnID, OrderedSga<'sge>)>>,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// Assumes that there is space at the front to write in packet header.
+    /// Used for baseline implementation.
+    fn queue_datapath_buffer(
+        &mut self,
+        _msg_id: MsgID,
+        _conn_id: ConnID,
+        _datapath_buffer: Self::DatapathBuffer,
+        _end_batch: bool,
+    ) -> Result<()> {
+        unimplemented!();
+    }
+
+    fn queue_metadata_vec(
+        &mut self,
+        _msg_id: MsgID,
+        _conn_id: ConnID,
+        _metadata_vec: Vec<Self::DatapathMetadata>,
+        _end_batch: bool,
+    ) -> Result<()> {
+        unimplemented!();
     }
 
     fn queue_cornflakes_obj<'arena>(

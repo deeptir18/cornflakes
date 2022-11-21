@@ -7,9 +7,6 @@ use byteorder::{ByteOrder, LittleEndian};
 use color_eyre::eyre::{Result, WrapErr};
 use std::{default::Default, marker::PhantomData, ops::Index, slice::Iter, str};
 
-#[cfg(feature = "profiler")]
-use perftools;
-
 #[inline]
 pub fn write_size_and_offset(write_offset: usize, size: usize, offset: usize, buffer: &mut [u8]) {
     let mut forward_pointer = MutForwardPointer(buffer, write_offset);
@@ -790,6 +787,13 @@ where
         let mut new_metadata = buf.clone();
         let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
         let original_offset = buf.offset();
+        tracing::debug!(
+            header_offset,
+            buffer_offset,
+            ptr_offset = forward_pointer.get_offset(),
+            "Deserializing cf string"
+        );
+
         new_metadata.set_data_len_and_offset(
             forward_pointer.get_size() as usize,
             forward_pointer.get_offset() as usize + original_offset + buffer_offset,
@@ -1070,7 +1074,7 @@ where
         ds_offset: &mut usize,
     ) -> Result<()> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("List inner serialize");
+        demikernel::timer!("List inner serialize");
         tracing::debug!("List inner serialize");
 
         {

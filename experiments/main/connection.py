@@ -15,8 +15,10 @@ from main import utils
 class ConnectionWrapper(Connection):
     def __init__(self, addr, user=None, port=22, key=None):
         connect_kwargs = {}
+        utils.debug(addr, user, port, key)
         if key is not None:
             connect_kwargs["key_filename"] = [key]
+            connect_kwargs["banner_timeout"] = 200
         super().__init__(
             host = addr,
             user = user,
@@ -90,6 +92,9 @@ class ConnectionWrapper(Connection):
 
         # Finally actually run it
         res = super().run(full_cmd, *args, hide=True, warn=True, pty=pty, **kwargs)
+        if res_key == ('start_client', 'client1'):
+            utils.debug("Finished running start client command")
+        
         if res_key is not None:
             res_map[res_key] = res
 
@@ -97,6 +102,10 @@ class ConnectionWrapper(Connection):
 
     def stop_background_binary(self, binary_name, quiet = False, sudo = False):
         stop_command = f"kill -9 `ps aux | grep {binary_name} | grep SCREEN | grep -v grep | awk '{{print $2}}'`"
+        return self.run(stop_command, quiet = quiet, sudo = sudo)
+    
+    def stop_with_pkill(self, binary_name, quiet = False, sudo = False):
+        stop_command = f"pkill -9 {binary_name}"
         return self.run(stop_command, quiet = quiet, sudo = sudo)
 
     def file_exists(self, fname):

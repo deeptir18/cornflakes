@@ -29,7 +29,7 @@ const ADD_USER_WEIGHT: usize = 5;
 const FOLLOW_UNFOLLOW_WEIGHT: usize = 15;
 const POST_TWEET_WEIGHT: usize = 30;
 const GET_TIMELINE_WEIGHT: usize = 50;
-const GET_TIMELINE_MAX_SIZE: usize = 8;
+const GET_TIMELINE_MAX_SIZE: usize = 10;
 const POSSIBLE_MESSAGE_TYPES: [MsgType; 4] = [
     MsgType::AddUser,
     MsgType::FollowUnfollow,

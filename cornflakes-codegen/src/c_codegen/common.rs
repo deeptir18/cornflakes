@@ -141,6 +141,39 @@ impl ArgType {
     }
 }
 
+/// Convert the struct into a box and do not send back to the caller.
+pub fn add_free_function(
+    compiler: &mut SerializationCompiler,
+    ty: &str,
+    ty_suffix: &str,
+    lifetime_annotations: &str,
+) -> Result<()> {
+    let args = vec![FunctionArg::CArg(CArgInfo::arg(
+        "self_",
+        "*const ::std::os::raw::c_void",
+    ))];
+    let lifetime_annotations_fmt = match lifetime_annotations == "" {
+        true => "".to_string(),
+        false => format!("<{}>", lifetime_annotations),
+    };
+    let func_context = FunctionContext::new_extern_c(
+        &format!("{}_free{}", ty, lifetime_annotations_fmt),
+        true,
+        args,
+        false,
+    );
+    compiler.add_context(Context::Function(func_context))?;
+    compiler.add_unsafe_def_with_let(
+        false,
+        None,
+        "_",
+        &format!("Box::from_raw(self_ as *mut {}{})", ty, ty_suffix),
+    )?;
+    compiler.pop_context()?; // end of function
+    compiler.add_newline()?;
+    Ok(())
+}
+
 /// Determine whether we need to add wrapper functions for CFString, CFBytes,
 /// or VariableList<T> parameterized by some type T. Then add them.
 pub fn add_cornflakes_structs(
@@ -626,10 +659,12 @@ pub fn add_new(
     lifetimes: bool,
 ) -> Result<()> {
     let struct_name = match datapath {
-        Some(d) => if lifetimes {
-            format!("{}::<'arena, 'registered, {}>", &msg_info.get_name(), d)
-        } else {
-            format!("{}::<{}>", &msg_info.get_name(), d)
+        Some(d) => {
+            if lifetimes {
+                format!("{}::<'arena, 'registered, {}>", &msg_info.get_name(), d)
+            } else {
+                format!("{}::<{}>", &msg_info.get_name(), d)
+            }
         }
         None => msg_info.get_name(),
     };
@@ -653,13 +688,12 @@ pub fn add_impl(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
     datapath: Option<&str>,
-    lifetimes: bool,
+    _lifetimes: bool,
 ) -> Result<()> {
     compiler.add_newline()?;
     for field in msg_info.get_fields().iter() {
         let field_info = FieldInfo(field.clone());
-        add_field_methods(fd, compiler, msg_info, &field_info, datapath,
-            lifetimes)?;
+        add_field_methods(fd, compiler, msg_info, &field_info, datapath)?;
     }
     Ok(())
 }
@@ -670,52 +704,69 @@ pub fn add_field_methods(
     msg_info: &MessageInfo,
     field: &FieldInfo,
     datapath: Option<&str>,
-    lifetimes: bool,
 ) -> Result<()> {
-    let struct_name = match datapath {
-        Some(d) => if lifetimes {
-            format!("{}::<'arena, 'registered, {}>", &msg_info.get_name(), d)
-        } else {
-            format!("{}::<{}>", &msg_info.get_name(), d)
-        }
-        None => msg_info.get_name(),
-    };
+    let lifetimes = msg_info.get_function_params(fd)?.join(",");
+    let type_annotations = msg_info
+        .get_type_params_with_lifetime_ffi(true, fd, datapath.unwrap())?
+        .join(",");
+    let struct_name = format!("{}<{}>", &msg_info.get_name(), type_annotations);
 
     // add has_x, get_x, set_x
     compiler.add_newline()?;
-    add_has(compiler, msg_info, field, struct_name.clone(), lifetimes)?;
+    add_has(compiler, msg_info, field, struct_name.clone(), &lifetimes)?;
     compiler.add_newline()?;
-    add_get(fd, compiler, msg_info, field, struct_name.clone(), datapath, lifetimes)?;
+    add_get(
+        fd,
+        compiler,
+        msg_info,
+        field,
+        struct_name.clone(),
+        datapath,
+        &lifetimes,
+    )?;
     compiler.add_newline()?;
-    add_set(fd, compiler, msg_info, field, struct_name.clone(), datapath, lifetimes)?;
+    add_set(
+        fd,
+        compiler,
+        msg_info,
+        field,
+        struct_name.clone(),
+        datapath,
+        &lifetimes,
+    )?;
     compiler.add_newline()?;
 
     // if field is a list or a nested struct, add get_mut_x
     if field.is_list() || field.is_nested_msg() {
-        add_get_mut(fd, compiler, msg_info, field, struct_name.clone(), datapath, lifetimes)?;
+        add_get_mut(
+            fd,
+            compiler,
+            msg_info,
+            field,
+            struct_name.clone(),
+            datapath,
+            &lifetimes,
+        )?;
     }
 
     // if field is list, add init_x
     if field.is_list() {
-        add_list_init(compiler, msg_info, field, struct_name.clone(), lifetimes)?;
+        add_list_init(compiler, msg_info, field, struct_name.clone(), &lifetimes)?;
     }
     Ok(())
 }
-
-const LIFETIMES_STRING: &'static str = "<'arena, 'registered: 'arena>";
 
 pub fn add_has(
     compiler: &mut SerializationCompiler,
     msg_info: &MessageInfo,
     field: &FieldInfo,
     struct_name: String,
-    lifetimes: bool,
+    lifetimes: &str,
 ) -> Result<()> {
     let func_name = format!("has_{}", field.get_name());
-    let lifetimes = if lifetimes { LIFETIMES_STRING } else { "" };
     add_extern_c_wrapper_function(
         compiler,
-        &format!("{}_{}{}", msg_info.get_name(), &func_name, lifetimes),
+        &format!("{}_{}<{}>", msg_info.get_name(), &func_name, lifetimes),
         &struct_name,
         &func_name,
         Some(SelfArgType::Value),
@@ -735,7 +786,7 @@ pub fn add_get(
     field: &FieldInfo,
     struct_name: String,
     datapath: Option<&str>,
-    lifetimes: bool,
+    lifetimes: &str,
 ) -> Result<()> {
     let return_type = {
         let ty = ArgType::new(fd, field, datapath)?;
@@ -743,14 +794,19 @@ pub fn add_get(
             ArgType::List { .. } => ArgType::Ref {
                 inner_ty: ty.to_cf_string(),
             },
+            ArgType::String { .. } => ArgType::Ref {
+                inner_ty: ty.to_cf_string(),
+            },
+            ArgType::Bytes { .. } => ArgType::Ref {
+                inner_ty: ty.to_cf_string(),
+            },
             ty => ty,
         }
     };
-    let lifetimes = if lifetimes { LIFETIMES_STRING } else { "" };
     let func_name = format!("get_{}", field.get_name());
     add_extern_c_wrapper_function(
         compiler,
-        &format!("{}_{}{}", msg_info.get_name(), &func_name, lifetimes),
+        &format!("{}_{}<{}>", msg_info.get_name(), &func_name, lifetimes),
         &struct_name,
         &func_name,
         Some(SelfArgType::Value),
@@ -770,7 +826,7 @@ pub fn add_get_mut(
     field: &FieldInfo,
     struct_name: String,
     datapath: Option<&str>,
-    lifetimes: bool,
+    lifetimes: &str,
 ) -> Result<()> {
     let return_type = {
         let ty = ArgType::new(fd, field, datapath)?;
@@ -781,11 +837,10 @@ pub fn add_get_mut(
             ty => ty,
         }
     };
-    let lifetimes = if lifetimes { LIFETIMES_STRING } else { "" };
     let func_name = format!("get_mut_{}", field.get_name());
     add_extern_c_wrapper_function(
         compiler,
-        &format!("{}_{}{}", msg_info.get_name(), &func_name, lifetimes),
+        &format!("{}_{}<{}>", msg_info.get_name(), &func_name, lifetimes),
         &struct_name,
         &func_name,
         Some(SelfArgType::Mut),
@@ -803,15 +858,14 @@ pub fn add_set(
     field: &FieldInfo,
     struct_name: String,
     datapath: Option<&str>,
-    lifetimes: bool,
+    lifetimes: &str,
 ) -> Result<()> {
     let field_name = field.get_name();
     let field_type = ArgType::new(fd, field, datapath)?;
-    let lifetimes = if lifetimes { LIFETIMES_STRING } else { "" };
     let func_name = format!("set_{}", field.get_name());
     add_extern_c_wrapper_function(
         compiler,
-        &format!("{}_{}{}", msg_info.get_name(), &func_name, lifetimes),
+        &format!("{}_{}<{}>", msg_info.get_name(), &func_name, lifetimes),
         &struct_name,
         &func_name,
         Some(SelfArgType::Mut),
@@ -827,24 +881,31 @@ pub fn add_list_init(
     msg_info: &MessageInfo,
     field: &FieldInfo,
     struct_name: String,
-    lifetimes: bool,
+    lifetimes: &str,
 ) -> Result<()> {
     let args = {
-        let mut args = vec![
-            ("num", ArgType::Rust { string: "usize".to_string() }),
-        ];
-        if lifetimes {
-            args.push((
-                "arena",
-                ArgType::Ref { inner_ty: "bumpalo::Bump".to_string() },
-            ));
-        }
+        let mut args = vec![(
+            "num",
+            ArgType::Rust {
+                string: "usize".to_string(),
+            },
+        )];
+        args.push((
+            "arena",
+            ArgType::Ref {
+                inner_ty: "bumpalo::Bump".to_string(),
+            },
+        ));
         args
     };
-    let lifetimes = if lifetimes { LIFETIMES_STRING } else { "" };
     add_extern_c_wrapper_function(
         compiler,
-        &format!("{}_init_{}{}", msg_info.get_name(), field.get_name(), lifetimes),
+        &format!(
+            "{}_init_{}<{}>",
+            msg_info.get_name(),
+            field.get_name(),
+            lifetimes
+        ),
         &struct_name,
         &format!("init_{}", field.get_name()),
         Some(SelfArgType::Mut),

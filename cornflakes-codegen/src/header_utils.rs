@@ -147,9 +147,14 @@ impl ProtoReprInfo {
             FieldType::Bytes => "CFBytes::default()".to_string(),
             FieldType::RefCountedString => "CFString::default()".to_string(),
             FieldType::RefCountedBytes => "CFBytes::default()".to_string(),
-            FieldType::MessageOrEnum(msg_name) => {
-                format!("{}::default()", msg_name)
-            }
+            FieldType::MessageOrEnum(msg_name) => match self.hybrid_mode {
+                true => {
+                    format!("{}::new_in(arena)", msg_name)
+                }
+                false => {
+                    format!("{}::default()", msg_name)
+                }
+            },
             _ => {
                 bail!("FieldType {:?} not supported by compiler", field.0.typ);
             }
@@ -412,6 +417,39 @@ impl MessageInfo {
 
     pub fn get_fields(&self) -> Vec<Field> {
         self.0.fields.clone()
+    }
+
+    pub fn get_function_params(&self, fd: &ProtoReprInfo) -> Result<Vec<String>> {
+        let mut ret: Vec<String> = Vec::default();
+        if fd.hybrid_mode() {
+            if self.contains_variable_list(&fd.get_message_map())? {
+                ret.insert(0, "'arena".to_string());
+                // TODO: hack for c codegen
+                ret.push(format!("{}: 'arena", fd.get_lifetime()));
+            } else {
+                ret.push(fd.get_lifetime());
+            }
+            return Ok(ret);
+        }
+        ret.push(fd.get_lifetime());
+        Ok(ret)
+    }
+
+    pub fn get_type_params_with_lifetime_ffi(
+        &self,
+        _is_ref_counted: bool,
+        fd: &ProtoReprInfo,
+        datapath: &str,
+    ) -> Result<Vec<String>> {
+        let mut ret: Vec<String> = Vec::default();
+        if fd.hybrid_mode() {
+            if self.contains_variable_list(&fd.get_message_map())? {
+                ret.insert(0, "'arena".to_string());
+            }
+        }
+        ret.push(fd.get_lifetime());
+        ret.push(datapath.to_string());
+        Ok(ret)
     }
 
     pub fn get_type_params_with_lifetime(

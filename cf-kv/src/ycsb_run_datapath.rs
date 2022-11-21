@@ -21,10 +21,9 @@ macro_rules! run_server(
         connection.set_copying_threshold($opt.copying_threshold.thresh());
         connection.set_inline_mode($opt.inline_mode);
         tracing::info!(threshold = $opt.copying_threshold.thresh(), "Setting zero-copy copying threshold");
-
         // init ycsb load generator
         let load_generator = YCSBServerLoader::new($opt.value_size_generator, $opt.num_values, $opt.num_keys, $opt.allocate_contiguously);
-        let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type, false, $opt.non_refcounted)?;
+        let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type, false, false)?;
         kv_server.init(&mut connection)?;
         kv_server.write_ready($opt.ready_file.clone())?;
         if is_baseline {
@@ -104,7 +103,7 @@ macro_rules! run_client(
                 kv_client.init(&mut connection)?;
 
                 let avg_size = opt_clone.value_size_generator.avg_size();
-                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, (opt_clone.num_values * avg_size) as _, &schedule)
+                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, (opt_clone.num_values * avg_size) as _, &schedule, opt_clone.num_threads as _)
             }));
         }
 

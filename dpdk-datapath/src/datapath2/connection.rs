@@ -21,9 +21,6 @@ use std::{
 };
 use tracing::warn;
 
-#[cfg(feature = "profiler")]
-use perftools;
-
 const MAX_ENTRIES: usize = 60;
 const PROCESSING_TIMER: &str = "E2E_PROCESSING_TIME";
 const RX_BURST_TIMER: &str = "RX_BURST_TIMER";
@@ -790,7 +787,7 @@ impl Datapath for DPDKConnection {
     /// * addr - Ipv4Addr to send the given scatter-gather array to.
     fn push_sgas(&mut self, sgas: &Vec<(impl ScatterGather, utils::AddressInfo)>) -> Result<()> {
         #[cfg(feature = "profiler")]
-        perftools::timer!("Push sgas func");
+        demikernel::timer!("Push sgas func");
         let push_processing_start = Instant::now();
         let push_processing_timer =
             self.get_timer(PUSH_PROCESSING_TIMER, cfg!(feature = "timers"))?;
@@ -816,7 +813,7 @@ impl Datapath for DPDKConnection {
                     .enumerate()
                 {
                     #[cfg(feature = "profiler")]
-                    perftools::timer!("Construct from sga");
+                    demikernel::timer!("Construct from sga");
                     if use_scatter_gather {
                         pkt.construct_from_sga(
                             &mut self.send_mbufs,
@@ -835,7 +832,7 @@ impl Datapath for DPDKConnection {
                         ))?;
                     } else {
                         #[cfg(feature = "profiler")]
-                        perftools::timer!("Construct from sga without scatter-gather");
+                        demikernel::timer!("Construct from sga without scatter-gather");
                         pkt.construct_from_sga_without_scatter_gather(
                             &mut self.send_mbufs,
                             i,
@@ -879,7 +876,7 @@ impl Datapath for DPDKConnection {
         // send out the scatter-gather array
         {
             #[cfg(feature = "profiler")]
-            perftools::timer!("dpdk processing");
+            demikernel::timer!("dpdk processing");
             let mbuf_ptr = &mut self.send_mbufs[0][0] as _;
             timefunc(
                 &mut || {
