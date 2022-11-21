@@ -1,5 +1,8 @@
+use color_eyre::eyre::Result;
 use cornflakes_libos::loadgen::request_schedule::DistributionType;
 use cornflakes_utils::TraceLevel;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
@@ -57,7 +60,7 @@ macro_rules! run_client(
                 )?;
 
                 connection.set_copying_threshold(usize::MAX);
-                let mut sg_bench_client = SgBenchClient::new(server_addr_clone, opt_clone.segment_size, opt_clone.echo_mode , opt_clone.num_segments, opt_clone.array_size, opt_clone.send_packet_size, opt_clone.random_seed, max_num_requests, i, opt_clone.client_id, opt_clone.num_threads, opt_clone.num_clients, region_order_clone)?;
+                let mut sg_bench_client = SgBenchClient::new(server_addr_clone, opt_clone.segment_size, opt_clone.echo_mode , opt_clone.num_segments, opt_clone.array_size, opt_clone.send_packet_size,max_num_requests, i, opt_clone.client_id, opt_clone.num_threads, opt_clone.num_clients, region_order_clone)?;
 
                 cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut sg_bench_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, (opt_clone.num_segments * opt_clone.segment_size) as _, &schedule, opt_clone.num_threads as _)
             }));
@@ -85,7 +88,7 @@ macro_rules! run_client(
     }
 );
 
-fn get_region_order(random_seed: usize, num_regions: usize) -> Result<Vec<usize>> {
+pub fn get_region_order(random_seed: usize, num_regions: usize) -> Result<Vec<usize>> {
     let mut r = StdRng::seed_from_u64(random_seed as u64);
     let mut indices: Vec<usize> = (0..num_regions).collect();
     let mut ret: Vec<usize> = (0..num_regions).collect();

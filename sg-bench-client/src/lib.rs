@@ -8,8 +8,6 @@ use cornflakes_libos::{
     utils::AddressInfo,
     MsgID,
 };
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use std::marker::PhantomData;
 const DEFAULT_CHAR: u8 = 'c' as u8;
 const RESPONSE_DATA_OFF: usize = 12;
@@ -71,7 +69,6 @@ where
         num_segments: usize,
         array_size: usize,
         send_packet_size: usize,
-        random_seed: usize,
         max_num_requests: usize,
         thread_id: usize,
         client_id: usize,
