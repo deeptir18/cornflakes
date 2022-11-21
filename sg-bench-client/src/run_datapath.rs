@@ -28,13 +28,15 @@ macro_rules! run_client(
         )?;
         let mut threads: Vec<std::thread::JoinHandle<Result<cornflakes_libos::loadgen::client_threads::ThreadStats>>> = vec![];
         let region_order = get_region_order($opt.random_seed, $opt.array_size / $opt.segment_size)?;
+        unsafe {
+        REGION_ORDER = region_order.leak();
+        }
         // spawn a thread to run client for each connection
         for (i, (schedule, per_thread_context)) in schedules
             .into_iter()
             .zip(per_thread_contexts.into_iter())
             .enumerate()
         {
-        let region_order_clone = region_order.clone();
         let server_addr_clone =
             cornflakes_libos::utils::AddressInfo::new(server_addr.2, server_addr.1.clone(), server_addr.0.clone());
             let datapath_params_clone = datapath_params.clone();
@@ -60,7 +62,7 @@ macro_rules! run_client(
                 )?;
 
                 connection.set_copying_threshold(usize::MAX);
-                let mut sg_bench_client = SgBenchClient::new(server_addr_clone, opt_clone.segment_size, opt_clone.echo_mode , opt_clone.num_segments, opt_clone.array_size, opt_clone.send_packet_size,max_num_requests, i, opt_clone.client_id, opt_clone.num_threads, opt_clone.num_clients, region_order_clone)?;
+                let mut sg_bench_client = SgBenchClient::new(server_addr_clone, opt_clone.segment_size, opt_clone.echo_mode , opt_clone.num_segments, opt_clone.array_size, opt_clone.send_packet_size,max_num_requests, i, opt_clone.client_id, opt_clone.num_threads, opt_clone.num_clients)?;
 
                 cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut sg_bench_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, (opt_clone.num_segments * opt_clone.segment_size) as _, &schedule, opt_clone.num_threads as _)
             }));
