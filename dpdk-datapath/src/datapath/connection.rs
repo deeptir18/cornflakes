@@ -303,7 +303,7 @@ impl MetadataOps for RteMbufMetadata {
     }
 
     fn data_len(&self) -> usize {
-        unsafe { access!(self.mbuf, data_len, usize) }
+        self.data_len
     }
 
     fn set_data_len_and_offset(&mut self, len: usize, offset: usize) -> Result<()> {
