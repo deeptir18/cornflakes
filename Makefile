@@ -5,6 +5,11 @@ all: build
 
 # TODO: make it so that if mlx5 drivers are not present on this machine, it only
 # tries to build the dpdk version of things
+# TODO:
+# 1. Separate out mlx5 and dpdk and ice feature flags so dpdk works
+# independently.
+# 2. Have targets for cf-kv that depend on mlx5 or ice (and compile the
+# datapath accordingly)
 comma:= ,
 empty:=
 space:= $(empty) $(empty)
@@ -19,6 +24,13 @@ ifeq ($(CONFIG_MLX5), y)
 	CARGOFEATURES +=mlx5
 endif
 
+ifeq ($(CONFIG_DPDK), y)
+	CARGOFEATURES +=dpdk
+endif
+
+ifeq ($(CONFIG_ICE), y)
+	CARGOFEATURES +=ice
+endif
 
 ifeq ($(PROFILER), y)
 	CARGOFEATURES +=profiler
@@ -27,13 +39,14 @@ endif
 CARGOFEATURES := $(subst $(space),$(comma),$(CARGOFEATURES))
 
 redis: mlx5-datapath
-	cargo b --package cf-kv $(CARGOFLAGS)
+	cargo b --package cf-kv $(CARGOFLAGS) $(CARGOFEATURES)
 	cd $(PWD)/cf-kv/c/kv-sga-cornflakes-c && cargo b $(CARGOFLAGS)
 	cd ../../..
 	CORNFLAKES_PATH=$(PWD) make -C redis -j
 
 kv: mlx5-datapath
 	cargo b --package cf-kv $(CARGOFLAGS) --features $(CARGOFEATURES)
+
 ds-echo: mlx5-datapath
 	cargo b --package ds-echo $(CARGOFLAGS) --features $(CARGOFEATURES)
 
@@ -87,9 +100,3 @@ submodules:
 	git -C dpdk-datapath/3rdparty/dpdk apply ../dpdk-mlx.patch
 	# build dpdk datapath submodule
 	dpdk-datapath/3rdparty/build-dpdk.sh $(PWD)/dpdk-datapath/3rdparty/dpdk
-
-	
-	
-
-
-

@@ -45,23 +45,6 @@ where
     _datapath: PhantomData<D>,
 }
 
-fn get_region_order(random_seed: usize, num_regions: usize) -> Result<Vec<usize>> {
-    let mut r = StdRng::seed_from_u64(random_seed as u64);
-    let mut indices: Vec<usize> = (0..num_regions).collect();
-    let mut ret: Vec<usize> = (0..num_regions).collect();
-    for i in 0usize..(num_regions - 1) {
-        let j: usize = i + (r.gen::<usize>() % (num_regions - i));
-        if i != j {
-            indices.swap(i, j);
-        }
-    }
-    for i in 1..num_regions {
-        ret[i - 1] = indices[i];
-    }
-    ret[num_regions - 1] = indices[0];
-    return Ok(ret);
-}
-
 fn get_starting_position(
     client_id: usize,
     thread_id: usize,
@@ -94,6 +77,7 @@ where
         client_id: usize,
         total_threads: usize,
         total_clients: usize,
+        region_order: Vec<usize>,
     ) -> Result<Self> {
         let mut server_payload_regions: Vec<Bytes> =
             vec![Bytes::default(); array_size / segment_size];
@@ -109,9 +93,6 @@ where
         }
         // store bytes in each region for checking
         let mut requests: Vec<(Bytes, Vec<usize>)> = Vec::with_capacity(max_num_requests);
-
-        // 1) get cannonical order of regions based on random seed and pointer chasing
-        let region_order = get_region_order(random_seed, array_size / segment_size)?;
 
         // 2) based on this thread's thread id and client id, get "starting position" into the
         //    list

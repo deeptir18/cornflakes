@@ -549,8 +549,10 @@ class Iteration(metaclass=abc.ABCMeta):
 
     def read_key_from_analysis_log(self, folder_path, key):
         df = self.read_analysis_log(folder_path)
+        col = df[key]
+        print(df[key])
         try:
-            return df[key].iloc(0)
+            return col[0]
         except:
             raise ValueError("Could not read value of {} from df {}".format(key, df))
             
@@ -690,6 +692,8 @@ class Iteration(metaclass=abc.ABCMeta):
             * pprint - Instead of running, just print out command lines.
             * use_perf - Whether to use perf or not when running the server.
         """
+        # generate a random seed for this experiment
+        random_seed = int(time.time())
         programs = exp_config["programs"]
         exp_time = exp_config["time"]
 
@@ -756,6 +760,8 @@ class Iteration(metaclass=abc.ABCMeta):
             for host in program_hosts:
                 utils.info("Configuring host: ", host)
                 # populate program args
+                # NOTE: random seed should be the *same* across all client
+                # hosts
                 program_args = self.get_program_args(host,
                                                      machine_config,
                                                      program_name,
@@ -766,6 +772,7 @@ class Iteration(metaclass=abc.ABCMeta):
                 program_args["local_folder"] = local_results_path
                 program_args["host"] = host
                 program_args["time"] = exp_time
+                program_args["random_seed"] = random_seed
                 program_args_map[(program_name, host)] = program_args
 
                 program_cmd = program["start"].format(**program_args)

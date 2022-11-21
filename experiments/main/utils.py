@@ -10,7 +10,6 @@ from statistics import mean
 import copy
 import json
 import numpy as np
-import torch
 from parse import *
 
 NUM_TRIALS = 5
@@ -137,11 +136,6 @@ def warn(*args):
     print(Fore.BLUE + Style.BRIGHT, prepend, "[WARN]: ", Style.RESET_ALL, *args, file=sys.stderr)
 
 
-def mean_func(arr):
-    mean = torch.mean(arr)
-    return mean.item()
-
-
 def median_func(arr):
     median = arr[int(len(arr) * 0.50)]
     return median.item()
@@ -155,12 +149,6 @@ def p99_func(arr):
 def p999_func(arr):
     p999 = arr[int(len(arr) * 0.999)]
     return p999.item()
-
-
-def sort_latency_lists(arrays):
-    c = torch.cat(arrays)
-    c_sorted, c_ind = c.sort()
-    return c_sorted
 
 
 def parse_latency_log(log, threshold):

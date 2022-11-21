@@ -42,7 +42,8 @@ class KVIteration(runner.Iteration):
         self.extra_serialization_params = extra_serialization_params
 
     def __str__(self):
-        return "Iteration info: client rates: {}, " \
+        return "Iteration info: " \
+            "client rates: {}, " \
             "value size distr: {}, " \
             "num keys: {}, " \
             "num values: {}, " \
@@ -412,7 +413,6 @@ class KVBench(runner.Experiment):
 
         # CURRENT KNEE CALCULATION:
         # just find maximum achieved rate across all rates
-        # group by array size, num segments, segment size,  # average
         clustered_df = filtered_df.groupby(["serialization",
                                             "avg_size", "num_values",
                                            "offered_load_pps",
@@ -428,9 +428,6 @@ class KVBench(runner.Experiment):
                                               aggfunc="mean"),
             achieved_load_gbps_sd=pd.NamedAgg(column="achieved_load_gbps",
                                               aggfunc=ourstd))
-        clustered_df = clustered_df[clustered_df["percent_achieved_rate"] >=
-                                    0.95]
-
         max_achieved_pps = clustered_df["achieved_load_pps_mean"].max()
         max_achieved_gbps = clustered_df["achieved_load_gbps_mean"].max()
         std_achieved_pps = clustered_df.loc[clustered_df['achieved_load_pps_mean'].idxmax(),
