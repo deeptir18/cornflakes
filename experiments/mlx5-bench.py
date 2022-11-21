@@ -282,7 +282,11 @@ class ScatterGatherIteration(runner.Iteration):
                 self.get_busy_cycles_string() /\
                 self.get_num_server_cores_string() /\
                 self.get_segment_size_string() /\
-                self.get_num_segments_string()
+                self.get_num_segments_string() /\
+                self.get_client_rate_string() /\
+                self.get_num_threads_string()
+
+
 
     def get_folder_name(self, high_level_folder):
         return self.get_parent_folder(high_level_folder) / self.get_trial_string()

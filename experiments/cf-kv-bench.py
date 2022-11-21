@@ -192,7 +192,8 @@ class KVIteration(runner.Iteration):
                 self.extra_serialization_params.get_subfolder() /\
                 self.get_size_distr_string() /\
             self.get_num_keys_string() /\
-            self.get_num_values_string() / self.get_client_rate_string() /\
+            self.get_num_values_string() / \
+            self.get_client_rate_string() /\
             self.get_num_threads_string()
 
     def get_folder_name(self, high_level_folder):
