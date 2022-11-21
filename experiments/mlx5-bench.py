@@ -373,7 +373,6 @@ class ScatterGather(runner.Experiment):
         return self.exp
 
     def append_to_skip_info(self, total_args, iteration, higher_level_folder):
-        return
         if total_args.exp_type == "individual":
             return
         iteration_hash = iteration.hash()
@@ -396,7 +395,6 @@ class ScatterGather(runner.Experiment):
                 self.iteration_skipping_information[iteration_hash] = (throughput, percent_achieved, True)
 
     def skip_iteration(self, total_args, iteration):
-        return
         if total_args.exp_type == "individual":
             return False
         iteration_hash = iteration.hash()
