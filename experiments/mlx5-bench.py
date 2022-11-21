@@ -467,9 +467,9 @@ class ScatterGather(runner.Experiment):
                      utils.yaml_get(loop_yaml, "max_rates"))
 
             for trial in range(0, num_trials):
-                for sgbenchinfo in max_rates_dict:
-                    # iterate in reverse to enable stopping early.
-                    for system in systems:
+                for system in systems:
+                    for sgbenchinfo in max_rates_dict:
+                        # iterate in reverse to enable stopping early.
                         for rate_percentage in reversed(rate_percentages):
                             max_rate = max_rates_dict[sgbenchinfo]
                             segment_size = sgbenchinfo.segment_size
