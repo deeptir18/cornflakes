@@ -347,7 +347,7 @@ def create_and_copy_machine_config(args, machine_conns):
 
     # write host types
     yaml_clients = ["client{}".format(i) for i in range(1, len(args.clients) + 1)]
-    yaml_server = "server"
+    yaml_server = ["server"]
     yaml["host_types"] = {"server": yaml_server, "client": yaml_clients}
 
     # get ethernet address of each host
