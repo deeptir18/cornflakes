@@ -1,7 +1,62 @@
 use color_eyre::eyre::{bail, Result, WrapErr};
+use quanta::Clock;
 use rand::thread_rng;
 use rand_distr::{Distribution, Exp};
+use std::time::Duration;
 
+pub struct SpinTimer {
+    clk: quanta::Clock,
+    interarrivals: PacketSchedule,
+    deficit: Duration,
+    cur_idx: usize,
+    total_time: Duration,
+    start_raw: u64,
+    last_return: Option<u64>,
+}
+
+impl SpinTimer {
+    pub fn new(interarrivals: PacketSchedule, total_time: Duration) -> Self {
+        let clk = Clock::new();
+        let start_raw = clk.raw();
+        SpinTimer {
+            start_raw: start_raw,
+            clk: clk,
+            interarrivals: interarrivals,
+            deficit: Duration::from_nanos(0),
+            cur_idx: 0,
+            total_time: total_time,
+            last_return: None,
+        }
+    }
+
+    pub fn done(&self) -> bool {
+        self.clk.delta(self.start_raw, self.clk.raw()) >= self.total_time
+    }
+
+    pub fn wait(&mut self, callback: &mut dyn FnMut() -> Result<()>) -> Result<()> {
+        let next_interarrival_ns = self.interarrivals.get(self.cur_idx);
+        self.cur_idx += 1;
+
+        // if built up deficit is too high, return
+        if self.deficit > next_interarrival_ns {
+            self.deficit -= next_interarrival_ns;
+            self.last_return = Some(self.clk.raw());
+            return Ok(());
+        }
+
+        if self.last_return.is_none() {
+            self.last_return = Some(self.clk.raw());
+        }
+
+        while (self.clk.delta(self.last_return.unwrap(), self.clk.raw())) < next_interarrival_ns {
+            callback()?;
+        }
+        self.deficit +=
+            self.clk.delta(self.last_return.unwrap(), self.clk.raw()) - next_interarrival_ns;
+        self.last_return = Some(self.clk.raw());
+        Ok(())
+    }
+}
 #[inline]
 pub fn rate_pps_to_interarrival_nanos(rate: u64) -> f64 {
     tracing::debug!("Nanos intersend: {:?}", 1_000_000_000.0 / rate as f64);
@@ -66,14 +121,8 @@ impl PacketDistribution {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
-pub struct Packet {
-    pub time_since_last: u64, // in nanos since the experiment start
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct PacketSchedule {
-    pub packets: Vec<Packet>,
-    //distribution: PacketDistribution,
+    pub interarrivals: Vec<Duration>,
 }
 
 impl PacketSchedule {
@@ -81,35 +130,20 @@ impl PacketSchedule {
         tracing::info!("Initializing packet schedule for {} requests", num_requests);
         let distribution = PacketDistribution::new(dist_type, rate_pps)
             .wrap_err("Failed to initialize distribution")?;
-        let mut packets: Vec<Packet> = vec![Packet::default(); num_requests * 4];
-        for i in 0..(num_requests * 4) {
-            packets[i] = Packet {
-                time_since_last: distribution.sample(),
-            };
+        let mut interarrivals: Vec<Duration> = Vec::with_capacity(num_requests);
+        for _ in 0..num_requests {
+            interarrivals.push(Duration::from_nanos(distribution.sample()));
         }
         // first packet starts at time 0
-        packets[0] = Packet { time_since_last: 0 };
+        interarrivals[0] = Duration::from_nanos(0);
 
-        Ok(PacketSchedule { packets: packets })
+        Ok(PacketSchedule {
+            interarrivals: interarrivals,
+        })
     }
 
-    fn get(&self, idx: usize) -> u64 {
-        self.packets[idx].time_since_last
-    }
-
-    pub fn get_next_in_cycles(
-        &self,
-        idx: usize,
-        last_cycle: u64,
-        hz: u64,
-        deficit_cycles: u64,
-    ) -> u64 {
-        let intersend = self.get(idx);
-        let add = nanos_to_hz(hz, intersend);
-        if deficit_cycles > add {
-            return last_cycle;
-        }
-        last_cycle + (add - deficit_cycles)
+    fn get(&self, idx: usize) -> Duration {
+        self.interarrivals[idx]
     }
 }
 

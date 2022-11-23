@@ -89,7 +89,7 @@ macro_rules! run_client (
 
                 client.init(&mut connection)?;
 
-                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut client, &mut connection, opt_clone.retries, opt_clone.total_time, opt_clone.logfile.clone(), opt_clone.rate, opt_clone.request_shape.message_size(), &schedule, opt_clone.num_threads as _)
+                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut client, &mut connection, opt_clone.retries, opt_clone.total_time, opt_clone.logfile.clone(), opt_clone.rate, opt_clone.request_shape.message_size(), schedule, opt_clone.num_threads as _)
             }));
         }
 

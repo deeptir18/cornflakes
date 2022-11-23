@@ -103,7 +103,7 @@ macro_rules! run_client(
                 kv_client.init(&mut connection)?;
 
                 let avg_size = opt_clone.value_size_generator.avg_size();
-                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, (opt_clone.num_values * avg_size) as _, &schedule, opt_clone.num_threads as _)
+                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, (opt_clone.num_values * avg_size) as _, schedule, opt_clone.num_threads as _)
             }));
         }
 

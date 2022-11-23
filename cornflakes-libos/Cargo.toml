@@ -10,6 +10,7 @@ cc = "1.0.63"
 
 [dependencies]
 color-eyre = "0.5"
+quanta = "0.10.1"
 tracing = "*"
 tracing-subscriber = "0.2.17"
 yaml-rust = "0.4.3"

@@ -20,6 +20,7 @@ mod kv_capnp {
 }
 
 use byteorder::{BigEndian, ByteOrder};
+use bytes::Bytes;
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
     allocator::MempoolID,
@@ -629,6 +630,7 @@ where
     D: Datapath,
 {
     request_generator: R,
+    requests: Vec<Bytes>,
     serializer: C,
     _datapath: PhantomData<D>,
     last_sent_id: MsgID,
@@ -664,6 +666,7 @@ where
         };
         Ok(KVClient {
             request_generator: request_generator,
+            requests: Vec::default(),
             serializer: C::new(),
             last_sent_id: 0,
             received: 0,
@@ -679,6 +682,21 @@ where
             ref_kv: ref_kv,
             ref_list_kv: ref_list_kv,
         })
+    }
+
+    pub fn write_request_into_new_bytes(
+        &self,
+        request: &R::RequestLine,
+        datapath: &D,
+    ) -> Result<Bytes> {
+        let mut bytes = vec![0u8; 9216];
+        let serialized_len = self.request_generator.serialize_request(
+            &request,
+            &mut bytes.as_mut_slice(),
+            &self.serializer,
+            datapath,
+        )?;
+        Ok(Bytes::copy_from_slice(&bytes.as_slice()[0..serialized_len]))
     }
 
     pub fn write_request<'a>(&mut self, request: &R::RequestLine, datapath: &D) -> Result<usize> {
@@ -739,34 +757,60 @@ where
         self.server_addr.clone()
     }
 
+    fn prep_requests(
+        &mut self,
+        nb_requests: usize,
+        datapath: &<Self as ClientSM>::Datapath,
+    ) -> Result<usize> {
+        self.requests = Vec::with_capacity(nb_requests);
+        for _ in 0..nb_requests {
+            let next_request = match self.request_generator.next_request()? {
+                Some(l) => l,
+                None => {
+                    return Ok(self.requests.len());
+                }
+            };
+            let bytes = self.write_request_into_new_bytes(&next_request, &datapath)?;
+            self.requests.push(bytes);
+        }
+        Ok(nb_requests)
+    }
+
     fn get_next_msg(
         &mut self,
         datapath: &<Self as ClientSM>::Datapath,
     ) -> Result<Option<(MsgID, &[u8])>> {
-        let next_request = match self.request_generator.next_request()? {
-            Some(l) => l,
-            None => {
-                return Ok(None);
+        if (self.last_sent_id as usize) < self.requests.len() {
+            let bytes = &self.requests[self.last_sent_id as usize];
+            Ok(Some((self.last_sent_id, bytes.as_ref())))
+        } else {
+            let next_request = match self.request_generator.next_request()? {
+                Some(l) => l,
+                None => {
+                    return Ok(None);
+                }
+            };
+            let buf_size = self.write_request(&next_request, &datapath)?;
+            tracing::debug!(
+                msg_id = self.last_sent_id,
+                "Sending msg of type {:?}",
+                next_request
+            );
+            if cfg!(debug_assertions) {
+                self.outgoing_msg_types
+                    .insert(self.last_sent_id, next_request.clone());
             }
-        };
-        let buf_size = self.write_request(&next_request, &datapath)?;
-        tracing::debug!(
-            msg_id = self.last_sent_id,
-            "Sending msg of type {:?}",
-            next_request
-        );
-        self.outgoing_msg_types
-            .insert(self.last_sent_id, next_request.clone());
 
-        if self.using_retries {
-            self.outgoing_requests
-                .insert(self.last_sent_id, next_request.clone());
+            if self.using_retries {
+                self.outgoing_requests
+                    .insert(self.last_sent_id, next_request.clone());
+            }
+
+            Ok(Some((
+                self.last_sent_id,
+                &mut self.buf.as_mut_slice()[0..buf_size],
+            )))
         }
-
-        Ok(Some((
-            self.last_sent_id,
-            &mut self.buf.as_mut_slice()[0..buf_size],
-        )))
     }
 
     fn process_received_msg(
@@ -782,19 +826,23 @@ where
                 bail!("Received ID not in in flight map: {}", sga.msg_id());
             }
         }
-        let request_line = match self.outgoing_msg_types.remove(&sga.msg_id()) {
-            Some(m) => m,
-            None => {
-                bail!("Received ID not in in flight map: {}", sga.msg_id());
-            }
-        };
-        self.request_generator.check_response(
-            &request_line,
-            sga.seg(0).as_ref(),
-            &self.serializer,
-            &self.ref_kv,
-            &self.ref_list_kv,
-        )
+        if cfg!(debug_assertions) {
+            let request_line = match self.outgoing_msg_types.remove(&sga.msg_id()) {
+                Some(m) => m,
+                None => {
+                    bail!("Received ID not in in flight map: {}", sga.msg_id());
+                }
+            };
+            self.request_generator.check_response(
+                &request_line,
+                sga.seg(0).as_ref(),
+                &self.serializer,
+                &self.ref_kv,
+                &self.ref_list_kv,
+            )
+        } else {
+            return Ok(true);
+        }
     }
 
     fn init(&mut self, _connection: &mut Self::Datapath) -> Result<()> {
