@@ -8,10 +8,10 @@ pub mod kv_api {
     include!(concat!(env!("OUT_DIR"), "/cf_kv_fb_generated.rs"));
 }
 use super::{
-    ClientSerializer, KVServer, ListKVServer, MsgType, ServerLoadGenerator, ZeroCopyPutKVServer,
+    ClientSerializer, KVServer, LinkedListKVServer, ListKVServer, MsgType, ServerLoadGenerator,
     REQ_TYPE_SIZE,
 };
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{bail, ensure, Result};
 use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, PushBufType, ReceivedPkt},
@@ -26,42 +26,55 @@ where
     D: Datapath,
 {
     _phantom: PhantomData<D>,
-    _zero_copy_puts: bool,
+    use_linked_list_kv: bool,
 }
 
 impl<D> FlatbuffersSerializer<D>
 where
     D: Datapath,
 {
-    pub fn new(zero_copy_puts: bool) -> Self {
+    pub fn new(use_linked_list_kv: bool) -> Self {
         FlatbuffersSerializer {
             _phantom: PhantomData::default(),
-            _zero_copy_puts: zero_copy_puts,
+            use_linked_list_kv: use_linked_list_kv,
         }
+    }
+
+    pub fn use_linked_list(&self) -> bool {
+        self.use_linked_list_kv
     }
 
     fn handle_get(
         &self,
         kv_server: &KVServer<D>,
+        linked_list_kv_server: &LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
         builder: &mut FlatBufferBuilder,
     ) -> Result<()> {
         let get_request = root::<cf_kv_fbs::GetReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-        let value = match kv_server.get(get_request.key().unwrap()) {
-            Some(v) => v,
-            None => {
-                bail!("Could not find value for key: {:?}", get_request.key());
-            }
+        let value = match self.use_linked_list() {
+            true => match linked_list_kv_server.get(get_request.key().unwrap()) {
+                Some(v) => v.as_ref().as_ref(),
+                None => {
+                    bail!("Could not find value for key: {:?}", get_request.key());
+                }
+            },
+            false => match kv_server.get(get_request.key().unwrap()) {
+                Some(v) => v.as_ref(),
+                None => {
+                    bail!("Could not find value for key: {:?}", get_request.key());
+                }
+            },
         };
 
         tracing::debug!(
             "For given key {:?}, found value {:?} with length {}",
             get_request.key().unwrap(),
-            value.as_ref().as_ptr(),
-            value.as_ref().len()
+            value.as_ptr(),
+            value.len()
         );
         let args = cf_kv_fbs::GetRespArgs {
-            val: Some(builder.create_vector_direct::<u8>(value.as_ref())),
+            val: Some(builder.create_vector_direct::<u8>(value)),
             id: get_request.id(),
         };
 
@@ -94,6 +107,7 @@ where
     fn handle_getm(
         &self,
         kv_server: &KVServer<D>,
+        linked_list_kv_server: &LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
         builder: &mut FlatBufferBuilder,
     ) -> Result<()> {
@@ -106,21 +120,27 @@ where
         let args_vec_res: Result<Vec<cf_kv_fbs::ValueArgs>> = keys
             .iter()
             .map(|key| {
-                let v = {
-                    #[cfg(feature = "profiler")]
-                    demikernel::timer!("got value");
-                    match kv_server.get(key) {
-                        Some(v) => v,
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("got value");
+                let value = match self.use_linked_list() {
+                    true => match linked_list_kv_server.get(key) {
+                        Some(v) => v.as_ref().as_ref(),
                         None => {
-                            bail!("Cannot find value for key in KV store: {:?}", key);
+                            bail!("Could not find value for key: {:?}", key);
                         }
-                    }
+                    },
+                    false => match kv_server.get(key) {
+                        Some(v) => v.as_ref(),
+                        None => {
+                            bail!("Could not find value for key: {:?}", key);
+                        }
+                    },
                 };
                 {
                     #[cfg(feature = "profiler")]
                     demikernel::timer!("append value");
                     Ok(cf_kv_fbs::ValueArgs {
-                        data: Some(builder.create_vector_direct::<u8>(v.as_ref())),
+                        data: Some(builder.create_vector_direct::<u8>(value)),
                     })
                 }
             })
@@ -165,33 +185,81 @@ where
     fn handle_getlist(
         &self,
         list_kv_server: &ListKVServer<D>,
+        linked_list_kv_server: &LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
         builder: &mut FlatBufferBuilder,
     ) -> Result<()> {
         let getlist_request = root::<cf_kv_fbs::GetListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
         let key = getlist_request.key().unwrap();
-        let vals = match list_kv_server.get(key) {
-            Some(v) => v,
-            None => {
-                bail!("Cannot find value for key in KV store: {:?}", key);
+        if self.use_linked_list() {
+            let range_start = getlist_request.rangestart();
+            let range_end = getlist_request.rangeend();
+            let mut node_option = linked_list_kv_server.get(key);
+
+            let range_len = {
+                // TODO: hack: flatbuffers doesn't seem to be recognizing -1
+                if range_end == -1 || range_end == 0 {
+                    let mut len = 0;
+                    while let Some(node) = node_option {
+                        len += 1;
+                        node_option = node.get_next();
+                    }
+                    len - range_start as usize
+                } else {
+                    ensure!(
+                        range_start < range_end,
+                        format!(
+                            "Cannot process get list with range_end {}< range_start: {}",
+                            range_start, range_end
+                        )
+                    );
+                    (range_end - range_start) as usize
+                }
+            };
+
+            let mut node_option = linked_list_kv_server.get(key);
+            let mut idx = 0;
+            let mut args_vec: Vec<cf_kv_fbs::ValueArgs> = Vec::with_capacity(range_len);
+            while let Some(node) = node_option {
+                if idx < range_start {
+                    node_option = node.get_next();
+                    idx += 1;
+                    continue;
+                } else if idx as usize == range_len {
+                    break;
+                }
+
+                args_vec.push(cf_kv_fbs::ValueArgs {
+                    data: Some(builder.create_vector_direct::<u8>(node.as_ref().get_data())),
+                });
+
+                node_option = node.get_next();
+                idx += 1;
             }
-        };
-        let args_vec: Vec<cf_kv_fbs::ValueArgs> = vals
-            .iter()
-            .map(|v| cf_kv_fbs::ValueArgs {
-                data: Some(builder.create_vector_direct::<u8>(v.as_ref())),
-            })
-            .collect();
-        let args_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = args_vec
-            .iter()
-            .map(|args| cf_kv_fbs::Value::create(builder, args))
-            .collect();
-        let getlist_resp_args = cf_kv_fbs::GetListRespArgs {
-            id: getlist_request.id(),
-            vals: Some(builder.create_vector(args_vec.as_slice())),
-        };
-        let getlist_resp = cf_kv_fbs::GetListResp::create(builder, &getlist_resp_args);
-        builder.finish(getlist_resp, None);
+        } else {
+            let vals = match list_kv_server.get(key) {
+                Some(v) => v,
+                None => {
+                    bail!("Cannot find value for key in KV store: {:?}", key);
+                }
+            };
+            let args_vec: Vec<cf_kv_fbs::ValueArgs> = vals
+                .iter()
+                .map(|v| cf_kv_fbs::ValueArgs {
+                    data: Some(builder.create_vector_direct::<u8>(v.as_ref())),
+                })
+                .collect();
+            let args_vec: Vec<WIPOffset<cf_kv_fbs::Value>> = args_vec
+                .iter()
+                .map(|args| cf_kv_fbs::Value::create(builder, args))
+                .collect();
+            let getlist_resp_args = cf_kv_fbs::GetListRespArgs {
+                id: getlist_request.id(),
+                vals: Some(builder.create_vector(args_vec.as_slice())),
+            };
+            let getlist_resp = cf_kv_fbs::GetListResp::create(builder, &getlist_resp_args);
+            builder.finish(getlist_resp, None);
+        }
         Ok(())
     }
 
@@ -227,7 +295,7 @@ where
 {
     kv_server: KVServer<D>,
     list_kv_server: ListKVServer<D>,
-    _zero_copy_put_kv_server: ZeroCopyPutKVServer<D>,
+    linked_list_kv_server: LinkedListKVServer<D>,
     mempool_ids: Vec<MempoolID>,
     serializer: FlatbuffersSerializer<D>,
     push_buf_type: PushBufType,
@@ -243,21 +311,20 @@ where
         load_generator: L,
         datapath: &mut D,
         push_buf_type: PushBufType,
-        zero_copy_puts: bool,
-        _non_refcounted: bool,
+        use_linked_list_kv: bool,
     ) -> Result<Self>
     where
         L: ServerLoadGenerator,
     {
-        let (kv, list_kv, zero_copy_put_kv, mempool_ids) =
-            load_generator.new_kv_state(file, datapath, zero_copy_puts)?;
+        let (kv, list_kv, linked_list_kv, mempool_ids) =
+            load_generator.new_kv_state(file, datapath, use_linked_list_kv)?;
         Ok(FlatbuffersKVServer {
             kv_server: kv,
             list_kv_server: list_kv,
-            _zero_copy_put_kv_server: zero_copy_put_kv,
+            linked_list_kv_server: linked_list_kv,
             mempool_ids: mempool_ids,
             push_buf_type: push_buf_type,
-            serializer: FlatbuffersSerializer::new(zero_copy_puts),
+            serializer: FlatbuffersSerializer::new(use_linked_list_kv),
             builder: FlatBufferBuilder::new(),
         })
     }
@@ -285,16 +352,25 @@ where
             let message_type = MsgType::from_packet(&pkt)?;
             match message_type {
                 MsgType::Get => {
-                    self.serializer
-                        .handle_get(&self.kv_server, &pkt, &mut self.builder)?;
+                    self.serializer.handle_get(
+                        &self.kv_server,
+                        &self.linked_list_kv_server,
+                        &pkt,
+                        &mut self.builder,
+                    )?;
                 }
                 MsgType::GetM(_size) => {
-                    self.serializer
-                        .handle_getm(&self.kv_server, &pkt, &mut self.builder)?;
+                    self.serializer.handle_getm(
+                        &self.kv_server,
+                        &self.linked_list_kv_server,
+                        &pkt,
+                        &mut self.builder,
+                    )?;
                 }
                 MsgType::GetList(_size) => {
                     self.serializer.handle_getlist(
                         &self.list_kv_server,
+                        &self.linked_list_kv_server,
                         &pkt,
                         &mut self.builder,
                     )?;
@@ -661,6 +737,8 @@ where
             // TODO: actually add in ID
             id: 0,
             key: Some(builder.create_string(key.as_ref())),
+            rangestart: 0,
+            rangeend: -1,
         };
         let get_list = cf_kv_fbs::GetListReq::create(&mut builder, &args);
         builder.finish(get_list, None);

@@ -23,7 +23,7 @@ macro_rules! run_server(
         tracing::info!(threshold = $opt.copying_threshold.thresh(), "Setting zero-copy copying threshold");
         // init ycsb load generator
         let load_generator = YCSBServerLoader::new($opt.value_size_generator, $opt.num_values, $opt.num_keys, $opt.allocate_contiguously);
-        let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type, false, false)?;
+        let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), load_generator, &mut connection, $opt.push_buf_type, $opt.use_linked_list)?;
         kv_server.init(&mut connection)?;
         kv_server.write_ready($opt.ready_file.clone())?;
         if is_baseline {
@@ -274,8 +274,11 @@ pub struct YCSBOpt {
         help = "Allocate YCSB multiple values contiguously."
     )]
     pub allocate_contiguously: bool,
-    #[structopt(long = "non_refcounted", help = "Non refcounted version of cornflakes")]
-    pub non_refcounted: bool,
+    #[structopt(
+        long = "use_linked_list",
+        help = "Use linked list version of kv store."
+    )]
+    pub use_linked_list: bool,
     #[structopt(
         long = "ready_file",
         help = "File to indicate server is ready to receive requests"

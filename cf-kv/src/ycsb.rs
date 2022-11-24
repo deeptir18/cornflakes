@@ -1,6 +1,6 @@
 use super::{
-    allocate_datapath_buffer, ClientSerializer, KVServer, ListKVServer, MsgType, RequestGenerator,
-    ServerLoadGenerator, ZeroCopyPutKVServer, REQ_TYPE_SIZE,
+    allocate_datapath_buffer, ClientSerializer, KVServer, LinkedListKVServer, ListKVServer,
+    MsgType, RequestGenerator, ServerLoadGenerator, REQ_TYPE_SIZE,
 };
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_libos::{allocator::MempoolID, datapath::Datapath};
@@ -15,6 +15,7 @@ const DEFAULT_NUM_KEYS: usize = 1;
 const DEFAULT_NUM_VALUES: usize = 1;
 use rand::{
     distributions::{Distribution, Uniform},
+    seq::SliceRandom,
     thread_rng,
 };
 
@@ -221,8 +222,10 @@ impl YCSBServerLoader {
         request: &<Self as ServerLoadGenerator>::RequestLine,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
+        use_linked_list_kv_server: bool,
         round: usize,
     ) -> Result<()>
     where
@@ -237,7 +240,11 @@ impl YCSBServerLoader {
                 let mut datapath_buffer =
                     allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
                 let _ = datapath_buffer.write(value.as_bytes())?;
-                kv_server.insert(key.to_string(), datapath_buffer);
+                if use_linked_list_kv_server {
+                    linked_list_kv_server.insert(key.to_string(), datapath_buffer);
+                } else {
+                    kv_server.insert(key.to_string(), datapath_buffer);
+                }
             }
             MsgType::PutM(size) => {
                 ensure!(
@@ -254,7 +261,11 @@ impl YCSBServerLoader {
                 let mut datapath_buffer =
                     allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
                 let _ = datapath_buffer.write(value.as_bytes())?;
-                kv_server.insert(key.to_string(), datapath_buffer);
+                if use_linked_list_kv_server {
+                    linked_list_kv_server.insert(key.to_string(), datapath_buffer);
+                } else {
+                    kv_server.insert(key.to_string(), datapath_buffer);
+                }
             }
             MsgType::PutList(size) => {
                 ensure!(
@@ -270,11 +281,15 @@ impl YCSBServerLoader {
                 let mut datapath_buffer =
                     allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
                 let _ = datapath_buffer.write(value.as_bytes())?;
-                if list_kv_server.contains_key(key) {
-                    let list = list_kv_server.get_mut_map().get_mut(key).unwrap();
-                    list.push(datapath_buffer);
+                if use_linked_list_kv_server {
+                    linked_list_kv_server.insert(key.to_string(), datapath_buffer);
                 } else {
-                    list_kv_server.insert(key.to_string(), vec![datapath_buffer]);
+                    if list_kv_server.contains_key(key) {
+                        let list = list_kv_server.get_mut_map().get_mut(key).unwrap();
+                        list.push(datapath_buffer);
+                    } else {
+                        list_kv_server.insert(key.to_string(), vec![datapath_buffer]);
+                    }
                 }
             }
             _ => {
@@ -351,10 +366,10 @@ impl ServerLoadGenerator for YCSBServerLoader {
         request_file: &str,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
-        _zero_copy_server: &mut ZeroCopyPutKVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
-        _use_zero_copy_puts: bool,
+        use_linked_list_kv_server: bool,
     ) -> Result<()>
     where
         D: Datapath,
@@ -363,16 +378,44 @@ impl ServerLoadGenerator for YCSBServerLoader {
             for i in 0..self.num_values {
                 let file = File::open(request_file)?;
                 let reader = BufReader::new(file);
-                for line in reader.lines() {
-                    let request = self.read_request(&line?)?;
-                    self.modify_server_state_round(
-                        &request,
-                        kv_server,
-                        list_kv_server,
-                        mempool_ids,
-                        datapath,
-                        i,
-                    )?;
+                let mut lines_iterator = reader.lines();
+                // read in batches
+                let batch_size = 1000;
+                let mut done = false;
+                while !done {
+                    let mut lines_vec: Vec<Self::RequestLine> = Vec::with_capacity(batch_size);
+                    for _ in 0..batch_size {
+                        match lines_iterator.next() {
+                            Some(line) => {
+                                let request = self.read_request(&line?)?;
+                                lines_vec.push(request);
+                            }
+                            None => {
+                                done = true;
+                                break;
+                            }
+                        }
+                    }
+                    // shuffle the vector
+                    let mut vec: Vec<usize> = (0..lines_vec.len()).collect();
+                    //let slice: &mut [usize] = &mut vec;
+                    vec.shuffle(&mut thread_rng());
+                    for idx in vec.iter() {
+                        let request = &lines_vec[*idx];
+                        self.modify_server_state_round(
+                            &request,
+                            kv_server,
+                            list_kv_server,
+                            linked_list_kv_server,
+                            mempool_ids,
+                            datapath,
+                            use_linked_list_kv_server,
+                            i,
+                        )?;
+                    }
+                    if done {
+                        break;
+                    }
                 }
             }
         } else {
@@ -385,8 +428,10 @@ impl ServerLoadGenerator for YCSBServerLoader {
                         &request,
                         kv_server,
                         list_kv_server,
+                        linked_list_kv_server,
                         mempool_ids,
                         datapath,
+                        use_linked_list_kv_server,
                         i,
                     )?;
                 }
@@ -401,10 +446,10 @@ impl ServerLoadGenerator for YCSBServerLoader {
         request: &Self::RequestLine,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
-        _zero_copy_server: &mut ZeroCopyPutKVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
-        _use_zero_copy_puts: bool,
+        use_linked_list_kv_server: bool,
     ) -> Result<()>
     where
         D: Datapath,
@@ -414,8 +459,10 @@ impl ServerLoadGenerator for YCSBServerLoader {
                 request,
                 kv_server,
                 list_kv_server,
+                linked_list_kv_server,
                 mempool_ids,
                 datapath,
+                use_linked_list_kv_server,
                 i,
             )?;
         }

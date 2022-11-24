@@ -10,10 +10,10 @@ pub mod kv_messages {
 }
 
 use super::{
-    ClientSerializer, KVServer, ListKVServer, MsgType, ServerLoadGenerator, ZeroCopyPutKVServer,
+    ClientSerializer, KVServer, LinkedListKVServer, ListKVServer, MsgType, ServerLoadGenerator,
     REQ_TYPE_SIZE,
 };
-use color_eyre::eyre::{bail, Result, WrapErr};
+use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, PushBufType, ReceivedPkt},
@@ -27,39 +27,55 @@ where
     D: Datapath,
 {
     _phantom: PhantomData<D>,
-    _zero_copy_puts: bool,
+    use_linked_list: bool,
 }
 
 impl<D> ProtobufSerializer<D>
 where
     D: Datapath,
 {
-    pub fn new(zero_copy_puts: bool) -> Self {
+    pub fn new(use_linked_list: bool) -> Self {
         ProtobufSerializer {
             _phantom: PhantomData::default(),
-            _zero_copy_puts: zero_copy_puts,
+            use_linked_list: use_linked_list,
         }
+    }
+
+    pub fn use_linked_list(&self) -> bool {
+        self.use_linked_list
     }
 
     fn handle_get(
         &self,
         kv_server: &KVServer<D>,
+        linked_list_kv_server: &LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
     ) -> Result<kv_messages::GetResp> {
         let get_request =
             kv_messages::GetReq::parse_from_bytes(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
                 .wrap_err("Failed to deserialize proto GetReq")?;
-        let value = match kv_server.get(&get_request.key) {
-            Some(v) => v,
-            None => {
-                bail!(
-                    "Cannot find value for key in KV store: {:?}",
-                    get_request.key
-                );
-            }
+        let value = match self.use_linked_list {
+            true => match linked_list_kv_server.get(&get_request.key) {
+                Some(v) => v.as_ref().as_ref(),
+                None => {
+                    bail!(
+                        "Cannot find value for key in KV store: {:?}",
+                        get_request.key
+                    );
+                }
+            },
+            false => match kv_server.get(&get_request.key) {
+                Some(v) => v.as_ref(),
+                None => {
+                    bail!(
+                        "Cannot find value for key in KV store: {:?}",
+                        get_request.key
+                    );
+                }
+            },
         };
         let mut get_resp = kv_messages::GetResp::new();
-        get_resp.val = value.as_ref().to_vec();
+        get_resp.val = value.to_vec();
         Ok(get_resp)
     }
 
@@ -87,6 +103,7 @@ where
     fn handle_getm(
         &self,
         kv_server: &KVServer<D>,
+        linked_list_kv_server: &LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
     ) -> Result<kv_messages::GetMResp> {
         let getm_request = {
@@ -97,20 +114,26 @@ where
         };
         let mut vals: Vec<Vec<u8>> = Vec::with_capacity(getm_request.keys.len());
         for key in getm_request.keys.iter() {
-            let value = {
-                #[cfg(feature = "profiler")]
-                demikernel::timer!("Get value");
-                match kv_server.get(&key.as_str()) {
-                    Some(v) => v,
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("Get value");
+            let value = match self.use_linked_list {
+                true => match linked_list_kv_server.get(&key.as_str()) {
+                    Some(v) => v.as_ref().as_ref(),
+                    None => {
+                        bail!("Cannot find value for key in KV store: {:?}", &key.as_str());
+                    }
+                },
+                false => match kv_server.get(&key.as_str()) {
+                    Some(v) => v.as_ref(),
                     None => {
                         bail!("Cannot find value for key in KV store: {:?}", &key.as_str(),);
                     }
-                }
+                },
             };
             {
                 #[cfg(feature = "profiler")]
                 demikernel::timer!("append value");
-                vals.push(value.as_ref().to_vec());
+                vals.push(value.to_vec());
             }
         }
         let mut getm_resp = kv_messages::GetMResp::new();
@@ -139,26 +162,74 @@ where
     fn handle_getlist(
         &self,
         list_kv_server: &ListKVServer<D>,
+        linked_list_kv_server: &LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
     ) -> Result<kv_messages::GetListResp> {
         let getlist_request =
             kv_messages::GetListReq::parse_from_bytes(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
                 .wrap_err("Failed to deserialize proto GetListReq")?;
-        let values = match list_kv_server.get(&getlist_request.key) {
-            Some(v) => v,
-            None => {
-                bail!(
-                    "Cannot find values for key in KV store: {:?}",
-                    getlist_request.key
-                );
+        let values_list = match self.use_linked_list() {
+            true => {
+                let range_start = getlist_request.range_start;
+                let range_end = getlist_request.range_end;
+                let mut node_option = linked_list_kv_server.get(&getlist_request.key.as_str());
+
+                // todo: again, why is range_end being parsed buggy?
+                let range_len = {
+                    if range_end == -1 || range_end == 0 {
+                        let mut len = 0;
+                        while let Some(node) = node_option {
+                            len += 1;
+                            node_option = node.get_next();
+                        }
+                        len - range_start as usize
+                    } else {
+                        ensure!(
+                            range_start < range_end,
+                            "Cannot process get list with range_end < range_start"
+                        );
+                        (range_end - range_start) as usize
+                    }
+                };
+
+                let mut node_option = linked_list_kv_server.get(&getlist_request.key.as_str());
+                let mut list: Vec<Vec<u8>> = Vec::with_capacity(range_len);
+                let mut idx = 0;
+                while let Some(node) = node_option {
+                    if idx < range_start {
+                        node_option = node.get_next();
+                        idx += 1;
+                        continue;
+                    } else if idx as usize == range_len {
+                        break;
+                    }
+
+                    list.push(node.as_ref().get_data().to_vec());
+                    node_option = node.get_next();
+                    idx += 1;
+                }
+                list
+            }
+            false => {
+                let values = match list_kv_server.get(&getlist_request.key) {
+                    Some(v) => v,
+                    None => {
+                        bail!(
+                            "Cannot find values for key in KV store: {:?}",
+                            getlist_request.key
+                        );
+                    }
+                };
+                let mut values_list: Vec<Vec<u8>> = Vec::with_capacity(values.len());
+                for val in values.iter() {
+                    values_list.push(val.as_ref().to_vec());
+                }
+                values_list
             }
         };
-        let mut values_list: Vec<Vec<u8>> = Vec::with_capacity(values.len());
-        for val in values.iter() {
-            values_list.push(val.as_ref().to_vec());
-        }
         let mut getlist_resp = kv_messages::GetListResp::new();
         getlist_resp.val_list = values_list;
+        getlist_resp.id = getlist_request.id;
         Ok(getlist_resp)
     }
 
@@ -191,8 +262,7 @@ where
 {
     kv_server: KVServer<D>,
     list_kv_server: ListKVServer<D>,
-    _zero_copy_put_kv_server: ZeroCopyPutKVServer<D>,
-
+    linked_list_kv_server: LinkedListKVServer<D>,
     mempool_ids: Vec<MempoolID>,
     serializer: ProtobufSerializer<D>,
     push_buf_type: PushBufType,
@@ -207,21 +277,20 @@ where
         load_generator: L,
         datapath: &mut D,
         push_buf_type: PushBufType,
-        zero_copy_puts: bool,
-        _non_refcounted: bool,
+        use_linked_list: bool,
     ) -> Result<Self>
     where
         L: ServerLoadGenerator,
     {
-        let (kv, list_kv, zero_copy_server, mempool_ids) =
-            load_generator.new_kv_state(file, datapath, zero_copy_puts)?;
+        let (kv, list_kv, linked_list_kv_server, mempool_ids) =
+            load_generator.new_kv_state(file, datapath, use_linked_list)?;
         Ok(ProtobufKVServer {
             kv_server: kv,
             list_kv_server: list_kv,
-            _zero_copy_put_kv_server: zero_copy_server,
+            linked_list_kv_server: linked_list_kv_server,
             mempool_ids: mempool_ids,
             push_buf_type: push_buf_type,
-            serializer: ProtobufSerializer::new(zero_copy_puts),
+            serializer: ProtobufSerializer::new(use_linked_list),
         })
     }
 }
@@ -247,21 +316,33 @@ where
             let message_type = MsgType::from_packet(&pkt)?;
             match message_type {
                 MsgType::Get => {
-                    let response = self.serializer.handle_get(&self.kv_server, &pkt)?;
+                    let response = self.serializer.handle_get(
+                        &self.kv_server,
+                        &self.linked_list_kv_server,
+                        &pkt,
+                    )?;
                     datapath.queue_protobuf_message(
                         (pkt.msg_id(), pkt.conn_id(), &response),
                         i == (pkts_len - 1),
                     )?;
                 }
                 MsgType::GetM(_size) => {
-                    let response = self.serializer.handle_getm(&self.kv_server, &pkt)?;
+                    let response = self.serializer.handle_getm(
+                        &self.kv_server,
+                        &self.linked_list_kv_server,
+                        &pkt,
+                    )?;
                     datapath.queue_protobuf_message(
                         (pkt.msg_id(), pkt.conn_id(), &response),
                         i == (pkts_len - 1),
                     )?;
                 }
                 MsgType::GetList(_size) => {
-                    let response = self.serializer.handle_getlist(&self.list_kv_server, &pkt)?;
+                    let response = self.serializer.handle_getlist(
+                        &self.list_kv_server,
+                        &self.linked_list_kv_server,
+                        &pkt,
+                    )?;
                     datapath.queue_protobuf_message(
                         (pkt.msg_id(), pkt.conn_id(), &response),
                         i == (pkts_len - 1),

@@ -17,6 +17,8 @@ table GetMReq {
 table GetListReq {
     id:uint32;
     key:string;
+    rangestart:int32;
+    rangeend:int32;
 }
 
 table GetResp {
