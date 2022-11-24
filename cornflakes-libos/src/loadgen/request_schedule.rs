@@ -142,6 +142,10 @@ impl PacketSchedule {
         })
     }
 
+    pub fn len(&self) -> usize {
+        self.interarrivals.len()
+    }
+
     fn get(&self, idx: usize) -> Duration {
         self.interarrivals[idx]
     }

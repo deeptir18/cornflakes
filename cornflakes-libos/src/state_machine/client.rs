@@ -191,7 +191,8 @@ pub trait ClientSM {
             .wrap_err("No more available connection IDs")?;
 
         // clients can prep for a certain number of messages they need to send
-        //self.prep_requests(schedule.len())?;
+        // self.prep_requests(schedule.len(), datapath)?;
+        // tracing::info!("Done with prepping requests");
 
         // wait for all threads to reach this function and "connect"
         let _ = GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);

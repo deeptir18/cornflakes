@@ -45,7 +45,7 @@ macro_rules! run_client(
                 Some($opt.server_ip.clone()),
                 cornflakes_utils::AppMode::Client,
             )?;
-        let num_rtts = ($opt.rate * $opt.total_time * 2) as usize;
+        let num_rtts = ($opt.rate as f64 * $opt.total_time as f64 * 1.2) as usize;
         let schedules =
             cornflakes_libos::loadgen::request_schedule::generate_schedules(num_rtts, $opt.rate as _, $opt.distribution, $opt.num_threads)?;
 
