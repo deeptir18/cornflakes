@@ -361,30 +361,28 @@ class Experiment(metaclass=abc.ABCMeta):
             ct += 1
             iteration_path = iteration.get_folder_name(folder_path)
             analysis_log = Path(iteration_path) / "analysis.log"
-            if (os.path.exists(str(iteration_path))):
-                utils.info("Iteration already exists, skipping {}; already ran {}".format(
-                    iteration, already_ran))
+            skipped_log = Path(iteration_path) / "skipped.log"
+            if os.path.exists(analysis_log) or os.path.exists(skipped_log):
+                utils.info("Analysis or skipped log exists for: {}".format(
+                    iteration))
                 self.append_to_skip_info(total_args, iteration, folder_path)
                 already_ran += 1
                 continue
-            elif os.path.exists(iteration.get_folder_name(folder_path) / "skipped.log"):
-                skipped += 1
-                continue
             if self.skip_iteration(total_args, iteration):
-                utils.info("Skipping iteration  # {} out of {}; already_ran {},"
-                           "skipped {}".format(ct - 1,
-                                               total,
-                                               already_ran,
-                                               skipped))
+                utils.info("Skipping iteration  # {} out of {}".format(ct - 1,
+                    total))
+                utils.info("Already ran {}; {} were skipped".format( already_ran, skipped))
+
                 skipped += 1
                 # append a folder to say this iteration was skipped
                 if not total_args.pprint:
                     iteration.create_folder(folder_path)
-                skipped = iteration.get_folder_name(folder_path) /\
+                skipped_log = iteration.get_folder_name(folder_path) /\
                     "skipped.log"
-                with open(skipped, 'w') as f:
+                with open(skipped_log, 'w') as f:
                     pass
                 continue
+            
             if (ct > 1):
                 rate_so_far = (ct - 1)/(time.time() - start)
                 left = (total - (ct - 1))

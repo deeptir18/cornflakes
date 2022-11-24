@@ -97,12 +97,14 @@ class ScatterGatherIteration(runner.Iteration):
             "client rates: {} , " \
             "num_threads: {} , " \
             "segment size: {} , " \
+            "num segments: {}, " \
             "num server cores: {} , "\
             "system: {} , " \
             "recv pkt size: {}, "\
             "trial: {}".format(self.get_client_rate_string(),
-                               self.get_segment_size_string(),
                                self.num_threads,
+                               self.get_segment_size_string(),
+                               self.get_num_segments_string(),
                                self.get_num_server_cores_string(),
                                self.get_system_string(),
                                self.get_recv_pkt_size_string(),
@@ -376,19 +378,19 @@ class ScatterGather(runner.Experiment):
         if total_args.exp_type == "individual":
             return
         iteration_hash = iteration.hash()
-        try:
-            throughput = iteration.read_key_from_analysis_log(higher_level_folder, "achieved_load_gbps")
-            percent_achieved = iteration.read_key_from_analysis_log(higher_level_folder, "percent_achieved_rate")
-        except:
-            utils.warn("Could not read throughput and percent achieved for trial {}".format(str(iteration)))
+        skipped = iteration.get_folder_name(higher_level_folder) / "skipped.log"
+        if (os.path.exists(skipped)):
+            utils.info("Skipped log already exists")
+            self.iteration_skipping_information[iteration_hash] =\
+                    (0, 0, False)
+            return
+        throughput = iteration.read_key_from_analysis_log(higher_level_folder, "achieved_load_gbps")
+        percent_achieved = iteration.read_key_from_analysis_log(higher_level_folder, "percent_achieved_rate")
         if iteration_hash not in self.iteration_skipping_information:
             self.iteration_skipping_information[iteration_hash] = (
                 throughput, percent_achieved, False)
-            if (throughput == 0 and percent_achieved == 0):
-                return
         else:
             # if previous iteration does not meet percent achieved cutoff
-            print(self.iteration_skipping_information[iteration_hash])
             if self.iteration_skipping_information[iteration_hash][1] < utils.PERCENT_ACHIEVED_CUTOFF:
                 self.iteration_skipping_information[iteration_hash] = (throughput, percent_achieved, False)
             elif self.iteration_skipping_information[iteration_hash][0] > throughput:
@@ -401,8 +403,7 @@ class ScatterGather(runner.Experiment):
         if iteration_hash not in self.iteration_skipping_information:
             return False
         else:
-            throughput, percent_achieved, skip = self.iteration_skipping_information[
-                iteration_hash]
+            throughput, percent_achieved, skip = self.iteration_skipping_information[iteration_hash]
             return skip
 
     def parse_exp_info_string(self, exp_string):
@@ -465,8 +466,8 @@ class ScatterGather(runner.Experiment):
                      utils.yaml_get(loop_yaml, "max_rates"))
 
             for trial in range(0, num_trials):
-                for system in systems:
-                    for sgbenchinfo in max_rates_dict:
+                for sgbenchinfo in max_rates_dict:
+                    for system in systems:
                         # iterate in reverse to enable stopping early.
                         for rate_percentage in reversed(rate_percentages):
                             max_rate = max_rates_dict[sgbenchinfo]
@@ -579,7 +580,7 @@ class ScatterGather(runner.Experiment):
                          (df.system == system) &
                          (df.num_server_cores  == num_server_cores) &
                          (df.busy_cycles == busy_cycles)]
-        filtered_df = filtered_df[filtered_df["percent_achieved_rate"] >= .95]
+        # filtered_df = filtered_df[filtered_df["percent_achieved_rate"] >= .95]
         # calculate lowest rate, get p99 and median
         # stats
         min_rate = filtered_df["offered_load_pps"].min()
@@ -642,7 +643,7 @@ class ScatterGather(runner.Experiment):
 
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
         utils.info("Running post process analysis")
-        header_str = "segment_size,num_segments,array_size,recv_pkt_size,busy_cycles,num_server_cores,mp99,p99sd,mmedian,mediansd,maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd" + os.linesep
+        header_str = "system,segment_size,num_segments,array_size,recv_pkt_size,busy_cycles,num_server_cores,mp99,p99sd,mmedian,mediansd,maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd" + os.linesep
         
         folder_path = Path(total_args.folder)
         out = open(folder_path / new_logfile, "w")
@@ -653,6 +654,7 @@ class ScatterGather(runner.Experiment):
         max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
         for system in systems:
             for sgbenchinfo in max_rates_dict:
+                print("Running summary analysis for {}".format(sgbenchinfo))
                 self.run_summary_analysis(df,
                                         out,
                                         system,
@@ -673,9 +675,6 @@ class ScatterGather(runner.Experiment):
 
     def graph_results(self, total_args, folder, logfile,
                       post_process_logfile):
-        factor_name = total_args.looping_variable
-        if total_args.looping_variable == "array_total_size":
-            factor_name = "array_size"
         cornflakes_repo = self.config_yaml["cornflakes_dir"]
         plot_path = Path(folder) / "plots"
         plot_path.mkdir(exist_ok=True)
@@ -688,7 +687,15 @@ class ScatterGather(runner.Experiment):
         metrics = ["median", "p99", "tput"]
         # TODO: correct this at some point
         # metrics = ["tput"]
+        pdf = plot_path /\
+                    "heatmap_{}.pdf".format('tput')
 
+        total_plot_args = [str(plotting_script), str(full_log),
+                                str(post_process_log), str(
+                                    pdf), 'tput', "heatmap"]
+        self.run_plot_cmd(total_plot_args)
+
+        return
         if factor_name == "array_size" or factor_name == "recv_size":
             # run SUMMARY
             for metric in metrics:
