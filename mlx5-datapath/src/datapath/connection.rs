@@ -2092,7 +2092,7 @@ impl Datapath for Mlx5Connection {
             sizes::MempoolAllocationParams::new(MEMPOOL_MIN_ELTS, PGSIZE_2MB, MAX_BUFFER_SIZE)
                 .wrap_err("Incorrect mempool allocation params")?;
         tracing::debug!(mempool_params = ?mempool_params, "Adding tx mempool");
-        let tx_mempool = DataMempool::new(&mempool_params, &context)?;
+        let tx_mempool = DataMempool::new(&mempool_params, &context, false)?;
 
         let allocator = MemoryPoolAllocator::new(rx_mempool, tx_mempool)?;
 
@@ -4978,7 +4978,7 @@ impl Datapath for Mlx5Connection {
         let mempool_params = sizes::MempoolAllocationParams::new(min_elts, PGSIZE_2MB, actual_size)
             .wrap_err("Incorrect mempool allocation params")?;
         tracing::info!(mempool_params = ?mempool_params, "Adding mempool");
-        let data_mempool = DataMempool::new(&mempool_params, &self.thread_context)?;
+        let data_mempool = DataMempool::new(&mempool_params, &self.thread_context, true)?;
         let id = self
             .allocator
             .add_mempool(mempool_params.get_item_len(), data_mempool)?;

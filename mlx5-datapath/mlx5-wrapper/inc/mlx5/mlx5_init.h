@@ -31,7 +31,8 @@ void custom_mlx5_set_rx_mempool_ptr(struct custom_mlx5_global_context *global_co
 int custom_mlx5_allocate_mempool(struct registered_mempool *mempool,
                         size_t item_len,
                         size_t num_items,
-                        size_t data_pgsize);
+                        size_t data_pgsize,
+                        uint32_t use_atomic_ops);
 
 /* Registers the mempool from the thread, doing nothing if the memory pool is
  * already not registered. */
@@ -52,7 +53,8 @@ int custom_mlx5_create_and_register_mempool(struct custom_mlx5_global_context *c
                                     size_t item_len,
                                     size_t num_items,
                                     size_t data_pgsize,
-                                    int registry_flags);
+                                    int registry_flags,
+                                    uint32_t use_atomic_ops);
 
 /* Unregisters the region backing this memory pool. */
 int custom_mlx5_deregister_memory_pool(struct registered_mempool *mempool);
@@ -76,7 +78,8 @@ int custom_mlx5_free_rx_mempools(struct custom_mlx5_global_context *context, siz
 int custom_mlx5_alloc_tx_pool(struct registered_mempool *mempool,
                                             size_t item_len,
                                             size_t num_items,
-                                            size_t data_pgsize);
+                                            size_t data_pgsize,
+                                            uint32_t use_atomic_ops);
 
 /* Allocate and register a new tx mempool, given pointer to registered mempool. */
 int custom_mlx5_alloc_and_register_tx_pool(struct custom_mlx5_per_thread_context *per_thread_context,
@@ -84,7 +87,8 @@ int custom_mlx5_alloc_and_register_tx_pool(struct custom_mlx5_per_thread_context
                                                         size_t item_len, 
                                                         size_t num_items, 
                                                         size_t data_pgsize,
-                                                        int registry_flags);
+                                                        int registry_flags,
+                                                        uint32_t use_atomic_ops);
 /* Decrement reference count or return buffer to mempool. */
 int custom_mlx5_refcnt_update_or_free(struct registered_mempool *mempool, 
         void *buf, 
