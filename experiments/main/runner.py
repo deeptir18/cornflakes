@@ -63,8 +63,10 @@ class ExtraSerializationParameters(object):
         if inline_mode != None:
             self.inline_mode = inline_mode
         else:
-            if self.serialization == "cornflakes-dynamic" or self.serialization == "cornflakes1c-dynamic":
+            if self.serialization == "cornflakes-dynamic":
                 self.inline_mode = "objectheader"
+            elif self.serialization == "cornflakes1c-dynamic":
+                self.inline_mode = "nothing"
             else:
                 self.inline_mode = "nothing"
 

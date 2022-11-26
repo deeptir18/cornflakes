@@ -533,7 +533,7 @@ class KVBench(runner.Experiment):
                                        str(post_process_log),
                                        str(pdf),
                                        metric, "individual", 
-                                       str(value_size),
+                                       str(int(value_size)),
                                        str(batch_size)]
                 print(" ".join(total_plot_args))
 

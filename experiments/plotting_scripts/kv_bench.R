@@ -14,7 +14,6 @@ showtext_auto()
 # 2. For some results we might want to display packets per second. Figure out
 # how to programmatically do that when we want to.
 # subset d to be points where `percent_achieved_rate > .95`
-d <- d[ which(d$percent_achieved_rate > 0.95),]
 args <- commandArgs(trailingOnly=TRUE)
 # argument 1: data
 d <- read.csv(args[1], sep=",", header = TRUE)
@@ -27,10 +26,12 @@ metric <- args[4]
 plot_type <- args[5]
 # argument 6: if individual -- size
 # argument 7: if individual -- num_values
+d <- d[ which(d$percent_achieved_rate > 0.95),]
 
 # cut out all data where the percentachieved is less than .95
 # d <- subset(d, percent_achieved_rate > .95)
 
+options(width=10000)
 labels <- c('capnproto' = 'Capnproto', 
             'protobuf' = 'Protobuf', 
             'flatbuffers' = 'Flatbuffers', 
@@ -53,13 +54,37 @@ color_values <- c('capnproto' = '#e7298a',
 levels <- c('capnproto', 'protobuf', 'flatbuffers', 'redis', 'cornflakes1c-dynamic', 'cornflakes-dynamic')
 # filter the serialization labels based on which are present in data
 unique_serialization_labels <- unique(c(d$serialization))
+subset_flat <- function(original, subset) {
+    x <- c()
+    for (name in original) {
+        if (name %in% subset) {
+            x <- append(x, name)
+        }
+    }
+    return(x)
+}
 
-shape_values <- shape_values[c(unique_serialization_labels)]
-color_values <- color_values[c(unique_serialization_labels)]
-labels <- labels[c(unique_serialization_labels)]
-levels <- levels[c(unique_serialization_labels)]
+subset_named <- function(original, subset) {
+    x <- c()
+    attr_name <- attributes(original)$name
+    attrs <- c()
+    for (name in attr_name) {
+        if (name %in% subset) {
+            x <- append(x, original[name])
+            attrs <- append(attrs, name)
+        }
+    }
+    names(x) <- attrs
+    return(x)
+}
+
+color_values <- subset_named(color_values, unique_serialization_labels)
+shape_values <- subset_named(shape_values, unique_serialization_labels)
+labels <- subset_named(labels, unique_serialization_labels)
+levels <- subset_flat(levels, unique_serialization_labels)
 
 d$serialization <- factor(d$serialization, levels = levels)
+
 
 base_plot <- function(data, metric) {
     # data <- subset(data, sdp99 < 300)
