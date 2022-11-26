@@ -279,6 +279,12 @@ int custom_mlx5_alloc_and_register_tx_pool(struct custom_mlx5_per_thread_context
     return 0;
 }
 
+uint16_t custom_mlx5_refcnt_read(struct registered_mempool *mempool,
+        size_t refcnt_index) {
+    struct custom_mlx5_mempool *data_mempool = &mempool->data_mempool;
+    return __atomic_load_n(&data_mempool->ref_counts[refcnt_index], __ATOMIC_RELAXED);
+}
+
 int custom_mlx5_refcnt_update_or_free(struct registered_mempool *mempool, 
         void *buf, 
         size_t refcnt_index, 
@@ -288,10 +294,13 @@ int custom_mlx5_refcnt_update_or_free(struct registered_mempool *mempool,
     if (data_mempool->use_atomic_ops) {
         // must use atomics to update this as potentially accessing from
         // multiple threads
+        NETPERF_DEBUG("Original refcnt: %u, change: %d", custom_mlx5_refcnt_read(mempool, refcnt_index), change);
         if (change > 0) {
             __atomic_add_fetch(&data_mempool->ref_counts[refcnt_index], (uint16_t)change, __ATOMIC_ACQ_REL);
+        NETPERF_DEBUG("Resulting refcnt: %u", custom_mlx5_refcnt_read(mempool, refcnt_index));
         } else {
-            uint16_t refcnt = __atomic_sub_fetch(&data_mempool->ref_counts[refcnt_index], (uint16_t)change, __ATOMIC_ACQ_REL);
+            uint16_t refcnt = __atomic_sub_fetch(&data_mempool->ref_counts[refcnt_index], (uint16_t)(change * -1), __ATOMIC_ACQ_REL);
+        NETPERF_DEBUG("Resulting refcnt: %u", custom_mlx5_refcnt_read(mempool, refcnt_index));
             if (refcnt == 0) {
                 custom_mlx5_mempool_free(data_mempool, buf);
             }
