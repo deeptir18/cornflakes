@@ -31,7 +31,7 @@ void custom_ice_mbuf_init_external(struct custom_ice_mbuf *m,
                                         struct custom_ice_mbuf *indirect_mbuf,
                                         uint16_t offset,
                                         uint16_t len) {
-    custom_ice_rte_memcpy((char *)m, (char *)indirect_mbuf, sizeof(struct custom_ice_mbuf));
+    rte_memcpy((char *)m, (char *)indirect_mbuf, sizeof(struct custom_ice_mbuf));
     m->metadata_mempool = metadata_mempool;
     m->data_mempool = NULL;
     m->indirect_mbuf_ptr = indirect_mbuf;
@@ -51,7 +51,6 @@ void custom_ice_mbuf_init(struct custom_ice_mbuf *m,
     if (data_mempool != NULL) {
         m->data_mempool = data_mempool;
         m->data_buf_len = data_mempool->item_len;
-        m->lkey = data_mempool->lkey;
     }
 }
 

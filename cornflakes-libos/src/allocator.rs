@@ -60,9 +60,6 @@ pub trait DatapathMemoryPool {
 
     fn has_allocated(&self) -> bool;
 
-    /// Is a specific buffer within bounds
-    fn is_buf_within_bounds(&self, buf: &[u8]) -> bool;
-
     fn recover_metadata(
         &self,
         buf: <<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer,

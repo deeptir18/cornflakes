@@ -48,12 +48,6 @@
 	container_of(member_ptr, typeof(*container_var), member)
 
 /**
- * ARRAY_SIZE - get the number of elements in a visible array
- * @arr: the array whose size you want.
- */
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
-
-/**
  * MAX - picks the maximum of two expressions
  *
  * Arguments @a and @b are evaluated exactly once
@@ -117,14 +111,6 @@
  */
 #define __cstr_t(x...)	#x
 #define __cstr(x...)	__cstr_t(x)
-
-/**
- * BIT - generates a value with one set bit by index
- * @n: the bit index to set
- *
- * Returns a long-sized constant.
- */
-#define BIT(n) (1UL << (n))
 
 /* common sizes */
 #define KB	(1024)

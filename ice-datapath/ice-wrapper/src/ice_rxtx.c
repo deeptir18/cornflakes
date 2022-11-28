@@ -10,7 +10,7 @@
 #include <rte_udp.h>
 //#include <ice_ethdev.h>
 
-#include <ice/ice_rxtx.h>
+#include <ice_rxtx.h>
 
 #define ICE_TX_CKSUM_OFFLOAD_MASK (		 \
 		RTE_MBUF_F_TX_IP_CKSUM |		 \

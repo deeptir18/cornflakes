@@ -1,7 +1,7 @@
 ROOT_PATH=.
 
 # shared toolchain definitions
-INC = -I$(ROOT_PATH)/inc -I$(DPDK_PATH)/build/include -I$(DPDK_PATH)/lib/ethdev -I$(DPDK_PATH)/lib/eal/include
+INC = -I$(ROOT_PATH)/inc -I$(DPDK_PATH)/build/include -I$(DPDK_PATH)/lib/ethdev -I$(DPDK_PATH)/lib/eal/include -I$(DPDK_PATH)/drivers/net/ice
 
 CFLAGS  = -g -Wall -D_GNU_SOURCE $(INC) -lstdc++ -fsanitize=unreachable  -Wno-address-of-packed-member -mssse3
 EXTRA_CFLAGS = -lm
@@ -56,11 +56,14 @@ all: static
 
 static: build $(LIB).a
 
-$(LIB).a: ice_rxtx.o mbuf.o mempool.o mem.o time.o
-	ar rcs build/$@ build/ice_rxtx.o build/mbuf.o build/mempool.o build/mem.o build/time.o
+$(LIB).a: ice_rxtx.o init.o mbuf.o mempool.o mem.o time.o
+	ar rcs build/$@ build/ice_rxtx.o build/init.o build/mbuf.o build/mempool.o build/mem.o build/time.o
 
 ice_rxtx.o:
 	$(CC) $(CFLAGS) src/ice_rxtx.c -c -o build/$@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_STATIC)
+
+init.o:
+	$(CC) $(CFLAGS) src/init.c -c -o build/$@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_STATIC)
 
 mbuf.o:
 	$(CC) $(CFLAGS) src/mbuf.c -c -o build/$@ $(EXTRA_CFLAGS) $(LDFLAGS) $(LDFLAGS_STATIC)

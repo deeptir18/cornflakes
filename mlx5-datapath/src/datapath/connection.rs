@@ -48,8 +48,6 @@ pub struct Mlx5Buffer {
     refcnt_index: usize,
     /// Data len,
     data_len: usize,
-    /// Mempool ID: which mempool was this allocated from?
-    mempool_id: MempoolID,
 }
 
 impl Clone for Mlx5Buffer {
@@ -69,7 +67,6 @@ impl Clone for Mlx5Buffer {
             mempool: self.mempool,
             refcnt_index: self.refcnt_index,
             data_len: self.data_len,
-            mempool_id: self.mempool_id,
         }
     }
 }
@@ -81,7 +78,6 @@ impl Default for Mlx5Buffer {
             mempool: std::ptr::null_mut(),
             refcnt_index: 0,
             data_len: 0,
-            mempool_id: 0,
         }
     }
 }
@@ -109,7 +105,6 @@ impl Mlx5Buffer {
         mempool: *mut registered_mempool,
         index: usize,
         data_len: usize,
-        mempool_id: MempoolID,
     ) -> Self {
         unsafe {
             custom_mlx5_refcnt_update_or_free(mempool, data, index as _, 1);
@@ -119,7 +114,6 @@ impl Mlx5Buffer {
             mempool: mempool,
             refcnt_index: index,
             data_len: data_len,
-            mempool_id: mempool_id,
         }
     }
 
@@ -175,14 +169,6 @@ impl Mlx5Buffer {
 }
 
 impl DatapathBufferOps for Mlx5Buffer {
-    fn set_mempool_id(&mut self, id: MempoolID) {
-        self.mempool_id = id;
-    }
-
-    fn get_mempool_id(&self) -> MempoolID {
-        self.mempool_id
-    }
-
     fn set_len(&mut self, len: usize) {
         self.data_len = len;
     }

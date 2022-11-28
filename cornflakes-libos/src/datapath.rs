@@ -221,10 +221,6 @@ pub trait MetadataOps {
 }
 
 pub trait DatapathBufferOps {
-    fn set_mempool_id(&mut self, id: MempoolID);
-
-    fn get_mempool_id(&self) -> MempoolID;
-
     fn set_len(&mut self, len: usize);
 
     fn get_mutable_slice(&mut self, start: usize, len: usize) -> Result<&mut [u8]>;
