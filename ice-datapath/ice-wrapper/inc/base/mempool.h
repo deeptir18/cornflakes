@@ -6,25 +6,25 @@
 
 #include <base/stddef.h>
 #include <base/debug.h>
+#include <base/types.h>
+#include <base/mem.h>
 
 struct custom_ice_mempool {
     void **free_items; /* Array of pointers to free items. */
     uint8_t *ref_counts; /* Array of reference counts for each item in the memory pool */
+    physaddr_t *phys_paddrs; /* Array of physical page addresses. */
     size_t allocated; /* Number of allocated items. */
     size_t capacity; /* Total capacity of memory pool. */
     void *buf; /* Actual contiguous region of backing data. */
-    void *phys_buf; /* Starting of physical address of backing data. */
     size_t len; /* Total region length. */
     size_t pgsize; /* Page size. Using larger pages leads to TLB efficiency. */
     size_t item_len; /* Length of mempool items. Must be aligned to page size. */
     size_t log_item_len; /* Log of the item len*/
     size_t num_pages; /* Number of pages */
-    int32_t lkey; /* Lkey for the memory region backed by mempool. -1 if not registered. */
+    uint32_t use_atomic_ops; /* If true, use atomic updates */
 };
 
 int custom_ice_is_allocated(struct custom_ice_mempool *mempool);
-
-int custom_ice_is_registered(struct custom_ice_mempool *mempool);
 
 void custom_ice_clear_mempool(struct custom_ice_mempool *mempool);
 
@@ -36,16 +36,6 @@ static inline void __custom_ice_mempool_alloc_debug_check(struct custom_ice_memp
 static inline void __custom_ice_mempool_free_debug_check(struct custom_ice_mempool *m, void *item) {}
 #endif /* DEBUG */
 
-
-/* Registers mempool to include lkey information. */
-static inline void custom_ice_register_mempool(struct custom_ice_mempool *mempool, uint32_t lkey) {
-    mempool->lkey = (int32_t)lkey;
-}
-
-/* Removes lkey information from the mempool.*/
-static inline void custom_ice_deregister_mempool(struct custom_ice_mempool *mempool) {
-    mempool->lkey = -1;
-}
 
 /**
  * mempool_find_index - Finds the allocated index of an item from the pool.
@@ -101,10 +91,29 @@ static inline void custom_ice_mempool_free_by_idx(struct custom_ice_mempool *m, 
 
 }
 
+/* Pins the memory backing the mempool by calling mlock. */
+int custom_ice_mempool_pin(struct custom_ice_mempool *m);
+
+/* Unpins the memory backing the mempool by calling munlock. */
+int custom_ice_mempool_unpin(struct custom_ice_mempool *m);
+
 extern int custom_ice_mempool_create(struct custom_ice_mempool *m,
                             size_t len,
                             size_t pgsize,
-                            size_t item_len);
+                            size_t item_len,
+                            uint32_t use_atomic_ops);
 
 extern void custom_ice_mempool_destroy(struct custom_ice_mempool *m);
+
+/* Decrement reference count or return buffer to mempool. */
+int custom_ice_refcnt_update_or_free(struct custom_ice_mempool *mempool,
+        void *buf, 
+        size_t refcnt_index, 
+        int8_t change);
+
+/* Get physical address associated with buffer. */
+physaddr_t custom_ice_get_dma_addr(struct custom_ice_mempool *mempool,
+        void *buf,
+        size_t refcnt_index,
+        size_t offset);
 

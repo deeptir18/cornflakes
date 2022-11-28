@@ -211,18 +211,6 @@ impl DatapathMemoryPool for DataMempool {
     }
 
     #[inline]
-    fn is_buf_within_bounds(&self, buf: &[u8]) -> bool {
-        let ptr = buf.as_ptr() as usize;
-        let data_pool = unsafe { get_data_mempool(self.mempool()) };
-        unsafe {
-            access!(data_pool, allocated, usize) >= 1
-                && ptr >= access!(data_pool, buf, *const u8) as usize
-                && ptr
-                    < (access!(data_pool, buf, *const u8) as usize + access!(data_pool, len, usize))
-        }
-    }
-
-    #[inline]
     fn recover_metadata(
         &self,
         buf: <<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer,

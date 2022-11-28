@@ -165,30 +165,6 @@ struct ip_hdr {
 #define	IPOPT_OFFSET		2		/* offset within option */
 #define	IPOPT_MINOFF		4		/* min value of above */
 
-/*
- * Time stamp option structure.
- */
-struct	ip_timestamp {
-	uint8_t code;			/* IPOPT_TS */
-	uint8_t len;			/* size of structure (variable) */
-	uint8_t ptr;			/* index of current entry */
-#if __BYTE_ORDER == __LITTLE_ENDIAN
-	uint8_t flags:4,		/* flags, see below */
-		overflow:4;		/* overflow counter */
-#endif
-#if __BYTE_ORDER == __BIG_ENDIAN
-	uint8_t overflow:4,		/* overflow counter */
-		flags:4;		/* flags, see below */
-#endif
-	union  {
-		uint32_t time[1];	/* network format */
-		struct {
-			uint32_t addr;
-			uint32_t ipt_time;	/* network format */
-		} ta[1];
-	} u;
-};
-
 /* Flag bits for ipt_flg. */
 #define	IPOPT_TS_TSONLY		0		/* timestamps only */
 #define	IPOPT_TS_TSANDADDR	1		/* timestamps and addresses */
