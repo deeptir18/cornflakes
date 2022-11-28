@@ -9,7 +9,7 @@ use super::{
         ice_bindings::custom_ice_init_tx_queues,
     },
     allocator::IceMempool,
-    check, dpdk_check, dpdk_wrapper,
+    check, dpdk_check, dpdk_wrapper, sizes,
 };
 use cornflakes_libos::{
     allocator::{MemoryPoolAllocator, MempoolID},
@@ -602,6 +602,10 @@ impl IcePerThreadContext {
     pub fn get_address_info(&self) -> &AddressInfo {
         &self.address_info
     }
+
+    pub fn get_dpdk_port(&self) -> u16 {
+        self.physical_port
+    }
 }
 
 impl Drop for IcePerThreadContext {
@@ -1181,14 +1185,86 @@ impl Datapath for IceConnection {
     where
         Self: Sized,
     {
-        unimplemented!();
+        let rx_mempool = IceMempool::new_from_dpdk_ptr(context.get_recv_mempool_ptr() as _);
+        // allocate a tx pool
+        let mempool_params =
+            sizes::MempoolAllocationParams::new(MEMPOOL_MIN_ELTS, PGSIZE_2MB, MAX_BUFFER_SIZE)
+                .wrap_err("Incorrect mempool allocation params")?;
+        let tx_mempool = IceMempool::new(&mempool_params, false)?;
+        let allocator = MemoryPoolAllocator::new(rx_mempool, tx_mempool)?;
+        Ok(IceConnection {
+            thread_context: context,
+            mode: mode,
+            outgoing_window: HashMap::default(),
+            active_connections: [None; MAX_CONCURRENT_CONNECTIONS],
+            address_to_conn_id: HashMap::default(),
+            allocator: allocator,
+            copying_threshold: 256,
+            max_segments: 32,
+            recv_mbufs: [ptr::null_mut(); RECEIVE_BURST_SIZE],
+        })
     }
 
     /// "Open" a connection to the other side.
     /// Args:
     /// @addr: Address information to connect to. Returns a unique "connection" ID.
     fn connect(&mut self, addr: AddressInfo) -> Result<ConnID> {
-        unimplemented!();
+        if self.address_to_conn_id.contains_key(&addr) {
+            return Ok(*self.address_to_conn_id.get(&addr).unwrap());
+        } else {
+            if self.address_to_conn_id.len() >= MAX_CONCURRENT_CONNECTIONS {
+                bail!("too many concurrent connections; cannot connect to more");
+            }
+            let mut idx: Option<usize> = None;
+            for (i, addr_option) in self.active_connections.iter().enumerate() {
+                match addr_option {
+                    Some(_) => {}
+                    None => {
+                        self.address_to_conn_id.insert(addr.clone(), i);
+                        idx = Some(i);
+                        break;
+                    }
+                }
+            }
+            match idx {
+                Some(i) => {
+                    let mut bytes: [u8; cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE] =
+                        [0u8; cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE];
+                    let header_info = cornflakes_libos::utils::HeaderInfo::new(
+                        self.thread_context.get_address_info().clone(),
+                        addr.clone(),
+                    );
+                    // write in the header to these bytes, assuming data length of 0
+                    // data length is updated at runtime and checksums are updated on specific
+                    // transmissions
+                    cornflakes_libos::utils::write_eth_hdr(
+                        &header_info,
+                        &mut bytes[0..cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE],
+                    )?;
+                    cornflakes_libos::utils::write_ipv4_hdr(
+                        &header_info,
+                        &mut bytes[cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE
+                            ..(cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE
+                                + cornflakes_libos::utils::IPV4_HEADER2_SIZE)],
+                        42,
+                    )?;
+                    cornflakes_libos::utils::write_udp_hdr(
+                        &header_info,
+                        &mut bytes[(cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE
+                            + cornflakes_libos::utils::IPV4_HEADER2_SIZE)
+                            ..(cornflakes_libos::utils::ETHERNET2_HEADER2_SIZE
+                                + cornflakes_libos::utils::IPV4_HEADER2_SIZE
+                                + cornflakes_libos::utils::UDP_HEADER2_SIZE)],
+                        42,
+                    )?;
+                    self.active_connections[i] = Some((addr, bytes));
+                    return Ok(i);
+                }
+                None => {
+                    bail!("too many concurrent connections; cannot connect to more");
+                }
+            }
+        }
     }
 
     /// Echo the specified packet back to the  source.
@@ -1250,7 +1326,55 @@ impl Datapath for IceConnection {
     where
         Self: Sized,
     {
-        unimplemented!();
+        let num_received = unsafe {
+            dpdk_bindings::rte_eth_rx_burst(
+                self.thread_context.get_dpdk_port(),
+                self.thread_context.get_queue_id(),
+                self.recv_mbufs.as_mut_ptr(),
+                RECEIVE_BURST_SIZE as _,
+            )
+        };
+
+        let mut ret: Vec<(ReceivedPkt<Self>, Duration)> = Vec::with_capacity(RECEIVE_BURST_SIZE);
+        for i in 0..num_received as usize {
+            if let Some(received_pkt) = self
+                .check_received_pkt(i)
+                .wrap_err(format!("Error checking received pkt {}", i))?
+            {
+                tracing::debug!(
+                    "Received pkt with msg ID {}, conn ID {}",
+                    received_pkt.msg_id(),
+                    received_pkt.conn_id(),
+                );
+                match self
+                    .outgoing_window
+                    .remove(&(received_pkt.msg_id(), received_pkt.conn_id()))
+                {
+                    Some(start_time) => {
+                        let dur = start_time.elapsed();
+                        ret.push((received_pkt, dur));
+                    }
+                    None => {
+                        // free the rest of the packets
+                        tracing::warn!(
+                            "Cannot find msg id {} and conn id {} in outgoing window",
+                            received_pkt.msg_id(),
+                            received_pkt.conn_id()
+                        );
+                        unsafe {
+                            dpdk_bindings::rte_pktmbuf_free(self.recv_mbufs[i]);
+                        }
+                    }
+                }
+            } else {
+                tracing::debug!("Received invalid packet at addr {:?}", self.recv_mbufs[i]);
+                unsafe {
+                    dpdk_bindings::rte_pktmbuf_free(self.recv_mbufs[i]);
+                }
+            }
+            self.recv_mbufs[i] = ptr::null_mut();
+        }
+        Ok(ret)
     }
 
     /// Listen for new received packets and pop them out.
@@ -1258,12 +1382,52 @@ impl Datapath for IceConnection {
     where
         Self: Sized,
     {
-        unimplemented!();
+        let num_received = unsafe {
+            dpdk_bindings::rte_eth_rx_burst(
+                self.thread_context.get_dpdk_port(),
+                self.thread_context.get_queue_id(),
+                self.recv_mbufs.as_mut_ptr(),
+                RECEIVE_BURST_SIZE as _,
+            )
+        };
+
+        if num_received == 0 {
+            return Ok(vec![]);
+        }
+
+        let mut ret: Vec<ReceivedPkt<Self>> = Vec::with_capacity(RECEIVE_BURST_SIZE);
+
+        for i in 0..num_received as usize {
+            if let Some(received_pkt) = self
+                .check_received_pkt(i)
+                .wrap_err(format!("Error checking received pkt {}", i))?
+            {
+                tracing::debug!(
+                    "Received pkt with msg ID {}, conn ID {}",
+                    received_pkt.msg_id(),
+                    received_pkt.conn_id()
+                );
+                ret.push(received_pkt);
+            } else {
+                unsafe {
+                    dpdk_bindings::rte_pktmbuf_free(self.recv_mbufs[i]);
+                }
+            }
+            self.recv_mbufs[i] = ptr::null_mut();
+        }
+        Ok(ret)
     }
 
     /// Check if any outstanding packets have timed out.
-    fn timed_out(&self, _time_out: Duration) -> Result<Vec<(MsgID, ConnID)>> {
-        unimplemented!();
+    fn timed_out(&self, time_out: Duration) -> Result<Vec<(MsgID, ConnID)>> {
+        let mut timed_out: Vec<(MsgID, ConnID)> = Vec::default();
+        for ((id, conn_id), start) in self.outgoing_window.iter() {
+            if start.elapsed().as_nanos() > time_out.as_nanos() {
+                tracing::debug!(elapsed = ?start.elapsed().as_nanos(), id = *id, "Timing out");
+                timed_out.push((*id, *conn_id));
+            }
+        }
+        Ok(timed_out)
     }
 
     /// Checks whether input buffer is registered.
@@ -1277,12 +1441,15 @@ impl Datapath for IceConnection {
     /// Args:
     /// @size: minimum size of buffer to be allocated.
     fn allocate(&mut self, size: usize) -> Result<Option<Self::DatapathBuffer>> {
-        unimplemented!();
+        self.allocator.allocate_buffer(size)
     }
 
     /// Allocate a tx buffer with MTU size (max packet size).
     fn allocate_tx_buffer(&mut self) -> Result<(Option<Self::DatapathBuffer>, usize)> {
-        unimplemented!();
+        Ok((
+            self.allocator.allocate_tx_buffer()?,
+            <Self as Datapath>::max_packet_size(),
+        ))
     }
 
     /// Consume a datapath buffer and returns a metadata object that owns the underlying
@@ -1290,14 +1457,14 @@ impl Datapath for IceConnection {
     /// Args:
     /// @buf: Datapath buffer object.
     fn get_metadata(&self, buf: Self::DatapathBuffer) -> Result<Option<Self::DatapathMetadata>> {
-        unimplemented!();
+        Ok(Some(IceMetadata::Ice(IceCustomMetadata::from_buf(buf))))
     }
 
     /// Takes a buffer and recovers underlying metadata if it is refcounted.
     /// Args:
     /// @buf: Buffer.
     fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>> {
-        unimplemented!();
+        self.allocator.recover_buffer(buf)
     }
 
     /// Elastically add a memory pool with a particular size.
@@ -1314,17 +1481,17 @@ impl Datapath for IceConnection {
     }
 
     /// Checks whether datapath has mempool of size size given (must be power of 2).
-    fn has_mempool(&self, size: usize) -> bool {
+    fn has_mempool(&self, _size: usize) -> bool {
         unimplemented!();
     }
 
     /// Register given mempool ID
-    fn register_mempool(&mut self, id: MempoolID) -> Result<()> {
+    fn register_mempool(&mut self, _id: MempoolID) -> Result<()> {
         unimplemented!();
     }
 
     /// Unregister given mempool ID
-    fn unregister_mempool(&mut self, id: MempoolID) -> Result<()> {
+    fn unregister_mempool(&mut self, _id: MempoolID) -> Result<()> {
         unimplemented!();
     }
 
@@ -1338,7 +1505,7 @@ impl Datapath for IceConnection {
     }
 
     /// Convert cycles to ns.
-    fn cycles_to_ns(&self, t: u64) -> u64 {
+    fn cycles_to_ns(&self, _t: u64) -> u64 {
         unimplemented!();
     }
 

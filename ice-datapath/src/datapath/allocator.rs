@@ -13,36 +13,37 @@ use std::boxed::Box;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct IceMempool {
-    mempool_ptr: *mut [u8],
-    is_dpdk: bool,
+    mempool_ptr: Option<*mut [u8]>,
+    dpdk_ptr: Option<*mut dpdk_bindings::rte_mempool>,
 }
 
 impl Drop for IceMempool {
     fn drop(&mut self) {
         unsafe {
-            if self.is_dpdk {
-                dpdk_bindings::rte_mempool_free(
-                    self.mempool_ptr as *mut dpdk_bindings::rte_mempool,
-                );
-            } else {
-                ice_bindings::custom_ice_mempool_destroy(self.mempool_as_ice());
+            match self.dpdk_ptr {
+                Some(x) => {
+                    dpdk_bindings::rte_mempool_free(x as *mut dpdk_bindings::rte_mempool);
+                }
+                None => {
+                    ice_bindings::custom_ice_mempool_destroy(self.mempool_as_ice());
+                    let _ = unsafe { Box::from_raw(self.mempool_ptr.unwrap()) };
+                }
             }
         }
-        let _ = unsafe { Box::from_raw(self.mempool_ptr) };
     }
 }
 
 impl IceMempool {
     #[inline]
     fn mempool_as_ice(&self) -> *mut ice_bindings::custom_ice_mempool {
-        self.mempool_ptr as *mut ice_bindings::custom_ice_mempool
+        self.mempool_ptr.unwrap() as *mut ice_bindings::custom_ice_mempool
     }
 
     #[inline]
-    pub fn new_from_dpdk_ptr(mempool_ptr: *mut [u8]) -> Self {
+    pub fn new_from_dpdk_ptr(mempool_ptr: *mut dpdk_bindings::rte_mempool) -> Self {
         IceMempool {
-            mempool_ptr: mempool_ptr,
-            is_dpdk: true,
+            mempool_ptr: None,
+            dpdk_ptr: Some(mempool_ptr),
         }
     }
 
@@ -76,8 +77,8 @@ impl IceMempool {
         }
         tracing::info!("New mempool at ptr: {:?}", mempool_ptr,);
         Ok(IceMempool {
-            mempool_ptr: mempool_ptr,
-            is_dpdk: false,
+            mempool_ptr: Some(mempool_ptr),
+            dpdk_ptr: None,
         })
     }
 
@@ -104,7 +105,7 @@ impl DatapathMemoryPool for IceMempool {
 
     #[inline]
     fn get_2mb_pages(&self) -> Vec<usize> {
-        if self.is_dpdk {
+        if let Some(_) = self.dpdk_ptr {
             return vec![];
         }
         let data_pool = self.mempool_as_ice();
@@ -122,7 +123,7 @@ impl DatapathMemoryPool for IceMempool {
 
     #[inline]
     fn get_4k_pages(&self) -> Vec<usize> {
-        if self.is_dpdk {
+        if let Some(_) = self.dpdk_ptr {
             return vec![];
         }
         let data_pool = self.mempool_as_ice();
@@ -139,7 +140,7 @@ impl DatapathMemoryPool for IceMempool {
 
     #[inline]
     fn get_1g_pages(&self) -> Vec<usize> {
-        if self.is_dpdk {
+        if let Some(_) = self.dpdk_ptr {
             return vec![];
         }
         let data_pool = self.mempool_as_ice();
@@ -171,7 +172,7 @@ impl DatapathMemoryPool for IceMempool {
 
     #[inline(always)]
     fn has_allocated(&self) -> bool {
-        if self.is_dpdk {
+        if let Some(_) = self.dpdk_ptr {
             unimplemented!();
         } else {
             unsafe { access!(self.mempool_as_ice(), allocated, usize) >= 1 }
@@ -186,7 +187,7 @@ impl DatapathMemoryPool for IceMempool {
         buf: &[u8],
     ) -> Result<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathMetadata> {
         // only recovers if !dpdk
-        if self.is_dpdk {
+        if let Some(_) = self.dpdk_ptr {
             bail!("Can only recover buffer if not dpdk mempool");
         }
         let (data_ptr, index, offset) = unsafe { self.recover_metadata_mbuf(buf.as_ptr()) };
