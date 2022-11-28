@@ -1013,12 +1013,10 @@ fn add_cf_string_or_bytes(
     ];
     let func_context = FunctionContext::new_extern_c(&format!("{}_unpack", ty), true, args, false);
     compiler.add_context(Context::Function(func_context))?;
-    let box_from_raw = format!("Box::from_raw(self_ as *mut {}<{}>)", ty, datapath);
+    let box_from_raw = format!("&*(self_ as *mut {}<{}>)", ty, datapath);
     compiler.add_unsafe_def_with_let(false, None, "self_", &box_from_raw)?;
-    compiler.add_def_with_let(false, None, "ptr", "(*self_).as_ref()")?;
-    compiler.add_unsafe_set("return_ptr", "ptr.as_ptr()")?;
+    compiler.add_unsafe_set("return_ptr", "self_.as_ref().as_ptr()")?;
     compiler.add_unsafe_set("return_len_ptr", "self_.len()")?;
-    compiler.add_func_call(None, "Box::into_raw", vec!["self_".to_string()], false)?;
     compiler.pop_context()?; // end of function
     compiler.add_newline()?;
     Ok(())

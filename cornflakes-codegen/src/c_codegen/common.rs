@@ -483,19 +483,18 @@ pub fn add_extern_c_wrapper_function(
                 compiler.add_unsafe_def_with_let(
                     false,
                     None,
-                    "self_box",
-                    &format!("Box::from_raw(self_ as *mut {})", struct_name),
+                    "self_",
+                    &format!("&*(self_ as *mut {})", struct_name),
                 )?;
-                compiler.add_unsafe_def_with_let(false, None, "self_", "&**self_box")?;
             }
             SelfArgType::RefMut => {
                 compiler.add_unsafe_def_with_let(
                     false,
                     None,
-                    "self_box",
-                    &format!("Box::from_raw(self_ as *mut {})", struct_name),
+                    "self_",
+                    &format!("&mut *(self_ as *mut {})",
+                       struct_name),
                 )?;
-                compiler.add_unsafe_def_with_let(false, None, "self_", "&mut **self_box")?;
             }
             SelfArgType::Mut => {
                 compiler.add_unsafe_def_with_let(
@@ -611,13 +610,14 @@ pub fn add_extern_c_wrapper_function(
 
     // Unformat arguments
     if let Some(ref self_ty) = self_ty {
-        let arg_name = if self_ty.is_ref() {
-            "self_box"
-        } else {
-            "self_"
+        if !self_ty.is_ref() {
+            compiler.add_func_call(
+                None,
+                "Box::into_raw",
+                vec!["self_".to_string()],
+                false,
+            )?;
         }
-        .to_string();
-        compiler.add_func_call(None, "Box::into_raw", vec![arg_name], false)?;
     }
     if use_error_code {
         compiler.add_line("0")?;
