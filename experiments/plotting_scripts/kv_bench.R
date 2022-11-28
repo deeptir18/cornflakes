@@ -6,6 +6,7 @@ library(tidyr)
 library(extrafont)
 library(showtext)
 library(viridis)
+library("stringr")  
 font_add_google("Fira Sans")
 showtext_auto()
 
@@ -36,8 +37,8 @@ labels <- c('capnproto' = 'Capnproto',
             'protobuf' = 'Protobuf', 
             'flatbuffers' = 'Flatbuffers', 
             'redis' = 'Redis',
-            'cornflakes1c-dynamic' = 'Cornflakes (Always Copy)',
-            'cornflakes-dynamic' = 'Cornflakes')
+            'cornflakes1c-dynamic' = 'Cornflakes (Copy)',
+            'cornflakes-dynamic' = 'Cornflakes (SG)')
 
 shape_values <- c('capnproto' = 18, 
                   'protobuf' = 8, 
@@ -84,7 +85,8 @@ labels <- subset_named(labels, unique_serialization_labels)
 levels <- subset_flat(levels, unique_serialization_labels)
 
 d$serialization <- factor(d$serialization, levels = levels)
-
+d_postprocess$serialization <- factor(d_postprocess$serialization, levels = levels)
+print(levels)
 
 base_plot <- function(data, metric) {
     # data <- subset(data, sdp99 < 300)
@@ -130,9 +132,9 @@ label_plot <- function(plot) {
     plot <- plot +
             geom_point(size=2) +
             geom_line(size = 0.5, aes(color=serialization)) +
-            scale_shape_manual(values = shape_values, labels = labels) +
-            scale_color_manual(values = color_values ,labels = labels) +
-            scale_fill_manual(values = color_values, labels = labels) +
+            scale_shape_manual(values = shape_values, labels = labels, breaks = levels) +
+            scale_color_manual(values = color_values ,labels = labels, breaks = levels) +
+            scale_fill_manual(values = color_values, labels = labels, breaks=levels) +
             theme_light() +
             scale_x_continuous(n.breaks=8) +
             expand_limits(x = 0, y = 0) +
@@ -141,7 +143,7 @@ label_plot <- function(plot) {
                   legend.title = element_blank(),
                   legend.key.size = unit(2, 'mm'),
                   legend.box="vertical",
-                  legend.spacing.x = unit(0.15, 'cm'),
+                  legend.spacing.x = unit(0.1, 'cm'),
                   legend.spacing.y = unit(0.05, 'cm'),
                   legend.text=element_text(size=11),
                   axis.title=element_text(size=11,face="plain", colour="#000000"),
@@ -181,31 +183,30 @@ full_plot <- function(data, metric) {
 
 tput_plot <- function(data, x_label) {
     y_name <- "maxtputgbps"
-    y_label <- "round(maxtputgbps, 2)"
-    y_label_height <- "maxtputgbps + maxtputgbpssd"
+    y_label <- "round(maxtputgbps, 1)"
+    y_label_height <- "maxtputgbps"
     y_axis <- "Highest Achieved\nLoad (Gbps)"
-    y_min = "maxtputgbps - maxtputgbpssd"
-    y_max = "maxtputgbps + maxtputgbpssd"
+    # TODO: for size plot, x should be reordered by size
     plot <- ggplot(data,
-                    aes_string(x = "factor(num_values)",
-                        y=y_name,
-                        fill = "serialization")) +
+                    aes(x =reorder(factor_name, num_values),
+                        y=maxtputgbps,
+                        fill = serialization)) +
                    expand_limits(y = 0) +
-            geom_point(size = 3, stroke=0.2, position=position_dodge(0.5), stat="identity", aes(color=serialization, shape=serialization,fill=serialization, size=serialization)) +
-            geom_bar(position=position_dodge(0.5), stat="identity", width = 0.05) +
+            geom_point(size = 3, stroke=0.2, position=position_dodge(0.8), stat="identity", aes(color=serialization, shape=serialization,fill=serialization, size=serialization)) +
+            geom_bar(position=position_dodge(0.8), stat="identity", width = 0.05) +
             guides(colour=guide_legend(nrow=2, byrow=TRUE),
                    shape=guide_legend(nrow=2, byrow=TRUE)) +
-          geom_text(position = position_dodge(0.5),
-                    aes(y=maxtputgbps + 6, label = round(maxtputgbps, 2)),
-                   size = 3,
+          geom_text(position = position_dodge(0.8),
+                    aes(y=maxtputgbps + 9, label = round(maxtputgbps, 1)),
+                   size = 2.75,
                    angle = 70) +
-                                  #vjust = -0.4, size=5.7, family = "Fira Sans", angle = 70)) +
-            scale_color_manual(values = color_values ,labels = labels) +
-            scale_fill_manual(values = color_values, labels = labels, guide = "none") +
-            scale_shape_manual(values = shape_values, labels = labels) +
+            scale_color_manual(values = color_values ,labels = labels, breaks=levels) +
+            scale_fill_manual(values = color_values, labels = labels, guide = "none", breaks=levels) +
+            scale_shape_manual(values = shape_values, labels = labels, breaks=levels) +
             scale_y_continuous(expand = expansion(mult = c(0, .2))) +
             labs(x = x_label, y = y_axis) +
             theme_light() +
+            scale_x_discrete(labels = function(x) str_wrap(x, width = 6)) +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
                   legend.title = element_blank(),
@@ -215,7 +216,7 @@ tput_plot <- function(data, x_label) {
                   legend.text=element_text(size=11),
                   axis.title=element_text(size=11,face="plain", colour="#000000"),
                   axis.text.y=element_text(size=11, colour="#000000"),
-                  axis.text.x=element_text(size=11, colour="#000000", angle=0),
+                  axis.text.x=element_text(size=8, colour="#000000", angle=0),
                   legend.margin=margin(0,0,0,0),
                   legend.box.margin=margin(-5,-10,-5,-10))
     print(plot)
@@ -258,5 +259,13 @@ if (plot_type == "full") {
     print(plot_pdf)
     ggsave("tmp.pdf", width=5, height=2)
     embed_fonts("tmp.pdf", outfile=plot_pdf)
+} else if (plot_type == "summary_num_values") {
+    num_values_arg <- strtoi(args[6])
+    d_postprocess <- subset(d_postprocess, num_values == num_values)
+    plot <- tput_plot(d_postprocess, args[7])
+    print(plot_pdf)
+    ggsave("tmp.pdf", width=5, height=2)
+    embed_fonts("tmp.pdf", outfile=plot_pdf)
+
 }
 

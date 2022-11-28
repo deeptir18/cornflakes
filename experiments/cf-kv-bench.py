@@ -407,6 +407,11 @@ class KVBench(runner.Experiment):
                          (df["avg_size"] == size) &
                          (df["num_values"] == num_values)]
         total_size = int(size * num_values)
+        rounded_size = int(size)
+
+        factor_name = f"{num_values} {rounded_size} Byte Values"
+        if num_values == 1:
+            factor_name = f"{num_values} {rounded_size} Byte Value"
         utils.info(f"Serialization: {serialization}, num_values: {num_values}, size: {size}")
 
         def ourstd(x):
@@ -440,6 +445,7 @@ class KVBench(runner.Experiment):
         as_one = False
         out.write(str(serialization) + "," + str(total_size) + "," +
                   str(num_values) + "," +
+                  factor_name + "," +
                   str(max_achieved_pps) + "," +
                   str(max_achieved_gbps) + "," +
                   str(std_achieved_pps) + "," +
@@ -448,7 +454,7 @@ class KVBench(runner.Experiment):
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
         # need to determine knee of the curve for each situation
         # TODO: add post processing based on buffer type
-        header_str = "serialization,total_size,num_values,"\
+        header_str = "serialization,total_size,num_values,factor_name,"\
             "maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd,percentachieved" + os.linesep
         folder_path = Path(total_args.folder)
         out = open(folder_path / new_logfile, "w")
@@ -510,6 +516,25 @@ class KVBench(runner.Experiment):
                                     "foo",
                                     "summary",
                                     str(total_size),
+                                    x_axis_label,
+                                ]
+                print(" ".join(total_plot_args))
+                sh.run(total_plot_args)
+        elif "summary_num_values" in loop_yaml:
+            x_axis_label = utils.yaml_get(loop_yaml, "summary_x_axis")
+            summary_num_values = utils.yaml_get(loop_yaml, "summary_num_values")
+            for num_values in summary_num_values:
+                individual_plot_path = plot_path
+                individual_plot_path.mkdir(parents=True, exist_ok=True)
+                pdf = individual_plot_path /\
+                    "summary_{}_tput.pdf".format(total_size)
+                total_plot_args = [str(plotting_script),
+                                    str(full_log),
+                                    str(post_process_log),
+                                    str(pdf),
+                                    "foo",
+                                    "summary_num_values",
+                                    str(num_values),
                                     x_axis_label,
                                 ]
                 print(" ".join(total_plot_args))
