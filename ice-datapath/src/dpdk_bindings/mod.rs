@@ -8,6 +8,18 @@ include!(concat!(env!("OUT_DIR"), "/dpdk_ice_bindings.rs"));
 
 #[link(name = "dpdkiceinlined")]
 extern "C" {
+    fn rte_eth_tx_burst_(
+        port_id: u16,
+        queue_id: u16,
+        tx_pkts: *mut *mut rte_mbuf,
+        nb_pkts: u16,
+    ) -> u16;
+    fn rte_eth_rx_burst_(
+        port_id: u16,
+        queue_id: u16,
+        rx_pkts: *mut *mut rte_mbuf,
+        nb_pkts: u16,
+    ) -> u16;
     fn custom_init_priv_(
         mempool: *mut rte_mempool,
         opaque: *mut ::std::os::raw::c_void,
@@ -23,6 +35,26 @@ extern "C" {
     fn rte_errno_() -> ::std::os::raw::c_int;
 
     fn rte_pktmbuf_refcnt_set_(pkt: *mut rte_mbuf, refcnt: u16);
+}
+
+#[inline]
+pub unsafe fn rte_eth_tx_burst(
+    port_id: u16,
+    queue_id: u16,
+    tx_pkts: *mut *mut rte_mbuf,
+    nb_pkts: u16,
+) -> u16 {
+    rte_eth_tx_burst_(port_id, queue_id, tx_pkts, nb_pkts)
+}
+
+#[inline]
+pub unsafe fn rte_eth_rx_burst(
+    port_id: u16,
+    queue_id: u16,
+    rx_pkts: *mut *mut rte_mbuf,
+    nb_pkts: u16,
+) -> u16 {
+    rte_eth_rx_burst_(port_id, queue_id, rx_pkts, nb_pkts)
 }
 
 #[inline]

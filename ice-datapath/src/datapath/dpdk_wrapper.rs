@@ -1,13 +1,6 @@
 use super::{super::dpdk_bindings::*, dpdk_check};
-use color_eyre::eyre::{bail, ensure, Result, WrapErr};
-use std::{
-    ffi::{CStr, CString},
-    fs::read_to_string,
-    mem::{size_of, MaybeUninit},
-    path::Path,
-    ptr,
-    time::Duration,
-};
+use color_eyre::eyre::{bail, Result, WrapErr};
+use std::{ffi::CString, fs::read_to_string, mem::MaybeUninit, path::Path, ptr, time::Duration};
 use yaml_rust::{Yaml, YamlLoader};
 
 /// DPDK memory pool parameters
