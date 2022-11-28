@@ -404,6 +404,33 @@ fn add_copy_context_functions(compiler: &mut SerializationCompiler, datapath: &s
         true,
     )?;
 
+    ////////////////////////////////////////////////////////////////////////////
+    // CopyContext_data_len
+    add_extern_c_wrapper_function(
+        compiler,
+        "CopyContext_data_len",
+        &format!("CopyContext<{}>", datapath),
+        "data_len",
+        Some(SelfArgType::Value),
+        vec![],
+        Some(ArgType::Rust { string: "usize".to_string() }),
+        false,
+    )?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // CopyContext_reset
+    add_extern_c_wrapper_function(
+        compiler,
+        "CopyContext_reset",
+        &format!("CopyContext<{}>", datapath),
+        "reset",
+        Some(SelfArgType::Mut),
+        vec![],
+        None,
+        false,
+    )?;
+
+    ////////////////////////////////////////////////////////////////////////////
     // CopyContext_free
     common::add_free_function(compiler, "CopyContext", &format!("<{}>", datapath), "")?;
 

@@ -2048,10 +2048,11 @@ pub struct CopyContext<'a, D>
 where
     D: datapath::Datapath,
 {
-    pub copy_buffers: bumpalo::collections::Vec<'a, SerializationCopyBuf<D>>,
+    pub copy_buffers: Vec<SerializationCopyBuf<D>>,
     threshold: usize,
     current_length: usize,
     remaining: usize,
+    phantom: std::marker::PhantomData<&'a D>
 }
 
 impl<'a, D> CopyContext<'a, D>
@@ -2077,11 +2078,19 @@ where
         #[cfg(feature = "profiler")]
         demikernel::timer!("Allocate new copy context");
         Ok(CopyContext {
-            copy_buffers: bumpalo::collections::Vec::with_capacity_in(1, arena),
+            copy_buffers: Vec::new(),
             threshold: datapath.get_copying_threshold(),
             current_length: 0,
             remaining: 0,
+            phantom: std::marker::PhantomData,
         })
+    }
+
+    #[inline]
+    pub fn reset(&mut self) {
+        self.copy_buffers = Vec::new();
+        self.current_length = 0;
+        self.remaining = 0;
     }
 
     #[inline]
