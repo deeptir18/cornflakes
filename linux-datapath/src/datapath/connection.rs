@@ -29,10 +29,12 @@ pub struct MutableByteBuffer {
 }
 
 impl DatapathBufferOps for MutableByteBuffer {
-    fn set_mempool_id(&mut self, _id: MempoolID) {}
+    fn set_len(&mut self, _len: usize) {
+        unimplemented!();
+    }
 
-    fn get_mempool_id(&self) -> MempoolID {
-        0
+    fn get_mutable_slice(&mut self, _start: usize, _len: usize) -> Result<&mut [u8]> {
+        unimplemented!();
     }
 }
 

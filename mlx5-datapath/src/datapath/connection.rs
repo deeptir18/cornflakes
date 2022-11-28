@@ -48,8 +48,6 @@ pub struct Mlx5Buffer {
     refcnt_index: usize,
     /// Data len,
     data_len: usize,
-    /// Mempool ID: which mempool was this allocated from?
-    mempool_id: MempoolID,
 }
 
 impl Clone for Mlx5Buffer {
@@ -69,7 +67,6 @@ impl Clone for Mlx5Buffer {
             mempool: self.mempool,
             refcnt_index: self.refcnt_index,
             data_len: self.data_len,
-            mempool_id: self.mempool_id,
         }
     }
 }
@@ -81,7 +78,6 @@ impl Default for Mlx5Buffer {
             mempool: std::ptr::null_mut(),
             refcnt_index: 0,
             data_len: 0,
-            mempool_id: 0,
         }
     }
 }
@@ -109,7 +105,6 @@ impl Mlx5Buffer {
         mempool: *mut registered_mempool,
         index: usize,
         data_len: usize,
-        mempool_id: MempoolID,
     ) -> Self {
         unsafe {
             custom_mlx5_refcnt_update_or_free(mempool, data, index as _, 1);
@@ -119,7 +114,6 @@ impl Mlx5Buffer {
             mempool: mempool,
             refcnt_index: index,
             data_len: data_len,
-            mempool_id: mempool_id,
         }
     }
 
@@ -175,12 +169,12 @@ impl Mlx5Buffer {
 }
 
 impl DatapathBufferOps for Mlx5Buffer {
-    fn set_mempool_id(&mut self, id: MempoolID) {
-        self.mempool_id = id;
+    fn set_len(&mut self, len: usize) {
+        self.data_len = len;
     }
 
-    fn get_mempool_id(&self) -> MempoolID {
-        self.mempool_id
+    fn get_mutable_slice(&mut self, start: usize, len: usize) -> Result<&mut [u8]> {
+        self.mutable_slice(start, start + len)
     }
 }
 
@@ -657,13 +651,6 @@ impl Mlx5Connection {
             );
             cornflakes_libos::utils::parse_msg_id(&slice)
         };
-
-        tracing::debug!(
-            msg_id = msg_id,
-            conn_id = conn_id,
-            data_len = data_len,
-            "Received "
-        );
 
         ensure!(
             data_len
@@ -2091,7 +2078,7 @@ impl Datapath for Mlx5Connection {
             sizes::MempoolAllocationParams::new(MEMPOOL_MIN_ELTS, PGSIZE_2MB, MAX_BUFFER_SIZE)
                 .wrap_err("Incorrect mempool allocation params")?;
         tracing::debug!(mempool_params = ?mempool_params, "Adding tx mempool");
-        let tx_mempool = DataMempool::new(&mempool_params, &context)?;
+        let tx_mempool = DataMempool::new(&mempool_params, &context, false)?;
 
         let allocator = MemoryPoolAllocator::new(rx_mempool, tx_mempool)?;
 
@@ -3277,6 +3264,219 @@ impl Datapath for Mlx5Connection {
         Ok(())
     }
 
+    fn queue_datapath_buffer(
+        &mut self,
+        msg_id: MsgID,
+        conn_id: ConnID,
+        mut datapath_buffer: Self::DatapathBuffer,
+        end_batch: bool,
+    ) -> Result<()> {
+        #[cfg(feature = "profiler")]
+        demikernel::timer!("queue datapath buffer");
+
+        let mut curr_available_wqes: usize =
+            unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                as usize;
+
+        let num_required = 1;
+        let num_octowords = unsafe { custom_mlx5_num_octowords(0, 1) };
+        while num_required > curr_available_wqes {
+            if self.first_ctrl_seg != ptr::null_mut() {
+                if unsafe {
+                    custom_mlx5_post_transmissions(
+                        self.thread_context.get_context_ptr(),
+                        self.first_ctrl_seg,
+                    ) != 0
+                } {
+                    bail!("Failed to post transmissions so far");
+                } else {
+                    self.first_ctrl_seg = ptr::null_mut();
+                }
+            }
+            self.poll_for_completions()?;
+            curr_available_wqes =
+                unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                    as usize;
+        }
+
+        let ctrl_seg = unsafe {
+            custom_mlx5_fill_in_hdr_segment(
+                self.thread_context.get_context_ptr(),
+                num_octowords as _,
+                num_required as _,
+                0,
+                1,
+                MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
+            )
+        };
+        if ctrl_seg.is_null() {
+            bail!("Error posting header segment for sga");
+        }
+
+        if self.first_ctrl_seg == ptr::null_mut() {
+            self.first_ctrl_seg = ctrl_seg;
+        }
+        // for queue datapath buffer, copy the header directly into the front
+        let data_len = datapath_buffer.as_ref().len() - cornflakes_libos::utils::TOTAL_HEADER_SIZE;
+        self.copy_hdr(&mut datapath_buffer, conn_id, msg_id, data_len)?;
+        let mut metadata_mbuf = MbufMetadata::from_buf(datapath_buffer);
+
+        let dpseg = unsafe { custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), 0) };
+        let completion =
+            unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
+        let _ = self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
+
+        unsafe {
+            custom_mlx5_finish_single_transmission(
+                self.thread_context.get_context_ptr(),
+                num_required as _,
+            );
+        }
+
+        if end_batch {
+            if !self.first_ctrl_seg.is_null() {
+                let _ = self.post_curr_transmissions(Some(self.first_ctrl_seg));
+                self.poll_for_completions()?;
+                self.first_ctrl_seg = ptr::null_mut();
+            }
+        }
+        Ok(())
+    }
+
+    fn queue_metadata_vec(
+        &mut self,
+        msg_id: MsgID,
+        conn_id: ConnID,
+        metadata_vec: Vec<Self::DatapathMetadata>,
+        end_batch: bool,
+    ) -> Result<()> {
+        #[cfg(feature = "profiler")]
+        demikernel::timer!("queue metadata vec");
+
+        let mut curr_available_wqes: usize =
+            unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                as usize;
+
+        let (num_octowords, num_required, inline_len, allocation_size, num_segs) =
+            match self.inline_mode {
+                InlineMode::Nothing => {
+                    let num_segs = metadata_vec.len() + 1;
+                    let num_octowords = unsafe { custom_mlx5_num_octowords(0, num_segs as u64) };
+                    let num_required = unsafe { custom_mlx5_num_wqes_required(num_octowords as _) };
+                    (
+                        num_octowords,
+                        num_required,
+                        0,
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                        num_segs,
+                    )
+                }
+                InlineMode::PacketHeader => {
+                    let num_segs = metadata_vec.len();
+                    let num_octowords = unsafe {
+                        custom_mlx5_num_octowords(
+                            cornflakes_libos::utils::TOTAL_HEADER_SIZE as u64,
+                            num_segs as u64,
+                        )
+                    };
+                    let num_required = unsafe { custom_mlx5_num_wqes_required(num_octowords as _) };
+                    let inline_len = cornflakes_libos::utils::TOTAL_HEADER_SIZE;
+                    (num_octowords, num_required, inline_len, 0, num_segs)
+                }
+                InlineMode::ObjectHeader => {
+                    unimplemented!();
+                }
+            };
+        while num_required as usize > curr_available_wqes {
+            if self.first_ctrl_seg != ptr::null_mut() {
+                if unsafe {
+                    custom_mlx5_post_transmissions(
+                        self.thread_context.get_context_ptr(),
+                        self.first_ctrl_seg,
+                    ) != 0
+                } {
+                    bail!("Failed to post transmissions so far");
+                } else {
+                    self.first_ctrl_seg = ptr::null_mut();
+                }
+            }
+            self.poll_for_completions()?;
+            curr_available_wqes =
+                unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                    as usize;
+        }
+
+        let ctrl_seg = unsafe {
+            custom_mlx5_fill_in_hdr_segment(
+                self.thread_context.get_context_ptr(),
+                num_octowords as _,
+                num_required as _,
+                0,
+                num_segs as _,
+                MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
+            )
+        };
+        if ctrl_seg.is_null() {
+            bail!("Error posting header segment.");
+        }
+
+        if self.first_ctrl_seg == ptr::null_mut() {
+            self.first_ctrl_seg = ctrl_seg;
+        }
+
+        let mut dpseg =
+            unsafe { custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), 0) };
+        let mut completion =
+            unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
+        // inline or copy header as necessary
+        let data_len: usize = metadata_vec
+            .iter()
+            .map(|seg| seg.as_ref().len())
+            .sum::<usize>();
+        let _ = self.inline_hdr_if_necessary(conn_id, msg_id, inline_len, data_len, &[])?;
+        if allocation_size > 0 {
+            let mut datapath_buffer = {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("allocating stuff to copy into");
+                match self.allocator.allocate_tx_buffer()? {
+                    Some(buf) => buf,
+                    None => {
+                        bail!("No tx mempools to allocate outgoing packet");
+                    }
+                }
+            };
+            self.copy_hdr(&mut datapath_buffer, conn_id, msg_id, data_len)?;
+            let mut metadata_mbuf = MbufMetadata::from_buf(datapath_buffer);
+            let (curr_dpseg, curr_completion) =
+                self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
+            dpseg = curr_dpseg;
+            completion = curr_completion;
+        }
+        // iterate over entries and post in sequence
+        for mut metadata in metadata_vec.into_iter() {
+            let (curr_dpseg, curr_completion) =
+                self.post_mbuf_metadata(&mut metadata, dpseg, completion);
+            dpseg = curr_dpseg;
+            completion = curr_completion;
+        }
+
+        unsafe {
+            custom_mlx5_finish_single_transmission(
+                self.thread_context.get_context_ptr(),
+                num_required as _,
+            );
+        }
+
+        if end_batch {
+            if !self.first_ctrl_seg.is_null() {
+                let _ = self.post_curr_transmissions(Some(self.first_ctrl_seg));
+                self.poll_for_completions()?;
+                self.first_ctrl_seg = ptr::null_mut();
+            }
+        }
+        Ok(())
+    }
+
     fn queue_cornflakes_obj<'arena>(
         &mut self,
         msg_id: MsgID,
@@ -3448,8 +3648,8 @@ impl Datapath for Mlx5Connection {
                     copy_context,
                     header_len,
                     allocated_header_buffer.mutable_slice(
-                        cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE,
-                        cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE + header_len,
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                        cornflakes_libos::utils::TOTAL_HEADER_SIZE + header_len,
                     )?,
                     0,
                     cornflakes_obj.dynamic_header_start(),
@@ -3461,7 +3661,7 @@ impl Datapath for Mlx5Connection {
                 // copy the packet header into the beginning of the buffer
                 self.copy_hdr(&mut allocated_header_buffer, conn_id, msg_id, data_len)?;
                 allocated_header_buffer
-                    .set_len(header_len + cornflakes_libos::utils::TOTAL_UDP_HEADER_SIZE);
+                    .set_len(header_len + cornflakes_libos::utils::TOTAL_HEADER_SIZE);
                 // reset ring buffer state
                 ring_buffer_state.0 = first_copy_dpseg;
                 ring_buffer_state.1 = first_copy_completion;
@@ -4764,7 +4964,7 @@ impl Datapath for Mlx5Connection {
         let mempool_params = sizes::MempoolAllocationParams::new(min_elts, PGSIZE_2MB, actual_size)
             .wrap_err("Incorrect mempool allocation params")?;
         tracing::info!(mempool_params = ?mempool_params, "Adding mempool");
-        let data_mempool = DataMempool::new(&mempool_params, &self.thread_context)?;
+        let data_mempool = DataMempool::new(&mempool_params, &self.thread_context, true)?;
         let id = self
             .allocator
             .add_mempool(mempool_params.get_item_len(), data_mempool)?;

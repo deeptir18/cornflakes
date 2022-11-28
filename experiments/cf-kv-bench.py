@@ -1,5 +1,6 @@
 from main import runner, utils
 import heapq
+from result import Ok
 import yaml
 from pathlib import Path
 import os
@@ -9,16 +10,10 @@ import copy
 import time
 import pandas as pd
 import numpy as np
+import collections
 STRIP_THRESHOLD = 0.03
-NUM_CLIENTS = 1
-NUM_THREADS = 16
-max_rates = {(1,1): 100000, (2, 2): 75000, (4,4): 50000, (8,8): (25000)}
-rate_percentages = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.95, 1.00]
-SIZES_TO_LOOP = [4096, 512]
-NUM_VALUES_TO_LOOP = [1, 2, 4, 8]
-NUM_KEYS_TO_LOOP = [1, 2, 4, 8]
 SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cornflakes1c-dynamic",
-                           "capnproto", "flatbuffers", "protobuf"]
+                           "capnproto", "flatbuffers", "protobuf", "redis"]
 
 
 class KVIteration(runner.Iteration):
@@ -47,7 +42,8 @@ class KVIteration(runner.Iteration):
         self.extra_serialization_params = extra_serialization_params
 
     def __str__(self):
-        return "Iteration info: client rates: {}, " \
+        return "Iteration info: " \
+            "client rates: {}, " \
             "value size distr: {}, " \
             "num keys: {}, " \
             "num values: {}, " \
@@ -196,7 +192,8 @@ class KVIteration(runner.Iteration):
                 self.extra_serialization_params.get_subfolder() /\
                 self.get_size_distr_string() /\
             self.get_num_keys_string() /\
-            self.get_num_values_string() / self.get_client_rate_string() /\
+            self.get_num_values_string() / \
+            self.get_client_rate_string() /\
             self.get_num_threads_string()
 
     def get_folder_name(self, high_level_folder):
@@ -243,6 +240,7 @@ class KVIteration(runner.Iteration):
             exit(1)
         return ret
 
+KVExpInfo = collections.namedtuple("KVExpInfo", ["num_values", "num_keys", "size"])
 
 class KVBench(runner.Experiment):
     def __init__(self, exp_yaml, config_yaml):
@@ -260,6 +258,19 @@ class KVBench(runner.Experiment):
 
     def append_to_skip_info(self, total_args, iteration, higher_level_folder):
         return
+
+    def parse_exp_info_string(self, exp_string):
+        """
+        Returns parsed KVExpInfo from exp_string.
+        Should be formatted as:
+        num_values = {}, num_keys = {}, size = {}
+        """
+        try:
+            parse_result = parse.parse("num_values = {:d}, num_keys = {:d}, size = {}", exp_string)
+            return KVExpInfo(parse_result[0], parse_result[1], parse_result[2])
+        except:
+            utils.error("Error parsing exp_string: {}".format(exp_string))
+            exit(1)
 
     def get_iterations(self, total_args):
         if total_args.exp_type == "individual":
@@ -298,36 +309,42 @@ class KVBench(runner.Experiment):
             it.set_trial(num_trials_finished)
             return [it]
         else:
-            # loop over various options
             ret = []
-            for trial in range(utils.NUM_TRIALS):
-                for serialization in SERIALIZATION_LIBRARIES:
+            loop_yaml = self.get_loop_yaml()
+            # loop over various options
+            num_trials = utils.yaml_get(loop_yaml, "num_trials")
+            num_threads = utils.yaml_get(loop_yaml, "num_threads")
+            num_clients = utils.yaml_get(loop_yaml, "num_clients")
+            rate_percentages = utils.yaml_get(loop_yaml, "rate_percentages")
+            serialization_libraries = utils.yaml_get(loop_yaml,
+                    "serialization_libraries")
+            max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
+
+            for trial in range(num_trials):
+                for serialization in serialization_libraries:
                     for rate_percentage in rate_percentages:
-                        num_threads = NUM_THREADS
-                        for total_size in SIZES_TO_LOOP:
-                            for num_values in NUM_VALUES_TO_LOOP:
-                                for num_keys in NUM_KEYS_TO_LOOP:
-                                    if num_keys != num_values:
-                                        continue
-                                    max_rate = max_rates[(num_keys,num_values)]
-                                    rate = int(float(max_rate) *
-                                                rate_percentage)
-                                    client_rates = [(rate, NUM_CLIENTS)]
-                                    size = int(total_size / num_values)
-                                    size_str = "UniformOverSizes-{}".format(size)
-                                    extra_serialization_params = runner.ExtraSerializationParameters(serialization)
-                                    it = KVIteration(client_rates,
-                                                         size,
-                                                         size_str,
-                                                         num_keys,
-                                                         num_values,
-                                                         serialization,
-                                                         total_args.load_trace,
-                                                         total_args.access_trace,
-                                                         num_threads,
-                                                         extra_serialization_params,
-                                                         trial=trial)
-                                    ret.append(it)
+                        for kvexp in max_rates_dict:
+                            max_rate = max_rates_dict[kvexp]
+                            num_values = kvexp.num_values
+                            num_keys = kvexp.num_keys
+                            size_str = kvexp.size
+                            size = utils.parse_cornflakes_size_distr_avg(size_str)
+                            rate = int(float(max_rate) *
+                                        rate_percentage)
+                            client_rates = [(rate, num_clients)]
+                            extra_serialization_params = runner.ExtraSerializationParameters(serialization)
+                            it = KVIteration(client_rates,
+                                                size,
+                                                size_str,
+                                                num_keys,
+                                                num_values,
+                                                serialization,
+                                                total_args.load_trace,
+                                                total_args.access_trace,
+                                                num_threads,
+                                                extra_serialization_params,
+                                                trial = trial)
+                            ret.append(it)
             return ret
 
     def add_specific_args(self, parser, namespace):
@@ -386,19 +403,22 @@ class KVBench(runner.Experiment):
         return self.config_yaml
 
     def run_summary_analysis(self, df, out, serialization, num_values, size):
-        print(df)
         filtered_df = df[(df["serialization"] == serialization) &
                          (df["avg_size"] == size) &
                          (df["num_values"] == num_values)]
         total_size = int(size * num_values)
-        print(serialization, num_values, size)
+        rounded_size = int(size)
+
+        factor_name = f"{num_values} {rounded_size} Byte Values"
+        if num_values == 1:
+            factor_name = f"{num_values} {rounded_size} Byte Value"
+        utils.info(f"Serialization: {serialization}, num_values: {num_values}, size: {size}")
 
         def ourstd(x):
             return np.std(x, ddof=0)
 
         # CURRENT KNEE CALCULATION:
         # just find maximum achieved rate across all rates
-        # group by array size, num segments, segment size,  # average
         clustered_df = filtered_df.groupby(["serialization",
                                             "avg_size", "num_values",
                                            "offered_load_pps",
@@ -414,9 +434,6 @@ class KVBench(runner.Experiment):
                                               aggfunc="mean"),
             achieved_load_gbps_sd=pd.NamedAgg(column="achieved_load_gbps",
                                               aggfunc=ourstd))
-        clustered_df = clustered_df[clustered_df["percent_achieved_rate"] >=
-                                    0.95]
-
         max_achieved_pps = clustered_df["achieved_load_pps_mean"].max()
         max_achieved_gbps = clustered_df["achieved_load_gbps_mean"].max()
         std_achieved_pps = clustered_df.loc[clustered_df['achieved_load_pps_mean'].idxmax(),
@@ -428,6 +445,7 @@ class KVBench(runner.Experiment):
         as_one = False
         out.write(str(serialization) + "," + str(total_size) + "," +
                   str(num_values) + "," +
+                  factor_name + "," +
                   str(max_achieved_pps) + "," +
                   str(max_achieved_gbps) + "," +
                   str(std_achieved_pps) + "," +
@@ -436,19 +454,23 @@ class KVBench(runner.Experiment):
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
         # need to determine knee of the curve for each situation
         # TODO: add post processing based on buffer type
-        header_str = "serialization,total_size,num_values,"\
+        header_str = "serialization,total_size,num_values,factor_name,"\
             "maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd,percentachieved" + os.linesep
         folder_path = Path(total_args.folder)
         out = open(folder_path / new_logfile, "w")
         df = pd.read_csv(folder_path / logfile)
         out.write(header_str)
+        loop_yaml = self.get_loop_yaml()
+        max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
+        serialization_libraries = utils.yaml_get(loop_yaml, "serialization_libraries")
+        max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
 
-        for serialization in SERIALIZATION_LIBRARIES:
-            for num_values in NUM_VALUES_TO_LOOP:
-                for total_size in SIZES_TO_LOOP:
-                    value_size = int(total_size / num_values)
-                    self.run_summary_analysis(df, out, serialization,
-                                              num_values, value_size)
+        for serialization in serialization_libraries:
+            for kvexpinfo in max_rates_dict:
+                avg_value_size = utils.parse_cornflakes_size_distr_avg(kvexpinfo.size)
+                num_values = kvexpinfo.num_values
+                self.run_summary_analysis(df, out, serialization, num_values,
+                        avg_value_size)
         out.close()
 
     def graph_results(self, args, folder, logfile, post_process_logfile):
@@ -460,7 +482,10 @@ class KVBench(runner.Experiment):
             "experiments" / "plotting_scripts" / "kv_bench.R"
         base_args = [str(plotting_script), str(full_log)]
         metrics = ["p99", "median"]
+        loop_yaml = self.get_loop_yaml()
         post_process_log = Path(folder) / post_process_logfile
+        max_rates = self.parse_max_rates(utils.yaml_get(loop_yaml,
+            "max_rates"))
 
         # make total plot
         for metric in metrics:
@@ -474,43 +499,70 @@ class KVBench(runner.Experiment):
             print(" ".join(total_plot_args))
             sh.run(total_plot_args)
 
-        # make summary plots
-        for total_size in SIZES_TO_LOOP:
-            individual_plot_path = plot_path
-            individual_plot_path.mkdir(parents=True, exist_ok=True)
-            pdf = individual_plot_path /\
-                "summary_{}_tput.pdf".format(total_size)
-            total_plot_args = [str(plotting_script),
-                               str(full_log),
-                               str(post_process_log),
-                               str(pdf),
-                               "foo",
-                               "summary",
-                               str(total_size)
-                               ]
-            print(" ".join(total_plot_args))
-            sh.run(total_plot_args)
+        # make plot representing summary throughput
+        if "summary_sizes" in loop_yaml:
+            # need to provide "summary_x_axis" name
+            x_axis_label = utils.yaml_get(loop_yaml, "summary_x_axis")
+            summary_sizes = utils.yaml_get(loop_yaml, "summary_sizes")
+            for total_size in summary_sizes:
+                individual_plot_path = plot_path
+                individual_plot_path.mkdir(parents=True, exist_ok=True)
+                pdf = individual_plot_path /\
+                    "summary_{}_tput.pdf".format(total_size)
+                total_plot_args = [str(plotting_script),
+                                    str(full_log),
+                                    str(post_process_log),
+                                    str(pdf),
+                                    "foo",
+                                    "summary",
+                                    str(total_size),
+                                    x_axis_label,
+                                ]
+                print(" ".join(total_plot_args))
+                sh.run(total_plot_args)
+        elif "summary_num_values" in loop_yaml:
+            x_axis_label = utils.yaml_get(loop_yaml, "summary_x_axis")
+            summary_num_values = utils.yaml_get(loop_yaml, "summary_num_values")
+            for num_values in summary_num_values:
+                individual_plot_path = plot_path
+                individual_plot_path.mkdir(parents=True, exist_ok=True)
+                pdf = individual_plot_path /\
+                    "summary_{}_tput.pdf".format(total_size)
+                total_plot_args = [str(plotting_script),
+                                    str(full_log),
+                                    str(post_process_log),
+                                    str(pdf),
+                                    "foo",
+                                    "summary_num_values",
+                                    str(num_values),
+                                    x_axis_label,
+                                ]
+                print(" ".join(total_plot_args))
+                sh.run(total_plot_args)
 
-        # make individual plots
+
+        # make throughput latency curves individual plots
         for metric in metrics:
-            for value_size in SIZES_TO_LOOP:
-                for batch_size in NUM_VALUES_TO_LOOP:
-                    individual_plot_path = plot_path / \
-                        "size_{}".format(value_size) / \
-                        "batch_{}".format(batch_size)
-                    individual_plot_path.mkdir(parents=True, exist_ok=True)
-                    pdf = individual_plot_path / \
-                        "size_{}_batch_{}_{}.pdf".format(value_size, batch_size,
-                                                         metric)
-                    total_plot_args = [str(plotting_script),
+            for kvexp in max_rates:
+                batch_size = kvexp.num_values
+                avg_size = utils.parse_cornflakes_size_distr_avg(kvexp.size)
+                value_size = batch_size * avg_size
+                individual_plot_path = plot_path / \
+                    "size_{}".format(value_size) / \
+                    "batch_{}".format(batch_size)
+                individual_plot_path.mkdir(parents=True, exist_ok=True)
+                pdf = individual_plot_path / \
+                    "size_{}_batch_{}_{}.pdf".format(value_size, batch_size, metric)
+                total_plot_args = [str(plotting_script),
                                        str(full_log),
                                        str(post_process_log),
                                        str(pdf),
-                                       metric, "individual", str(value_size),
+                                       metric, "individual", 
+                                       str(int(value_size)),
                                        str(batch_size)]
-                    print(" ".join(total_plot_args))
+                print(" ".join(total_plot_args))
 
-                    sh.run(total_plot_args)
+                sh.run(total_plot_args)
 
 
 def main():

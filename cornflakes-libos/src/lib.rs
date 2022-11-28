@@ -22,7 +22,7 @@ use cornflakes_utils::AppMode;
 use datapath::MetadataOps;
 #[cfg(feature = "profiler")]
 use demikernel::perftools;
-use loadgen::request_schedule::PacketSchedule;
+use loadgen::request_schedule::{PacketSchedule, SpinTimer};
 use mem::MmapMetadata;
 use std::{
     io::Write,
@@ -3356,28 +3356,18 @@ pub trait ClientSM {
         server_ip: &Ipv4Addr,
         port: u16,
     ) -> Result<()> {
-        let freq = datapath.timer_hz(); // cycles per second
         let addr_info = datapath.get_outgoing_addr_from_ip(server_ip, port)?;
-        let time_start = Instant::now();
-        let mut idx = 0;
+        let mut spin_timer = SpinTimer::new(schedule.clone(), Duration::from_secs(total_time));
 
-        let start = datapath.current_cycles();
-        let mut deficit;
-        let mut next = start;
         while let Some(msg) = self.get_next_msg()? {
-            if datapath.current_cycles() > (total_time * freq + start) {
+            if spin_timer.done() {
                 tracing::debug!("Total time done");
                 break;
             }
             // Send the next message
-            tracing::debug!(time = ?time_start.elapsed(), "About to send next packet");
             datapath.push_buf(msg, addr_info.clone())?;
-            idx += 1;
-            let last_sent = datapath.current_cycles();
-            deficit = last_sent - next;
-            next = schedule.get_next_in_cycles(idx, last_sent, freq, deficit);
 
-            while datapath.current_cycles() <= next {
+            spin_timer.wait(&mut || {
                 let recved_pkts = datapath.pop()?;
                 for (pkt, rtt) in recved_pkts.into_iter() {
                     let msg_id = pkt.get_id();
@@ -3392,7 +3382,8 @@ pub trait ClientSM {
                         datapath.push_buf(self.msg_timeout_cb(*id)?, addr_info.clone())?;
                     }
                 }
-            }
+                Ok(())
+            })?;
         }
 
         tracing::debug!("Finished sending");

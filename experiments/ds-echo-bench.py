@@ -9,25 +9,11 @@ import copy
 import time
 import pandas as pd
 import numpy as np
-STRIP_THRESHOLD = 0.03
+import collections
 
-SIZES_TO_LOOP = [512, 4096]
-NUM_THREADS = 16
-NUM_CLIENTS = 1
-MESSAGE_TYPES = ["single"]
-
-MESSAGE_TYPES.extend(["list-2", "list-4", "list-8", "list-16"])
-max_rates = {4096: 120000, 2048: 180000, 1024: 200000, 512: 300000 }
-rate_percentages = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.95, 1.00]
-SERIALIZATION_LIBRARIES = ["cornflakes-dynamic",  "protobuf", "flatbuffers",
-        "capnproto", "cornflakes1c-dynamic", "ideal"]
-MOTIVATION_SERIALIZATION_LIBRARIES = ["ideal", "onecopy", "twocopy",
-                                      "flatbuffers", "capnproto", "cereal", "protobuf"]
 ALL_SERIALIZATION_LIBRARIES = [
     "cornflakes-dynamic", "cornflakes1c-dynamic", "flatbuffers", "capnproto",
-    "cereal", "protobuf", "onecopy", "twocopy", "ideal"]
-MOTIVATION_MESSAGE_TYPE = "list-2"
-MOTIVATION_SIZES_TO_LOOP = [1024, 4096]
+    "protobuf", "onecopy", "twocopy", "ideal", "manualzerocopy"]
 
 
 class EchoBenchIteration(runner.Iteration):
@@ -230,6 +216,8 @@ class EchoBenchIteration(runner.Iteration):
             exit(1)
         return ret
 
+EchoInfo = collections.namedtuple("EchoInfo", ["message", "total_size"])
+
 class EchoBench(runner.Experiment):
     def __init__(self, exp_yaml, config_yaml):
         self.exp = "DSEchoBench"
@@ -246,6 +234,21 @@ class EchoBench(runner.Experiment):
 
     def append_to_skip_info(self, total_args, iteration, higher_level_folder):
         return
+
+    def parse_exp_info_string(self, exp_string):
+        """
+        Returns parsed EchoInfo from exp_string.
+        Should be formatted as:
+        message = {}, total_size = {}
+        """
+        try:
+            parse_result = parse.parse("message = {}, total_size = {:d}",
+                    exp_string)
+
+            return EchoInfo(parse_result[0], parse_result[1])
+        except:
+            utils.error("Error parsing exp_string: {}".format(exp_string))
+            exit(1)
 
     def get_iterations(self, total_args):
         if total_args.exp_type == "individual":
@@ -281,32 +284,34 @@ class EchoBench(runner.Experiment):
         else:
             # loop over the options
             ret = []
-            if total_args.loop_mode == "eval":
-                for trial in range(utils.NUM_TRIALS):
-                    for serialization in SERIALIZATION_LIBRARIES:
-                        for rate_percentage in rate_percentages:
-                            num_threads = NUM_THREADS
-                            for size in SIZES_TO_LOOP:
-                                for message_type in MESSAGE_TYPES:
-                                    if size == 8192\
-                                            and message_type == "tree-5"\
-                                            and (serialization == "cornflakes-dynamic" or serialization == "cornflakes-1cdynamic"):
-                                        continue
-                                    max_rate = max_rates[size]
-                                    rate = int(float(max_rate) *
-                                            rate_percentage)
-                                    client_rates = [(rate, NUM_CLIENTS)]
-                                    extra_serialization_params = runner.ExtraSerializationParameters(serialization)
-                                    it = EchoBenchIteration(client_rates,
-                                                            size,
-                                                            serialization,
-                                                            message_type,
-                                                            num_threads,
-                                                            extra_serialization_params,
-                                                            trial=trial)
-                                    ret.append(it)
-            elif total_args.loop_mode == "motivation":
-                pass
+            loop_yaml = self.get_loop_yaml()
+            num_trials = utils.yaml_get(loop_yaml, "num_trials")
+            num_threads = utils.yaml_get(loop_yaml, "num_threads")
+            num_clients = utils.yaml_get(loop_yaml, "num_clients")
+            rate_percentages = utils.yaml_get(loop_yaml, "rate_percentages")
+            serialization_libraries = utils.yaml_get(loop_yaml,
+                    "serialization_libraries")
+            max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
+
+            for trial in range(num_trials):
+                for serialization in serialization_libraries:
+                    for rate_percentage in rate_percentages:
+                        for echoexp in max_rates_dict:
+                            max_rate = max_rates_dict[echoexp]
+                            message_type = echoexp.message
+                            size = echoexp.total_size
+                            rate = int(float(max_rate) *
+                                        rate_percentage)
+                            client_rates = [(rate, num_clients)]
+                            extra_serialization_params = runner.ExtraSerializationParameters(serialization)
+                            it = EchoBenchIteration(client_rates,
+                                                        size,
+                                                        serialization,
+                                                        message_type,
+                                                        num_threads,
+                                                        extra_serialization_params,
+                                                        trial=trial)
+                            ret.append(it)
             return ret
 
     def add_specific_args(self, parser, namespace):
@@ -330,7 +335,9 @@ class EchoBench(runner.Experiment):
                                 required=True)
             parser.add_argument("-m", "--message_type",
                                 dest="message_type",
-                                choices=MESSAGE_TYPES,
+                                choices=["single", "list-1", "list-2", "list-8",
+                                    "list-4", "list-16", "tree-1", "tree-2",
+                                    "tree-3", "tree-4"],
                                 required=True)
             parser.add_argument("-nc", "--num_clients",
                                 dest="num_clients",
@@ -338,7 +345,7 @@ class EchoBench(runner.Experiment):
                                 default=1)
             parser.add_argument("-ser", "--serialization",
                                 dest="serialization",
-                                choices=SERIALIZATION_LIBRARIES,
+                                choices=ALL_SERIALIZATION_LIBRARIES,
                                 required=True)
             # extra serialization related parser arguments
             runner.extend_with_serialization_parameters(parser) 
@@ -363,14 +370,13 @@ class EchoBench(runner.Experiment):
                          (df["message_type"] == message_type)]
         print(size, message_type, serialization)
         # calculate lowest rate, get p99 and median
-        # filtered_df = filtered_df[filtered_df["percent_achieved_rate"] >= .95]
+        filtered_df = filtered_df[filtered_df["percent_achieved_rate"] >= .95]
 
         def ourstd(x):
             return np.std(x, ddof=0)
 
         # CURRENT KNEE CALCULATION:
         # just find maximum achieved rate across all rates
-        # group by array size, num segments, segment size,  # average
         clustered_df = filtered_df.groupby(["serialization",
                                             "size", "message_type",
                                            "offered_load_pps",
@@ -387,7 +393,6 @@ class EchoBench(runner.Experiment):
             achieved_load_gbps_sd=pd.NamedAgg(column="achieved_load_gbps",
                                               aggfunc=ourstd))
 
-        clustered_df = clustered_df[clustered_df["percent_achieved_rate"] >= 0.95]
         max_achieved_pps = clustered_df["achieved_load_pps_mean"].max()
         max_achieved_gbps = clustered_df["achieved_load_gbps_mean"].max()
         std_achieved_pps = clustered_df.loc[clustered_df['achieved_load_pps_mean'].idxmax(),
@@ -413,15 +418,22 @@ class EchoBench(runner.Experiment):
         out = open(folder_path / new_logfile, "w")
         df = pd.read_csv(folder_path / logfile)
         out.write(header_str)
+        
+        loop_yaml = self.get_loop_yaml()
+        max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
+        serialization_libraries = utils.yaml_get(loop_yaml, "serialization_libraries")
+        max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
 
-        for size in SIZES_TO_LOOP:
-            for message_type in MESSAGE_TYPES:
-                for serialization in ALL_SERIALIZATION_LIBRARIES:
-                    self.run_summary_analysis(
-                        df, out, size, message_type, serialization)
+        for serialization in serialization_libraries:
+            for echoinfo in max_rates_dict:
+                total_size = echoinfo.total_size
+                message_type = echoinfo.message
+                self.run_summary_analysis(
+                    df, out, total_size, message_type, serialization)
         out.close()
 
     def graph_results(self, args, folder, logfile, post_process_logfile):
+        # TODO: fix this for the new yaml setup
         cornflakes_repo = self.config_yaml["cornflakes_dir"]
         plot_path = Path(folder) / "plots"
         plot_path.mkdir(exist_ok=True)
@@ -431,6 +443,12 @@ class EchoBench(runner.Experiment):
             "experiments" / "plotting_scripts" / "echo_bench.R"
         base_args = [str(plotting_script), str(full_log)]
         metrics = ["p99", "median"]
+        
+        loop_yaml = self.get_loop_yaml()
+        post_process_log = Path(folder) / post_process_logfile
+        max_rates = self.parse_max_rates(utils.yaml_get(loop_yaml,
+            "max_rates"))
+
 
         # make total plot
         for metric in metrics:
@@ -443,66 +461,28 @@ class EchoBench(runner.Experiment):
                                metric, "full"]
             print(" ".join(total_plot_args))
             sh.run(total_plot_args)
-        # make individual plots
-        if args.loop_mode == "motivation":
+
+        
             for metric in metrics:
-                for size in MOTIVATION_SIZES_TO_LOOP:
-                    message_type = MOTIVATION_MESSAGE_TYPE
+                for echoexp in max_rates:
+                    size = echoexp.total_size
+                    message_type = echoexp.message
                     individual_plot_path = plot_path / \
-                        "size_{}".format(size) / \
-                        "msg_{}".format(message_type)
+                            "size_{}".format(size) / \
+                            "msg_{}".format(message_type)
                     individual_plot_path.mkdir(parents=True, exist_ok=True)
                     pdf = individual_plot_path /\
                         "size_{}_msg_{}_{}.pdf".format(
                             size, message_type, metric)
                     total_plot_args = [str(plotting_script),
-                                       str(full_log),
-                                       str(post_process_log),
-                                       str(pdf),
-                                       metric, "motivation", message_type,
-                                       str(size)]
-                    utils.info("Running: {}".format(" ".join(total_plot_args)))
+                                        str(full_log),
+                                        str(post_process_log),
+                                        str(pdf),
+                                        metric, "individual", message_type,
+                                        str(size)]
 
+                    print(" ".join(total_plot_args))
                     sh.run(total_plot_args)
-
-        elif args.loop_mode == "eval":
-            # make summary plots
-            for size in SIZES_TO_LOOP:
-                for summary_type in ["tree-compare", "list-compare"]:
-                    individual_plot_path = plot_path / \
-                        "size_{}".format(size)
-                    individual_plot_path.mkdir(parents=True, exist_ok=True)
-                    pdf = individual_plot_path /\
-                        "size_{}_{}_tput.pdf".format(size, summary_type)
-                    total_plot_args = [str(plotting_script),
-                                       str(full_log),
-                                       str(post_process_log),
-                                       str(pdf),
-                                       "foo", summary_type, str(size)
-                                       ]
-                    utils.info("Running: {}".format(" ".join(total_plot_args)))
-                    sh.run(total_plot_args)
-            # just return here for now
-            return
-            for metric in metrics:
-                for size in SIZES_TO_LOOP:
-                    for message_type in MESSAGE_TYPES:
-                        individual_plot_path = plot_path / \
-                            "size_{}".format(size) / \
-                            "msg_{}".format(message_type)
-                        individual_plot_path.mkdir(parents=True, exist_ok=True)
-                        pdf = individual_plot_path /\
-                            "size_{}_msg_{}_{}.pdf".format(
-                                size, message_type, metric)
-                        total_plot_args = [str(plotting_script),
-                                           str(full_log),
-                                           str(post_process_log),
-                                           str(pdf),
-                                           metric, "individual", message_type,
-                                           str(size)]
-
-                        print(" ".join(total_plot_args))
-                        sh.run(total_plot_args)
 
 
 def main():

@@ -323,6 +323,7 @@ impl ThreadStats {
             num_sent = self.num_sent,
             num_received = self.num_received,
             num_retries = self.retries,
+            runtime =? self.runtime,
             offered_pps =?self.offered_load_pps,
             offered_gbps = ?self.offered_load_gbps,
             achieved_pps = ?self.achieved_load_pps,

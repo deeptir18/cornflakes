@@ -10,6 +10,8 @@ typedef struct ReceivedPkt {
   uintptr_t conn_id;
 } ReceivedPkt;
 
+void Mlx5_global_debug_init(void);
+
 void OrderedSga_allocate(uintptr_t size, void **return_ptr);
 
 void *Mlx5Connection_new(const char *config_file, const char *server_ip);

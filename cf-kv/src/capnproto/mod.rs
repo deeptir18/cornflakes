@@ -1,10 +1,10 @@
 use super::{
-    kv_capnp, ClientSerializer, KVServer, ListKVServer, MsgType, ServerLoadGenerator,
-    ZeroCopyPutKVServer, REQ_TYPE_SIZE,
+    kv_capnp, ClientSerializer, KVServer, LinkedListKVServer, ListKVServer, MsgType,
+    ServerLoadGenerator, REQ_TYPE_SIZE,
 };
 use byteorder::{ByteOrder, LittleEndian};
 use capnp::message::{Allocator, Builder, Reader, ReaderOptions, ReaderSegments, SegmentArray};
-use color_eyre::eyre::{bail, Result, WrapErr};
+use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, PushBufType, ReceivedPkt},
@@ -36,23 +36,28 @@ where
     D: Datapath,
 {
     _phantom: PhantomData<D>,
-    _zero_copy_puts: bool,
+    use_linked_list_kv_server: bool,
 }
 
 impl<D> CapnprotoSerializer<D>
 where
     D: Datapath,
 {
-    pub fn new(zero_copy_puts: bool) -> Self {
+    pub fn new(use_list_kv_server: bool) -> Self {
         CapnprotoSerializer {
             _phantom: PhantomData::default(),
-            _zero_copy_puts: zero_copy_puts,
+            use_linked_list_kv_server: use_list_kv_server,
         }
+    }
+
+    pub fn use_linked_list(&self) -> bool {
+        self.use_linked_list_kv_server
     }
 
     fn handle_get<T>(
         &mut self,
         kv_server: &KVServer<D>,
+        linked_list_kv_server: &LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
         builder: &mut Builder<T>,
     ) -> Result<()>
@@ -67,11 +72,19 @@ where
             .wrap_err("Failed to deserialize GetReq.")?;
         tracing::debug!("Received get request for key: {:?}", get_request.get_key());
         let key = get_request.get_key()?;
-        let value = match kv_server.get(key) {
-            Some(v) => v,
-            None => {
-                bail!("Cannot find value for key in KV store: {:?}", key);
-            }
+        let value = match self.use_linked_list() {
+            true => match linked_list_kv_server.get(key) {
+                Some(v) => v.as_ref().get_buffer(),
+                None => {
+                    bail!("Could not find value for key: {:?}", key);
+                }
+            },
+            false => match kv_server.get(key) {
+                Some(v) => v,
+                None => {
+                    bail!("Cannot find value for key in KV store: {:?}", key);
+                }
+            },
         };
         tracing::debug!("Value len: {:?}", value.as_ref().len());
 
@@ -84,6 +97,7 @@ where
     fn handle_put<T>(
         &self,
         kv_server: &mut KVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
@@ -100,7 +114,11 @@ where
             .wrap_err("Failed to deserialize PutReq.")?;
         let key = put_request.get_key()?;
         let value = put_request.get_val()?;
-        kv_server.insert_with_copies(key, value, datapath, mempool_ids)?;
+        if self.use_linked_list() {
+            linked_list_kv_server.insert_with_copies(key, value, datapath, mempool_ids)?;
+        } else {
+            kv_server.insert_with_copies(key, value, datapath, mempool_ids)?;
+        }
 
         // construct response
         let mut response = builder.init_root::<kv_capnp::put_resp::Builder>();
@@ -111,6 +129,7 @@ where
     fn handle_getm<T>(
         &self,
         kv_server: &KVServer<D>,
+        linked_list_kv_server: &LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
         builder: &mut Builder<T>,
     ) -> Result<()>
@@ -129,11 +148,19 @@ where
         let mut list = response.init_vals(keys.len());
         for (i, key_res) in keys.iter().enumerate() {
             let key = key_res?;
-            let value = match kv_server.get(key) {
-                Some(v) => v,
-                None => {
-                    bail!("Cannot find value for key in KV store: {:?}", key);
-                }
+            let value = match self.use_linked_list() {
+                true => match linked_list_kv_server.get(key) {
+                    Some(v) => v.as_ref().as_ref(),
+                    None => {
+                        bail!("Could not find value for key: {:?}", key);
+                    }
+                },
+                false => match kv_server.get(key) {
+                    Some(v) => v.as_ref(),
+                    None => {
+                        bail!("Cannot find value for key in KV store: {:?}", key);
+                    }
+                },
             };
             tracing::debug!("Value len: {:?}", value.as_ref().len());
             list.set(i as u32, value.as_ref());
@@ -144,6 +171,7 @@ where
     fn handle_putm<T>(
         &self,
         kv_server: &mut KVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
@@ -161,7 +189,11 @@ where
         let keys = putm_request.get_keys()?;
         let values = putm_request.get_vals()?;
         for (key, value) in keys.iter().zip(values.iter()) {
-            kv_server.insert_with_copies(key?, value?, datapath, mempool_ids)?;
+            if self.use_linked_list() {
+                linked_list_kv_server.insert_with_copies(key?, value?, datapath, mempool_ids)?;
+            } else {
+                kv_server.insert_with_copies(key?, value?, datapath, mempool_ids)?;
+            }
         }
 
         // construct response
@@ -173,6 +205,7 @@ where
     fn handle_getlist<T>(
         &self,
         list_kv_server: &ListKVServer<D>,
+        linked_list_kv: &LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
         builder: &mut Builder<T>,
     ) -> Result<()>
@@ -190,18 +223,58 @@ where
             getlist_request.get_key()
         );
         let key = getlist_request.get_key()?;
-        let values = match list_kv_server.get(key) {
-            Some(v) => v,
-            None => {
-                bail!("Cannot find value for key in KV store: {:?}", key);
-            }
-        };
-        tracing::debug!("Values len: {:?}", values.len());
-
         let response = builder.init_root::<kv_capnp::get_list_resp::Builder>();
-        let mut list = response.init_vals(values.len() as _);
-        for (i, val) in values.iter().enumerate() {
-            list.set(i as u32, val.as_ref());
+        if self.use_linked_list() {
+            let range_start = getlist_request.get_rangestart();
+            let range_end = getlist_request.get_rangeend();
+            let mut node_option = linked_list_kv.get(key);
+            let range_len = {
+                // TODO: range parsing is buggy?
+                if range_end == -1 || range_end == 0 {
+                    let mut len = 0;
+                    while let Some(node) = node_option {
+                        len += 1;
+                        node_option = node.get_next();
+                    }
+                    len - range_start as usize
+                } else {
+                    ensure!(
+                        range_start < range_end,
+                        "Cannot process get list with range_end < range_start"
+                    );
+                    (range_end - range_start) as usize
+                }
+            };
+            let mut list = response.init_vals(range_len as _);
+            let mut node_option = linked_list_kv.get(key);
+
+            let mut idx: i32 = 0;
+            while let Some(node) = node_option {
+                if idx < range_start {
+                    node_option = node.get_next();
+                    idx += 1;
+                    continue;
+                }
+                if idx == range_len as i32 {
+                    break;
+                }
+                list.set((idx - range_start) as u32, node.get_data());
+                node_option = node.get_next();
+                idx += 1;
+            }
+        } else {
+            let values = match list_kv_server.get(key) {
+                Some(v) => v,
+                None => {
+                    bail!("Cannot find value for key in KV store: {:?}", key);
+                }
+            };
+            tracing::debug!("Values len: {:?}", values.len());
+
+            let mut list = response.init_vals(values.len() as _);
+            for (i, val) in values.iter().enumerate() {
+                list.set(i as u32, val.as_ref());
+            }
         }
         Ok(())
     }
@@ -209,6 +282,7 @@ where
     fn handle_putlist<T>(
         &self,
         list_kv_server: &mut ListKVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
@@ -225,7 +299,11 @@ where
             .wrap_err("Failed to deserialize PutReq.")?;
         let key = putlist_request.get_key()?;
         let values = putlist_request.get_vals()?.iter().map(|val| val.unwrap());
-        list_kv_server.insert_with_copies(key, values, datapath, mempool_ids)?;
+        if self.use_linked_list() {
+            linked_list_kv_server.insert_list_with_copies(key, values, datapath, mempool_ids)?;
+        } else {
+            list_kv_server.insert_with_copies(key, values, datapath, mempool_ids)?;
+        }
 
         // construct response
         let mut response = builder.init_root::<kv_capnp::put_resp::Builder>();
@@ -240,7 +318,7 @@ where
 {
     kv_server: KVServer<D>,
     list_kv_server: ListKVServer<D>,
-    _zero_copy_put_kv_server: ZeroCopyPutKVServer<D>,
+    linked_list_kv_server: LinkedListKVServer<D>,
     mempool_ids: Vec<MempoolID>,
     serializer: CapnprotoSerializer<D>,
     push_buf_type: PushBufType,
@@ -256,21 +334,20 @@ where
         load_generator: L,
         datapath: &mut D,
         push_buf_type: PushBufType,
-        zero_copy_puts: bool,
-        _non_refcounted: bool,
+        use_linked_list: bool,
     ) -> Result<Self>
     where
         L: ServerLoadGenerator,
     {
-        let (kv, list_kv, zero_copy_put_kv, mempool_ids) =
-            load_generator.new_kv_state(file, datapath, zero_copy_puts)?;
+        let (kv, list_kv, linked_list_kv, mempool_ids) =
+            load_generator.new_kv_state(file, datapath, use_linked_list)?;
         Ok(CapnprotoKVServer {
             kv_server: kv,
             list_kv_server: list_kv,
-            _zero_copy_put_kv_server: zero_copy_put_kv,
+            linked_list_kv_server: linked_list_kv,
             mempool_ids: mempool_ids,
             push_buf_type: push_buf_type,
-            serializer: CapnprotoSerializer::new(zero_copy_puts),
+            serializer: CapnprotoSerializer::new(use_linked_list),
             arena: bumpalo::Bump::with_capacity(
                 ArenaOrderedSga::arena_size(
                     D::batch_size(),
@@ -304,20 +381,33 @@ where
             let message_type = MsgType::from_packet(&pkt)?;
             match message_type {
                 MsgType::Get => {
-                    self.serializer
-                        .handle_get(&self.kv_server, &pkt, &mut builder)?;
+                    self.serializer.handle_get(
+                        &self.kv_server,
+                        &self.linked_list_kv_server,
+                        &pkt,
+                        &mut builder,
+                    )?;
                 }
                 MsgType::GetM(_size) => {
-                    self.serializer
-                        .handle_getm(&self.kv_server, &pkt, &mut builder)?;
+                    self.serializer.handle_getm(
+                        &self.kv_server,
+                        &self.linked_list_kv_server,
+                        &pkt,
+                        &mut builder,
+                    )?;
                 }
                 MsgType::GetList(_size) => {
-                    self.serializer
-                        .handle_getlist(&self.list_kv_server, &pkt, &mut builder)?;
+                    self.serializer.handle_getlist(
+                        &self.list_kv_server,
+                        &self.linked_list_kv_server,
+                        &pkt,
+                        &mut builder,
+                    )?;
                 }
                 MsgType::Put => {
                     self.serializer.handle_put(
                         &mut self.kv_server,
+                        &mut self.linked_list_kv_server,
                         &mut self.mempool_ids,
                         &pkt,
                         datapath,
@@ -327,6 +417,7 @@ where
                 MsgType::PutM(_size) => {
                     self.serializer.handle_putm(
                         &mut self.kv_server,
+                        &mut self.linked_list_kv_server,
                         &mut self.mempool_ids,
                         &pkt,
                         datapath,
@@ -336,6 +427,7 @@ where
                 MsgType::PutList(_size) => {
                     self.serializer.handle_putlist(
                         &mut self.list_kv_server,
+                        &mut self.linked_list_kv_server,
                         &mut self.mempool_ids,
                         &pkt,
                         datapath,
@@ -782,6 +874,8 @@ where
     fn serialize_get_list(&self, buf: &mut [u8], key: &str, _datapath: &D) -> Result<usize> {
         let mut builder = Builder::new_default();
         let mut getlist_req = builder.init_root::<kv_capnp::get_list_req::Builder>();
+        getlist_req.set_rangestart(0);
+        getlist_req.set_rangeend(-1);
         getlist_req.set_key(&key);
         let framing_size = fill_in_context_without_arena(&builder, buf)?;
         let full_size = copy_into_buf(buf, framing_size, &builder)?;

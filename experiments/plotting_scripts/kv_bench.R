@@ -6,9 +6,15 @@ library(tidyr)
 library(extrafont)
 library(showtext)
 library(viridis)
+library("stringr")  
 font_add_google("Fira Sans")
 showtext_auto()
 
+# TODO:
+# 1. Figure out why the legend ordering is not working properly
+# 2. For some results we might want to display packets per second. Figure out
+# how to programmatically do that when we want to.
+# subset d to be points where `percent_achieved_rate > .95`
 args <- commandArgs(trailingOnly=TRUE)
 # argument 1: data
 d <- read.csv(args[1], sep=",", header = TRUE)
@@ -21,32 +27,66 @@ metric <- args[4]
 plot_type <- args[5]
 # argument 6: if individual -- size
 # argument 7: if individual -- num_values
+d <- d[ which(d$percent_achieved_rate > 0.95),]
 
 # cut out all data where the percentachieved is less than .95
 # d <- subset(d, percent_achieved_rate > .95)
 
-labels <- c("capnproto" = "Capnproto", 
-            "protobuf" = "Protobuf", 
-            "flatbuffers" = "Flatbuffers", 
-            "cornflakes1c-dynamic" = "Cornflakes (Always Copy)",
-            "cornflakes-dynamic" = "Cornflakes")
+options(width=10000)
+labels <- c('capnproto' = 'Capnproto', 
+            'protobuf' = 'Protobuf', 
+            'flatbuffers' = 'Flatbuffers', 
+            'redis' = 'Redis',
+            'cornflakes1c-dynamic' = 'Cornflakes (Copy)',
+            'cornflakes-dynamic' = 'Cornflakes (SG)')
 
 shape_values <- c('capnproto' = 18, 
                   'protobuf' = 8, 
                   'flatbuffers' = 17, 
+                  'redis' = 7,
                   'cornflakes1c-dynamic' = 15, 
                   'cornflakes-dynamic' = 19)
 color_values <- c('capnproto' = '#e7298a',
                   'protobuf' = '#e6ab02',
                   'flatbuffers' = '#7570b3',
+                  'redis' = '#66a61e',
                   'cornflakes1c-dynamic' = '#d95f02',
                   'cornflakes-dynamic' = '#1b9e77')
+levels <- c('capnproto', 'protobuf', 'flatbuffers', 'redis', 'cornflakes1c-dynamic', 'cornflakes-dynamic')
+# filter the serialization labels based on which are present in data
+unique_serialization_labels <- unique(c(d$serialization))
+subset_flat <- function(original, subset) {
+    x <- c()
+    for (name in original) {
+        if (name %in% subset) {
+            x <- append(x, name)
+        }
+    }
+    return(x)
+}
 
-d$serialization <- factor(d$serialization, levels = c('capnproto', 
-                                                      'protobuf', 
-                                                      'flatbuffers', 
-                                                      'cornflakes1c-dynamic', 
-                                                      'cornflakes-dynamic'))
+subset_named <- function(original, subset) {
+    x <- c()
+    attr_name <- attributes(original)$name
+    attrs <- c()
+    for (name in attr_name) {
+        if (name %in% subset) {
+            x <- append(x, original[name])
+            attrs <- append(attrs, name)
+        }
+    }
+    names(x) <- attrs
+    return(x)
+}
+
+color_values <- subset_named(color_values, unique_serialization_labels)
+shape_values <- subset_named(shape_values, unique_serialization_labels)
+labels <- subset_named(labels, unique_serialization_labels)
+levels <- subset_flat(levels, unique_serialization_labels)
+
+d$serialization <- factor(d$serialization, levels = levels)
+d_postprocess$serialization <- factor(d_postprocess$serialization, levels = levels)
+print(levels)
 
 base_plot <- function(data, metric) {
     # data <- subset(data, sdp99 < 300)
@@ -92,9 +132,9 @@ label_plot <- function(plot) {
     plot <- plot +
             geom_point(size=2) +
             geom_line(size = 0.5, aes(color=serialization)) +
-            scale_shape_manual(values = shape_values, labels = labels) +
-            scale_color_manual(values = color_values ,labels = labels) +
-            scale_fill_manual(values = color_values, labels = labels) +
+            scale_shape_manual(values = shape_values, labels = labels, breaks = levels) +
+            scale_color_manual(values = color_values ,labels = labels, breaks = levels) +
+            scale_fill_manual(values = color_values, labels = labels, breaks=levels) +
             theme_light() +
             scale_x_continuous(n.breaks=8) +
             expand_limits(x = 0, y = 0) +
@@ -103,11 +143,12 @@ label_plot <- function(plot) {
                   legend.title = element_blank(),
                   legend.key.size = unit(2, 'mm'),
                   legend.box="vertical",
-                  legend.spacing.x = unit(0.15, 'cm'),
+                  legend.spacing.x = unit(0.1, 'cm'),
                   legend.spacing.y = unit(0.05, 'cm'),
                   legend.text=element_text(size=11),
                   axis.title=element_text(size=11,face="plain", colour="#000000"),
                   axis.text=element_text(size=11, colour="#000000"),
+                  legend.title.align=0.5,
                   legend.margin=margin(0,0,0,0),
                     legend.box.margin=margin(-5,-10,-5,-10)) +
             guides(colour=guide_legend(nrow=2, byrow=TRUE),
@@ -140,29 +181,32 @@ full_plot <- function(data, metric) {
     return(plot)
 }
 
-tput_plot <- function(data) {
+tput_plot <- function(data, x_label) {
     y_name <- "maxtputgbps"
-    y_label <- "round(maxtputgbps, 2)"
-    y_label_height <- "maxtputgbps + maxtputgbpssd"
+    y_label <- "round(maxtputgbps, 1)"
+    y_label_height <- "maxtputgbps"
     y_axis <- "Highest Achieved\nLoad (Gbps)"
-    y_min = "maxtputgbps - maxtputgbpssd"
-    y_max = "maxtputgbps + maxtputgbpssd"
-    data$serialization <- factor(data$serialization, levels = c("capnproto", "flatbuffers", "protobuf", "cornflakes1c-dynamic", "cornflakes-dynamic"))
+    # TODO: for size plot, x should be reordered by size
     plot <- ggplot(data,
-                    aes_string(x = "factor(num_values)",
-                        y=y_name,
-                        fill = "serialization")) +
+                    aes(x =reorder(factor_name, num_values),
+                        y=maxtputgbps,
+                        fill = serialization)) +
                    expand_limits(y = 0) +
-            geom_point(size = 3, stroke=0.2, position=position_dodge(0.5), stat="identity", aes(color=serialization, shape=serialization,fill=serialization, size=serialization)) +
-            geom_bar(position=position_dodge(0.5), stat="identity", width = 0.05) +
+            geom_point(size = 3, stroke=0.2, position=position_dodge(0.8), stat="identity", aes(color=serialization, shape=serialization,fill=serialization, size=serialization)) +
+            geom_bar(position=position_dodge(0.8), stat="identity", width = 0.05) +
             guides(colour=guide_legend(nrow=2, byrow=TRUE),
                    shape=guide_legend(nrow=2, byrow=TRUE)) +
-            scale_color_manual(values = color_values ,labels = labels) +
-            scale_fill_manual(values = color_values, labels = labels, guide = "none") +
-            scale_shape_manual(values = shape_values, labels = labels) +
+          geom_text(position = position_dodge(0.8),
+                    aes(y=maxtputgbps + 9, label = round(maxtputgbps, 1)),
+                   size = 2.75,
+                   angle = 70) +
+            scale_color_manual(values = color_values ,labels = labels, breaks=levels) +
+            scale_fill_manual(values = color_values, labels = labels, guide = "none", breaks=levels) +
+            scale_shape_manual(values = shape_values, labels = labels, breaks=levels) +
             scale_y_continuous(expand = expansion(mult = c(0, .2))) +
-            labs(x = "Number of Batched Gets", y = y_axis) +
+            labs(x = x_label, y = y_axis) +
             theme_light() +
+            scale_x_discrete(labels = function(x) str_wrap(x, width = 6)) +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
                   legend.title = element_blank(),
@@ -172,7 +216,7 @@ tput_plot <- function(data) {
                   legend.text=element_text(size=11),
                   axis.title=element_text(size=11,face="plain", colour="#000000"),
                   axis.text.y=element_text(size=11, colour="#000000"),
-                  axis.text.x=element_text(size=11, colour="#000000", angle=0),
+                  axis.text.x=element_text(size=8, colour="#000000", angle=0),
                   legend.margin=margin(0,0,0,0),
                   legend.box.margin=margin(-5,-10,-5,-10))
     print(plot)
@@ -196,6 +240,8 @@ summarized <- ddply(d, c("serialization", "total_size", "avg_size", "num_values"
 # summarized$sdp99_percent = summarized$sdp99 / summarized$mp99
 # summarized <- subset(summarized, summarized$sdp99_percent < .25)
 
+
+
 if (plot_type == "full") {
     plot <- full_plot(summarized, metric)
     ggsave("tmp.pdf", width=9, height=9)
@@ -209,9 +255,17 @@ if (plot_type == "full") {
 } else if (plot_type == "summary") {
     size_arg <- strtoi(args[6])
     d_postprocess <- subset(d_postprocess, total_size == size_arg)
-    plot <- tput_plot(d_postprocess)
+    plot <- tput_plot(d_postprocess, args[7])
     print(plot_pdf)
     ggsave("tmp.pdf", width=5, height=2)
     embed_fonts("tmp.pdf", outfile=plot_pdf)
+} else if (plot_type == "summary_num_values") {
+    num_values_arg <- strtoi(args[6])
+    d_postprocess <- subset(d_postprocess, num_values == num_values)
+    plot <- tput_plot(d_postprocess, args[7])
+    print(plot_pdf)
+    ggsave("tmp.pdf", width=5, height=2)
+    embed_fonts("tmp.pdf", outfile=plot_pdf)
+
 }
 

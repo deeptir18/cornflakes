@@ -52,7 +52,10 @@ class ExtraSerializationParameters(object):
         else:
             if self.serialization == "cornflakes-dynamic" or self.serialization == "cornflakes1c-dynamic":
                 self.buf_mode = "object"
-            elif self.serialization == "ideal":
+            elif self.serialization == "ideal"\
+                    or self.serialization == "manualzerocopy"\
+                    or self.serialization == "onecopy"\
+                    or self.serialization == "twocopy":
                 self.buf_mode = "echo"
             else:
                 self.buf_mode = "singlebuf"
@@ -60,8 +63,10 @@ class ExtraSerializationParameters(object):
         if inline_mode != None:
             self.inline_mode = inline_mode
         else:
-            if self.serialization == "cornflakes-dynamic" or self.serialization == "cornflakes1c-dynamic":
+            if self.serialization == "cornflakes-dynamic":
                 self.inline_mode = "objectheader"
+            elif self.serialization == "cornflakes1c-dynamic":
+                self.inline_mode = "nothing"
             else:
                 self.inline_mode = "nothing"
 
@@ -159,6 +164,9 @@ def get_basic_args():
                         dest="exp_config",
                         required=True,
                         help="experiment information.")
+    parser.add_argument("-lc", "--loop_config",
+                        dest="loop_config",
+                        help = "Looping information (required for loop experiment)")
     parser.add_argument("-pp", "--pprint",
                         dest="pprint",
                         help="Print out commands that will be run",
@@ -261,6 +269,23 @@ class Experiment(metaclass=abc.ABCMeta):
     def append_to_skip_info(self, total_args, iteration, higher_level_folder):
         """Updates skip info with this iteration"""
         return
+    
+    def parse_max_rates(self, max_rates):
+        ret = {}
+        for config in max_rates:
+            named_tuple = self.parse_exp_info_string(config)
+            ret[named_tuple] = int(max_rates[config])
+        return ret
+
+
+    @abc.abstractmethod
+    def parse_exp_info_string(self, exp_string):
+        """
+        Parses string with exp_info of form:
+        num_values = 1, num_keys = 1, size = UniformOverSizes-4096
+        into a named tuple that is hashable.
+        """
+        return
 
     @abc.abstractmethod
     def graph_results(self, total_args, folder, logfile):
@@ -338,30 +363,28 @@ class Experiment(metaclass=abc.ABCMeta):
             ct += 1
             iteration_path = iteration.get_folder_name(folder_path)
             analysis_log = Path(iteration_path) / "analysis.log"
-            if (os.path.exists(str(iteration_path))):
-                utils.info("Iteration already exists, skipping {}; already ran {}".format(
-                    iteration, already_ran))
+            skipped_log = Path(iteration_path) / "skipped.log"
+            if os.path.exists(analysis_log) or os.path.exists(skipped_log):
+                utils.info("Analysis or skipped log exists for: {}".format(
+                    iteration))
                 self.append_to_skip_info(total_args, iteration, folder_path)
                 already_ran += 1
                 continue
-            elif os.path.exists(iteration.get_folder_name(folder_path) / "skipped.log"):
-                skipped += 1
-                continue
             if self.skip_iteration(total_args, iteration):
-                utils.info("Skipping iteration  # {} out of {}; already_ran {},"
-                           "skipped {}".format(ct - 1,
-                                               total,
-                                               already_ran,
-                                               skipped))
+                utils.info("Skipping iteration  # {} out of {}".format(ct - 1,
+                    total))
+                utils.info("Already ran {}; {} were skipped".format( already_ran, skipped))
+
                 skipped += 1
                 # append a folder to say this iteration was skipped
                 if not total_args.pprint:
                     iteration.create_folder(folder_path)
-                skipped = iteration.get_folder_name(folder_path) /\
+                skipped_log = iteration.get_folder_name(folder_path) /\
                     "skipped.log"
-                with open(skipped, 'w') as f:
+                with open(skipped_log, 'w') as f:
                     pass
                 continue
+            
             if (ct > 1):
                 rate_so_far = (ct - 1)/(time.time() - start)
                 left = (total - (ct - 1))
@@ -402,9 +425,18 @@ class Experiment(metaclass=abc.ABCMeta):
             self.append_to_skip_info(total_args, iteration, folder_path)
             if not total_args.pprint:
                 time.sleep(2)
-
+    def get_loop_yaml(self):
+        return self.loop_yaml
     def execute(self, parser, namespace):
         total_args = self.add_specific_args(parser, namespace)
+        if total_args.exp_type == "loop":
+            if total_args.loop_config is None:
+                utils.error("For experiment type loop, must provide loop config")
+                exit(1)
+            self.loop_yaml = yaml.load(Path(total_args.loop_config).read_text(),
+                    Loader = yaml.FullLoader)
+        else:
+            self.loop_yaml = {}
         iterations = self.get_iterations(total_args)
         utils.debug("Number of iterations: {}".format(len(iterations)))
         # run the experiment (s) and analysis
@@ -517,8 +549,10 @@ class Iteration(metaclass=abc.ABCMeta):
 
     def read_key_from_analysis_log(self, folder_path, key):
         df = self.read_analysis_log(folder_path)
+        col = df[key]
+        print(df[key])
         try:
-            return df[key].iloc(0)
+            return col[0]
         except:
             raise ValueError("Could not read value of {} from df {}".format(key, df))
             
@@ -658,6 +692,8 @@ class Iteration(metaclass=abc.ABCMeta):
             * pprint - Instead of running, just print out command lines.
             * use_perf - Whether to use perf or not when running the server.
         """
+        # generate a random seed for this experiment
+        random_seed = int(time.time())
         programs = exp_config["programs"]
         exp_time = exp_config["time"]
 
@@ -706,6 +742,8 @@ class Iteration(metaclass=abc.ABCMeta):
                                         key = key)
                 connections[host] = connection_wrapper
             except:
+                utils.warn("Failed to ssh")
+                time.sleep(60)
                 return False
                 
             # for this host, create the remote temporary folder
@@ -722,6 +760,8 @@ class Iteration(metaclass=abc.ABCMeta):
             for host in program_hosts:
                 utils.info("Configuring host: ", host)
                 # populate program args
+                # NOTE: random seed should be the *same* across all client
+                # hosts
                 program_args = self.get_program_args(host,
                                                      machine_config,
                                                      program_name,
@@ -732,6 +772,7 @@ class Iteration(metaclass=abc.ABCMeta):
                 program_args["local_folder"] = local_results_path
                 program_args["host"] = host
                 program_args["time"] = exp_time
+                program_args["random_seed"] = random_seed
                 program_args_map[(program_name, host)] = program_args
 
                 program_cmd = program["start"].format(**program_args)
@@ -824,6 +865,7 @@ class Iteration(metaclass=abc.ABCMeta):
 
 
             while not(is_ready(program_name)):
+                utils.debug("NOT READY")
                 time.sleep(1)
                 continue
             ct += 1
@@ -850,6 +892,14 @@ class Iteration(metaclass=abc.ABCMeta):
                     sudo = True)
                 if res.exited != 0:
                     utils.warn("Failed to kill server: stdout: {} stderr: {}".format(res.stdout, res.stderr))
+                if "extra_stop" in program:
+                    res = connections[host].stop_with_pkill(
+                            program["binary_name"].format(**program_args),
+                            quiet = True,
+                            sudo = True)
+                    if res.exited != 0:
+                        utils.warn("Failed to kill server: stdout: {} stderr: {}".format(res.stdout, res.stderr))
+
 
         any_failed = server_failed
         if not(server_failed):

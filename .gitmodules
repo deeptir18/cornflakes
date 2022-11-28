@@ -14,3 +14,6 @@
 [submodule "dpdk-datapath/3rdparty/dpdk"]
 	path = dpdk-datapath/3rdparty/dpdk
 	url = https://github.com/DPDK/dpdk.git
+[submodule "redis"]
+	path = redis
+	url = https://github.com/ygina/redis

@@ -54,9 +54,14 @@ impl DataMempool {
     pub fn new(
         mempool_params: &sizes::MempoolAllocationParams,
         per_thread_context: &Mlx5PerThreadContext,
+        use_atomic_ops: bool,
     ) -> Result<Self> {
         let mempool_box =
             vec![0u8; unsafe { custom_mlx5_get_registered_mempool_size() } as _].into_boxed_slice();
+        let atomic_ops: u32 = match use_atomic_ops {
+            true => 1,
+            false => 0,
+        };
         let mempool_ptr = Box::<[u8]>::into_raw(mempool_box);
         if unsafe {
             custom_mlx5_alloc_and_register_tx_pool(
@@ -66,6 +71,7 @@ impl DataMempool {
                 mempool_params.get_num_items() as _,
                 mempool_params.get_data_pgsize() as _,
                 ibv_access_flags_IBV_ACCESS_LOCAL_WRITE as _,
+                atomic_ops,
             )
         } != 0
         {
@@ -202,18 +208,6 @@ impl DatapathMemoryPool for DataMempool {
     #[inline(always)]
     fn has_allocated(&self) -> bool {
         unsafe { access!(get_data_mempool(self.mempool()), allocated, usize) >= 1 }
-    }
-
-    #[inline]
-    fn is_buf_within_bounds(&self, buf: &[u8]) -> bool {
-        let ptr = buf.as_ptr() as usize;
-        let data_pool = unsafe { get_data_mempool(self.mempool()) };
-        unsafe {
-            access!(data_pool, allocated, usize) >= 1
-                && ptr >= access!(data_pool, buf, *const u8) as usize
-                && ptr
-                    < (access!(data_pool, buf, *const u8) as usize + access!(data_pool, len, usize))
-        }
     }
 
     #[inline]

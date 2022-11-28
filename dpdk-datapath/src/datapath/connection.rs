@@ -51,15 +51,12 @@ const TX_RING_SIZE: u16 = 2048;
 pub struct DpdkBuffer {
     /// Underlying allocated mbuf
     mbuf: *mut rte_mbuf,
-    /// Mempool ID
-    mempool_id: MempoolID,
 }
 
 impl Default for DpdkBuffer {
     fn default() -> Self {
         DpdkBuffer {
             mbuf: ptr::null_mut(),
-            mempool_id: 0,
         }
     }
 }
@@ -69,25 +66,25 @@ impl Clone for DpdkBuffer {
         if self.mbuf != std::ptr::null_mut() {
             unsafe { rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1) }
         }
-        DpdkBuffer {
-            mbuf: self.mbuf,
-            mempool_id: self.mempool_id,
-        }
+        DpdkBuffer { mbuf: self.mbuf }
     }
 }
 
 impl DatapathBufferOps for DpdkBuffer {
-    fn set_mempool_id(&mut self, id: MempoolID) {
-        self.mempool_id = id;
+    fn set_len(&mut self, len: usize) {
+        unsafe {
+            write_struct_field!(self.mbuf, data_len, len);
+        }
     }
 
-    fn get_mempool_id(&self) -> MempoolID {
-        self.mempool_id
+    #[inline]
+    fn get_mutable_slice(&mut self, start: usize, len: usize) -> Result<&mut [u8]> {
+        self.mutable_slice(start, start + len)
     }
 }
 
 impl DpdkBuffer {
-    pub fn new(mbuf: *mut rte_mbuf, mempool_id: MempoolID) -> Self {
+    pub fn new(mbuf: *mut rte_mbuf) -> Self {
         unsafe { rte_pktmbuf_refcnt_set(mbuf, 1) }
         DpdkBuffer {
             mbuf: mbuf,
@@ -292,7 +289,7 @@ impl MetadataOps for RteMbufMetadata {
     }
 
     fn data_len(&self) -> usize {
-        unsafe { access!(self.mbuf, data_len, usize) }
+        self.data_len
     }
 
     fn set_data_len_and_offset(&mut self, len: usize, offset: usize) -> Result<()> {
@@ -591,6 +588,7 @@ impl DpdkConnection {
     }
 
     fn check_received_pkt(&mut self, i: usize) -> Result<Option<ReceivedPkt<Self>>> {
+        tracing::debug!("Checking received packet");
         let recv_mbuf = self.recv_mbufs[i];
         let eth_hdr = unsafe {
             mbuf_slice!(
@@ -622,6 +620,7 @@ impl DpdkConnection {
         ) {
             Ok(r) => r,
             Err(_) => {
+                tracing::debug!("IP hdr wrong");
                 return Ok(None);
             }
         };
@@ -641,6 +640,7 @@ impl DpdkConnection {
         ) {
             Ok(p) => p,
             Err(_) => {
+                tracing::debug!("UDP hdr wrong");
                 return Ok(None);
             }
         };

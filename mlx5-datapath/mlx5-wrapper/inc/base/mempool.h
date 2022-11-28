@@ -19,6 +19,7 @@ struct custom_mlx5_mempool {
     size_t log_item_len; /* Log of the item len*/
     size_t num_pages; /* Number of pages */
     int32_t lkey; /* Lkey for the memory region backed by mempool. -1 if not registered. */
+    uint32_t use_atomic_ops; /* Whether to use atomic operations to update the refcnt. */
 };
 
 int custom_mlx5_is_allocated(struct custom_mlx5_mempool *mempool);
@@ -103,7 +104,8 @@ static inline void custom_mlx5_mempool_free_by_idx(struct custom_mlx5_mempool *m
 extern int custom_mlx5_mempool_create(struct custom_mlx5_mempool *m,
                             size_t len,
                             size_t pgsize,
-                            size_t item_len);
+                            size_t item_len,
+                            uint32_t use_atomic_ops);
 
 extern void custom_mlx5_mempool_destroy(struct custom_mlx5_mempool *m);
 

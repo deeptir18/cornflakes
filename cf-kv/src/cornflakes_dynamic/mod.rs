@@ -32,10 +32,10 @@ use cornflakes_libos::{
 use kv_serializer::*;
 
 use super::{
-    ClientSerializer, KVServer, ListKVServer, MsgType, ServerLoadGenerator, ZeroCopyPutKVServer,
+    ClientSerializer, KVServer, LinkedListKVServer, ListKVServer, MsgType, ServerLoadGenerator,
     REQ_TYPE_SIZE,
 };
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{bail, ensure, Result};
 use std::marker::PhantomData;
 
 pub struct CornflakesSerializer<D>
@@ -43,33 +43,31 @@ where
     D: Datapath,
 {
     _phantom: PhantomData<D>,
-    zero_copy_puts: bool,
     with_copies: bool,
-    _non_refcounted: bool,
+    use_linked_list: bool,
 }
 
 impl<D> CornflakesSerializer<D>
 where
     D: Datapath,
 {
-    pub fn new(zero_copy_puts: bool, non_refcounted: bool) -> Self {
+    pub fn new(use_linked_list: bool) -> Self {
         CornflakesSerializer {
             _phantom: PhantomData::default(),
-            zero_copy_puts: zero_copy_puts,
             with_copies: false,
-            _non_refcounted: non_refcounted,
+            use_linked_list: use_linked_list,
         }
+    }
+
+    pub fn use_linked_list(&self) -> bool {
+        self.use_linked_list
+    }
+    pub fn set_with_copies(&mut self) {
+        self.with_copies = true;
     }
 
     pub fn with_copies(&self) -> bool {
         self.with_copies
-    }
-
-    pub fn zero_copy_puts(&self) -> bool {
-        self.zero_copy_puts
-    }
-    pub fn set_with_copies(&mut self) {
-        self.with_copies = true;
     }
 
     fn handle_get_serialize_and_send<'kv, 'arena>(
@@ -78,6 +76,7 @@ where
         conn_id: ConnID,
         end_batch: bool,
         kv_server: &'kv KVServer<D>,
+        linked_list_kv_server: &'kv LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
         arena: &'arena bumpalo::Bump,
@@ -87,11 +86,19 @@ where
     {
         let mut get_req = kv_serializer_hybrid::GetReq::new_in(arena);
         get_req.deserialize(pkt, REQ_TYPE_SIZE, arena)?;
-        let value = match kv_server.get(get_req.get_key().to_str()?) {
-            Some(v) => v,
-            None => {
-                bail!("Could not find value for key: {:?}", get_req.get_key());
-            }
+        let value = match self.use_linked_list() {
+            true => match linked_list_kv_server.get(get_req.get_key().to_str()?) {
+                Some(v) => v.as_ref().get_buffer(),
+                None => {
+                    bail!("Could not find value for key: {:?}", get_req.get_key());
+                }
+            },
+            false => match kv_server.get(get_req.get_key().to_str()?) {
+                Some(v) => v,
+                None => {
+                    bail!("Could not find value for key: {:?}", get_req.get_key());
+                }
+            },
         };
         tracing::debug!(
             "For given key {:?}, found value {:?} with length {}",
@@ -117,6 +124,7 @@ where
     fn handle_get<'kv, 'arena>(
         &self,
         kv_server: &'kv KVServer<D>,
+        linked_list_kv_server: &'kv LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
         arena: &'arena bumpalo::Bump,
@@ -126,11 +134,19 @@ where
     {
         let mut get_req = kv_serializer_hybrid::GetReq::new_in(arena);
         get_req.deserialize(pkt, REQ_TYPE_SIZE, arena)?;
-        let value = match kv_server.get(get_req.get_key().to_str()?) {
-            Some(v) => v,
-            None => {
-                bail!("Could not find value for key: {:?}", get_req.get_key());
-            }
+        let value = match self.use_linked_list() {
+            true => match linked_list_kv_server.get(get_req.get_key().to_str()?) {
+                Some(v) => v.as_ref().get_buffer(),
+                None => {
+                    bail!("Could not find value for key: {:?}", get_req.get_key());
+                }
+            },
+            false => match kv_server.get(get_req.get_key().to_str()?) {
+                Some(v) => v,
+                None => {
+                    bail!("Could not find value for key: {:?}", get_req.get_key());
+                }
+            },
         };
         tracing::debug!(
             "For given key {:?}, found value {:?} with length {}",
@@ -157,6 +173,7 @@ where
     fn handle_put<'arena>(
         &self,
         kv_server: &mut KVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
@@ -164,12 +181,21 @@ where
     ) -> Result<ArenaOrderedRcSga<'arena, D>> {
         let mut put_req = PutReq::new();
         put_req.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
-        kv_server.insert_with_copies(
-            put_req.get_key().to_str()?,
-            put_req.get_val().as_bytes(),
-            datapath,
-            mempool_ids,
-        )?;
+        if self.use_linked_list() {
+            linked_list_kv_server.insert_with_copies(
+                put_req.get_key().to_str()?,
+                put_req.get_val().as_bytes(),
+                datapath,
+                mempool_ids,
+            )?;
+        } else {
+            kv_server.insert_with_copies(
+                put_req.get_key().to_str()?,
+                put_req.get_val().as_bytes(),
+                datapath,
+                mempool_ids,
+            )?;
+        }
 
         let mut put_resp = PutResp::new();
         put_resp.set_id(put_req.get_id());
@@ -185,6 +211,7 @@ where
         conn_id: ConnID,
         end_batch: bool,
         kv_server: &'kv KVServer<D>,
+        linked_list_kv_server: &'kv LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
         arena: &'arena bumpalo::Bump,
@@ -207,11 +234,19 @@ where
                 tracing::debug!("Key bytes: {:?}", key);
                 #[cfg(feature = "profiler")]
                 demikernel::timer!("got value");
-                match kv_server.get(key.to_str()?) {
-                    Some(v) => v,
-                    None => {
-                        bail!("Could not find value for key: {:?}", key);
-                    }
+                match self.use_linked_list() {
+                    true => match linked_list_kv_server.get(key.to_str()?) {
+                        Some(v) => v.as_ref().get_buffer(),
+                        None => {
+                            bail!("Could not find value for key: {:?}", key);
+                        }
+                    },
+                    false => match kv_server.get(key.to_str()?) {
+                        Some(v) => v,
+                        None => {
+                            bail!("Could not find value for key: {:?}", key);
+                        }
+                    },
                 }
             };
             tracing::debug!(
@@ -241,6 +276,7 @@ where
     fn handle_getm<'kv, 'arena>(
         &self,
         kv_server: &'kv KVServer<D>,
+        linked_list_kv_server: &'kv LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
         arena: &'arena bumpalo::Bump,
@@ -263,11 +299,19 @@ where
                 tracing::debug!("Key bytes: {:?}", key);
                 #[cfg(feature = "profiler")]
                 demikernel::timer!("got value");
-                match kv_server.get(key.to_str()?) {
-                    Some(v) => v,
-                    None => {
-                        bail!("Could not find value for key: {:?}", key);
-                    }
+                match self.use_linked_list() {
+                    true => match linked_list_kv_server.get(key.to_str()?) {
+                        Some(v) => v.get_buffer(),
+                        None => {
+                            bail!("Could not find value for key: {:?}", key);
+                        }
+                    },
+                    false => match kv_server.get(key.to_str()?) {
+                        Some(v) => v,
+                        None => {
+                            bail!("Could not find value for key: {:?}", key);
+                        }
+                    },
                 }
             };
             tracing::debug!(
@@ -300,6 +344,7 @@ where
     fn handle_putm<'arena>(
         &self,
         kv_server: &mut KVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
@@ -308,7 +353,21 @@ where
         let mut putm_req = PutMReq::new();
         putm_req.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
         for (key, value) in putm_req.get_keys().iter().zip(putm_req.get_vals().iter()) {
-            kv_server.insert_with_copies(key.to_str()?, value.as_bytes(), datapath, mempool_ids)?;
+            if self.use_linked_list() {
+                linked_list_kv_server.insert_with_copies(
+                    key.to_str()?,
+                    value.as_bytes(),
+                    datapath,
+                    mempool_ids,
+                )?;
+            } else {
+                kv_server.insert_with_copies(
+                    key.to_str()?,
+                    value.as_bytes(),
+                    datapath,
+                    mempool_ids,
+                )?;
+            }
         }
         let mut put_resp = PutResp::new();
         put_resp.set_id(putm_req.get_id());
@@ -324,6 +383,7 @@ where
         conn_id: ConnID,
         end_batch: bool,
         list_kv_server: &'kv ListKVServer<D>,
+        linked_list_kv: &'kv LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
         arena: &'arena bumpalo::Bump,
@@ -333,24 +393,70 @@ where
     {
         let mut getlist_req = kv_serializer_hybrid::GetListReq::new_in(arena);
         getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
-        let value_list = match list_kv_server.get(getlist_req.get_key().to_str()?) {
-            Some(v) => v,
-            None => {
-                bail!("Could not find value for key: {:?}", getlist_req.get_key());
-            }
-        };
-
         let mut getlist_resp = kv_serializer_hybrid::GetListResp::new_in(arena);
         let mut copy_context = CopyContext::new(arena, datapath)?;
         getlist_resp.set_id(getlist_req.get_id());
-        getlist_resp.init_val_list(value_list.len(), arena);
-        let list = getlist_resp.get_mut_val_list();
-        for value in value_list.iter() {
-            list.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
-                value.as_ref(),
-                datapath,
-                &mut copy_context,
-            )?);
+
+        if self.use_linked_list() {
+            let range_start = getlist_req.get_range_start();
+            let range_end = getlist_req.get_range_end();
+            let mut node_option = linked_list_kv.get(getlist_req.get_key().to_str()?);
+
+            let range_len = {
+                if range_end == -1 {
+                    let mut len = 0;
+                    while let Some(node) = node_option {
+                        len += 1;
+                        node_option = node.get_next();
+                    }
+                    len - range_start as usize
+                } else {
+                    ensure!(
+                        range_start < range_end,
+                        "Cannot process get list with range_end < range_start"
+                    );
+                    (range_end - range_start) as usize
+                }
+            };
+
+            getlist_resp.init_val_list(range_len, arena);
+            let list = getlist_resp.get_mut_val_list();
+            let mut node_option = linked_list_kv.get(getlist_req.get_key().to_str()?);
+
+            let mut idx = 0;
+            while let Some(node) = node_option {
+                if idx < range_start {
+                    node_option = node.get_next();
+                    idx += 1;
+                    continue;
+                } else if idx as usize == range_len {
+                    break;
+                }
+                list.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                    node.get_data(),
+                    datapath,
+                    &mut copy_context,
+                )?);
+                node_option = node.get_next();
+                idx += 1;
+            }
+        } else {
+            let value_list = match list_kv_server.get(getlist_req.get_key().to_str()?) {
+                Some(v) => v,
+                None => {
+                    bail!("Could not find value for key: {:?}", getlist_req.get_key());
+                }
+            };
+
+            getlist_resp.init_val_list(value_list.len(), arena);
+            let list = getlist_resp.get_mut_val_list();
+            for value in value_list.iter() {
+                list.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                    value.as_ref(),
+                    datapath,
+                    &mut copy_context,
+                )?);
+            }
         }
 
         datapath.queue_cornflakes_obj(
@@ -366,6 +472,7 @@ where
     fn handle_getlist<'kv, 'arena>(
         &self,
         list_kv_server: &'kv ListKVServer<D>,
+        linked_list_kv_server: &'kv LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
         arena: &'arena bumpalo::Bump,
@@ -375,24 +482,70 @@ where
     {
         let mut getlist_req = kv_serializer_hybrid::GetListReq::new_in(arena);
         getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
-        let value_list = match list_kv_server.get(getlist_req.get_key().to_str()?) {
-            Some(v) => v,
-            None => {
-                bail!("Could not find value for key: {:?}", getlist_req.get_key());
-            }
-        };
-
         let mut getlist_resp = kv_serializer_hybrid::GetListResp::new_in(arena);
         let mut copy_context = CopyContext::new(arena, datapath)?;
         getlist_resp.set_id(getlist_req.get_id());
-        getlist_resp.init_val_list(value_list.len(), arena);
-        let list = getlist_resp.get_mut_val_list();
-        for value in value_list.iter() {
-            list.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
-                value.as_ref(),
-                datapath,
-                &mut copy_context,
-            )?);
+
+        if self.use_linked_list() {
+            let range_start = getlist_req.get_range_start();
+            let range_end = getlist_req.get_range_end();
+            let mut node_option = linked_list_kv_server.get(getlist_req.get_key().to_str()?);
+
+            let range_len = {
+                if range_end == -1 {
+                    let mut len = 0;
+                    while let Some(node) = node_option {
+                        len += 1;
+                        node_option = node.get_next();
+                    }
+                    len - range_start as usize
+                } else {
+                    ensure!(
+                        range_start < range_end,
+                        "Cannot process get list with range_end < range_start"
+                    );
+                    (range_end - range_start) as usize
+                }
+            };
+
+            let mut node_option = linked_list_kv_server.get(getlist_req.get_key().to_str()?);
+            getlist_resp.init_val_list(range_len, arena);
+            let list = getlist_resp.get_mut_val_list();
+            let mut idx = 0;
+            while let Some(node) = node_option {
+                if idx < range_start {
+                    node_option = node.get_next();
+                    idx += 1;
+                    continue;
+                } else if idx as usize == range_len {
+                    break;
+                }
+
+                list.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                    node.as_ref().get_data(),
+                    datapath,
+                    &mut copy_context,
+                )?);
+                node_option = node.get_next();
+                idx += 1;
+            }
+        } else {
+            let value_list = match list_kv_server.get(getlist_req.get_key().to_str()?) {
+                Some(v) => v,
+                None => {
+                    bail!("Could not find value for key: {:?}", getlist_req.get_key());
+                }
+            };
+
+            getlist_resp.init_val_list(value_list.len(), arena);
+            let list = getlist_resp.get_mut_val_list();
+            for value in value_list.iter() {
+                list.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                    value.as_ref(),
+                    datapath,
+                    &mut copy_context,
+                )?);
+            }
         }
 
         let datapath_sga =
@@ -403,6 +556,7 @@ where
     fn handle_putlist<'arena>(
         &self,
         list_kv_server: &mut ListKVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         pkt: &ReceivedPkt<D>,
         datapath: &mut D,
@@ -412,8 +566,22 @@ where
         putlist_req.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
         let key = putlist_req.get_key();
         let values_iterator = putlist_req.get_vals().iter().map(|value| value.as_bytes());
-        list_kv_server.insert_with_copies(key.to_str()?, values_iterator, datapath, mempool_ids)?;
 
+        if self.use_linked_list() {
+            linked_list_kv_server.insert_list_with_copies(
+                key.to_str()?,
+                values_iterator,
+                datapath,
+                mempool_ids,
+            )?;
+        } else {
+            list_kv_server.insert_with_copies(
+                key.to_str()?,
+                values_iterator,
+                datapath,
+                mempool_ids,
+            )?;
+        }
         let mut put_resp = PutResp::new();
         put_resp.set_id(putlist_req.get_id());
         let mut arena_sga =
@@ -429,11 +597,10 @@ where
 {
     kv_server: KVServer<D>,
     list_kv_server: ListKVServer<D>,
-    zero_copy_put_kv_server: ZeroCopyPutKVServer<D>,
+    linked_list_kv_server: LinkedListKVServer<D>,
     mempool_ids: Vec<MempoolID>,
     serializer: CornflakesSerializer<D>,
     push_buf_type: PushBufType,
-    _non_refcounted: bool,
 }
 
 impl<D> CornflakesKVServer<D>
@@ -445,15 +612,14 @@ where
         load_generator: L,
         datapath: &mut D,
         push_buf_type: PushBufType,
-        zero_copy_puts: bool,
-        non_refcounted: bool,
+        use_linked_list: bool,
     ) -> Result<Self>
     where
         L: ServerLoadGenerator,
     {
-        let (kv, list_kv, zero_copy_put_kv, mempool_ids) =
-            load_generator.new_kv_state(file, datapath, zero_copy_puts)?;
-        let mut serializer = CornflakesSerializer::<D>::new(zero_copy_puts, non_refcounted);
+        let (kv, list_kv, linked_list_kv, mempool_ids) =
+            load_generator.new_kv_state(file, datapath, use_linked_list)?;
+        let mut serializer = CornflakesSerializer::<D>::new(use_linked_list);
         if datapath.get_copying_threshold() == usize::MAX {
             tracing::info!("For serialization cornflakes 1c, setting with copies");
             serializer.set_with_copies();
@@ -461,11 +627,10 @@ where
         Ok(CornflakesKVServer {
             kv_server: kv,
             list_kv_server: list_kv,
-            zero_copy_put_kv_server: zero_copy_put_kv,
+            linked_list_kv_server: linked_list_kv,
             mempool_ids: mempool_ids,
             push_buf_type: push_buf_type,
             serializer: serializer,
-            _non_refcounted: non_refcounted,
         })
     }
 }
@@ -504,6 +669,7 @@ where
                         pkt.conn_id(),
                         end_batch,
                         &self.kv_server,
+                        &self.linked_list_kv_server,
                         &pkt,
                         datapath,
                         &arena,
@@ -518,6 +684,7 @@ where
                         pkt.conn_id(),
                         end_batch,
                         &self.kv_server,
+                        &self.linked_list_kv_server,
                         &pkt,
                         datapath,
                         arena,
@@ -532,6 +699,7 @@ where
                         pkt.conn_id(),
                         end_batch,
                         &self.list_kv_server,
+                        &self.linked_list_kv_server,
                         &pkt,
                         datapath,
                         &arena,
@@ -549,17 +717,17 @@ where
                     let mut add_user_response =
                         kv_serializer_hybrid::AddUserResponse::<D>::new_in(arena);
                     let mut copy_context = CopyContext::new(arena, datapath)?;
-                    match self.serializer.zero_copy_puts() {
+                    match self.serializer.use_linked_list() {
                         true => {
                             let value = self
-                                .zero_copy_put_kv_server
+                                .linked_list_kv_server
                                 .remove(add_user.get_keys()[0].to_str()?)
                                 .unwrap();
                             // will increment the reference count of value, or copy into the copy
                             // context
                             add_user_response.set_first_value(
                                 dynamic_rcsga_hybrid_hdr::CFBytes::new(
-                                    value.as_ref(),
+                                    value.as_ref().as_ref(),
                                     datapath,
                                     &mut copy_context,
                                 )?,
@@ -567,13 +735,11 @@ where
                             for (key, value) in
                                 add_user.get_keys().iter().zip(add_user.get_values().iter())
                             {
-                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                self.linked_list_kv_server.insert_with_copies(
                                     key.to_str()?,
                                     value.as_ref(),
-                                    &pkt,
                                     datapath,
                                     &mut self.mempool_ids,
-                                    true,
                                 )?;
                             }
                             datapath.queue_cornflakes_obj(
@@ -628,7 +794,7 @@ where
                     let mut copy_context = CopyContext::new(arena, datapath)?;
                     follow_unfollow_response.init_original_values(2, arena);
                     let response_vals = follow_unfollow_response.get_mut_original_values();
-                    match self.serializer.zero_copy_puts() {
+                    match self.serializer.use_linked_list() {
                         true => {
                             for (cf_key, value) in follow_unfollow
                                 .get_keys()
@@ -637,17 +803,15 @@ where
                                 .take(2)
                             {
                                 let key = cf_key.to_str()?;
-                                let old_value = self.zero_copy_put_kv_server.remove(key).unwrap();
-                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                let old_value = self.linked_list_kv_server.remove(key).unwrap();
+                                self.linked_list_kv_server.insert_with_copies(
                                     key,
                                     value.as_ref(),
-                                    &pkt,
                                     datapath,
                                     &mut self.mempool_ids,
-                                    true,
                                 )?;
                                 response_vals.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
-                                    old_value.as_ref(),
+                                    old_value.as_ref().as_ref(),
                                     datapath,
                                     &mut copy_context,
                                 )?);
@@ -702,7 +866,7 @@ where
                     let mut copy_context = CopyContext::new(arena, datapath)?;
                     post_tweet_response.init_values(3, arena);
                     let response_vals = post_tweet_response.get_mut_values();
-                    match self.serializer.zero_copy_puts() {
+                    match self.serializer.use_linked_list() {
                         true => {
                             for (cf_key, value) in post_tweet
                                 .get_keys()
@@ -711,17 +875,15 @@ where
                                 .take(3)
                             {
                                 let key = cf_key.to_str()?;
-                                let old_value = self.zero_copy_put_kv_server.remove(key).unwrap();
-                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                let old_value = self.linked_list_kv_server.remove(key).unwrap();
+                                self.linked_list_kv_server.insert_with_copies(
                                     key,
                                     value.as_ref(),
-                                    &pkt,
                                     datapath,
                                     &mut self.mempool_ids,
-                                    true,
                                 )?;
                                 response_vals.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
-                                    old_value.as_ref(),
+                                    old_value.as_ref().as_ref(),
                                     datapath,
                                     &mut copy_context,
                                 )?);
@@ -733,13 +895,11 @@ where
                                 .skip(3)
                                 .take(2)
                             {
-                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                self.linked_list_kv_server.insert_with_copies(
                                     cf_key.to_str()?,
                                     value.as_ref(),
-                                    &pkt,
                                     datapath,
                                     &mut self.mempool_ids,
-                                    true,
                                 )?;
                             }
                             datapath.queue_cornflakes_obj(
@@ -808,18 +968,18 @@ where
                     get_timeline_response.init_values(get_timeline.get_keys().len(), arena);
                     let response_vals = get_timeline_response.get_mut_values();
                     for (_i, key) in get_timeline.get_keys().iter().enumerate() {
-                        let cf_bytes = match self.serializer.zero_copy_puts() {
+                        let cf_bytes = match self.serializer.use_linked_list() {
                             true => {
-                                let val = self.zero_copy_put_kv_server.get(key.to_str()?).unwrap();
+                                let val = self.linked_list_kv_server.get(key.to_str()?).unwrap();
                                 tracing::debug!(
                                     msg_id = pkt.msg_id(),
                                     conn_id = pkt.conn_id(),
                                     key_idx = _i,
                                     "Get timeline val size {}",
-                                    val.as_ref().len()
+                                    val.as_ref().as_ref().len()
                                 );
                                 dynamic_rcsga_hybrid_hdr::CFBytes::new(
-                                    val.as_ref(),
+                                    val.as_ref().as_ref(),
                                     datapath,
                                     &mut copy_context,
                                 )?
@@ -883,15 +1043,20 @@ where
             );
             match msg_type {
                 MsgType::Get => {
-                    let sga =
-                        self.serializer
-                            .handle_get(&self.kv_server, &pkt, datapath, &arena)?;
+                    let sga = self.serializer.handle_get(
+                        &self.kv_server,
+                        &self.linked_list_kv_server,
+                        &pkt,
+                        datapath,
+                        &arena,
+                    )?;
                     datapath
                         .queue_arena_datapath_sga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
                 }
                 MsgType::Put => {
                     let sga = self.serializer.handle_put(
                         &mut self.kv_server,
+                        &mut self.linked_list_kv_server,
                         &mut self.mempool_ids,
                         &pkt,
                         datapath,
@@ -901,15 +1066,20 @@ where
                         .queue_arena_ordered_rcsga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
                 }
                 MsgType::GetM(_size) => {
-                    let sga =
-                        self.serializer
-                            .handle_getm(&self.kv_server, &pkt, datapath, &arena)?;
+                    let sga = self.serializer.handle_getm(
+                        &self.kv_server,
+                        &self.linked_list_kv_server,
+                        &pkt,
+                        datapath,
+                        &arena,
+                    )?;
                     datapath
                         .queue_arena_datapath_sga((pkt.msg_id(), pkt.conn_id(), sga), end_batch)?;
                 }
                 MsgType::PutM(_size) => {
                     let sga = self.serializer.handle_putm(
                         &mut self.kv_server,
+                        &mut self.linked_list_kv_server,
                         &mut self.mempool_ids,
                         &pkt,
                         datapath,
@@ -921,6 +1091,7 @@ where
                 MsgType::GetList(_size) => {
                     let sga = self.serializer.handle_getlist(
                         &self.list_kv_server,
+                        &self.linked_list_kv_server,
                         &pkt,
                         datapath,
                         &arena,
@@ -931,6 +1102,7 @@ where
                 MsgType::PutList(_size) => {
                     let sga = self.serializer.handle_putlist(
                         &mut self.list_kv_server,
+                        &mut self.linked_list_kv_server,
                         &mut self.mempool_ids,
                         &pkt,
                         datapath,
@@ -946,24 +1118,22 @@ where
                     add_user.deserialize_from_pkt(&pkt, REQ_TYPE_SIZE)?;
 
                     let mut add_user_response = AddUserResponse::<D>::new();
-                    match self.serializer.zero_copy_puts() {
+                    match self.serializer.use_linked_list() {
                         true => {
-                            let value = self
-                                .zero_copy_put_kv_server
+                            /*let value = self
+                                .linked_list_kv_server
                                 .remove(add_user.get_keys()[0].to_str()?)
                                 .unwrap();
                             add_user_response
-                                .set_first_value(CFBytes::new(value.as_ref(), datapath)?);
+                                .set_first_value(CFBytes::new(value.as_ref().as_ref(), datapath)?);
                             for (key, value) in
                                 add_user.get_keys().iter().zip(add_user.get_values().iter())
                             {
-                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                self.linked_list_kv_server.insert_with_copies(
                                     key.to_str()?,
                                     value.as_bytes(),
-                                    &pkt,
                                     datapath,
                                     &mut self.mempool_ids,
-                                    true,
                                 )?;
                             }
                             let mut arena_sga = ArenaOrderedRcSga::allocate(
@@ -979,7 +1149,8 @@ where
                             datapath.queue_arena_ordered_rcsga(
                                 (pkt.msg_id(), pkt.conn_id(), arena_sga),
                                 end_batch,
-                            )?
+                            )?*/
+                            unimplemented!();
                         }
                         false => {
                             let value = self
@@ -1026,13 +1197,9 @@ where
                     let mut follow_unfollow_response = FollowUnfollowResponse::<D>::new();
                     follow_unfollow_response.init_original_values(2);
                     let response_vals = follow_unfollow_response.get_mut_original_values();
-                    match self.serializer.zero_copy_puts() {
+                    match self.serializer.use_linked_list() {
                         true => {
-                            let mut old_values: [D::DatapathMetadata; 2] = [
-                                D::DatapathMetadata::default(),
-                                D::DatapathMetadata::default(),
-                            ];
-                            for (i, (cf_key, value)) in follow_unfollow
+                            /*for (i, (cf_key, value)) in follow_unfollow
                                 .get_keys()
                                 .iter()
                                 .zip(follow_unfollow.get_values().iter())
@@ -1040,19 +1207,16 @@ where
                                 .enumerate()
                             {
                                 let key = cf_key.to_str()?;
-                                let old_value = self.zero_copy_put_kv_server.remove(key).unwrap();
-                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                let old_value = self.linked_list_kv_server.remove(key).unwrap();
+                                response_vals
+                                    .append(CFBytes::new(old_value.as_ref().as_ref(), datapath)?);
+                                self.linked_list_kv_server.insert_with_copies(
                                     key,
                                     value.as_bytes(),
-                                    &pkt,
                                     datapath,
                                     &mut self.mempool_ids,
-                                    true,
                                 )?;
-                                old_values[i] = old_value;
                             }
-                            response_vals.append(CFBytes::new(old_values[0].as_ref(), datapath)?);
-                            response_vals.append(CFBytes::new(old_values[1].as_ref(), datapath)?);
                             let mut arena_sga = ArenaOrderedRcSga::allocate(
                                 follow_unfollow_response.num_scatter_gather_entries(),
                                 &arena,
@@ -1067,7 +1231,8 @@ where
                             datapath.queue_arena_ordered_rcsga(
                                 (pkt.msg_id(), pkt.conn_id(), arena_sga),
                                 end_batch,
-                            )?;
+                            )?;*/
+                            unimplemented!();
                         }
                         false => {
                             let mut old_values: [D::DatapathBuffer; 2] =
@@ -1081,13 +1246,13 @@ where
                             {
                                 let key = cf_key.to_str()?;
                                 let old_value = self.kv_server.remove(key).unwrap();
+                                old_values[i] = old_value;
                                 self.kv_server.insert_with_copies(
                                     key,
                                     value.as_bytes(),
                                     datapath,
                                     &mut self.mempool_ids,
                                 )?;
-                                old_values[i] = old_value;
                             }
                             response_vals.append(CFBytes::new(old_values[0].as_ref(), datapath)?);
                             response_vals.append(CFBytes::new(old_values[1].as_ref(), datapath)?);
@@ -1118,14 +1283,9 @@ where
                     let mut post_tweet_response = PostTweetResponse::<D>::new();
                     post_tweet_response.init_values(3);
                     let response_vals = post_tweet_response.get_mut_values();
-                    match self.serializer.zero_copy_puts() {
+                    match self.serializer.use_linked_list() {
                         true => {
-                            let mut old_values: [D::DatapathMetadata; 3] = [
-                                D::DatapathMetadata::default(),
-                                D::DatapathMetadata::default(),
-                                D::DatapathMetadata::default(),
-                            ];
-                            for (i, (cf_key, value)) in post_tweet
+                            /*for (i, (cf_key, value)) in post_tweet
                                 .get_keys()
                                 .iter()
                                 .zip(post_tweet.get_values().iter())
@@ -1133,20 +1293,16 @@ where
                                 .enumerate()
                             {
                                 let key = cf_key.to_str()?;
-                                let old_value = self.zero_copy_put_kv_server.remove(key).unwrap();
-                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                let old_value = self.linked_list_kv_server.remove(key).unwrap();
+                                response_vals
+                                    .append(CFBytes::new(old_value.as_ref().as_ref(), datapath)?);
+                                self.linked_list_kv_server.insert_with_copies(
                                     key,
                                     value.as_bytes(),
-                                    &pkt,
                                     datapath,
                                     &mut self.mempool_ids,
-                                    true,
                                 )?;
-                                old_values[i] = old_value;
                             }
-                            response_vals.append(CFBytes::new(old_values[0].as_ref(), datapath)?);
-                            response_vals.append(CFBytes::new(old_values[1].as_ref(), datapath)?);
-                            response_vals.append(CFBytes::new(old_values[2].as_ref(), datapath)?);
                             for (cf_key, value) in post_tweet
                                 .get_keys()
                                 .iter()
@@ -1154,13 +1310,11 @@ where
                                 .skip(3)
                                 .take(2)
                             {
-                                self.zero_copy_put_kv_server.insert_with_or_without_copies(
+                                self.linked_list_kv_server.insert_with_copies(
                                     cf_key.to_str()?,
                                     value.as_bytes(),
-                                    &pkt,
                                     datapath,
                                     &mut self.mempool_ids,
-                                    true,
                                 )?;
                             }
                             let mut arena_sga = ArenaOrderedRcSga::allocate(
@@ -1177,7 +1331,8 @@ where
                             datapath.queue_arena_ordered_rcsga(
                                 (pkt.msg_id(), pkt.conn_id(), arena_sga),
                                 end_batch,
-                            )?;
+                            )?;*/
+                            unimplemented!();
                         }
                         false => {
                             let mut old_values: [D::DatapathBuffer; 3] = [
@@ -1194,13 +1349,13 @@ where
                             {
                                 let key = cf_key.to_str()?;
                                 let old_value = self.kv_server.remove(key).unwrap();
+                                old_values[i] = old_value;
                                 self.kv_server.insert_with_copies(
                                     key,
                                     value.as_bytes(),
                                     datapath,
                                     &mut self.mempool_ids,
                                 )?;
-                                old_values[i] = old_value;
                             }
                             response_vals.append(CFBytes::new(old_values[0].as_ref(), datapath)?);
                             response_vals.append(CFBytes::new(old_values[1].as_ref(), datapath)?);
@@ -1247,17 +1402,18 @@ where
                     get_timeline_response.init_values(get_timeline.get_keys().len());
                     let response_vals = get_timeline_response.get_mut_values();
                     for (_i, key) in get_timeline.get_keys().iter().enumerate() {
-                        let cf_bytes = match self.serializer.zero_copy_puts() {
+                        let cf_bytes = match self.serializer.use_linked_list() {
                             true => {
-                                let val = self.zero_copy_put_kv_server.get(key.to_str()?).unwrap();
+                                /*let val = self.linked_list_kv_server.get(key.to_str()?).unwrap();
                                 tracing::debug!(
                                     msg_id = pkt.msg_id(),
                                     conn_id = pkt.conn_id(),
                                     key_idx = _i,
                                     "Get timeline val size {}",
-                                    val.as_ref().len()
+                                    val.as_ref().as_ref().len()
                                 );
-                                CFBytes::new(val.as_ref(), datapath)?
+                                CFBytes::new(val.as_ref().as_ref(), datapath)?*/
+                                unimplemented!();
                             }
                             false => {
                                 let val = self.kv_server.get(key.to_str()?).unwrap();
@@ -1463,7 +1619,18 @@ where
     fn serialize_get_list(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize> {
         let mut get = GetListReq::<D>::new();
         get.set_key(CFString::new_from_str(key));
-        get.serialize_into_buf(datapath, buf)
+        get.set_range_start(0);
+        get.set_range_end(-1);
+        tracing::debug!(
+            "Serializing get list command: {:?}; total header size is: {}, dynamic header start is {}, has range start: {}, has range end: {}",
+            get,
+            get.total_header_size(false, false),
+            get.dynamic_header_start(),
+            get.has_range_start(), get.has_range_end(),
+        );
+        let size = get.serialize_into_buf(datapath, buf)?;
+        tracing::debug!("Serialized buffer: {:?}", &buf[0..size]);
+        Ok(size)
     }
 
     fn serialize_put_list(

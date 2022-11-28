@@ -8,8 +8,7 @@ use cornflakes_libos::{
     utils::AddressInfo,
     MsgID,
 };
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+pub static mut REGION_ORDER: &[usize] = &[];
 use std::marker::PhantomData;
 const DEFAULT_CHAR: u8 = 'c' as u8;
 const RESPONSE_DATA_OFF: usize = 12;
@@ -20,13 +19,15 @@ where
     D: Datapath,
 {
     /// How server initializes memory on other sizes (for checking)
+    /// Only initialized in debug mode.
     server_payload_regions: Vec<Bytes>,
-    /// requests: actual bytes to send
-    requests: Vec<(Bytes, Vec<usize>)>,
+    /// request segments to check
+    /// Only initialized in debug mode.
+    request_indices: Vec<Vec<usize>>,
     /// Echo mode on server
     echo_mode: bool,
     /// number of mbufs
-    num_mbufs: usize,
+    num_segments: usize,
     /// segment size
     segment_size: usize,
     /// packets received so far
@@ -43,23 +44,16 @@ where
     rtts: ManualHistogram,
     /// phantom data
     _datapath: PhantomData<D>,
-}
-
-fn get_region_order(random_seed: usize, num_regions: usize) -> Result<Vec<usize>> {
-    let mut r = StdRng::seed_from_u64(random_seed as u64);
-    let mut indices: Vec<usize> = (0..num_regions).collect();
-    let mut ret: Vec<usize> = (0..num_regions).collect();
-    for i in 0usize..(num_regions - 1) {
-        let j: usize = i + (r.gen::<usize>() % (num_regions - i));
-        if i != j {
-            indices.swap(i, j);
-        }
-    }
-    for i in 1..num_regions {
-        ret[i - 1] = indices[i];
-    }
-    ret[num_regions - 1] = indices[0];
-    return Ok(ret);
+    /// Send packet size
+    send_packet_size: usize,
+    /// Min send size
+    min_send_size: usize,
+    /// cur region idx
+    cur_region_idx: usize,
+    /// Request padding:
+    padding: Vec<u8>,
+    /// Last sent bytes
+    last_sent_bytes: Bytes,
 }
 
 fn get_starting_position(
@@ -88,33 +82,35 @@ where
         num_segments: usize,
         array_size: usize,
         send_packet_size: usize,
-        random_seed: usize,
         max_num_requests: usize,
         thread_id: usize,
         client_id: usize,
         total_threads: usize,
         total_clients: usize,
     ) -> Result<Self> {
-        let mut server_payload_regions: Vec<Bytes> =
-            vec![Bytes::default(); array_size / segment_size];
-        let alphabet = [
-            'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q',
-            'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-        ];
-        for seg in 0..(array_size / segment_size) {
-            let letter = alphabet[seg % alphabet.len()];
-            let chars: Vec<u8> = std::iter::repeat(letter as u8).take(segment_size).collect();
-            let bytes = Bytes::copy_from_slice(chars.as_slice());
-            server_payload_regions[seg] = bytes;
-        }
-        // store bytes in each region for checking
-        let mut requests: Vec<(Bytes, Vec<usize>)> = Vec::with_capacity(max_num_requests);
+        let server_payload_regions: Vec<Bytes> = match cfg!(debug_assertions) {
+            true => {
+                let mut server_payload_regions = vec![Bytes::default(); array_size / segment_size];
+                let alphabet = [
+                    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
+                    'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+                ];
+                for seg in 0..(array_size / segment_size) {
+                    let letter = alphabet[seg % alphabet.len()];
+                    let chars: Vec<u8> =
+                        std::iter::repeat(letter as u8).take(segment_size).collect();
+                    let bytes = Bytes::copy_from_slice(chars.as_slice());
+                    server_payload_regions[seg] = bytes;
+                }
+                server_payload_regions
+            }
+            false => Vec::default(),
+        };
 
-        // 1) get cannonical order of regions based on random seed and pointer chasing
-        let region_order = get_region_order(random_seed, array_size / segment_size)?;
+        // store the segment array if debug mode
+        let mut request_indices: Vec<Vec<usize>> = Vec::default();
 
-        // 2) based on this thread's thread id and client id, get "starting position" into the
-        //    list
+        // 2) based on this thread's thread id and client id, get "starting position" into the array
         let starting_offset = get_starting_position(
             client_id,
             thread_id,
@@ -122,48 +118,41 @@ where
             total_threads,
             array_size / segment_size,
         )?;
-        let mut cur_region_idx = region_order[0];
+        let mut cur_region_idx = unsafe { REGION_ORDER[0] };
         for _ in 0..starting_offset {
-            cur_region_idx = region_order[cur_region_idx];
+            cur_region_idx = unsafe { REGION_ORDER[cur_region_idx] };
         }
 
+        let mut cur_region_idx_local = cur_region_idx;
+
         // (3) with starting position, num segments, construct the packet
+        let min_send_size = REQUEST_SEGLIST_OFFSET_PADDING_SIZE + 8 * num_segments;
         ensure!(
-            send_packet_size > REQUEST_SEGLIST_OFFSET_PADDING_SIZE + 8 * num_segments,
-            "Provided send packet size must be atleast segment length"
+            send_packet_size >= min_send_size,
+            format!("Provided send packet size must be atleast segment length: provided {}, expected atleast {}",
+            send_packet_size, min_send_size)
         );
-        let padding: Vec<u8> = match send_packet_size > 0 {
+        let padding: Vec<u8> = match send_packet_size > min_send_size {
             true => std::iter::repeat(0u8)
-                .take(send_packet_size - (REQUEST_SEGLIST_OFFSET_PADDING_SIZE + 8 * num_segments))
+                .take(send_packet_size - min_send_size)
                 .collect(),
             false => Vec::default(),
         };
         for _ in 0..max_num_requests {
-            if send_packet_size != 0 {}
-            let mut bytes = match send_packet_size == 0 {
-                true => {
-                    BytesMut::with_capacity(REQUEST_SEGLIST_OFFSET_PADDING_SIZE + 8 * num_segments)
+            if cfg!(debug_assertions) {
+                let mut segment_indices = Vec::with_capacity(num_segments);
+                for _ in 0..num_segments {
+                    cur_region_idx_local = unsafe { REGION_ORDER[cur_region_idx_local] };
+                    segment_indices.push(cur_region_idx);
                 }
-                false => BytesMut::with_capacity(send_packet_size),
-            };
-            // write four bytes of 0 as the padding
-            for _i in 0..4 {
-                bytes.put_u8(0);
+                request_indices.push(segment_indices);
             }
-            let mut segment_indices = Vec::with_capacity(num_segments);
-            for _ in 0..num_segments {
-                cur_region_idx = region_order[cur_region_idx];
-                bytes.put_u64(cur_region_idx as u64);
-                segment_indices.push(cur_region_idx);
-            }
-            bytes.put(padding.as_slice());
-            requests.push((bytes.freeze(), segment_indices));
         }
 
         Ok(SgBenchClient {
             server_payload_regions: server_payload_regions,
-            requests: requests,
-            num_mbufs: num_segments,
+            request_indices: request_indices,
+            num_segments: num_segments,
             segment_size: segment_size,
             echo_mode: echo_mode,
             received: 0,
@@ -173,6 +162,11 @@ where
             server_addr: server_addr,
             rtts: ManualHistogram::new(max_num_requests),
             _datapath: PhantomData::default(),
+            send_packet_size: send_packet_size,
+            min_send_size: min_send_size,
+            cur_region_idx: cur_region_idx,
+            padding: padding,
+            last_sent_bytes: Bytes::default(),
         })
     }
 }
@@ -228,12 +222,21 @@ where
         _datapath: &<Self as ClientSM>::Datapath,
     ) -> Result<Option<(MsgID, &[u8])>> {
         let id = self.last_sent_id;
-        ensure!(
-            (id as usize) < self.requests.len(),
-            format!("Requests array doesn't have msg id # {}", id)
-        );
-        let bytes_to_send = &self.requests[id as usize].0;
-        Ok(Some((id as u32, bytes_to_send)))
+        let mut bytes = match self.send_packet_size <= self.min_send_size {
+            true => BytesMut::with_capacity(self.min_send_size),
+            false => BytesMut::with_capacity(self.send_packet_size),
+        };
+        // write four bytes of 0 as the padding (for this server)
+        for _i in 0..4 {
+            bytes.put_u8(0);
+        }
+        for _ in 0..self.num_segments {
+            self.cur_region_idx = unsafe { REGION_ORDER[self.cur_region_idx] };
+            bytes.put_u64_le(self.cur_region_idx as u64);
+        }
+        bytes.put(self.padding.as_slice());
+        self.last_sent_bytes = bytes.freeze();
+        Ok(Some((id as u32, &self.last_sent_bytes.as_ref())))
     }
 
     fn process_received_msg(
@@ -242,9 +245,9 @@ where
         _datapath: &<Self as ClientSM>::Datapath,
     ) -> Result<bool> {
         if cfg!(debug_assertions) {
-            let expected_size = self.num_mbufs * self.segment_size + RESPONSE_DATA_OFF;
+            let expected_size = self.num_segments * self.segment_size + RESPONSE_DATA_OFF;
             ensure!(
-                sga.data_len() == expected_size,
+                (sga.data_len() == expected_size),
                 format!(
                     "Received sga id {} has length {}, expected {}",
                     sga.msg_id(),
@@ -265,7 +268,7 @@ where
                     return Ok(true);
                 }
                 false => {
-                    let seg_sequence = &self.requests[sga.msg_id() as usize].1;
+                    let seg_sequence = &self.request_indices[sga.msg_id() as usize];
                     for (idx, seg) in seg_sequence.iter().enumerate() {
                         let msg_to_check = &sga.seg(0).as_ref()[(RESPONSE_DATA_OFF
                             + idx * self.segment_size)
@@ -290,12 +293,8 @@ where
         Ok(())
     }
 
-    fn msg_timeout_cb(&mut self, id: MsgID, _datapath: &Self::Datapath) -> Result<&[u8]> {
-        ensure!(
-            (id as usize) < self.requests.len(),
-            format!("Requests array doesn't have msg id # {}", id)
-        );
-        let bytes_to_send = &self.requests[id as usize].0;
-        Ok(bytes_to_send)
+    fn msg_timeout_cb(&mut self, _id: MsgID, _datapath: &Self::Datapath) -> Result<&[u8]> {
+        // Not implemented so we can delete bytes from request array as we send
+        unimplemented!();
     }
 }

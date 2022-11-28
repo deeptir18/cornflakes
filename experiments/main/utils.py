@@ -10,13 +10,30 @@ from statistics import mean
 import copy
 import json
 import numpy as np
-import torch
+from parse import *
 
 NUM_TRIALS = 5
 NUM_RETRIES = 5
 
 PERCENT_ACHIEVED_CUTOFF = 0.98
 DEFAULT_HISTOGRAM_PRECISION = 1000
+
+def parse_cornflakes_size_distr_avg(size_distr):
+    params = size_distr.split("-")
+    sum_size = 0
+    if params[0] == "UniformOverSizes":
+        for i in range(1, len(params)):
+            sum_size += int(params[i])
+        return sum_size / (len(params) - 1)
+    else:
+        utils.error("Parsing size_distr_avg not implemented for ", params[0])
+        exit(1)
+
+def yaml_get(yaml_obj, var):
+    try:
+        return yaml_obj[var]
+    except:
+        utils.error("Variable {} not found in yaml {}".format(var, yaml_obj))
 
 class Histogram(object):
     def __init__(self, histogram_yaml_map):
@@ -119,11 +136,6 @@ def warn(*args):
     print(Fore.BLUE + Style.BRIGHT, prepend, "[WARN]: ", Style.RESET_ALL, *args, file=sys.stderr)
 
 
-def mean_func(arr):
-    mean = torch.mean(arr)
-    return mean.item()
-
-
 def median_func(arr):
     median = arr[int(len(arr) * 0.50)]
     return median.item()
@@ -137,12 +149,6 @@ def p99_func(arr):
 def p999_func(arr):
     p999 = arr[int(len(arr) * 0.999)]
     return p999.item()
-
-
-def sort_latency_lists(arrays):
-    c = torch.cat(arrays)
-    c_sorted, c_ind = c.sort()
-    return c_sorted
 
 
 def parse_latency_log(log, threshold):

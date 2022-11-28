@@ -787,6 +787,13 @@ where
         let mut new_metadata = buf.clone();
         let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
         let original_offset = buf.offset();
+        tracing::debug!(
+            header_offset,
+            buffer_offset,
+            ptr_offset = forward_pointer.get_offset(),
+            "Deserializing cf string"
+        );
+
         new_metadata.set_data_len_and_offset(
             forward_pointer.get_size() as usize,
             forward_pointer.get_offset() as usize + original_offset + buffer_offset,

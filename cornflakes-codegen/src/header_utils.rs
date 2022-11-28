@@ -419,6 +419,39 @@ impl MessageInfo {
         self.0.fields.clone()
     }
 
+    pub fn get_function_params(&self, fd: &ProtoReprInfo) -> Result<Vec<String>> {
+        let mut ret: Vec<String> = Vec::default();
+        if fd.hybrid_mode() {
+            if self.contains_variable_list(&fd.get_message_map())? {
+                ret.insert(0, "'arena".to_string());
+                // TODO: hack for c codegen
+                ret.push(format!("{}: 'arena", fd.get_lifetime()));
+            } else {
+                ret.push(fd.get_lifetime());
+            }
+            return Ok(ret);
+        }
+        ret.push(fd.get_lifetime());
+        Ok(ret)
+    }
+
+    pub fn get_type_params_with_lifetime_ffi(
+        &self,
+        _is_ref_counted: bool,
+        fd: &ProtoReprInfo,
+        datapath: &str,
+    ) -> Result<Vec<String>> {
+        let mut ret: Vec<String> = Vec::default();
+        if fd.hybrid_mode() {
+            if self.contains_variable_list(&fd.get_message_map())? {
+                ret.insert(0, "'arena".to_string());
+            }
+        }
+        ret.push(fd.get_lifetime());
+        ret.push(datapath.to_string());
+        Ok(ret)
+    }
+
     pub fn get_type_params_with_lifetime(
         &self,
         is_ref_counted: bool,

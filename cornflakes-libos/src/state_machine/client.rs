@@ -1,7 +1,10 @@
 use super::super::{
     datapath::{Datapath, ReceivedPkt},
     high_timeout_at_start,
-    loadgen::{client_threads::ThreadStats, request_schedule::PacketSchedule},
+    loadgen::{
+        client_threads::ThreadStats,
+        request_schedule::{PacketSchedule, SpinTimer},
+    },
     no_retries_timeout,
     timing::ManualHistogram,
     utils::AddressInfo,
@@ -10,6 +13,10 @@ use super::super::{
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_utils::get_thread_latlog;
 use std::time::{Duration, Instant};
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub trait ClientSM {
     type Datapath: Datapath;
@@ -80,6 +87,15 @@ pub trait ClientSM {
         self.get_mut_rtts()
             .log_truncated_to_file(path, start_cutoff)?;
         Ok(())
+    }
+
+    /// Optional function to prep requests.
+    fn prep_requests(
+        &mut self,
+        _num_packets: usize,
+        _datapath: &<Self as ClientSM>::Datapath,
+    ) -> Result<usize> {
+        Ok(0)
     }
 
     fn dump(&mut self, path: Option<String>, total_time: Duration, app_name: &str) -> Result<()> {
@@ -164,37 +180,36 @@ pub trait ClientSM {
     fn run_open_loop(
         &mut self,
         datapath: &mut Self::Datapath,
-        schedule: &PacketSchedule,
-        total_time: u64,
+        schedule: PacketSchedule,
+        total_time: Duration,
         time_out: impl Fn(usize) -> Duration,
         no_retries: bool,
+        num_threads: usize,
     ) -> Result<()> {
-        let freq = datapath.timer_hz(); // cycles per second
         let conn_id = datapath
             .connect(self.server_addr())
             .wrap_err("No more available connection IDs")?;
-        let time_start = Instant::now();
-        let mut idx = 0;
 
-        let start = datapath.current_cycles();
-        let mut deficit;
-        let mut next = start;
+        // clients can prep for a certain number of messages they need to send
+        // self.prep_requests(schedule.len(), datapath)?;
+        // tracing::info!("Done with prepping requests");
+
+        // wait for all threads to reach this function and "connect"
+        let _ = GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
+        while GLOBAL_THREAD_COUNT.load(Ordering::SeqCst) != num_threads {}
+        let mut spin_timer = SpinTimer::new(schedule, total_time);
+
         while let Some((id, msg)) = self.get_next_msg(&datapath)? {
-            if datapath.current_cycles() > (total_time * freq + start) {
+            if spin_timer.done() {
                 tracing::debug!("Total time done");
                 break;
             }
 
             // Send the next message
-            tracing::debug!(time = ?time_start.elapsed(), "About to send next packet");
             datapath.push_buffers_with_copy(&vec![(id, conn_id, msg)])?;
             self.increment_uniq_sent();
-            idx += 1;
-            let last_sent = datapath.current_cycles();
-            deficit = last_sent - next;
-            next = schedule.get_next_in_cycles(idx, last_sent, freq, deficit);
 
-            while datapath.current_cycles() <= next {
+            spin_timer.wait(&mut || {
                 let recved_pkts = datapath.pop_with_durations()?;
                 for (pkt, rtt) in recved_pkts.into_iter() {
                     let msg_id = pkt.msg_id();
@@ -221,7 +236,8 @@ pub trait ClientSM {
                         )])?;
                     }
                 }
-            }
+                Ok(())
+            })?;
         }
 
         tracing::debug!("Finished sending");
@@ -234,11 +250,12 @@ pub fn run_client_loadgen<D>(
     client: &mut impl ClientSM<Datapath = D>,
     connection: &mut D,
     retries: bool,
-    total_time: u64,
+    total_time_seconds: u64,
     logfile: Option<String>,
     rate: u64,
     message_size: usize,
-    schedule: &PacketSchedule,
+    schedule: PacketSchedule,
+    num_threads: usize,
 ) -> Result<ThreadStats>
 where
     D: Datapath,
@@ -249,7 +266,14 @@ where
         false => no_retries_timeout,
     };
 
-    client.run_open_loop(connection, schedule, total_time, timeout, !retries)?;
+    client.run_open_loop(
+        connection,
+        schedule,
+        Duration::from_secs(total_time_seconds),
+        timeout,
+        !retries,
+        num_threads,
+    )?;
     tracing::info!(thread = thread_id, "Finished running open loop");
 
     let exp_duration = start_run.elapsed().as_nanos();
