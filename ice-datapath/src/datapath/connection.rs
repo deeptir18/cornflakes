@@ -1164,22 +1164,6 @@ impl Datapath for IceConnection {
         // start ethernet port
         dpdk_check_not_errored!(rte_eth_dev_start(datapath_params.get_physical_port()?));
 
-        // disable rx/tx flow control
-        // TODO: why?
-
-        let mut fc_conf: MaybeUninit<dpdk_bindings::rte_eth_fc_conf> = MaybeUninit::zeroed();
-        dpdk_check_not_errored!(rte_eth_dev_flow_ctrl_get(
-            datapath_params.get_physical_port()?,
-            fc_conf.as_mut_ptr()
-        ));
-        unsafe {
-            (*fc_conf.as_mut_ptr()).mode = dpdk_bindings::rte_eth_fc_mode_RTE_ETH_FC_NONE;
-        }
-        dpdk_check_not_errored!(rte_eth_dev_flow_ctrl_set(
-            datapath_params.get_physical_port()?,
-            fc_conf.as_mut_ptr()
-        ));
-
         dpdk_wrapper::wait_for_link_status_up(datapath_params.get_physical_port()?)?;
 
         // init ice queue pointer to point to DPDK initialized tx queue

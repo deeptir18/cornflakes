@@ -239,7 +239,7 @@ int custom_ice_refcnt_update_or_free(struct custom_ice_mempool *m,
         if (change > 0) {
             __atomic_add_fetch(&m->ref_counts[refcnt_index], (uint16_t)change, __ATOMIC_ACQ_REL);
         } else {
-            uint16_t refcnt = __atomic_sub_fetch(&m->ref_counts[refcnt_index], (uint16_t)(change * -1));
+            uint16_t refcnt = __atomic_sub_fetch(&m->ref_counts[refcnt_index], (uint16_t)(change * -1), __ATOMIC_ACQ_REL);
             if (refcnt == 0) {
                 custom_ice_mempool_free_by_idx(m,
                     buf,
