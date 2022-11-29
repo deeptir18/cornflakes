@@ -84,6 +84,7 @@ fn main() {
         .allowlist_type("custom_ice_global_context")
         .allowlist_type("custom_ice_per_thread_context")
         .allowlist_function("custom_ice_err_to_str")
+        .allowlist_function("custom_ice_post_data_segment")
         .allowlist_function("custom_ice_get_per_thread_context")
         .allowlist_function("custom_ice_clear_per_thread_context")
         .allowlist_function("custom_ice_get_global_context_size")

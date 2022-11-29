@@ -1,6 +1,43 @@
 #include <rte_mbuf.h>
 #include <rte_errno.h>
 #include <rte_ethdev.h>
+#include <rte_ip.h>
+
+void flip_headers_(struct rte_mbuf *mbuf ) {
+	struct rte_ether_hdr *ptr_mac_hdr;
+	struct rte_ether_addr src_addr;
+	struct rte_ipv4_hdr *ptr_ipv4_hdr;
+	uint32_t src_ip_addr;
+	struct rte_udp_hdr *rte_udp_hdr;
+	uint16_t tmp_port;
+    
+    /* swap src and dst ether addresses */
+    ptr_mac_hdr = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
+    rte_ether_addr_copy(&ptr_mac_hdr->src_addr, &src_addr);
+	rte_ether_addr_copy(&ptr_mac_hdr->dst_addr, &ptr_mac_hdr->src_addr);
+	rte_ether_addr_copy(&src_addr, &ptr_mac_hdr->dst_addr);
+
+
+	/* swap src and dst IP addresses */
+	ptr_ipv4_hdr = rte_pktmbuf_mtod_offset(mbuf, struct rte_ipv4_hdr *, RTE_ETHER_HDR_LEN);
+	src_ip_addr = ptr_ipv4_hdr->src_addr;
+	ptr_ipv4_hdr->src_addr = ptr_ipv4_hdr->dst_addr;
+	ptr_ipv4_hdr->dst_addr = src_ip_addr;
+    ptr_ipv4_hdr->hdr_checksum = 0;
+    ptr_ipv4_hdr->hdr_checksum = rte_ipv4_cksum(ptr_ipv4_hdr);
+
+	/* swap UDP ports */
+	rte_udp_hdr = rte_pktmbuf_mtod_offset(mbuf, struct rte_udp_hdr *,
+                                            RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
+	tmp_port = rte_udp_hdr->src_port;
+	rte_udp_hdr->src_port = rte_udp_hdr->dst_port;
+	rte_udp_hdr->dst_port = tmp_port;
+    rte_udp_hdr->dgram_cksum = 0;
+    rte_udp_hdr->dgram_cksum = rte_ipv4_udptcp_cksum(ptr_ipv4_hdr, (void *)rte_udp_hdr);
+
+    mbuf->l2_len = RTE_ETHER_HDR_LEN;
+	mbuf->l3_len = sizeof(struct rte_ipv4_hdr);
+}
 
 uint16_t rte_eth_rx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **rx_pkts, const uint16_t nb_pkts) {
     uint16_t ret = rte_eth_rx_burst(port_id, queue_id, rx_pkts, nb_pkts);
