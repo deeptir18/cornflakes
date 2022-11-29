@@ -21,6 +21,10 @@ d <- read.csv(args[1], sep=",", header = TRUE)
 d_postprocess <- read.csv(args[2], sep = ",", header = TRUE)
 # argument 3: pdf to write plot into
 plot_pdf <- args[3]
+basename <- sub('\\.pdf$', '', plot_pdf) 
+cr_plot_pdf <- paste(basename, "cr.pdf", sep = "_")
+anon_plot_pdf <- paste(basename, "anon.pdf", sep = "_")
+
 # argument 4: metric (p99, or median)
 metric <- args[4]
 # argument 5: plot type ([full, individual])
@@ -33,13 +37,18 @@ d <- d[ which(d$percent_achieved_rate > 0.95),]
 # d <- subset(d, percent_achieved_rate > .95)
 
 options(width=10000)
-labels <- c('capnproto' = 'Capnproto', 
+cr_labels <- c('capnproto' = 'Capnproto', 
             'protobuf' = 'Protobuf', 
             'flatbuffers' = 'Flatbuffers', 
             'redis' = 'Redis',
             'cornflakes1c-dynamic' = 'Cornflakes (Copy)',
             'cornflakes-dynamic' = 'Cornflakes (SG)')
-
+anon_labels <- c('capnproto' = 'Capnproto', 
+            'protobuf' = 'Protobuf', 
+            'flatbuffers' = 'Flatbuffers', 
+            'redis' = 'Redis',
+            'cornflakes1c-dynamic' = 'Oatmeal (Copy)',
+            'cornflakes-dynamic' = 'Oatmeal (SG)')
 shape_values <- c('capnproto' = 18, 
                   'protobuf' = 8, 
                   'flatbuffers' = 17, 
@@ -81,22 +90,24 @@ subset_named <- function(original, subset) {
 
 color_values <- subset_named(color_values, unique_serialization_labels)
 shape_values <- subset_named(shape_values, unique_serialization_labels)
-labels <- subset_named(labels, unique_serialization_labels)
+cr_labels <- subset_named(cr_labels, unique_serialization_labels)
+anon_labels <- subset_named(anon_labels, unique_serialization_labels)
 levels <- subset_flat(levels, unique_serialization_labels)
+
 
 d$serialization <- factor(d$serialization, levels = levels)
 d_postprocess$serialization <- factor(d_postprocess$serialization, levels = levels)
 print(levels)
 
-base_plot <- function(data, metric) {
+base_plot <- function(data, metric, labels) {
     # data <- subset(data, sdp99 < 300)
     if (metric == "p99") {
         base_plot <- base_p99_plot(data, 100.0)
-        base_plot <- label_plot(base_plot)
+        base_plot <- label_plot(base_plot, labels)
         return(base_plot)
     } else if (metric == "median") {
         base_plot <- base_median_plot(data, 50.0)
-        base_plot <- label_plot(base_plot)
+        base_plot <- label_plot(base_plot, labels)
         return(base_plot)
     }
 }
@@ -127,7 +138,7 @@ base_median_plot <- function(data, y_cutoff) {
     return(plot)
 }
 
-label_plot <- function(plot) {
+label_plot <- function(plot, labels) {
     print("in label plot")
     plot <- plot +
             geom_point(size=2) +
@@ -159,15 +170,15 @@ label_plot <- function(plot) {
     return(plot)
 }
 
-individual_plot <- function(data, metric, size, values) {
+individual_plot <- function(data, metric, size, values, labels) {
     data <- subset(data, num_values == values & total_size == size)
-    plot <- base_plot(data, metric)
+    plot <- base_plot(data, metric, labels)
     print(plot)
     return(plot)
 }
 
-full_plot <- function(data, metric) {
-    plot <- base_plot(data, metric) +
+full_plot <- function(data, metric, labels) {
+    plot <- base_plot(data, metric, labels) +
         facet_grid(total_size ~ num_values, scales="free") +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
@@ -181,32 +192,51 @@ full_plot <- function(data, metric) {
     return(plot)
 }
 
-tput_plot <- function(data, x_label) {
-    y_name <- "maxtputgbps"
-    y_label <- "round(maxtputgbps, 1)"
-    y_label_height <- "maxtputgbps"
-    y_axis <- "Highest Achieved\nLoad (Gbps)"
-    # TODO: for size plot, x should be reordered by size
+# TODO: decide whether it's better to show this plot as gbps or size
+tput_plot_size <- function(data) {
     plot <- ggplot(data,
-                    aes(x =reorder(factor_name, num_values),
-                        y=maxtputgbps,
-                        fill = serialization)) +
-                   expand_limits(y = 0) +
-            geom_point(size = 3, stroke=0.2, position=position_dodge(0.8), stat="identity", aes(color=serialization, shape=serialization,fill=serialization, size=serialization)) +
+            aes(x =reorder(factor_name, total_size),
+                y=maxtputgbps,
+                fill = serialization)) +
+        geom_text(position = position_dodge(0.8),
+                    aes(y=maxtputgbps + 7, label = round(maxtputgbps, 1)),
+                   size = 2.75,
+                   angle = 70)
+    print(plot)
+    return(plot)
+}
+
+tput_plot_num_values <- function(data) {
+    plot <- ggplot(data,
+            aes(x =reorder(factor_name,num_values),
+                y=maxtputgbps,
+                fill = serialization)) +
+        geom_text(position = position_dodge(0.8),
+                    aes(y=maxtputgbps + 9, label = round(maxtputgbps, 1)),
+                   size = 2.75,
+                   angle = 70)
+    print(plot)
+    return(plot)
+}
+
+tput_plot <- function(data, x_label, vary_size_plot, labels) {
+    y_axis <- "Highest Achieved\nLoad (Gbps)"
+    plot <- tput_plot_num_values(data)
+    if (vary_size_plot) {
+        plot <- tput_plot_size(data)
+    }
+    plot <- plot + expand_limits(y = 0) +
+            geom_point(size = 2, stroke=0.2, position=position_dodge(0.8), stat="identity", aes(color=serialization, shape=serialization,fill=serialization, size=serialization)) +
             geom_bar(position=position_dodge(0.8), stat="identity", width = 0.05) +
             guides(colour=guide_legend(nrow=2, byrow=TRUE),
                    shape=guide_legend(nrow=2, byrow=TRUE)) +
-          geom_text(position = position_dodge(0.8),
-                    aes(y=maxtputgbps + 9, label = round(maxtputgbps, 1)),
-                   size = 2.75,
-                   angle = 70) +
             scale_color_manual(values = color_values ,labels = labels, breaks=levels) +
             scale_fill_manual(values = color_values, labels = labels, guide = "none", breaks=levels) +
             scale_shape_manual(values = shape_values, labels = labels, breaks=levels) +
             scale_y_continuous(expand = expansion(mult = c(0, .2))) +
             labs(x = x_label, y = y_axis) +
             theme_light() +
-            scale_x_discrete(labels = function(x) str_wrap(x, width = 6)) +
+            scale_x_discrete(labels = function(x) str_wrap(x, width = 12)) +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
                   legend.title = element_blank(),
@@ -245,27 +275,48 @@ summarized <- ddply(d, c("serialization", "total_size", "avg_size", "num_values"
 if (plot_type == "full") {
     plot <- full_plot(summarized, metric)
     ggsave("tmp.pdf", width=9, height=9)
-    embed_fonts("tmp.pdf", outfile=plot_pdf)
+    embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
+
+    plot <- full_plot(summarized, metric)
+    ggsave("tmp.pdf", width=9, height=9)
+    embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
 } else if (plot_type == "individual") {
     total_size <- strtoi(args[6])
     num_values <- strtoi(args[7])
-    plot <- individual_plot(summarized, metric, total_size, num_values)
+    plot <- individual_plot(summarized, metric, total_size, num_values, anon_labels)
     ggsave("tmp.pdf", width=5, height=2)
-    embed_fonts("tmp.pdf", outfile=plot_pdf)
+    embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
+    
+    
+    plot <- individual_plot(summarized, metric, total_size, num_values, cr_labels)
+    ggsave("tmp.pdf", width=5, height=2)
+    embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
 } else if (plot_type == "summary") {
     size_arg <- strtoi(args[6])
     d_postprocess <- subset(d_postprocess, total_size == size_arg)
-    plot <- tput_plot(d_postprocess, args[7])
+    plot <- tput_plot(d_postprocess, args[7], FALSE, anon_labels)
     print(plot_pdf)
     ggsave("tmp.pdf", width=5, height=2)
-    embed_fonts("tmp.pdf", outfile=plot_pdf)
+    embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
+    
+
+    plot <- tput_plot(d_postprocess, args[7], FALSE, cr_labels)
+    print(plot_pdf)
+    ggsave("tmp.pdf", width=5, height=2)
+    embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
+
 } else if (plot_type == "summary_num_values") {
     num_values_arg <- strtoi(args[6])
     d_postprocess <- subset(d_postprocess, num_values == num_values)
-    plot <- tput_plot(d_postprocess, args[7])
-    print(plot_pdf)
-    ggsave("tmp.pdf", width=5, height=2)
-    embed_fonts("tmp.pdf", outfile=plot_pdf)
+    plot <- tput_plot(d_postprocess, args[7], TRUE, anon_labels)
+    #print(plot_pdf)
+    ggsave("tmp.pdf", plot = plot, width=5, height=2)
+    embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
+
+    plot <- tput_plot(d_postprocess, args[7], TRUE, cr_labels)
+    #print(plot_pdf)
+    ggsave("tmp.pdf", plot = plot, width=5, height=2)
+    embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
 
 }
 
