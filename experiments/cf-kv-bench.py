@@ -527,7 +527,7 @@ class KVBench(runner.Experiment):
                 individual_plot_path = plot_path
                 individual_plot_path.mkdir(parents=True, exist_ok=True)
                 pdf = individual_plot_path /\
-                    "summary_{}_tput.pdf".format(total_size)
+                    "summary_{}_num_values_tput.pdf".format(num_values)
                 total_plot_args = [str(plotting_script),
                                     str(full_log),
                                     str(post_process_log),

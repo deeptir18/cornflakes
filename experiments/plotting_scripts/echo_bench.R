@@ -14,6 +14,9 @@ d <- read.csv(args[1], sep=",", header = TRUE)
 d_postprocess <- read.csv(args[2], sep=",", header= TRUE, quote="",  encoding="UTF-8")
 # argument 2: pdf to write plot into
 plot_pdf <- args[3]
+basename <- sub('\\.pdf$', '', plot_pdf) 
+cr_plot_pdf <- paste(basename, "cr.pdf", sep = "_")
+anon_plot_pdf <- paste(basename, "anon.pdf", sep = "_")
 # argument 3: metric (p99, or median)
 metric <- args[4]
 # argument 4: plot type ([full, individual])
@@ -24,7 +27,8 @@ plot_type <- args[5]
 # subset d to be points where `percent_achieved_rate > .95`
 d <- d[ which(d$percent_achieved_rate > 0.95),]
 
-labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cornflakes-dynamic" = "Cornflakes (Hardware SG)", "cornflakes1c-dynamic" = "Cornflakes (1 Software Copy)", "ideal" = "Peak Single Core", "onecopy" = "One Copy", "twocopy" = "Two Copies", "manualzerocopy" = "Manual Zero Copy")
+cr_labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cornflakes-dynamic" = "Cornflakes (SG)", "cornflakes1c-dynamic" = "Cornflakes (Copy)", "ideal" = "Peak Single Core", "onecopy" = "One Copy", "twocopy" = "Two Copies", "manualzerocopy" = "Manual Zero Copy")
+anon_labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cornflakes-dynamic" = "Oatmeal (SG)", "cornflakes1c-dynamic" = "Oatmeal (Copy)", "ideal" = "Peak Single Core", "onecopy" = "One Copy", "twocopy" = "Two Copies", "manualzerocopy" = "Manual Zero Copy")
 
 
 shape_values <- c('protobuf' = 8, 'capnproto' = 18, 'flatbuffers' = 17, 'cornflakes1c-dynamic' = 15, 'cornflakes-dynamic' = 19, "ideal" = 20, "onecopy" = 1, "twocopy" = 10, "manualzerocopy" = 13)
@@ -53,13 +57,13 @@ labels <- labels[c(unique_serialization_labels)]
 
 d$serialization <- factor(d$serialization, levels = levels)
 
-base_plot <- function(data, metric ) {
+base_plot <- function(data, metric,labels ) {
     if (metric == "p99") {
         base_plot <- base_p99_plot(data, 100.0)
-        base_plot <- label_plot(base_plot)
+        base_plot <- label_plot(base_plot,labels)
     } else if (metric == "median") {
         base_plot <- base_median_plot(data, 50.0)
-        base_plot <- label_plot(base_plot)
+        base_plot <- label_plot(base_plot,labels)
     }
 }
 
@@ -89,7 +93,7 @@ base_median_plot <- function(data, y_cutoff, x_cutoff) {
     return(plot)
 }
 
-label_plot <- function(plot) {
+label_plot <- function(plot,labels) {
     plot <- plot +
             geom_point(size=2) +
             geom_line(size = 0.5, aes(color=serialization)) +
@@ -112,7 +116,7 @@ label_plot <- function(plot) {
     return(plot)
 }
 
-individual_plot <- function(data, metric, total_size, msg_type) {
+individual_plot <- function(data, metric, total_size, msg_type,labels) {
     data <- subset(data, message_type == msg_type & size == total_size)
     print(total_size)
     if (total_size == 4096) {
@@ -120,13 +124,13 @@ individual_plot <- function(data, metric, total_size, msg_type) {
     } else if (total_size == 512) {
         print("reaching x cutoff")
     }
-    plot <- base_plot(data, metric)
+    plot <- base_plot(data, metric,labels)
     print(plot)
     return(plot)
 }
 
-full_plot <- function(data, metric) {
-    plot <- base_plot(data, metric) +
+full_plot <- function(data, metric,labels) {
+    plot <- base_plot(data, metric,labels) +
         facet_grid(message_type ~ size, scales="free") +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
@@ -139,7 +143,7 @@ full_plot <- function(data, metric) {
     print(plot)
     return(plot)
 }
-tput_plot <- function(data) {
+tput_plot <- function(data,labels) {
     y_name <- "maxtputgbps"
     y_label <- "round(maxtputgbps, 2)"
     y_label_height <- "maxtputgbps + maxtputgbpssd"
@@ -193,32 +197,48 @@ summarized <- ddply(d, c("serialization", "size", "message_type", "offered_load_
                     maload = mean(achieved_load_pps))
 
 if (plot_type == "full") {
-    plot <- full_plot(summarized, metric)
-    ggsave("tmp.pdf", width=9, height=9)
-    embed_fonts("tmp.pdf", outfile=plot_pdf)
+    plot <- full_plot(summarized, metric,cr_labels)
+    ggsave("tmp.pdf", plot = plot, width=9, height=9)
+    embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
+
+    plot <- full_plot(summarized, metric,anon_labels)
+    ggsave("tmp.pdf", plot = plot, width=9, height=9)
+    embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
 } else if (plot_type == "individual") {
     summarized$serialization <- factor(summarized$serialization, levels = levels)
     msg_type <- args[6]
     size <- strtoi(args[7])
-    plot <- individual_plot(summarized, metric, size, msg_type)
-    ggsave("tmp.pdf", width=5.5, height=2)
-    embed_fonts("tmp.pdf", outfile=plot_pdf)
+    plot <- individual_plot(summarized, metric, size, msg_type, cr_labels)
+    ggsave("tmp.pdf", plot = plot, width=5.5, height=2)
+    embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
+    
+    plot <- individual_plot(summarized, metric, size, msg_type, anon_labels)
+    ggsave("tmp.pdf", plot = plot, width=5.5, height=2)
+    embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
 } else if (plot_type == "list-compare") {
     size_arg <- strtoi(args[6])
     d_postprocess <- subset(d_postprocess, (message_type == "single") | (message_type == "list-2" ) | (message_type == "list-4") | (message_type == "list-8"))
     d_postprocess <- subset(d_postprocess, size == size_arg)
     d_postprocess$message_type <- factor(d_postprocess$message_type, levels = c("single", "list-2", "list-4", "list-8"))
-    plot <- tput_plot(d_postprocess)
-    ggsave("tmp.pdf", width=5, height=2)
-    embed_fonts("tmp.pdf", outfile=plot_pdf)
+    plot <- tput_plot(d_postprocess, cr_labels)
+    ggsave("tmp.pdf", plot = plot, width=5, height=2)
+    embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
+
+    plot <- tput_plot(d_postprocess, anon_labels)
+    ggsave("tmp.pdf", plot = plot, width=5, height=2)
+    embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
 } else if (plot_type == "tree-compare") {
     size_arg <- strtoi(args[6])
     d_postprocess <- subset(d_postprocess, (message_type == "list-2") | (message_type == "tree-1") | (message_type == "list-4") | (message_type == "tree-2"))
     d_postprocess$message_type <- factor(d_postprocess$message_type, levels = c("list-2", "tree-1", "list-4", "tree-2"))
     d_postprocess <- subset(d_postprocess, size == size_arg)
-    plot <- tput_plot(d_postprocess)
-    ggsave("tmp.pdf", width=5, height=2)
-    embed_fonts("tmp.pdf", outfile=plot_pdf)
+    plot <- tput_plot(d_postprocess, cr_labels)
+    ggsave("tmp.pdf", plot = plot, width=5, height=2)
+    embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
+    
+    plot <- tput_plot(d_postprocess, anon_labels)
+    ggsave("tmp.pdf", plot = plot, width=5, height=2)
+    embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
 }
 
 
