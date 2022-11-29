@@ -29,7 +29,7 @@ fn main() {
         Path::new(&cargo_dir)
             .join("src")
             .join("ice_bindings")
-            .join("ice_inlined.c")
+            .join("inlined.c")
     );
 
     let header_path = Path::new(&cargo_dir)

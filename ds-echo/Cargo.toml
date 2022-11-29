@@ -15,6 +15,7 @@ dpdk-datapath = { path = "../dpdk-datapath", optional = true }
 cornflakes-utils = { path = "../cornflakes-utils" }
 cornflakes-codegen = { path = "../cornflakes-codegen" }
 mlx5-datapath = { path = "../mlx5-datapath", optional = true }
+ice-datapath = { path = "../ice-datapath", optional = true }
 linux-datapath = { path = "../linux-datapath" }
 ctrlc = "3.1.7"
 memmap = "0.7.0"
@@ -47,6 +48,7 @@ cornflakes-utils = { path = "../cornflakes-utils" }
 default = []
 mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath/mlx5", "mlx5-datapath", "dpdk-datapath"]
 profiler = ["cornflakes-libos/profiler", "demikernel", "dpdk-datapath/profiler", "mlx5-datapath/profiler"]
+ice = ["ice-datapath"]
 
 [[bin]]
 name = "ds_echo_dpdk"
@@ -58,3 +60,7 @@ required-features = ["mlx5"]
 
 [[bin]]
 name = "ds_echo_linux"
+
+[[bin]]
+name= "ds_echo_ice"
+required-features = ["ice"]
