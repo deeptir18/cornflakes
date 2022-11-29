@@ -47,8 +47,8 @@ anon_labels <- c('capnproto' = 'Capnproto',
             'protobuf' = 'Protobuf', 
             'flatbuffers' = 'Flatbuffers', 
             'redis' = 'Redis',
-            'cornflakes1c-dynamic' = 'Oatmeal (Copy)',
-            'cornflakes-dynamic' = 'Oatmeal (SG)')
+            'cornflakes1c-dynamic' = 'AnonSys (Copy)',
+            'cornflakes-dynamic' = 'AnonSys (SG)')
 shape_values <- c('capnproto' = 18, 
                   'protobuf' = 8, 
                   'flatbuffers' = 17, 
@@ -97,10 +97,20 @@ levels <- subset_flat(levels, unique_serialization_labels)
 
 d$serialization <- factor(d$serialization, levels = levels)
 d_postprocess$serialization <- factor(d_postprocess$serialization, levels = levels)
-print(levels)
+
+base_pps_plot <- function(data, metric, labels) {
+    if (metric == "p99") {
+        base_plot <- base_pps_p99_plot(data, 100.0)
+        base_plot <- label_plot(base_plot, labels)
+        return(base_plot)
+    } else if (metric == "median") {
+        base_plot <- base_pps_median_plot(data, 50.0)
+        base_plot <- label_plot(base_plot, labels)
+        return(base_plot)
+    }
+}
 
 base_plot <- function(data, metric, labels) {
-    # data <- subset(data, sdp99 < 300)
     if (metric == "p99") {
         base_plot <- base_p99_plot(data, 100.0)
         base_plot <- label_plot(base_plot, labels)
@@ -112,37 +122,53 @@ base_plot <- function(data, metric, labels) {
     }
 }
 
+base_pps_p99_plot <- function(data, y_cutoff) {
+    plot <- ggplot(data,
+                    aes(x = maloadpps,
+                        y = mp99,
+                        color = serialization,
+                        shape = serialization)) +
+            coord_cartesian(ylim=c(0, y_cutoff)) +
+    labs(x = "Achieved Load (Packets Per Second)", y = "p99 latency (µs)")
+    return(plot)
+}
 base_p99_plot <- function(data, y_cutoff) {
     plot <- ggplot(data,
                     aes(x = maloadgbps,
                         y = mp99,
                         color = serialization,
-                        shape = serialization,
-                        ymin = mp99 - sdp99,
-                        ymax = mp99 + sdp99)) +
+                        shape = serialization)) +
             coord_cartesian(ylim=c(0, y_cutoff)) +
-    labs(x = "Achieved Load (Gbps)", y = "p99 Latency (µs)")
+    labs(x = "Achieved Load (Gbps)", y = "p99 latency (µs)")
+    return(plot)
+}
+
+base_pps_median_plot <- function(data, y_cutoff) {
+    plot <- ggplot(data,
+                    aes(x = maloadpps,
+                        y = mmedian,
+                        color = serialization,
+                        shape = serialization)) +
+            coord_cartesian(ylim=c(0, y_cutoff)) +
+    labs(x = "Achieved Load (Packets Per Second)", y = "Median Latency (µs)")
     return(plot)
 }
 
 base_median_plot <- function(data, y_cutoff) {
     plot <- ggplot(data,
-                    aes(x = offered_load_gbps,
-                        y = avgmedian,
+                    aes(x = maloadgbps,
+                        y = mmedian,
                         color = serialization,
-                        shape = serialization,
-                        ymin = avgmedian - sdmedian,
-                        ymax = avgmedian + sdmedian)) +
+                        shape = serialization)) +
             coord_cartesian(ylim=c(0, y_cutoff)) +
-    labs(x = "Offered Load (Gbps)", y = "Median Latency (µs)")
+    labs(x = "Achieved Load (Gbps)", y = "Median Latency (µs)")
     return(plot)
 }
 
 label_plot <- function(plot, labels) {
-    print("in label plot")
     plot <- plot +
             geom_point(size=2) +
-            geom_line(size = 0.5, aes(color=serialization)) +
+            geom_line(linewidth = 0.5, aes(color=serialization)) +
             scale_shape_manual(values = shape_values, labels = labels, breaks = levels) +
             scale_color_manual(values = color_values ,labels = labels, breaks = levels) +
             scale_fill_manual(values = color_values, labels = labels, breaks=levels) +
@@ -173,6 +199,12 @@ label_plot <- function(plot, labels) {
 individual_plot <- function(data, metric, size, values, labels) {
     data <- subset(data, num_values == values & total_size == size)
     plot <- base_plot(data, metric, labels)
+    print(plot)
+    return(plot)
+}
+
+individual_plot_retwis <- function(data, metric, labels) {
+    plot <- base_pps_plot(data, metric, labels)
     print(plot)
     return(plot)
 }
@@ -254,33 +286,35 @@ tput_plot <- function(data, x_label, vary_size_plot, labels) {
 }
 
 
-d$total_size = d$avg_size * d$num_values;
-summarized <- ddply(d, c("serialization", "total_size", "avg_size", "num_values", "offered_load_pps", "offered_load_gbps"), summarise,
-                        mavg = mean(avg),
-                        mp99 = mean(p99),
-                        avgmedian = mean(median),
-                        mp999 = mean(p999),
-                        sdp99 = sd(p99),
-                        sdmedian = sd(median),
-                        mprate = mean(percent_achieved_rate),
-                        maloadgbps = mean(achieved_load_gbps),
-                        maload = mean(achieved_load_pps))
-
-# cutoff points where the sd of the p99 is > 50 % of the p99?
-# summarized$sdp99_percent = summarized$sdp99 / summarized$mp99
-# summarized <- subset(summarized, summarized$sdp99_percent < .25)
-
-
-
 if (plot_type == "full") {
-    plot <- full_plot(summarized, metric)
+    d$total_size = d$avg_size * d$num_values;
+    summarized <- ddply(d, c("serialization", "total_size", "avg_size", "num_values", "offered_load_pps", "offered_load_gbps"), summarise,
+                        mavg = median(avg),
+                        mp99 = median(p99),
+                        mmedian = median(median),
+                        mp999 = median(p999),
+                        mprate = median(percent_achieved_rate),
+                        maloadgbps = median(achieved_load_gbps),
+                        maload = median(achieved_load_pps))
+
+    plot <- full_plot(summarized, metric, anon_labels)
     ggsave("tmp.pdf", width=9, height=9)
     embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
 
-    plot <- full_plot(summarized, metric)
+    plot <- full_plot(summarized, metric, cr_labels)
     ggsave("tmp.pdf", width=9, height=9)
     embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
 } else if (plot_type == "individual") {
+    d$total_size = d$avg_size * d$num_values;
+    summarized <- ddply(d, c("serialization", "total_size", "avg_size", "num_values", "offered_load_pps", "offered_load_gbps"), summarise,
+                        mavg = median(avg),
+                        mp99 = median(p99),
+                        mmedian = median(median),
+                        mp999 = median(p999),
+                        mprate = median(percent_achieved_rate),
+                        maloadgbps = median(achieved_load_gbps),
+                        maload = median(achieved_load_pps))
+    
     total_size <- strtoi(args[6])
     num_values <- strtoi(args[7])
     plot <- individual_plot(summarized, metric, total_size, num_values, anon_labels)
@@ -289,6 +323,30 @@ if (plot_type == "full") {
     
     
     plot <- individual_plot(summarized, metric, total_size, num_values, cr_labels)
+    ggsave("tmp.pdf", width=5, height=2)
+    embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
+} else if (plot_type == "individual-retwis") {
+    # zipf, retwis_distribution, key_size, total_num_keys, value_distribution
+    zipf <- as.double(args[6])
+    retwis_distribution <- args[7]
+    key_size <- strtoi(args[8])
+    total_num_keys <- strtoi(args[9])
+    value_distribution <- args[10]
+
+    summarized <- ddply(d, c("serialization", "zipf", "total_num_keys", "key_size", "value_distribution", "retwis_distribution", "offered_load_pps", "offered_load_gbps"), summarise,
+                        mavg = median(avg),
+                        mp99 = median(p99),
+                        mmedian = median(median),
+                        mp999 = median(p999),
+                        mprate = median(percent_achieved_rate),
+                        maload = median(achieved_load_pps))
+    summarized <- subset(summarized, zipf == zipf & total_num_keys == total_num_keys & key_size == key_size & value_distribution == value_distribution & retwis_distribution == retwis_distribution)
+
+    plot <- individual_retwis_plot(summarized, metric, anon_labels)
+    ggsave("tmp.pdf", width=5, height=2)
+    embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
+    
+    plot <- individual_retwis_plot(summarized, metric, cr_labels)
     ggsave("tmp.pdf", width=5, height=2)
     embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
 } else if (plot_type == "summary") {

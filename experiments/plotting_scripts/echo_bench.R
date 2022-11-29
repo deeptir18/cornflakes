@@ -28,7 +28,7 @@ plot_type <- args[5]
 d <- d[ which(d$percent_achieved_rate > 0.95),]
 
 cr_labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cornflakes-dynamic" = "Cornflakes (SG)", "cornflakes1c-dynamic" = "Cornflakes (Copy)", "ideal" = "Peak Single Core", "onecopy" = "One Copy", "twocopy" = "Two Copies", "manualzerocopy" = "Manual Zero Copy")
-anon_labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cornflakes-dynamic" = "Oatmeal (SG)", "cornflakes1c-dynamic" = "Oatmeal (Copy)", "ideal" = "Peak Single Core", "onecopy" = "One Copy", "twocopy" = "Two Copies", "manualzerocopy" = "Manual Zero Copy")
+anon_labels <- c("protobuf" = "Protobuf", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "cornflakes-dynamic" = "AnonSys (SG)", "cornflakes1c-dynamic" = "AnonSys (Copy)", "ideal" = "Peak Single Core", "onecopy" = "One Copy", "twocopy" = "Two Copies", "manualzerocopy" = "Manual Zero Copy")
 
 
 shape_values <- c('protobuf' = 8, 'capnproto' = 18, 'flatbuffers' = 17, 'cornflakes1c-dynamic' = 15, 'cornflakes-dynamic' = 19, "ideal" = 20, "onecopy" = 1, "twocopy" = 10, "manualzerocopy" = 13)
