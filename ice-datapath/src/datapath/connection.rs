@@ -250,6 +250,10 @@ impl DpdkMetadata {
         })
     }
 
+    pub fn get_mbuf(&self) -> *mut dpdk_bindings::rte_mbuf {
+        self.mbuf
+    }
+
     pub fn increment_refcnt(&mut self) {
         unsafe {
             dpdk_bindings::rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1);
@@ -370,6 +374,17 @@ impl IceCustomMetadata {
             refcnt_index: refcnt_index,
             offset: offset,
             data_len: data_len,
+        }
+    }
+
+    pub fn get_dma_addr(&self) -> u64 {
+        unsafe {
+            ice_bindings::custom_ice_get_dma_addr(
+                self.mempool,
+                self.data as _,
+                self.refcnt_index as _,
+                self.offset as _,
+            )
         }
     }
 
@@ -698,6 +713,8 @@ pub struct IceConnection {
     max_segments: usize,
     /// Array of mbuf pointers used to receive packets
     recv_mbufs: [*mut dpdk_bindings::rte_mbuf; RECEIVE_BURST_SIZE],
+    /// Has outstanding queued data
+    has_queued_data: bool,
 }
 
 impl IceConnection {
@@ -1202,6 +1219,7 @@ impl Datapath for IceConnection {
             copying_threshold: 256,
             max_segments: 32,
             recv_mbufs: [ptr::null_mut(); RECEIVE_BURST_SIZE],
+            has_queued_data: false,
         })
     }
 
@@ -1274,7 +1292,60 @@ impl Datapath for IceConnection {
     where
         Self: Sized,
     {
-        unimplemented!();
+        let mut send_mbufs: [[*mut dpdk_bindings::rte_mbuf; RECEIVE_BURST_SIZE]; 32] =
+            [[ptr::null_mut(); RECEIVE_BURST_SIZE]; 32];
+        let pkts_len = pkts.len();
+        for (i, mut pkt) in pkts.into_iter().enumerate() {
+            let msg_id = pkt.msg_id();
+            for (scatter_index, ref mut dpdk_metadata) in pkt.iter_mut().enumerate() {
+                let mbuf = match dpdk_metadata {
+                    IceMetadata::Dpdk(dpdk) => dpdk.get_mbuf(),
+                    IceMetadata::Ice(ice) => {
+                        tracing::warn!("Echo on ice should always be called with popped packets, that are allocated by dpdk");
+                        unreachable!();
+                    }
+                };
+                tracing::debug!(
+                    "Echoing packet with id {}, mbuf addr {:?}, refcnt {}",
+                    msg_id,
+                    mbuf,
+                    unsafe { access!(mbuf, refcnt, u16) }
+                );
+
+                // flip headers on packet
+                if scatter_index == 0 {
+                    // flip headers assumes the header is right at the buf addr of the packet
+                    unsafe {
+                        dpdk_bindings::flip_headers(mbuf);
+                    }
+                }
+                // increment ref count so it does not get dropped here
+                dpdk_metadata.increment_refcnt();
+                send_mbufs[scatter_index as usize][i as usize] = mbuf;
+            }
+        }
+        let mut num_sent: u16 = 0;
+        while (num_sent as usize) < pkts_len {
+            let mbuf_ptr = &mut send_mbufs[0][num_sent as usize] as _;
+            let sent = unsafe {
+                dpdk_bindings::rte_eth_tx_burst(
+                    self.thread_context.get_dpdk_port(),
+                    self.thread_context.get_queue_id(),
+                    mbuf_ptr,
+                    pkts_len as u16 - num_sent,
+                )
+            };
+            num_sent += sent;
+            if (num_sent as usize) != pkts_len {
+                tracing::debug!(
+                    "Failed to send {} mbufs, sent {}, {} so far",
+                    pkts_len,
+                    sent,
+                    num_sent
+                );
+            }
+        }
+        Ok(())
     }
 
     fn queue_cornflakes_obj<'arena>(
@@ -1288,6 +1359,50 @@ impl Datapath for IceConnection {
     where
         Self: Sized,
     {
+        // check the number of segments this object needs
+        // wait until that number of segments is available (poll for completions)
+        // before polling, post what you have (if you have something to post)
+        // then get current value txq->tx_tail
+        // skip 1 for the header
+        // if copy context has data, skip one more
+        // then define and call the callback
+        let per_thread_context = self.thread_context.get_context_ptr();
+        let last_id = 0;
+        let mut callback = |metadata_mbuf: &IceMetadata, ring_buffer_id: *mut u16| -> Result<()> {
+            let mut metadata_clone = metadata_mbuf.clone();
+            metadata_clone.increment_refcnt();
+            let custom_ice_res: Result<IceCustomMetadata> = match metadata_clone {
+                IceMetadata::Dpdk(_) => {
+                    bail!("Cannot be dpdk buffer in callback");
+                }
+                IceMetadata::Ice(custom_ice) => Ok(custom_ice),
+            };
+            let custom_ice = custom_ice_res?;
+
+            let physaddr = custom_ice.get_dma_addr();
+            let len = custom_ice.as_ref().len();
+            // we need length & physical address to post
+
+            unsafe {
+                ice_bindings::custom_ice_post_data_segment(
+                    per_thread_context as _,
+                    physaddr,
+                    len as _,
+                    ring_buffer_id,
+                    last_id,
+                );
+            }
+            Ok(())
+        };
+
+        // call the callback
+        // circle back and write packet and object header into first segment
+        // optionally write copied data into second segment
+        // update txqueue's txq_tail value (/ finish single transmission)
+        // if end batch is true:
+        //  post what you have
+        //
+        // TODO: implement this
         unimplemented!();
     }
 
@@ -1296,6 +1411,7 @@ impl Datapath for IceConnection {
         _buf: (MsgID, ConnID, &[u8]),
         _end_batch: bool,
     ) -> Result<()> {
+        // TODO: implement this one!
         unimplemented!();
     }
 

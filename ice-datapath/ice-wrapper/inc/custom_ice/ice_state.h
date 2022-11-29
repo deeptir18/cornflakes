@@ -1,6 +1,7 @@
 #pragma once
 #include <base/mempool.h>
 #include <ice_rxtx.h>
+#include <base/types.h>
 
 struct custom_ice_tx_entry {
     // pointer to mempool
@@ -67,3 +68,20 @@ int custom_ice_init_tx_queues(
  * Includes:
  * */
 int custom_ice_teardown(struct custom_ice_per_thread_context *per_thread_context);
+
+int get_current_tx_id(struct custom_ice_per_thread_context *per_thread_context);
+
+int get_last_tx_id_needed(
+        struct custom_ice_per_thread_context *per_thread_context,
+        size_t num_needed);
+
+int custom_ice_post_data_segment(
+    struct custom_ice_per_thread_context *per_thread_context,
+    physaddr_t dma_addr, 
+    size_t len, 
+    uint16_t *tx_id,
+    uint16_t last_id);
+
+int finish_single_transmission(struct custom_ice_per_thread_context *per_thread_context,
+        uint16_t last_id);
+int post_queued_segments(struct custom_ice_per_thread_context *per_thread_context);

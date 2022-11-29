@@ -8,6 +8,8 @@ include!(concat!(env!("OUT_DIR"), "/dpdk_ice_bindings.rs"));
 
 #[link(name = "dpdkiceinlined")]
 extern "C" {
+    fn flip_headers_(pkt: *mut rte_mbuf);
+
     fn rte_eth_tx_burst_(
         port_id: u16,
         queue_id: u16,
@@ -35,6 +37,11 @@ extern "C" {
     fn rte_errno_() -> ::std::os::raw::c_int;
 
     fn rte_pktmbuf_refcnt_set_(pkt: *mut rte_mbuf, refcnt: u16);
+}
+
+#[inline]
+pub unsafe fn flip_headers(pkt: *mut rte_mbuf) {
+    flip_headers_(pkt);
 }
 
 #[inline]

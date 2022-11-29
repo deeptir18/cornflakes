@@ -101,3 +101,44 @@ int custom_ice_teardown(struct custom_ice_per_thread_context *per_thread_context
     return 0;
 }
 
+int get_current_tx_id(struct custom_ice_per_thread_context *per_thread_context) {
+}
+int get_last_tx_id_needed(
+        struct custom_ice_per_thread_context *per_thread_context,
+        size_t num_needed) {
+}
+int custom_ice_post_data_segment(
+        struct custom_ice_per_thread_context *per_thread_context,
+        physaddr_t dma_addr,
+        size_t len,
+        uint16_t *tx_id,
+        uint16_t last_id) {
+    volatile struct ice_tx_desc *tx_ring;
+    volatile struct ice_tx_desc *txd;
+    struct custom_ice_tx_entry *completion_entry;
+
+    if (*tx_id == last_id) {
+        // write EOP bit
+        // do rs thresh stuff
+    }
+    
+    // TODO: access tx_queue
+    *tx_id = completion_entry->next_id;
+}
+
+int finish_single_transmission(struct custom_ice_per_thread_context *per_thread_context,
+        uint16_t last_id) {
+    // locally updates the tx_id in tx queue struct
+    // optionally do this rs thresh stuff
+    // https://github.com/deeptir18/ice_netperf/blob/main/ice/ice_rxtx.c#L668
+    // stuff here
+}
+int post_queued_segments(struct custom_ice_per_thread_context *per_thread_context) {
+    // WRITE TO TAIL REGISTER
+    //ICE_PCI_REG_WRITE(txq->qtx_tail, tx_id);
+}
+
+
+
+
+
