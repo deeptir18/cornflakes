@@ -61,6 +61,7 @@ static void *
 __custom_ice_mem_map_anom(void *base, size_t len, size_t pgsize,
 	       unsigned long *mask, int numa_policy)
 {
+	NETPERF_DEBUG("pgsize: %u", pgsize);
 	void *addr;
 	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE;
 
@@ -86,12 +87,15 @@ __custom_ice_mem_map_anom(void *base, size_t len, size_t pgsize,
 //#endif
 		break;
 	default: /* fail on other sizes */
+		NETPERF_WARN("errno: %d", errno);
 		return MAP_FAILED;
 	}
 
 	addr = mmap(base, len, PROT_READ | PROT_WRITE, flags, -1, 0);
-	if (addr == MAP_FAILED)
+	if (addr == MAP_FAILED) {
+		NETPERF_WARN("errno: %d", errno);
 		return MAP_FAILED;
+	}
 
 	NETPERF_ASSERT(sizeof(unsigned long) * 8 >= NNUMA, "Long size incorrect");
 	if (custom_ice_mbind(addr, len, numa_policy, mask ? mask : NULL,

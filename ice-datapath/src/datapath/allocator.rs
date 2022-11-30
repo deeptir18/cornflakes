@@ -62,9 +62,9 @@ impl IceMempool {
         if unsafe {
             ice_bindings::custom_ice_mempool_create(
                 mempool_ptr as _,
-                mempool_params.get_item_len() as _,
-                mempool_params.get_num_items() as _,
+                mempool_params.get_total_len() as _,
                 mempool_params.get_data_pgsize() as _,
+                mempool_params.get_item_len() as _,
                 atomic_ops,
             )
         } != 0
