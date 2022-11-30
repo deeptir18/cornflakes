@@ -2088,7 +2088,7 @@ where
 
     #[inline]
     pub fn reset(&mut self) {
-        self.copy_buffers = Vec::new();
+        self.copy_buffers.clear();
         self.current_length = 0;
         self.remaining = 0;
     }
