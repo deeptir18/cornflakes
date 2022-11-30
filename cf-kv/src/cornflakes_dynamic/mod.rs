@@ -117,7 +117,7 @@ where
         )?);
 
         // now serialize and send object
-        datapath.queue_cornflakes_obj(msg_id, conn_id, &mut copy_context, get_resp, end_batch)?;
+        datapath.queue_cornflakes_obj(msg_id, conn_id, &mut copy_context, &get_resp, end_batch)?;
         Ok(())
     }
 
@@ -269,7 +269,7 @@ where
         tracing::debug!("Finished setting all pointers");
         tracing::debug!("Sending back {:?}", getm_resp);
 
-        datapath.queue_cornflakes_obj(msg_id, conn_id, &mut copy_context, getm_resp, end_batch)?;
+        datapath.queue_cornflakes_obj(msg_id, conn_id, &mut copy_context, &getm_resp, end_batch)?;
         Ok(())
     }
 
@@ -463,7 +463,7 @@ where
             msg_id,
             conn_id,
             &mut copy_context,
-            getlist_resp,
+            &getlist_resp,
             end_batch,
         )?;
         Ok(())
@@ -746,7 +746,7 @@ where
                                 pkt.msg_id(),
                                 pkt.conn_id(),
                                 &mut copy_context,
-                                add_user_response,
+                                &add_user_response,
                                 end_batch,
                             )?;
                         }
@@ -776,7 +776,7 @@ where
                                 pkt.msg_id(),
                                 pkt.conn_id(),
                                 &mut copy_context,
-                                add_user_response,
+                                &add_user_response,
                                 end_batch,
                             )?;
                         }
@@ -820,7 +820,7 @@ where
                                 pkt.msg_id(),
                                 pkt.conn_id(),
                                 &mut copy_context,
-                                follow_unfollow_response,
+                                &follow_unfollow_response,
                                 end_batch,
                             )?;
                         }
@@ -849,7 +849,7 @@ where
                                 pkt.msg_id(),
                                 pkt.conn_id(),
                                 &mut copy_context,
-                                follow_unfollow_response,
+                                &follow_unfollow_response,
                                 end_batch,
                             )?;
                         }
@@ -906,7 +906,7 @@ where
                                 pkt.msg_id(),
                                 pkt.conn_id(),
                                 &mut copy_context,
-                                post_tweet_response,
+                                &post_tweet_response,
                                 end_batch,
                             )?;
                         }
@@ -950,7 +950,7 @@ where
                                 pkt.msg_id(),
                                 pkt.conn_id(),
                                 &mut copy_context,
-                                post_tweet_response,
+                                &post_tweet_response,
                                 end_batch,
                             )?;
                         }
@@ -1010,7 +1010,7 @@ where
                         pkt.msg_id(),
                         pkt.conn_id(),
                         &mut copy_context,
-                        get_timeline_response,
+                        &get_timeline_response,
                         end_batch,
                     )?;
                 }

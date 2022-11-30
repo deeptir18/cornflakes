@@ -395,7 +395,7 @@ pub trait Datapath {
         _msg_id: MsgID,
         _conn_id: ConnID,
         _copy_context: &mut CopyContext<'arena, Self>,
-        _cornflakes_obj: impl HybridArenaRcSgaHdr<'arena, Self>,
+        _cornflakes_obj: &impl HybridArenaRcSgaHdr<'arena, Self>,
         _end_batch: bool,
     ) -> Result<()>
     where

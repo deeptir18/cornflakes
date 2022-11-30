@@ -293,7 +293,7 @@ fn add_queue_cornflakes_obj_function(
             ),
             (
                 "cornflakes_obj",
-                ArgType::VoidPtr {
+                ArgType::Ref {
                     inner_ty: format!("{}<{}>", msg_info.get_name(), type_annotations),
                 },
             ),

@@ -3496,7 +3496,7 @@ impl Datapath for Mlx5Connection {
         msg_id: MsgID,
         conn_id: ConnID,
         copy_context: &mut CopyContext<'arena, Self>,
-        cornflakes_obj: impl HybridArenaRcSgaHdr<'arena, Self>,
+        cornflakes_obj: &impl HybridArenaRcSgaHdr<'arena, Self>,
         end_batch: bool,
     ) -> Result<()>
     where
