@@ -1137,9 +1137,10 @@ where
 
         self.num_set = size;
         //self.elts = bumpalo::vec![in &arena; T::new_in(arena); size];
-        if self.elts.len() < size {
-            self.elts.resize(size, T::new_in(arena));
-        }
+        // always reset inner elts since the only reason to call
+        // inner_deserialize twice is to reuse the struct
+        self.elts = bumpalo::collections::Vec::new_in(arena);
+        self.elts.resize(size, T::new_in(arena));
         self.num_space = size;
 
         for (i, elt) in self.elts.iter_mut().take(size).enumerate() {
