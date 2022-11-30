@@ -44,6 +44,9 @@ pub struct MempoolAllocationParams {
 }
 
 impl MempoolAllocationParams {
+    pub fn get_total_len(&self) -> usize {
+        self.item_len * self.num_items
+    }
     pub fn get_item_len(&self) -> usize {
         self.item_len
     }
