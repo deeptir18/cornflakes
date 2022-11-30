@@ -98,6 +98,8 @@ where
 
     fn set_bitmap(&mut self, _bitmap: impl Iterator<Item = Bitmap<32>>) {}
 
+    fn reset_bitmap(&mut self) {}
+
     #[inline]
     fn bitmap_length() -> usize {
         Self::NUM_U32_BITMAPS * 4

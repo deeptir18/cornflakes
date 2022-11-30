@@ -198,6 +198,9 @@ fn add_dynamic_rcsga_hybrid_header_repr(
     let type_annotations = msg_info
         .get_type_params_with_lifetime_ffi(true, fd, datapath)?
         .join(",");
+
+    ////////////////////////////////////////////////////////////////////////////
+    // MsgInfoName_deserialize
     add_extern_c_wrapper_function(
         compiler,
         &format!("{}_deserialize<{}>", msg_info.get_name(), lifetimes),
@@ -226,6 +229,19 @@ fn add_dynamic_rcsga_hybrid_header_repr(
         ],
         None,
         true,
+    )?;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // MsgInfoName_reset_bitmap
+    add_extern_c_wrapper_function(
+        compiler,
+        &format!("{}_reset_bitmap<{}>", msg_info.get_name(), lifetimes),
+        &format!("{}::<{}>", msg_info.get_name(), type_annotations),
+        "reset_bitmap",
+        Some(SelfArgType::Mut),
+        vec![],
+        None,
+        false,
     )?;
     Ok(())
 }

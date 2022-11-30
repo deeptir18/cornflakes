@@ -601,6 +601,21 @@ fn add_header_repr(
     compiler.pop_context()?;
     compiler.add_newline()?;
 
+    let reset_bitmap_context = FunctionContext::new(
+        "reset_bitmap",
+        false,
+        vec![FunctionArg::MutSelfArg],
+        "",
+    );
+
+    compiler.add_context(Context::Function(reset_bitmap_context))?;
+    compiler.add_block(&format!(
+        "self.bitmap = [Bitmap::<32>::new(); {}_NUM_U32_BITMAPS]",
+        msg_info.get_name(),
+    ))?;
+    compiler.pop_context()?;
+    compiler.add_newline()?;
+
     add_equality_func(fd, compiler, msg_info)?;
     compiler.add_newline()?;
 
