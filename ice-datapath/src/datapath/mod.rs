@@ -60,7 +60,7 @@ macro_rules! dpdk_mbuf_slice(
     ($mbuf: expr, $offset: expr, $len: expr) => {
         std::slice::from_raw_parts(
             ((*$mbuf).buf_addr as *mut u8)
-            .offset($offset as isize),
+            .offset((*$mbuf).data_off as isize + $offset as isize),
             $len,
         )
     }
