@@ -88,7 +88,6 @@ impl DpdkBuffer {
         unsafe { rte_pktmbuf_refcnt_set(mbuf, 1) }
         DpdkBuffer {
             mbuf: mbuf,
-            mempool_id: mempool_id,
         }
     }
 

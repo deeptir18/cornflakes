@@ -330,14 +330,14 @@ impl DatapathMemoryPool for MempoolInfo {
 
     fn alloc_data_buf(
         &self,
-        context: MempoolID,
+        _context: MempoolID,
     ) -> Result<Option<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>>
     {
         let mbuf = unsafe { rte_pktmbuf_alloc(self.handle) };
         if mbuf.is_null() {
             return Ok(None);
         }
-        return Ok(Some(DpdkBuffer::new(mbuf, context)));
+        return Ok(Some(DpdkBuffer::new(mbuf)));
     }
 }
 
