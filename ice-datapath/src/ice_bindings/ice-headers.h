@@ -3,3 +3,4 @@
 #include <base/mempool.h>
 #include <base/mbuf.h>
 #include <custom_ice/ice_state.h>
+#include <custom_ice/ice_pci.h>
