@@ -50,11 +50,11 @@ void eth_dev_configure_ice_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rin
     struct rte_eth_conf port_conf = {};
     port_conf.rxmode.max_lro_pkt_size = RX_PACKET_LEN;
 
-    //port_conf.rxmode.offloads = RTE_ETH_RX_OFFLOAD_IPV4_CKSUM;
-    //port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS | RTE_ETH_MQ_RX_RSS_FLAG;
-    //port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
-    //port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
-    //port_conf.rx_adv_conf.rss_conf.rss_hf =  RTE_ETH_RSS_NONFRAG_IPV4_UDP;
+    port_conf.rxmode.offloads = RTE_ETH_RX_OFFLOAD_IPV4_CKSUM;
+    port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS | RTE_ETH_MQ_RX_RSS_FLAG;
+    port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
+    port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
+    port_conf.rx_adv_conf.rss_conf.rss_hf =  RTE_ETH_RSS_NONFRAG_IPV4_UDP;
     port_conf.txmode.offloads = RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM;
     port_conf.txmode.mq_mode = RTE_ETH_MQ_TX_NONE;
 
