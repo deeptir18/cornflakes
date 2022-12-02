@@ -101,6 +101,7 @@ fn main() {
         .allowlist_function("custom_ice_refcnt_update_or_free")
         .allowlist_function("custom_ice_get_dma_addr")
         .allowlist_function("custom_ice_mempool_alloc")
+        .allowlist_function("post_queued_segments")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .generate()
         .unwrap_or_else(|e| panic!("Failed to generate bindings: {:?}", e));

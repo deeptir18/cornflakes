@@ -84,4 +84,4 @@ int custom_ice_post_data_segment(
 
 int finish_single_transmission(struct custom_ice_per_thread_context *per_thread_context,
         uint16_t last_id);
-int post_queued_segments(struct custom_ice_per_thread_context *per_thread_context);
+int post_queued_segments(struct custom_ice_per_thread_context *per_thread_context, uint16_t tx_id);

@@ -1,5 +1,6 @@
 #include <base/mempool.h>
 #include <custom_ice/ice_state.h>
+#include <custom_ice/ice_pci.h>
 #include <rte_ethdev.h>
 #include <ethdev_driver.h>
 #include <rte_malloc.h>
@@ -133,9 +134,9 @@ int finish_single_transmission(struct custom_ice_per_thread_context *per_thread_
     // https://github.com/deeptir18/ice_netperf/blob/main/ice/ice_rxtx.c#L668
     // stuff here
 }
-int post_queued_segments(struct custom_ice_per_thread_context *per_thread_context) {
-    // WRITE TO TAIL REGISTER
-    //ICE_PCI_REG_WRITE(txq->qtx_tail, tx_id);
+int post_queued_segments(struct custom_ice_per_thread_context *per_thread_context, uint16_t tx_id) {
+    // WRITE TO TAIL REGISTER 
+    ICE_PCI_REG_WRITE(per_thread_context->tx_queue->qtx_tail, tx_id);
 }
 
 
