@@ -405,6 +405,7 @@ class KVBench(runner.Experiment):
     def run_summary_analysis(self, df, out, serialization, num_values, size):
         filtered_df = df[(df["serialization"] == serialization) &
                          (df["avg_size"] == size) &
+                         (df["num_keys"] == num_keys) &
                          (df["num_values"] == num_values)]
         total_size = int(size * num_values)
         rounded_size = int(size)
@@ -444,6 +445,7 @@ class KVBench(runner.Experiment):
                                              'achieved_load_gbps_sd']
         as_one = False
         out.write(str(serialization) + "," + str(total_size) + "," +
+                 str(num_keys) + "," +
                   str(num_values) + "," +
                   factor_name + "," +
                   str(max_achieved_pps) + "," +
@@ -454,7 +456,7 @@ class KVBench(runner.Experiment):
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
         # need to determine knee of the curve for each situation
         # TODO: add post processing based on buffer type
-        header_str = "serialization,total_size,num_values,factor_name,"\
+        header_str = "serialization,total_size,num_keys,num_values,factor_name,"\
             "maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd,percentachieved" + os.linesep
         folder_path = Path(total_args.folder)
         out = open(folder_path / new_logfile, "w")
@@ -469,7 +471,9 @@ class KVBench(runner.Experiment):
             for kvexpinfo in max_rates_dict:
                 avg_value_size = utils.parse_cornflakes_size_distr_avg(kvexpinfo.size)
                 num_values = kvexpinfo.num_values
+                num_keys = kvexpinfo.num_keys
                 self.run_summary_analysis(df, out, serialization, num_values,
+                        num_keys,
                         avg_value_size)
         out.close()
 
@@ -547,19 +551,22 @@ class KVBench(runner.Experiment):
                 batch_size = kvexp.num_values
                 avg_size = utils.parse_cornflakes_size_distr_avg(kvexp.size)
                 value_size = batch_size * avg_size
+                num_keys = kvexp.num_keys
                 individual_plot_path = plot_path / \
                     "size_{}".format(value_size) / \
-                    "batch_{}".format(batch_size)
+                    "keys_{}".format(num_keys) / \
+                    "values_{}".format(batch_size)
                 individual_plot_path.mkdir(parents=True, exist_ok=True)
                 pdf = individual_plot_path / \
-                    "size_{}_batch_{}_{}.pdf".format(value_size, batch_size, metric)
+                    "size_{}_keys_{}_values_{}_{}.pdf".format(value_size, batch_size, metric)
                 total_plot_args = [str(plotting_script),
                                        str(full_log),
                                        str(post_process_log),
                                        str(pdf),
                                        metric, "individual", 
                                        str(int(value_size)),
-                                       str(batch_size)]
+                                       str(batch_size),
+                                       str(num_keys)]
                 print(" ".join(total_plot_args))
 
                 sh.run(total_plot_args)
