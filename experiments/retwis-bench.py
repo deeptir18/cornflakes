@@ -348,7 +348,7 @@ class KVBench(runner.Experiment):
                         for kvexp in max_rates_dict:
                             max_rate = max_rates_dict[kvexp]
                             total_num_keys = kvexp.total_num_keys
-                            key_size = kvexp.keysize
+                            key_size = kvexp.key_size
                             zipf = kvexp.zipf
                             size_distr = kvexp.value_distribution
                             retwis_distribution = kvexp.retwis_distribution
@@ -422,22 +422,15 @@ class KVBench(runner.Experiment):
     def get_machine_config(self):
         return self.config_yaml
 
-    def run_summary_analysis(self, out, serialization, retwisexpinfo):
+    def run_summary_analysis(self, df, out, serialization, retwisexpinfo):
     #RetwisExpInfo = collections.namedtuple("RetwisExpInfo", ["total_num_keys", "zipf",
     #"key_size", "value_distribution", "retwis_distribution"])
         filtered_df = df[(df["serialization"] == serialization) &
                          (df["zipf"] == retwisexpinfo.zipf) &
                          (df["total_num_keys"] == retwisexpinfo.total_num_keys) &
                          (df["key_size"] == retwisexpinfo.key_size) &
-                         (df["value_distribution"] == retwisexpinfo.value_distribution) &
+                         (df["size_distr"] == retwisexpinfo.value_distribution) &
                          (df["retwis_distribution"] == retwisexpinfo.retwis_distribution)]
-        total_size = int(size * num_values)
-        rounded_size = int(size)
-
-        factor_name = f"{num_values} {rounded_size} Byte Values"
-        if num_values == 1:
-            factor_name = f"{num_values} {rounded_size} Byte Value"
-        utils.info(f"Serialization: {serialization}, num_values: {num_values}, size: {size}")
 
         def ourstd(x):
             return np.std(x, ddof=0)
@@ -448,7 +441,7 @@ class KVBench(runner.Experiment):
                                             "zipf",
                                             "total_num_keys",
                                             "key_size",
-                                            "value_distribution",
+                                            "size_distr",
                                             "retwis_distribution",
                                            "offered_load_pps",
                                             "offered_load_gbps"],
@@ -472,11 +465,11 @@ class KVBench(runner.Experiment):
         std_achieved_gbps = clustered_df.loc[clustered_df['achieved_load_gbps_mean'].idxmax(),
                                              'achieved_load_gbps_sd']
         as_one = False
-        out.write(str(serialization) + "," + str(total_num_keys) + "," +
-                  str(key_size) + "," +
-                  str(zipf) + "," +
-                  str(value_distribution) + "," +
-                  str(retwis_distribution) + "," +
+        out.write(str(serialization) + "," + str(retwisexpinfo.total_num_keys) + "," +
+                  str(retwisexpinfo.key_size) + "," +
+                  str(retwisexpinfo.zipf) + "," +
+                  str(retwisexpinfo.value_distribution) + "," +
+                  str(retwisexpinfo.retwis_distribution) + "," +
                   str(max_achieved_pps) + "," +
                   str(max_achieved_gbps) + "," +
                   str(std_achieved_pps) + "," +
@@ -522,7 +515,7 @@ class KVBench(runner.Experiment):
             for retwisexp in max_rates:
                 total_num_keys = retwisexp.total_num_keys
                 zipf = retwisexp.zipf
-                key_size = retwisexp.keysize
+                key_size = retwisexp.key_size
                 retwis_distribution = retwisexp.retwis_distribution
                 value_distribution = retwisexp.value_distribution
                 individual_plot_path = plot_path / \
