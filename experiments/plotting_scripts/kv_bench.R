@@ -203,7 +203,7 @@ individual_plot <- function(data, metric, size, values, labels) {
     return(plot)
 }
 
-individual_plot_retwis <- function(data, metric, labels) {
+individual_retwis_plot <- function(data, metric, labels) {
     plot <- base_pps_plot(data, metric, labels)
     print(plot)
     return(plot)
@@ -295,7 +295,7 @@ if (plot_type == "full") {
                         mp999 = median(p999),
                         mprate = median(percent_achieved_rate),
                         maloadgbps = median(achieved_load_gbps),
-                        maload = median(achieved_load_pps))
+                        maloadpps = median(achieved_load_pps))
 
     plot <- full_plot(summarized, metric, anon_labels)
     ggsave("tmp.pdf", width=9, height=9)
@@ -306,17 +306,18 @@ if (plot_type == "full") {
     embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
 } else if (plot_type == "individual") {
     d$total_size = d$avg_size * d$num_values;
-    summarized <- ddply(d, c("serialization", "total_size", "avg_size", "num_values", "offered_load_pps", "offered_load_gbps"), summarise,
+    summarized <- ddply(d, c("serialization", "total_size", "avg_size", "num_keys", "num_values", "offered_load_pps", "offered_load_gbps"), summarise,
                         mavg = median(avg),
                         mp99 = median(p99),
                         mmedian = median(median),
                         mp999 = median(p999),
                         mprate = median(percent_achieved_rate),
                         maloadgbps = median(achieved_load_gbps),
-                        maload = median(achieved_load_pps))
+                        maloadpps = median(achieved_load_pps))
     
     total_size <- strtoi(args[6])
     num_values <- strtoi(args[7])
+    num_keys <- strtoi(args[8])
     plot <- individual_plot(summarized, metric, total_size, num_values, anon_labels)
     ggsave("tmp.pdf", width=5, height=2)
     embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
@@ -327,20 +328,20 @@ if (plot_type == "full") {
     embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
 } else if (plot_type == "individual-retwis") {
     # zipf, retwis_distribution, key_size, total_num_keys, value_distribution
-    zipf <- as.double(args[6])
-    retwis_distribution <- args[7]
-    key_size <- strtoi(args[8])
-    total_num_keys <- strtoi(args[9])
-    value_distribution <- args[10]
+    zipf_arg <- as.double(args[6])
+    retwis_distribution_arg <- args[7]
+    key_size_arg <- strtoi(args[8])
+    total_num_keys_arg <- strtoi(args[9])
+    value_distribution_arg <- args[10]
 
-    summarized <- ddply(d, c("serialization", "zipf", "total_num_keys", "key_size", "value_distribution", "retwis_distribution", "offered_load_pps", "offered_load_gbps"), summarise,
+    summarized <- ddply(d, c("serialization", "zipf", "total_num_keys", "key_size", "size_distr", "retwis_distribution", "offered_load_pps", "offered_load_gbps", "percent_achieved_rate"), summarise,
                         mavg = median(avg),
                         mp99 = median(p99),
                         mmedian = median(median),
                         mp999 = median(p999),
                         mprate = median(percent_achieved_rate),
-                        maload = median(achieved_load_pps))
-    summarized <- subset(summarized, zipf == zipf & total_num_keys == total_num_keys & key_size == key_size & value_distribution == value_distribution & retwis_distribution == retwis_distribution)
+                        maloadpps = median(achieved_load_pps))
+    summarized <- subset(summarized, zipf == zipf_arg & total_num_keys == total_num_keys_arg & key_size == key_size_arg & size_distr == value_distribution_arg & retwis_distribution == retwis_distribution_arg)
 
     plot <- individual_retwis_plot(summarized, metric, anon_labels)
     ggsave("tmp.pdf", width=5, height=2)
