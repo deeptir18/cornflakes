@@ -402,7 +402,7 @@ class KVBench(runner.Experiment):
     def get_machine_config(self):
         return self.config_yaml
 
-    def run_summary_analysis(self, df, out, serialization, num_values, size):
+    def run_summary_analysis(self, df, out, serialization, num_values, num_keys, size):
         filtered_df = df[(df["serialization"] == serialization) &
                          (df["avg_size"] == size) &
                          (df["num_keys"] == num_keys) &
@@ -550,6 +550,7 @@ class KVBench(runner.Experiment):
             for kvexp in max_rates:
                 batch_size = kvexp.num_values
                 avg_size = utils.parse_cornflakes_size_distr_avg(kvexp.size)
+                num_keys = kvexp.num_keys
                 value_size = batch_size * avg_size
                 num_keys = kvexp.num_keys
                 individual_plot_path = plot_path / \
@@ -558,7 +559,8 @@ class KVBench(runner.Experiment):
                     "values_{}".format(batch_size)
                 individual_plot_path.mkdir(parents=True, exist_ok=True)
                 pdf = individual_plot_path / \
-                    "size_{}_keys_{}_values_{}_{}.pdf".format(value_size, batch_size, metric)
+                    "size_{}_keys_{}_values_{}_{}.pdf".format(value_size,
+                        num_keys, batch_size, metric)
                 total_plot_args = [str(plotting_script),
                                        str(full_log),
                                        str(post_process_log),
