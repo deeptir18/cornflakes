@@ -102,44 +102,137 @@ int custom_ice_teardown(struct custom_ice_per_thread_context *per_thread_context
     return 0;
 }
 
-int get_current_tx_id(struct custom_ice_per_thread_context *per_thread_context) {
+size_t get_current_tx_id(struct custom_ice_per_thread_context *per_thread_context) {
+    return per_thread_context->tx_queue->tx_tail;
 }
-int get_last_tx_id_needed(
+
+size_t get_last_tx_id_needed(
         struct custom_ice_per_thread_context *per_thread_context,
         size_t num_needed) {
+    uint16_t nb_txd = per_thread_context->tx_queue->nb_tx_desc;
+    uint16_t nxt_txd = per_thread_context->tx_queue->tx_tail;
+    return (nxt_txd + num_needed - 1) % nb_txd;
 }
-int custom_ice_post_data_segment(
+
+size_t custom_ice_post_data_segment(
         struct custom_ice_per_thread_context *per_thread_context,
         physaddr_t dma_addr,
         size_t len,
-        uint16_t *tx_id,
+        uint16_t tx_id,
         uint16_t last_id) {
+    struct ice_tx_queue *txq;
     volatile struct ice_tx_desc *tx_ring;
     volatile struct ice_tx_desc *txd;
     struct custom_ice_tx_entry *completion_entry;
+    uint32_t td_cmd = 0;
+    uint32_t td_offset = 0;
+    uint32_t td_tag = 0;
 
-    if (*tx_id == last_id) {
-        // write EOP bit
-        // do rs thresh stuff
-    }
+    // update tx_queue metadata
+    txq = per_thread_context->tx_queue;
+    txq->nb_tx_used++;
+    txq->nb_tx_free--;
     
-    // TODO: access tx_queue
-    *tx_id = completion_entry->next_id;
+    if (tx_id == last_id) {
+        // write EOP bit
+        td_cmd |= ICE_TX_DESC_CMD_EOP;
+        // do rs thresh stuff
+        if (txq->nb_tx_used >= txq->tx_rs_thresh) {
+			td_cmd |= ICE_TX_DESC_CMD_RS;
+			/* Update txq RS bit counters */
+			txq->nb_tx_used = 0;
+		}
+    }
+
+    // queue onto tx ring
+    tx_ring = txq->tx_ring;
+    txd = &tx_ring[tx_id];
+
+    txd->buf_addr = rte_cpu_to_le_64(dma_addr);  // little endian
+    txd->cmd_type_offset_bsz = rte_cpu_to_le_64(ICE_TX_DESC_DTYPE_DATA |
+				((uint64_t)td_cmd << ICE_TXD_QW1_CMD_S) |
+				((uint64_t)td_offset << ICE_TXD_QW1_OFFSET_S) |
+				((uint64_t)len << ICE_TXD_QW1_TX_BUF_SZ_S) |
+				((uint64_t)td_tag << ICE_TXD_QW1_L2TAG1_S));
+    
+    // fill in completion entry
+    completion_entry = &per_thread_context->pending_transmissions[tx_id];
+    completion_entry->last_id = last_id;
+
+    // return next id
+    return completion_entry->next_id;
 }
 
 int finish_single_transmission(struct custom_ice_per_thread_context *per_thread_context,
         uint16_t last_id) {
+    struct custom_ice_tx_entry *completion_entry = &per_thread_context->pending_transmissions[last_id];
+    uint16_t next_tx_id = completion_entry->next_id;
     // locally updates the tx_id in tx queue struct
-    // optionally do this rs thresh stuff
-    // https://github.com/deeptir18/ice_netperf/blob/main/ice/ice_rxtx.c#L668
-    // stuff here
+    per_thread_context->tx_queue->tx_tail = next_tx_id;
+    printf("in finish_single_transmission. next_tx_id: %u\n", next_tx_id);
+    return 0;
 }
-int post_queued_segments(struct custom_ice_per_thread_context *per_thread_context, uint16_t tx_id) {
+
+void post_queued_segments(struct custom_ice_per_thread_context *per_thread_context, uint16_t tx_id) {
+    struct custom_ice_tx_entry *completion_entry = &per_thread_context->pending_transmissions[tx_id];
+    uint16_t next_tx_id = completion_entry->next_id;
     // WRITE TO TAIL REGISTER 
-    ICE_PCI_REG_WRITE(per_thread_context->tx_queue->qtx_tail, tx_id);
+    ICE_PCI_REG_WRITE(per_thread_context->tx_queue->qtx_tail, next_tx_id);
+    printf("in post_queued_segments. tail written to: %u\n", next_tx_id);
 }
 
+size_t custom_ice_get_txd_avail(struct custom_ice_per_thread_context *per_thread_context) {
+    return per_thread_context->tx_queue->nb_tx_free;
+}
 
+int custom_ice_tx_cleanup(struct custom_ice_per_thread_context *per_thread_context) {
+    struct ice_tx_queue *txq = per_thread_context->tx_queue;
+    struct custom_ice_tx_entry *completion_ring = per_thread_context->pending_transmissions;
+	volatile struct ice_tx_desc *txd = txq->tx_ring;
+	uint16_t last_desc_cleaned = txq->last_desc_cleaned;
+	uint16_t nb_tx_desc = txq->nb_tx_desc;
+	uint16_t desc_to_clean_to;
+	uint16_t nb_tx_to_clean;
+
+	/* Determine the last descriptor needing to be cleaned */
+	desc_to_clean_to = (uint16_t)(last_desc_cleaned + txq->tx_rs_thresh);
+	if (desc_to_clean_to >= nb_tx_desc)
+		desc_to_clean_to = (uint16_t)(desc_to_clean_to - nb_tx_desc);
+
+	/* Check to make sure the last descriptor to clean is done */
+	desc_to_clean_to = completion_ring[desc_to_clean_to].last_id;
+	if (!(txd[desc_to_clean_to].cmd_type_offset_bsz &
+	    rte_cpu_to_le_64(ICE_TX_DESC_DTYPE_DESC_DONE))) {
+		printf("TX descriptor %4u is not done "
+				"(port=%d queue=%d) value=0x%"PRIx64"\n",
+				desc_to_clean_to,
+				txq->port_id, txq->queue_id,
+				txd[desc_to_clean_to].cmd_type_offset_bsz);
+		/* Failed to clean any descriptors */
+		return -1;
+	}
+
+	/* Figure out how many descriptors will be cleaned */
+	if (last_desc_cleaned > desc_to_clean_to)
+		nb_tx_to_clean = (uint16_t)((nb_tx_desc - last_desc_cleaned) +
+					    desc_to_clean_to);
+	else
+		nb_tx_to_clean = (uint16_t)(desc_to_clean_to -
+					    last_desc_cleaned);
+
+	/* The last descriptor to clean is done, so that means all the
+	 * descriptors from the last descriptor that was cleaned
+	 * up to the last descriptor with the RS bit set
+	 * are done. Only reset the threshold descriptor.
+	 */
+	txd[desc_to_clean_to].cmd_type_offset_bsz = 0;
+
+	/* Update the txq to reflect the last descriptor that was cleaned */
+	txq->last_desc_cleaned = desc_to_clean_to;
+	txq->nb_tx_free = (uint16_t)(txq->nb_tx_free + nb_tx_to_clean);
+
+	return 0;
+}
 
 
 

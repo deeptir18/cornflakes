@@ -102,6 +102,11 @@ fn main() {
         .allowlist_function("custom_ice_get_dma_addr")
         .allowlist_function("custom_ice_mempool_alloc")
         .allowlist_function("post_queued_segments")
+        .allowlist_function("get_last_tx_id_needed")
+        .allowlist_function("get_current_tx_id")
+        .allowlist_function("custom_ice_get_txd_avail")
+        .allowlist_function("custom_ice_tx_cleanup")
+        .allowlist_function("finish_single_transmission")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .generate()
         .unwrap_or_else(|e| panic!("Failed to generate bindings: {:?}", e));

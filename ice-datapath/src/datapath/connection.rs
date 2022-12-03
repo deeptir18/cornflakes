@@ -2,8 +2,8 @@ use super::{
     super::{
         access, check_ok, dpdk_bindings,
         dpdk_bindings::{
-            rte_eth_dev_flow_ctrl_get, rte_eth_dev_flow_ctrl_set, rte_eth_dev_socket_id,
-            rte_eth_dev_start, rte_eth_rx_queue_setup, rte_eth_tx_queue_setup,
+            rte_eth_dev_socket_id, rte_eth_dev_start, rte_eth_rx_queue_setup,
+            rte_eth_tx_queue_setup,
         },
         dpdk_mbuf_slice, ice_bindings,
         ice_bindings::custom_ice_init_tx_queues,
@@ -408,6 +408,10 @@ impl IceCustomMetadata {
                 1i8,
             );
         }
+    }
+
+    pub fn data(&self) -> *mut ::std::os::raw::c_void {
+        self.data
     }
 }
 
@@ -956,10 +960,21 @@ impl IceConnection {
         unimplemented!();
     }
 
-    fn post_ice_metadata(&self, metadata: &mut IceMetadata) -> Result<()> {
+    fn post_ice_metadata(&self, metadata: &mut IceMetadata, tx_id: u64, last_tx_id: u64) -> Result<()> {
         // increment reference count for this metadata as we are posting on the NIC
         metadata.increment_refcnt();
-        todo!();
+        let per_thread_context = self.thread_context.get_context_ptr();
+        // function to post the packet to tx_ring
+        let ice_metadata = match metadata {
+            IceMetadata::Dpdk(_) => {
+                bail!("Cannot be dpdk buffer in posting");
+            }
+            IceMetadata::Ice(custom_ice) => custom_ice
+        };
+        unsafe {
+            ice_bindings::custom_ice_post_data_segment(per_thread_context, 
+                ice_metadata.get_dma_addr(), ice_metadata.data_len() as _, tx_id as _, last_tx_id as _);
+        }
         Ok(())
     }
 }
@@ -1372,7 +1387,7 @@ impl Datapath for IceConnection {
                     per_thread_context as _,
                     physaddr,
                     len as _,
-                    ring_buffer_id,
+                    *ring_buffer_id,
                     last_id,
                 );
             }
@@ -1392,11 +1407,77 @@ impl Datapath for IceConnection {
 
     fn queue_single_buffer_with_copy(
         &mut self,
-        _buf: (MsgID, ConnID, &[u8]),
-        _end_batch: bool,
+        buf: (MsgID, ConnID, &[u8]),
+        end_batch: bool,
     ) -> Result<()> {
-        // TODO: implement this one!
-        unimplemented!();
+        let per_thread_context = self.thread_context.get_context_ptr();
+
+        let msg_id = buf.0;
+        let conn_id = buf.1;
+        let buf_arr = buf.2;
+
+        // determine num tx descriptors necessary for buffer
+        let num_required = 1;
+
+        // determine num tx descriptors available
+        let mut txd_avail = unsafe { ice_bindings::custom_ice_get_txd_avail(per_thread_context) };
+
+        let cur_tx_id = unsafe { ice_bindings::get_current_tx_id(per_thread_context) };
+        let last_tx_id = unsafe { ice_bindings::get_last_tx_id_needed(per_thread_context, num_required as _) };
+        // wait until enough tx descriptors are available
+        while num_required > txd_avail {
+            // function to get number of tx descriptors available
+            if self.has_queued_data {
+                unsafe {
+                    ice_bindings::post_queued_segments(per_thread_context, last_tx_id as _)
+                }
+                self.has_queued_data = false;
+            }
+            if unsafe {
+                ice_bindings::custom_ice_tx_cleanup(per_thread_context) != 0
+            } {
+                tracing::debug!("custom_ice_tx_cleanup failed to clean");
+            }
+
+            txd_avail = unsafe { ice_bindings::custom_ice_get_txd_avail(per_thread_context) };
+        }
+        
+        // allocate IceBuffer
+        let mut data_buffer = {
+            match self.allocator.allocate_tx_buffer()? {
+                Some(data_buf) => data_buf,
+                None => {
+                    bail!("No tx mempools to allocate outgoing packet");
+                }
+            }
+        };
+
+        // write header
+        self.copy_hdr(&mut data_buffer, conn_id, msg_id, buf_arr.len())?;
+
+        // write data buffer
+        ensure!(
+            data_buffer.write(buf_arr)? == buf_arr.len(),
+            "Could not copy whole buffer into allocated buffer"
+        );
+        let mut ice_metadata = IceMetadata::Ice(IceCustomMetadata::from_buf(data_buffer));
+        let _ = self.post_ice_metadata(&mut ice_metadata, cur_tx_id, last_tx_id);
+
+        // finish queueing buffer
+        unsafe {
+            ice_bindings::finish_single_transmission(per_thread_context, last_tx_id as _);
+        }
+
+        // end batch
+        if end_batch {
+            println!("batch being ended");
+            unsafe {
+                ice_bindings::post_queued_segments(per_thread_context, last_tx_id as _);
+            }
+            self.has_queued_data = false;
+        }
+        println!("queue_single_buffer_with_copy finished");
+        Ok(())
     }
 
     fn push_buffers_with_copy(&mut self, _: &[(u32, usize, &[u8])]) -> Result<()> {
