@@ -196,8 +196,8 @@ label_plot <- function(plot, labels) {
     return(plot)
 }
 
-individual_plot <- function(data, metric, size, values, labels) {
-    data <- subset(data, num_values == values & total_size == size)
+individual_plot <- function(data, metric, size, values, keys, labels) {
+    data <- subset(data, num_values == values & num_keys == keys & total_size == size)
     plot <- base_plot(data, metric, labels)
     print(plot)
     return(plot)
@@ -318,12 +318,12 @@ if (plot_type == "full") {
     total_size <- strtoi(args[6])
     num_values <- strtoi(args[7])
     num_keys <- strtoi(args[8])
-    plot <- individual_plot(summarized, metric, total_size, num_values, anon_labels)
+    plot <- individual_plot(summarized, metric, total_size, num_values, num_keys, anon_labels)
     ggsave("tmp.pdf", width=5, height=2)
     embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
     
     
-    plot <- individual_plot(summarized, metric, total_size, num_values, cr_labels)
+    plot <- individual_plot(summarized, metric, total_size, num_values, num_keys, cr_labels)
     ggsave("tmp.pdf", width=5, height=2)
     embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
 } else if (plot_type == "individual-retwis") {
