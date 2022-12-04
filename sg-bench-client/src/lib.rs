@@ -143,7 +143,7 @@ where
                 let mut segment_indices = Vec::with_capacity(num_segments);
                 for _ in 0..num_segments {
                     cur_region_idx_local = unsafe { REGION_ORDER[cur_region_idx_local] };
-                    segment_indices.push(cur_region_idx);
+                    segment_indices.push(cur_region_idx_local);
                 }
                 request_indices.push(segment_indices);
             }

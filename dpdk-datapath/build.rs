@@ -43,6 +43,7 @@ fn main() {
 
     let dpdk_bindings_folder = Path::new(&cargo_dir).join("src").join("dpdk_bindings");
     header_locations.push(dpdk_bindings_folder.to_str().unwrap().trim());
+
     let ldflags_bytes = Command::new("pkg-config")
         .env("PKG_CONFIG_PATH", &pkg_config_path)
         .args(&["--libs", "libdpdk"])

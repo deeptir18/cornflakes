@@ -279,6 +279,16 @@ pub trait Datapath {
         app_mode: cornflakes_utils::AppMode,
     ) -> Result<Vec<AddressInfo>>;
 
+    /// Given a remote IP address, compute a source IP and port for each queue
+    /// Such that receiving a packet with that IP and port as the destination,
+    /// and remote_ip as source, will be hashed to that queue ID.
+    fn port_for_queue_idx(
+        datapath_params: &Self::DatapathSpecificParams,
+        num_queues: usize,
+        remote_ip: Option<Ipv4Addr>,
+        app_mode: cornflakes_utils::AppMode,
+    ) -> Result<Vec<AddressInfo>>;
+    
     /// Any global initialization required by this datapath.
     /// Initialization might include: memory registration per queue,
     /// and flow initialization.

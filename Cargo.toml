@@ -1,6 +1,18 @@
 [workspace]
 
-members = ["cornflakes-codegen", "cornflakes-libos", "cornflakes-utils", "ds-echo", "cf-kv", "mlx5-datapath", "ice-datapath", "mlx5-datapath-c", "linux-datapath", "linux-datapath-c", "dpdk-datapath", "sg-bench-client", "simple-echo"]
+members = ["cornflakes-codegen",
+	"cornflakes-libos",
+	"cornflakes-utils",
+	"ds-echo",
+	"cf-kv",
+	"mlx5-datapath",
+	#"ice-datapath",
+	"mlx5-datapath-c",
+	"linux-datapath",
+	"linux-datapath-c",
+	"dpdk-datapath",
+	"sg-bench-client",
+	"simple-echo"]
 
 [profile.release]
 lto = "fat"

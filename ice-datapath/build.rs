@@ -13,13 +13,13 @@ fn main() {
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let cargo_dir = Path::new(&cargo_manifest_dir);
     let out_dir = env::var("OUT_DIR").unwrap();
-    println!(
-        "cargo:rerun-if-changed={:?}",
-        Path::new(&cargo_dir)
-            .join("src")
-            .join("ice_bindings")
-            .join("ice_inlined.c")
-    );
+    //println!(
+    //    "cargo:rerun-if-changed={:?}",
+    //    Path::new(&cargo_dir)
+    //        .join("src")
+    //        .join("ice_bindings")
+    //        .join("ice_inlined.c")
+    //);
 
     let header_path = Path::new(&cargo_dir)
         .join("src")

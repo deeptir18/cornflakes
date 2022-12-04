@@ -9,6 +9,7 @@ use structopt::StructOpt;
 #[macro_export]
 macro_rules! run_client(
     ($datapath: ty, $opt: ident) => {
+	println!("in macro");
         let server_addr = cornflakes_utils::parse_server_addr(&$opt.config_file, &$opt.server_ip)?;
         let mut datapath_params = <$datapath as Datapath>::parse_config_file(&$opt.config_file, &$opt.our_ip)?;
         let addresses = <$datapath as Datapath>::compute_affinity(
@@ -38,7 +39,8 @@ macro_rules! run_client(
             .enumerate()
         {
         let server_addr_clone =
-            cornflakes_libos::utils::AddressInfo::new(server_addr.2, server_addr.1.clone(), server_addr.0.clone());
+		cornflakes_libos::utils::AddressInfo::new(server_addr.2, server_addr.1.clone(), server_addr.0.clone());
+	    println!("address: {} {} {}", server_addr.2, server_addr.1.clone(), server_addr.0.clone());
             let datapath_params_clone = datapath_params.clone();
 
             let max_num_requests = num_rtts;

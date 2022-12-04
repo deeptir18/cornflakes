@@ -10,6 +10,7 @@ use structopt::StructOpt;
 fn main() -> Result<()> {
     let opt = SgBenchOpt::from_args();
     global_debug_init(opt.trace_level)?;
+    print!("here");
     run_client!(DpdkConnection, opt);
     Ok(())
 }
