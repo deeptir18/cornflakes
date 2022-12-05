@@ -124,6 +124,14 @@ impl IceBuffer {
         mempool: *mut ice_bindings::custom_ice_mempool,
         index: usize,
     ) -> Self {
+        unsafe {
+            ice_bindings::custom_ice_refcnt_update_or_free(
+                mempool,
+                data,
+                index as _,
+                1i8,
+            );
+        }        
         IceBuffer {
             data: data,
             mempool: mempool,
@@ -412,6 +420,14 @@ impl IceCustomMetadata {
 
     pub fn data(&self) -> *mut ::std::os::raw::c_void {
         self.data
+    }
+
+    pub fn mempool(&self) -> *mut ice_bindings::custom_ice_mempool {
+        self.mempool
+    }
+
+    pub fn get_refcnt_index(&self) -> usize {
+        self.refcnt_index
     }
 }
 
@@ -973,7 +989,8 @@ impl IceConnection {
         };
         unsafe {
             ice_bindings::custom_ice_post_data_segment(per_thread_context, 
-                ice_metadata.get_dma_addr(), ice_metadata.data_len() as _, tx_id as _, last_tx_id as _);
+                ice_metadata.data(), ice_metadata.mempool(), ice_metadata.get_refcnt_index() as _,
+                ice_metadata.data_len() as _, tx_id as _, last_tx_id as _);
         }
         Ok(())
     }
@@ -1381,7 +1398,7 @@ impl Datapath for IceConnection {
             let physaddr = custom_ice.get_dma_addr();
             let len = custom_ice.as_ref().len();
             // we need length & physical address to post
-
+            /*
             unsafe {
                 ice_bindings::custom_ice_post_data_segment(
                     per_thread_context as _,
@@ -1391,6 +1408,7 @@ impl Datapath for IceConnection {
                     last_id,
                 );
             }
+            */
             Ok(())
         };
 
@@ -1470,13 +1488,14 @@ impl Datapath for IceConnection {
 
         // end batch
         if end_batch {
-            println!("batch being ended");
             unsafe {
                 ice_bindings::post_queued_segments(per_thread_context, last_tx_id as _);
             }
+            unsafe {
+                ice_bindings::custom_ice_tx_cleanup(per_thread_context);
+            }
             self.has_queued_data = false;
         }
-        println!("queue_single_buffer_with_copy finished");
         Ok(())
     }
 

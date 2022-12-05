@@ -247,15 +247,14 @@ int custom_ice_refcnt_update_or_free(struct custom_ice_mempool *m,
             }
         }
     } else {
-        uint8_t cur_refcnt = m->ref_counts[refcnt_index];
-        NETPERF_ASSERT((cur_refcnt + change) < 0, "Refcnt cannot be updated to < 0");
+	uint8_t cur_refcnt = m->ref_counts[refcnt_index];
+	NETPERF_DEBUG("buf: %p, refcnt before update: %u, change: %d", buf, cur_refcnt, change);
+        NETPERF_ASSERT((cur_refcnt + change) >= 0, "Refcnt cannot be updated to < 0");
         if ((cur_refcnt + change) == 0) {
-            m->ref_counts[cur_refcnt] = 0;
-            custom_ice_mempool_free_by_idx(m,
-                buf,
-                refcnt_index);
+            m->ref_counts[refcnt_index] = 0;
+	    custom_ice_mempool_free(m, buf);
         } else {
-            m->ref_counts[cur_refcnt] += change;
+            m->ref_counts[refcnt_index] += change;
         } 
     }
     return 0;
