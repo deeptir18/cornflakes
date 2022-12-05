@@ -113,6 +113,8 @@ extern "C" {
 
     fn eth_dev_configure_(port_id: u16, rx_rings: u16, tx_rings: u16);
 
+    fn eth_dev_configure_ice_(port_id: u16, rx_rings: u16, tx_rings: u16);
+
     fn destroy_flow_rules_(dpdk_port: u16);
 
     fn compute_flow_affinity_(
@@ -437,7 +439,14 @@ pub unsafe fn shinfo_init(
 
 #[inline]
 pub unsafe fn eth_dev_configure(port_id: u16, rx_rings: u16, tx_rings: u16) {
-    eth_dev_configure_(port_id, rx_rings, tx_rings);
+    #[cfg(feature = "ice")]
+    {
+        eth_dev_configure_ice_(port_id, rx_rings, tx_rings);
+    }
+    #[cfg(not(feature = "ice"))]
+    {
+        eth_dev_configure_(port_id, rx_rings, tx_rings);
+    }
 }
 
 #[inline]
