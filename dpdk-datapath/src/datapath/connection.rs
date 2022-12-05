@@ -1158,7 +1158,7 @@ impl Datapath for DpdkConnection {
 
         for queue_id in 0..num_queues as u16 {
             let mut cur_octets = my_starting_ip.octets();
-            let cur_port = my_port;
+            let mut cur_port = my_port;
             while unsafe {
                 compute_flow_affinity(
                     ip_from_octets(&cur_octets),
@@ -1170,7 +1170,8 @@ impl Datapath for DpdkConnection {
             } != queue_id as u32
                 || in_recv_addrs(&cur_octets, cur_port, &recv_addrs)
             {
-                cur_octets[3] += 1;
+                //cur_octets[3] += 1;
+		cur_port += 1;
             }
             tracing::info!(queue_id = queue_id, octets = ?cur_octets, port = cur_port, "Chosen addr pair");
             let queue_addr_info = AddressInfo::new(
