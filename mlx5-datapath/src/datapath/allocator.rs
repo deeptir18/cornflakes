@@ -263,7 +263,6 @@ impl DatapathMemoryPool for DataMempool {
             self.mempool(),
             index as usize,
             0,
-            context,
         )))
     }
 }
