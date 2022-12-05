@@ -6,8 +6,10 @@
 struct custom_ice_tx_entry {
     // pointer to mempool
     struct custom_ice_mempool *mempool;
+    // pointer to beginning of data
+    void *data;
     // reference count of buffer in that mempool
-    uint16_t refcnt;
+    size_t refcnt;
     // index of next entry in ring (to safely do wraparound)
     uint16_t next_id;
     // index of last entry for this packet completion
@@ -76,7 +78,9 @@ size_t get_last_tx_id_needed(
 
 size_t custom_ice_post_data_segment(
     struct custom_ice_per_thread_context *per_thread_context,
-    physaddr_t dma_addr, 
+    void *buf_addr,
+    struct custom_ice_mempool *mempool,
+    size_t refcnt_index, 
     size_t len, 
     uint16_t tx_id,
     uint16_t last_id);

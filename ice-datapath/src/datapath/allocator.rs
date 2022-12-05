@@ -219,6 +219,7 @@ impl DatapathMemoryPool for IceMempool {
     {
         let data = unsafe { ice_bindings::custom_ice_mempool_alloc(self.mempool_as_ice()) };
         if data.is_null() {
+            println!("data is null");
             return Ok(None);
         }
         // recover the ref count index
