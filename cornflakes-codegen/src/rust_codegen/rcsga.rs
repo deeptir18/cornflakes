@@ -222,7 +222,11 @@ fn add_impl(
             .get_constants_with_u32_bitmaps(&field_info, false, false)?
             .iter()
         {
-            compiler.add_const_def(var, typ, def)?;
+            if var.contains("BITMAP_IDX") || var.contains("BITMAP_OFFSET") {
+                compiler.add_const_def_pub(var, typ, def)?;
+            } else {
+                compiler.add_const_def(var, typ, def)?;
+            }
         }
     }
 

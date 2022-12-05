@@ -519,6 +519,7 @@ where
     where
         'buf: 'obj,
     {
+        tracing::debug!("In deserialize from buf");
         let rc_sge = RcSge::RawRef(buf);
         self.inner_deserialize(&rc_sge, 0)?;
         Ok(())
@@ -819,6 +820,7 @@ where
     where
         'buf: 'obj,
     {
+        tracing::debug!("Inner deserialize for cf bytes, off = {}", header_offset);
         let forward_pointer = ForwardPointer(buffer.addr(), header_offset);
         let off = forward_pointer.get_offset() as usize;
         let size = forward_pointer.get_size() as usize;
