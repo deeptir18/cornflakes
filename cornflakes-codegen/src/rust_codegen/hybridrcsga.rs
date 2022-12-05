@@ -1244,7 +1244,8 @@ fn add_deserialization_for_field(
                     "inner_deserialize",
                     vec![
                         "buffer".to_string(),
-                        "read_size_and_offset::<D>(cur_constant_offset, buffer)?.1".to_string(),
+                        "read_size_and_offset::<D>(cur_constant_offset + buffer_offset, buffer)?.1"
+                            .to_string(),
                         "buffer_offset".to_string(),
                         "arena".to_string(),
                     ],
