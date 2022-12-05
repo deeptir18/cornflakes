@@ -76,10 +76,10 @@ where
         arena: &mut bumpalo::Bump,
     ) -> Result<()> {
         let end = sga.len();
-        let mut copy_context = CopyContext::new(arena, datapath)?;
         for (i, pkt) in sga.into_iter().enumerate() {
             let end_batch = i == (end - 1);
             let message_type = read_message_type(&pkt)?;
+            let mut copy_context = CopyContext::new(arena, datapath)?;
             match message_type {
                 SimpleMessageType::Single => {
                     let mut single_deser = echo_messages_hybrid::SingleBufferCF::new_in(arena);
