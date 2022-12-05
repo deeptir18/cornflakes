@@ -334,6 +334,15 @@ calculate_tput_difference <- function(row) {
 normalize <- function(x, min_val, max_val) {
     return ((x["difference"] - min_val) / (max_val - min_val))
 }
+
+system_heatmap <- function(data, metric, system_name) {
+    # TODO: finish system heatmap plot
+    subset <- ddply(data, c("system", "num_segments", "total_size"), summarise, tput = median(maxtputgbps))
+    subset <- subset[subset$system == system_name]
+    heatmap_data <- subset %>% spread(key = system, value = tput)
+    heatmap_data$difference <- apply(heatmap_data, 1, calculate_tput_difference)
+
+}
 heatmap_plot <- function(data, metric) {
     subset <- ddply(data, c("system", "num_segments", "total_size"), summarise, tput = mean(maxtputgbps))
     heatmap_data <- subset %>% spread(key = system, value = tput)
@@ -448,6 +457,11 @@ if (plot_type == "full") {
     embed_fonts("tmp.pdf", outfile=plot_pdf)
 } else if (plot_type == "heatmap") {
     plot <- heatmap_plot(d_postprocess, metric)
+    ggsave("tmp.pdf", width=9, height=9)
+    embed_fonts("tmp.pdf", outfile=plot_pdf)
+} else if (plot_type == "system_heatmap") {
+    system <- strtoi(args[6])
+    plot <- heatmap_plot(d_postprocess, metric, system)
     ggsave("tmp.pdf", width=9, height=9)
     embed_fonts("tmp.pdf", outfile=plot_pdf)
 }

@@ -5,7 +5,7 @@ programs:
     start_server: 
         ready_file: { "{folder}/ready.log": "ready" }
         host_type: "server"
-        start: sudo nice -n -19 taskset -c 2 {cornflakes_dir}/mlx5-netperf/build/mlx5-netperf  --mode=SERVER --pci_addr={pci_addr} --server_mac={server_mac} --ready_file={folder}/ready.log --server_ip={server_ip} --array_size={array_size} --segment_size={segment_size} --num_segments={num_segments}{with_copy} --busy_work_us={busy_cycles}{read_pkt_str}{echo_str}
+        start: sudo nice -n -19 taskset -c 2 {cornflakes_dir}/mlx5-netperf/build/mlx5-netperf  --mode=SERVER --pci_addr={pci_addr} --server_mac={server_mac} --ready_file={folder}/ready.log --server_ip={server_ip} --array_size={array_size} --segment_size={segment_size} --num_segments={num_segments}{with_copy} --busy_work_us={busy_cycles}{read_pkt_str}{echo_str}{refcnt_str}
         perf: sudo perf stat -e task-clock,cycles,instructions,cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses,L1-dcache-stores,dTLB-loads,dTLB-load-misses,dTLB-prefetch-misses,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses -o {folder}/server.perf.log
         log:
             out: "{folder}/{host}.log"
