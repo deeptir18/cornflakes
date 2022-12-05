@@ -324,15 +324,22 @@ class ScatterGatherIteration(runner.Iteration):
 
         if self.system == "echo":
             ret["echo_str"] = " --echo_mode"
+            ret["refcnt_str"] = ""
         elif self.system == "copy":
             ret["with_copy"] = " --with_copy"
             ret["echo_str"] = ""
+            ret["refcnt_str"] = ""
+        elif self.system == "zero_copy_refcnt":
+            ret["echo_str"] = ""
+            ret["with_copy"] = ""
+            ret["refcnt_str"] = " --using_ref_counting"
         else:
             if self.system != "zero_copy":
                 utils.warn("Unknown system name: ", self.system)
                 exit(1)
             ret["echo_str"] = ""
             ret["with_copy"] = ""
+            ret["refcnt_str"] = ""
 
         if (self.recv_pkt_size != 0):
             ret["read_pkt_str"] = " --read_incoming_packet"
@@ -548,7 +555,8 @@ class ScatterGather(runner.Experiment):
                                 default=1)
             parser.add_argument("--system",
                                 help = "Which mode to run.",
-                                choices = ["copy", "zero_copy", "echo"])
+                                choices = ["copy", "zero_copy", "echo",
+                                "zero_copy_refcnt"])
         else:
             parser.add_argument("-l", "--logfile",
                                 help="Logfile name",
@@ -573,6 +581,7 @@ class ScatterGather(runner.Experiment):
             recv_pkt_size, 
             num_server_cores,
             busy_cycles):
+        # TODO: change to take into accout mean
         filtered_df = df[(df.array_size == array_size) &
                          (df.recv_pkt_size == recv_pkt_size) &
                          (df.num_segments == num_segments) &
