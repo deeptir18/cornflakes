@@ -722,9 +722,89 @@ where
                 );
                 match depth {
                     TreeDepth::One => {
+                        tracing::debug!("Received bytes: {:?}", pkt.seg(0).as_ref());
+                        tracing::debug!("Expected bytes: {:?}", &input.as_slice());
                         let tree_ser = get_tree1l_sga(&input.as_slice(), datapath)?;
                         let mut tree_deser = echo_messages_rcsga::Tree1LCF::new();
                         tree_deser.deserialize_from_buf(pkt.seg(0).as_ref())?;
+                        if tree_deser.get_bitmap_field(
+                            echo_messages_rcsga::Tree1LCF::<D>::LEFT_BITMAP_IDX,
+                            echo_messages_rcsga::Tree1LCF::<D>::LEFT_BITMAP_OFFSET,
+                        ) != tree_ser.get_bitmap_field(
+                            echo_messages_rcsga::Tree1LCF::<D>::LEFT_BITMAP_IDX,
+                            echo_messages_rcsga::Tree1LCF::<D>::LEFT_BITMAP_OFFSET,
+                        ) {
+                            tracing::debug!(
+                                "Bitmap for left doesn't match, arrived: {:?}, expected: {:?}",
+                                tree_deser.get_bitmap_field(
+                                    echo_messages_rcsga::Tree1LCF::<D>::LEFT_BITMAP_IDX,
+                                    echo_messages_rcsga::Tree1LCF::<D>::LEFT_BITMAP_OFFSET
+                                ),
+                                tree_ser.get_bitmap_field(
+                                    echo_messages_rcsga::Tree1LCF::<D>::LEFT_BITMAP_IDX,
+                                    echo_messages_rcsga::Tree1LCF::<D>::LEFT_BITMAP_OFFSET
+                                )
+                            );
+                            return Ok(false);
+                        } else if tree_deser.get_bitmap_field(
+                            echo_messages_rcsga::Tree1LCF::<D>::LEFT_BITMAP_IDX,
+                            echo_messages_rcsga::Tree1LCF::<D>::LEFT_BITMAP_OFFSET,
+                        ) && tree_ser.get_bitmap_field(
+                            echo_messages_rcsga::Tree1LCF::<D>::LEFT_BITMAP_IDX,
+                            echo_messages_rcsga::Tree1LCF::<D>::LEFT_BITMAP_OFFSET,
+                        ) {
+                            if !tree_deser
+                                .get_left()
+                                .check_deep_equality(&tree_ser.get_left())
+                            {
+                                tracing::debug!(
+                                    "Paylod for left doesn't match: deser: {:?}, expected: {:?}",
+                                    tree_deser.get_left().get_message().as_bytes(),
+                                    tree_ser.get_left().get_message().as_bytes()
+                                );
+                                return Ok(false);
+                            }
+                        }
+
+                        if tree_deser.get_bitmap_field(
+                            echo_messages_rcsga::Tree1LCF::<D>::RIGHT_BITMAP_IDX,
+                            echo_messages_rcsga::Tree1LCF::<D>::RIGHT_BITMAP_OFFSET,
+                        ) != tree_ser.get_bitmap_field(
+                            echo_messages_rcsga::Tree1LCF::<D>::RIGHT_BITMAP_IDX,
+                            echo_messages_rcsga::Tree1LCF::<D>::RIGHT_BITMAP_OFFSET,
+                        ) {
+                            tracing::debug!(
+                                "Bitmap for right doesn't match, arrived: {:?}, expected: {:?}",
+                                tree_deser.get_bitmap_field(
+                                    echo_messages_rcsga::Tree1LCF::<D>::RIGHT_BITMAP_IDX,
+                                    echo_messages_rcsga::Tree1LCF::<D>::RIGHT_BITMAP_OFFSET
+                                ),
+                                tree_ser.get_bitmap_field(
+                                    echo_messages_rcsga::Tree1LCF::<D>::RIGHT_BITMAP_IDX,
+                                    echo_messages_rcsga::Tree1LCF::<D>::RIGHT_BITMAP_OFFSET
+                                )
+                            );
+                            return Ok(false);
+                        } else if tree_deser.get_bitmap_field(
+                            echo_messages_rcsga::Tree1LCF::<D>::RIGHT_BITMAP_IDX,
+                            echo_messages_rcsga::Tree1LCF::<D>::RIGHT_BITMAP_OFFSET,
+                        ) && tree_ser.get_bitmap_field(
+                            echo_messages_rcsga::Tree1LCF::<D>::RIGHT_BITMAP_IDX,
+                            echo_messages_rcsga::Tree1LCF::<D>::RIGHT_BITMAP_OFFSET,
+                        ) {
+                            if !tree_deser
+                                .get_right()
+                                .check_deep_equality(&tree_ser.get_right())
+                            {
+                                tracing::debug!(
+                                    "Paylod for right doesn't match: deser: {:?}, expected: {:?}",
+                                    tree_deser.get_right().get_message().as_bytes(),
+                                    tree_ser.get_right().get_message().as_bytes()
+                                );
+                                return Ok(false);
+                            }
+                        }
+
                         Ok(tree_ser.check_deep_equality(&tree_deser))
                     }
                     TreeDepth::Two => {
