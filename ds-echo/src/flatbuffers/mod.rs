@@ -64,41 +64,59 @@ where
     ) -> Result<()> {
         let pkts_len = sga.len();
         for (i, pkt) in sga.into_iter().enumerate() {
-            self.builder.reset();
-            let msg_type = read_message_type(&pkt)?;
+            let msg_type = {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("Loop overhead");
+                self.builder.reset();
+                read_message_type(&pkt)?
+            };
             match msg_type {
                 SimpleMessageType::Single => {
-                    let object_deser =
-                        root::<echo_fb::SingleBufferFB>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-                    let args = echo_fb::SingleBufferFBArgs {
-                        message: Some(
-                            self.builder
-                                .create_vector_direct::<u8>(object_deser.message().unwrap()),
-                        ),
+                    let object_deser = {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Deserialize pkt");
+                        root::<echo_fb::SingleBufferFB>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?
                     };
-                    let single_buffer_fb =
-                        echo_fb::SingleBufferFB::create(&mut self.builder, &args);
-                    self.builder.finish(single_buffer_fb, None);
+                    {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Set message");
+                        let args = echo_fb::SingleBufferFBArgs {
+                            message: Some(
+                                self.builder
+                                    .create_vector_direct::<u8>(object_deser.message().unwrap()),
+                            ),
+                        };
+                        let single_buffer_fb =
+                            echo_fb::SingleBufferFB::create(&mut self.builder, &args);
+                        self.builder.finish(single_buffer_fb, None);
+                    }
                 }
                 SimpleMessageType::List(list_elts) => {
-                    let object_deser =
-                        root::<echo_fb::ListFB>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-                    let args_vec: Vec<echo_fb::SingleBufferFBArgs> = (0..list_elts)
-                        .map(|idx| echo_fb::SingleBufferFBArgs {
-                            message: Some(self.builder.create_vector_direct::<u8>(
-                                object_deser.messages().unwrap().get(idx).message().unwrap(),
-                            )),
-                        })
-                        .collect();
-                    let vec: Vec<WIPOffset<echo_fb::SingleBufferFB>> = args_vec
-                        .iter()
-                        .map(|args| echo_fb::SingleBufferFB::create(&mut self.builder, args))
-                        .collect();
-                    let list_args = echo_fb::ListFBArgs {
-                        messages: Some(self.builder.create_vector(vec.as_slice())),
+                    let object_deser = {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Deserialize pkt");
+                        root::<echo_fb::ListFB>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?
                     };
-                    let list_fb = echo_fb::ListFB::create(&mut self.builder, &list_args);
-                    self.builder.finish(list_fb, None);
+                    {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Set message");
+                        let args_vec: Vec<echo_fb::SingleBufferFBArgs> = (0..list_elts)
+                            .map(|idx| echo_fb::SingleBufferFBArgs {
+                                message: Some(self.builder.create_vector_direct::<u8>(
+                                    object_deser.messages().unwrap().get(idx).message().unwrap(),
+                                )),
+                            })
+                            .collect();
+                        let vec: Vec<WIPOffset<echo_fb::SingleBufferFB>> = args_vec
+                            .iter()
+                            .map(|args| echo_fb::SingleBufferFB::create(&mut self.builder, args))
+                            .collect();
+                        let list_args = echo_fb::ListFBArgs {
+                            messages: Some(self.builder.create_vector(vec.as_slice())),
+                        };
+                        let list_fb = echo_fb::ListFB::create(&mut self.builder, &list_args);
+                        self.builder.finish(list_fb, None);
+                    }
                 }
                 SimpleMessageType::Tree(tree_depth) => match tree_depth {
                     TreeDepth::One => {
@@ -143,10 +161,14 @@ where
                     }
                 },
             }
-            datapath.queue_single_buffer_with_copy(
-                (pkt.msg_id(), pkt.conn_id(), &self.builder.finished_data()),
-                i == pkts_len - 1,
-            )?;
+            {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("queue_single_buffer_with_copy");
+                datapath.queue_single_buffer_with_copy(
+                    (pkt.msg_id(), pkt.conn_id(), &self.builder.finished_data()),
+                    i == pkts_len - 1,
+                )?;
+            }
         }
         Ok(())
     }

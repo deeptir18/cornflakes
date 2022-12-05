@@ -58,35 +58,66 @@ where
     ) -> Result<()> {
         let pkts_len = sga.len();
         for (i, pkt) in sga.into_iter().enumerate() {
-            let msg_type = read_message_type(&pkt)?;
+            let msg_type = {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("Loop overhead");
+                read_message_type(&pkt)?
+            };
             match msg_type {
                 SimpleMessageType::Single => {
-                    let object_deser = echo_messages::SingleBufferProto::parse_from_bytes(
-                        &pkt.seg(0).as_ref()[REQ_TYPE_SIZE..],
-                    )
-                    .wrap_err("Failed to deserialize single buffer proto.")?;
-                    let mut object_ser = echo_messages::SingleBufferProto::new();
-                    object_ser.message = object_deser.message.clone();
-                    datapath.queue_protobuf_message(
-                        (pkt.msg_id(), pkt.conn_id(), &object_ser),
-                        i == (pkts_len - 1),
-                    )?;
+                    let object_deser = {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Deserialize pkt");
+                        let object_deser = echo_messages::SingleBufferProto::parse_from_bytes(
+                            &pkt.seg(0).as_ref()[REQ_TYPE_SIZE..],
+                        )
+                        .wrap_err("Failed to deserialize single buffer proto.")?;
+                        object_deser
+                    };
+                    let object_ser = {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Set message");
+                        let mut object_ser = echo_messages::SingleBufferProto::new();
+                        object_ser.message = object_deser.message.clone();
+                        object_ser
+                    };
+                    {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("queue_protobuf_message");
+                        datapath.queue_protobuf_message(
+                            (pkt.msg_id(), pkt.conn_id(), &object_ser),
+                            i == (pkts_len - 1),
+                        )?;
+                    }
                 }
                 SimpleMessageType::List(_list_size) => {
-                    let object_deser = echo_messages::ListProto::parse_from_bytes(
-                        &pkt.seg(0).as_ref()[REQ_TYPE_SIZE..],
-                    )
-                    .wrap_err("Failed to deserialize list proto.")?;
-                    let mut object_ser = echo_messages::ListProto::new();
-                    let mut list: Vec<Vec<u8>> = Vec::with_capacity(object_deser.messages.len());
-                    for message in object_deser.messages.iter() {
-                        list.push(message.clone());
+                    let object_deser = {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Deserialize pkt");
+                        echo_messages::ListProto::parse_from_bytes(
+                            &pkt.seg(0).as_ref()[REQ_TYPE_SIZE..],
+                        )
+                        .wrap_err("Failed to deserialize list proto.")?
+                    };
+                    let object_ser = {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Set message");
+                        let mut object_ser = echo_messages::ListProto::new();
+                        let mut list: Vec<Vec<u8>> = Vec::with_capacity(object_deser.messages.len());
+                        for message in object_deser.messages.iter() {
+                            list.push(message.clone());
+                        }
+                        object_ser.messages = list;
+                        object_ser
+                    };
+                    {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("queue_protobuf_message");
+                        datapath.queue_protobuf_message(
+                            (pkt.msg_id(), pkt.conn_id(), &object_ser),
+                            i == (pkts_len - 1),
+                        )?;
                     }
-                    object_ser.messages = list;
-                    datapath.queue_protobuf_message(
-                        (pkt.msg_id(), pkt.conn_id(), &object_ser),
-                        i == (pkts_len - 1),
-                    )?;
                 }
                 SimpleMessageType::Tree(tree_depth) => match tree_depth {
                     TreeDepth::One => {
