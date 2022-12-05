@@ -1,6 +1,6 @@
 ### Experiment runner yaml for Echo-Server benchmark
 
-time: 15
+time: 25
 programs:
     start_server:
         ready_file: { "{folder}/ready.log": "ready" }
