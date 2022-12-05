@@ -1433,7 +1433,7 @@ impl Datapath for IceConnection {
         let msg_id = buf.0;
         let conn_id = buf.1;
         let buf_arr = buf.2;
-
+        
         // determine num tx descriptors necessary for buffer
         let num_required = 1;
 
@@ -1480,7 +1480,7 @@ impl Datapath for IceConnection {
         );
         let mut ice_metadata = IceMetadata::Ice(IceCustomMetadata::from_buf(data_buffer));
         let _ = self.post_ice_metadata(&mut ice_metadata, cur_tx_id, last_tx_id);
-
+        
         // finish queueing buffer
         unsafe {
             ice_bindings::finish_single_transmission(per_thread_context, last_tx_id as _);
@@ -1496,6 +1496,7 @@ impl Datapath for IceConnection {
             }
             self.has_queued_data = false;
         }
+        
         Ok(())
     }
 

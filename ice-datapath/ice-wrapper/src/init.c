@@ -175,9 +175,6 @@ int finish_single_transmission(struct custom_ice_per_thread_context *per_thread_
     uint16_t next_tx_id = completion_entry->next_id;
     // locally updates the tx_id in tx queue struct
     per_thread_context->tx_queue->tx_tail = next_tx_id;
-    if (last_id == 0) {
-        printf("last_id: %hu, nb_tx_desc: %hu\n", last_id, per_thread_context->tx_queue->nb_tx_desc);
-    }
     return 0;
 }
 

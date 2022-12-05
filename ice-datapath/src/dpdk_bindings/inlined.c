@@ -86,11 +86,11 @@ void rte_pktmbuf_free_(struct rte_mbuf *packet) {
 }
 
 void rte_pktmbuf_refcnt_update_or_free_(struct rte_mbuf *packet,int16_t val) {
-    //printf("[rte_mbuf_refcnt_update_or_free_] Changing refcnt of mbuf %p by val %d; currently %d\n", packet, val, rte_mbuf_refcnt_read(packet));
-    rte_mbuf_refcnt_update(packet, val);
     uint16_t cur_rc = rte_mbuf_refcnt_read(packet);
-    if (cur_rc == 0) {
+    if ((cur_rc + val) == 0) {
         rte_pktmbuf_free(packet);
+    } else {
+        rte_mbuf_refcnt_update(packet, val);
     }
     return;
 }
