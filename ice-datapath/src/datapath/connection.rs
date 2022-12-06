@@ -976,7 +976,7 @@ impl IceConnection {
         unimplemented!();
     }
 
-    fn post_ice_metadata(&self, metadata: &mut IceMetadata, tx_id: u64, last_tx_id: u64) -> Result<()> {
+    fn post_ice_metadata(&self, metadata: &mut IceMetadata, tx_id: u64, last_tx_id: u64) -> Result<u64> {
         // increment reference count for this metadata as we are posting on the NIC
         metadata.increment_refcnt();
         let per_thread_context = self.thread_context.get_context_ptr();
@@ -987,12 +987,12 @@ impl IceConnection {
             }
             IceMetadata::Ice(custom_ice) => custom_ice
         };
-        unsafe {
-            ice_bindings::custom_ice_post_data_segment(per_thread_context, 
+        let next_id = unsafe {
+            ice_bindings::custom_ice_post_data_segment(per_thread_context,
                 ice_metadata.data(), ice_metadata.mempool(), ice_metadata.get_refcnt_index() as _,
-                ice_metadata.data_len() as _, tx_id as _, last_tx_id as _);
-        }
-        Ok(())
+                ice_metadata.data_len() as _, tx_id as _, last_tx_id as _)
+        };
+        Ok(next_id)
     }
 }
 
@@ -1000,7 +1000,7 @@ impl Datapath for IceConnection {
     type DatapathBuffer = IceBuffer;
     type DatapathMetadata = IceMetadata;
     // callback entry is &mut u16: representing the index into the ring buffer being posted
-    type CallbackEntryState = *mut u16;
+    type CallbackEntryState = (*mut u64, u64);
 
     type PerThreadContext = IcePerThreadContext;
     type DatapathSpecificParams = IceDatapathSpecificParams;
@@ -1366,11 +1366,11 @@ impl Datapath for IceConnection {
 
     fn queue_cornflakes_obj<'arena>(
         &mut self,
-        _msg_id: MsgID,
-        _conn_id: ConnID,
-        _copy_context: &mut CopyContext<'arena, Self>,
-        _cornflakes_obj: impl HybridArenaRcSgaHdr<'arena, Self>,
-        _end_batch: bool,
+        msg_id: MsgID,
+        conn_id: ConnID,
+        copy_context: &mut CopyContext<'arena, Self>,
+        cornflakes_obj: impl HybridArenaRcSgaHdr<'arena, Self>,
+        end_batch: bool,
     ) -> Result<()>
     where
         Self: Sized,
@@ -1379,12 +1379,53 @@ impl Datapath for IceConnection {
         // wait until that number of segments is available (poll for completions)
         // before polling, post what you have (if you have something to post)
         // then get current value txq->tx_tail
-        // skip 1 for the header
-        // if copy context has data, skip one more
-        // then define and call the callback
+        
         let per_thread_context = self.thread_context.get_context_ptr();
         let last_id = 0;
-        let mut callback = |metadata_mbuf: &IceMetadata, ring_buffer_id: *mut u16| -> Result<()> {
+
+        // determine num tx descriptors necessary for buffer
+        let num_zero_copy_entries = cornflakes_obj.num_zero_copy_scatter_gather_entries();
+        let mut num_copy_entries = copy_context.len();
+        if copy_context.data_len() == 0 {
+            // doesn't work when there is a "raw" cf bytes
+            num_copy_entries = 0;
+        }
+        let num_required = 1 + num_copy_entries + num_zero_copy_entries;
+
+        // determine num tx descriptors available
+        let mut txd_avail = unsafe { ice_bindings::custom_ice_get_txd_avail(per_thread_context) as usize };
+        let mut cur_tx_id = unsafe { ice_bindings::get_current_tx_id(per_thread_context) };
+        let last_tx_id = unsafe { ice_bindings::get_last_tx_id_needed(per_thread_context, num_required as _) };
+        let cur_tx_id_ptr: *mut u64 = &mut cur_tx_id;
+        let mut ring_buffer_state = (cur_tx_id_ptr, last_tx_id);
+        let first_tx_id = cur_tx_id;
+
+        // wait until enough tx descriptors are available
+        while num_required > txd_avail {
+            // function to get number of tx descriptors available
+            if self.has_queued_data {
+                unsafe {
+                    ice_bindings::post_queued_segments(per_thread_context, last_tx_id as _)
+                }    
+                self.has_queued_data = false;
+            }    
+            if unsafe {
+                ice_bindings::custom_ice_tx_cleanup(per_thread_context) != 0 
+            } {  
+                tracing::debug!("custom_ice_tx_cleanup failed to clean");
+            }    
+
+            txd_avail = unsafe { ice_bindings::custom_ice_get_txd_avail(per_thread_context) as usize };
+        }
+
+        // skip 1 for the header
+        // if copy context has data, skip one more
+        let mut entries_to_skip = 1 + num_copy_entries;
+        for _ in 0..entries_to_skip {
+            cur_tx_id = unsafe { ice_bindings::advance_tx_id(per_thread_context, cur_tx_id as _) };
+        }
+        // define and call the callback
+        let mut callback = |metadata_mbuf: &IceMetadata, ring_buffer_state: &mut (*mut u64, u64)| -> Result<()> {
             let mut metadata_clone = metadata_mbuf.clone();
             metadata_clone.increment_refcnt();
             let custom_ice_res: Result<IceCustomMetadata> = match metadata_clone {
@@ -1395,32 +1436,97 @@ impl Datapath for IceConnection {
             };
             let custom_ice = custom_ice_res?;
 
-            let physaddr = custom_ice.get_dma_addr();
-            let len = custom_ice.as_ref().len();
-            // we need length & physical address to post
-            /*
             unsafe {
-                ice_bindings::custom_ice_post_data_segment(
-                    per_thread_context as _,
-                    physaddr,
-                    len as _,
-                    *ring_buffer_id,
-                    last_id,
-                );
-            }
-            */
+                let next_id = ice_bindings::custom_ice_post_data_segment(per_thread_context, 
+                    custom_ice.data(), custom_ice.mempool(), custom_ice.get_refcnt_index() as _,
+                    custom_ice.data_len() as _, *ring_buffer_state.0 as _, ring_buffer_state.1 as _);
+                println!("next id: {}", next_id);
+                *ring_buffer_state.0 = next_id;
+            };
             Ok(())
         };
 
-        // call the callback
         // circle back and write packet and object header into first segment
         // optionally write copied data into second segment
-        // update txqueue's txq_tail value (/ finish single transmission)
-        // if end batch is true:
-        //  post what you have
-        //
-        // TODO: implement this
-        unimplemented!();
+        let header_len = cornflakes_obj.total_header_size(false, false);
+        let mut cur_entry_ptr: usize = header_len + copy_context.data_len();
+        let mut allocated_header_buffer = {
+            match self.allocator.allocate_tx_buffer()? {
+                Some(buf) => buf,
+                None => {
+                    bail!("No tx mempools to allocate outgoing packet hdr");
+                }
+            }
+        };
+        let data_len = cornflakes_obj.iterate_over_entries(
+            copy_context,
+            header_len,
+            allocated_header_buffer.mutable_slice(
+                cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                cornflakes_libos::utils::TOTAL_HEADER_SIZE + header_len,
+            )?,
+            0,
+            cornflakes_obj.dynamic_header_start(),
+            &mut cur_entry_ptr,
+            &mut callback,
+            &mut ring_buffer_state,
+        )? + header_len;
+
+        // copy the packet header into the beginning of the buffer
+        self.copy_hdr(&mut allocated_header_buffer, conn_id, msg_id, data_len)?;
+        allocated_header_buffer
+            .set_len(header_len + cornflakes_libos::utils::TOTAL_HEADER_SIZE);
+        // reset ring buffer state
+        unsafe {
+            *ring_buffer_state.0 = first_tx_id;
+        }
+        ring_buffer_state.1 = last_tx_id;
+        
+        // turn the data buffer into metadata and post it
+        let mut ice_metadata = IceMetadata::Ice(
+            IceCustomMetadata::from_buf(allocated_header_buffer));
+        unsafe {
+            let next_id = self.post_ice_metadata(
+                &mut ice_metadata,
+                *ring_buffer_state.0,
+                ring_buffer_state.1,
+            )?;
+            *ring_buffer_state.0 = next_id;
+        }
+        
+        // now, copy the context
+        if copy_context.data_len() > 0 {
+            for serialization_copy_buf in copy_context.copy_buffers_slice().iter() {
+                let buffer = serialization_copy_buf.get_buffer();
+                let mut metadata_mbuf = IceMetadata::Ice(IceCustomMetadata::from_buf(buffer));
+                unsafe {
+                    let next_id = self.post_ice_metadata(
+                        &mut ice_metadata,
+                        *ring_buffer_state.0,
+                        ring_buffer_state.1,
+                    )?;
+                    *ring_buffer_state.0 = next_id;
+                }
+            }
+        }
+
+        // finish posting data to queue
+        unsafe {
+            ice_bindings::finish_single_transmission(per_thread_context, last_tx_id as _);
+        }
+
+        // end batch
+        if end_batch {
+            unsafe {
+                ice_bindings::post_queued_segments(per_thread_context, last_tx_id as _);
+            }
+            unsafe {
+                ice_bindings::custom_ice_tx_cleanup(per_thread_context);
+            }
+            self.has_queued_data = false;
+        }
+
+        Ok(())
     }
 
     fn queue_single_buffer_with_copy(
