@@ -1008,6 +1008,11 @@ impl SerializationCompiler {
         Ok(())
     }
 
+    pub fn add_const_def_pub(&mut self, var_name: &str, typ: &str, def: &str) -> Result<()> {
+        let line = format!("pub const {}: {} = {};", var_name, typ, def);
+        self.add_line(&line)?;
+        Ok(())
+    }
     pub fn add_const_def(&mut self, var_name: &str, typ: &str, def: &str) -> Result<()> {
         let line = format!("const {}: {} = {};", var_name, typ, def);
         self.add_line(&line)?;

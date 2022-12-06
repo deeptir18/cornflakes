@@ -76,25 +76,14 @@ d_postprocess$mediansd <- d_postprocess$mediansd / 1000.0
 d_postprocess$maxtputpps <- d_postprocess$maxtputpps / 1000000.0
 d_postprocess$maxtputppssd <- d_postprocess$maxtputppssd / 1000000.0
 
-labels <- c("scatter_gather" = "Scatter-Gather", "copy_each_segment" = "Copy Segments")
-
-# add in the row name
-get_system_name <- function(row) {
-    if (row["with_copy"] == "False" && row["as_one"] == "False") {
-        res <- "scatter_gather"
-    }
-    else if (row["with_copy"] == "True" && row["as_one"] == "False") {
-        res <- "copy_each_segment"
-    }
-    return(res)
-}
+labels <- c("zero_copy" = "Scatter-Gather", "copy" = "Copy Segments")
 
 base_median_plot <- function(data, factor_name, x_axis_name, x_axis_labels) {
     factor_name_string <- sprintf("factor(%s)", factor_name)
     plot <- ggplot(data,
                   aes_string(x = factor_name_string,
                       y = "mmedian",
-                      fill  = "system_name")) +
+                      fill  = "system")) +
             expand_limits(y = 0) +
             geom_bar(position="dodge", stat="identity", width = 0.5) +
             geom_errorbar(aes(ymin=mmedian-mediansd, ymax=mmedian+mediansd),position="dodge", stat="identity", width = 0.5) +
@@ -122,7 +111,7 @@ base_p99_plot <- function(data, factor_name, x_axis_name, x_axis_labels) {
     plot <- ggplot(data,
                   aes_string(x = factor_name_string,
                       y = "mp99",
-                      fill  = "system_name")) +
+                      fill  = "system")) +
             expand_limits(y = 0) +
             geom_bar(position="dodge", stat="identity", width = 0.5) +
             geom_errorbar(aes(ymin=mp99-p99sd, ymax=mp99+p99sd),position="dodge", stat="identity", width = 0.5) +
@@ -166,10 +155,10 @@ base_tput_plot <- function(data, factor_name, x_axis_name, x_axis_labels, metric
     plot <- ggplot(data,
                    aes_string(x=factor_name_string,
                        y = y_name,
-                       fill = "system_name",
-                       color = "system_name",
-                       group = "system_name",
-                       shape = "system_name")) +
+                       fill = "system",
+                       color = "system",
+                       group = "system",
+                       shape = "system")) +
                 expand_limits(y = 0) +
             geom_line(size = 1) + geom_point(size = 4) +
             scale_shape_manual(values = shape_values, labels = labels) +
@@ -200,8 +189,8 @@ base_p99_tput_latency <- function(data, y_cutoff) {
     plot <- ggplot(data,
                     aes(x = machieved_load_pps,
                         y = mp99,
-                        color = system_name,
-                        shape = system_name,
+                        color = system,
+                        shape = system,
                         ymin = mp99 - p99sd,
                         ymax = mp99 + p99sd)) +
                 coord_cartesian(ylim = c(0, y_cutoff), expand = FALSE) +
@@ -214,8 +203,8 @@ base_median_tput_latency <- function(data, y_cutoff) {
     plot <- ggplot(data,
                     aes(x = machieved_load_pps,
                         y = mmedian,
-                        color = system_name,
-                        shape = system_name,
+                        color = system,
+                        shape = system,
                         ymin = mmedian - mediansd,
                         ymax = mmedian + mediansd)) +
                 coord_cartesian(ylim = c(0, y_cutoff), expand = FALSE) +
@@ -227,7 +216,7 @@ base_median_tput_latency <- function(data, y_cutoff) {
 label_tput_latency <- function(plot) {
     plot <- plot +
             geom_point(size=4) +
-            geom_line(size = 1, aes(color=system_name)) +
+            geom_line(size = 1, aes(color=system)) +
             scale_shape_manual(values = shape_values, labels = labels) +
             scale_color_manual(values = color_values ,labels = labels) +
             scale_fill_manual(values = color_values, labels = labels) +
@@ -316,43 +305,55 @@ full_plot <- function(data, metric, factor_name) {
 }
 
 label_heatmap <- function(row) {
-    scatter_gather <- round(row["scatter_gather"], digits = 1)
-    copy <- round(row["copy_each_segment"], digits = 1)
+    scatter_gather <- round(row["zero_copy"], digits = 2)
+    copy <- round(row["copy"], digits = 2)
     difference <- round(row["difference"], digits = 2)
     label <- paste("SG: ", scatter_gather)
     label <- paste(label, "\n")
     label <- paste(label, "Copy: ")
     label <- paste(label, copy)
-    label <- paste(label, "\n( ")
-    label <- paste(label, difference)
-    label <- paste(label, " )")
+    label <- paste(label, "\n(")
+    if (difference > 0) {
+        label <- paste(label, "+")
+    }
+    label <- paste(label, difference*100)
+    label <- paste(label, "%)")
     return (label)
 
 }
 
 calculate_latency_difference <- function(row) {
-    res <- (row["copy_each_segment"] - row["scatter_gather"]) / row["scatter+gather"]
+    res <- (row["copy"] - row["zero_copy"]) / row["zero_copy"]
     return (res)
 }
 
 calculate_tput_difference <- function(row) {
-    res <- (row["scatter_gather"] - row["copy_each_segment"]) / row["copy_each_segment"]
+    res <- (row["zero_copy"] - row["copy"]) / row["copy"]
     return (res)
 }
 normalize <- function(x, min_val, max_val) {
     return ((x["difference"] - min_val) / (max_val - min_val))
 }
+
+system_heatmap <- function(data, metric, system_name) {
+    # TODO: finish system heatmap plot
+    subset <- ddply(data, c("system", "num_segments", "total_size"), summarise, tput = median(maxtputgbps))
+    subset <- subset[subset$system == system_name]
+    heatmap_data <- subset %>% spread(key = system, value = tput)
+    heatmap_data$difference <- apply(heatmap_data, 1, calculate_tput_difference)
+
+}
 heatmap_plot <- function(data, metric) {
-    subset <- ddply(data, c("system_name", "num_segments", "total_size"), summarise, tput = mean(maxtputgbps))
-    heatmap_data <- subset %>% spread(key = system_name, value = tput)
+    subset <- ddply(data, c("system", "num_segments", "total_size"), summarise, tput = mean(maxtputgbps))
+    heatmap_data <- subset %>% spread(key = system, value = tput)
     heatmap_data$difference <- apply(heatmap_data, 1, calculate_tput_difference)
     if (metric == "p99") {
-        subset <- ddply(data, c("system_name", "num_segments", "total_size"), summarise, tput = mean(mp99))
-        heatmap_data <- subset %>% spread(key = system_name, value = p99)
+        subset <- ddply(data, c("system", "num_segments", "total_size"), summarise, tput = mean(mp99))
+        heatmap_data <- subset %>% spread(key = system, value = p99)
         heatmap_data$difference <- apply(heatmap_data, 1, calculate_latency_difference)
     } else if (metric == "median") {
-        subset <- ddply(data, c("system_name", "num_segments", "total_size"), summarise, tput = mean(mmedian))
-        heatmap_data <- subset %>% spread(key = system_name, value = median)
+        subset <- ddply(data, c("system", "num_segments", "total_size"), summarise, tput = mean(mmedian))
+        heatmap_data <- subset %>% spread(key = system, value = median)
         heatmap_data$difference <- apply(heatmap_data, 1, calculate_latency_difference)
     }
     min_value  <- min(heatmap_data[,"difference"])
@@ -397,9 +398,8 @@ if (!("recv_size" %in% colnames(d)))
     d$recv_size <- 0
 }
 
-d$system_name <- apply(d, 1, get_system_name)
 d$total_size <- d$segment_size * d$num_segments
-summarized <- ddply(d, c("system_name", "segment_size", "num_segments", "with_copy", "as_one", "total_size", "array_size", "recv_size", "offered_load_pps", "offered_load_gbps"),
+summarized <- ddply(d, c("system", "segment_size", "num_segments", "total_size", "array_size", "recv_pkt_size", "busy_cycles", "offered_load_pps", "offered_load_gbps"),
                     summarise,
                     mavg = mean(avg),
                     mmedian = mean(median),
@@ -409,7 +409,6 @@ summarized <- ddply(d, c("system_name", "segment_size", "num_segments", "with_co
                     mp999 = mean(p999),
                     machieved_load_pps = mean(achieved_load_pps),
                     machieved_load_gbps = mean(achieved_load_gbps))
-d_postprocess$system_name <- apply(d_postprocess, 1, get_system_name)
 d_postprocess$total_size <- d_postprocess$segment_size * d_postprocess$num_segments
 
 
@@ -458,6 +457,11 @@ if (plot_type == "full") {
     embed_fonts("tmp.pdf", outfile=plot_pdf)
 } else if (plot_type == "heatmap") {
     plot <- heatmap_plot(d_postprocess, metric)
+    ggsave("tmp.pdf", width=9, height=9)
+    embed_fonts("tmp.pdf", outfile=plot_pdf)
+} else if (plot_type == "system_heatmap") {
+    system <- strtoi(args[6])
+    plot <- heatmap_plot(d_postprocess, metric, system)
     ggsave("tmp.pdf", width=9, height=9)
     embed_fonts("tmp.pdf", outfile=plot_pdf)
 }

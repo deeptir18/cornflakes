@@ -250,11 +250,6 @@ impl DatapathMemoryPool for MempoolInfo {
         unimplemented!();
     }
 
-    fn is_buf_within_bounds(&self, buf: &[u8]) -> bool {
-        tracing::debug!(addr =  buf.as_ptr() as usize, start =? self.start as usize, end = self.start + self.size, in_bounds = (buf.as_ptr() as usize > self.start) && (buf.as_ptr() as usize) < (self.start + self.size), "Checking if in bounds");
-        (buf.as_ptr() as usize > self.start) && (buf.as_ptr() as usize) < (self.start + self.size)
-    }
-
     fn recover_metadata(
         &self,
         buf: <<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer,
@@ -335,14 +330,14 @@ impl DatapathMemoryPool for MempoolInfo {
 
     fn alloc_data_buf(
         &self,
-        context: MempoolID,
+        _context: MempoolID,
     ) -> Result<Option<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>>
     {
         let mbuf = unsafe { rte_pktmbuf_alloc(self.handle) };
         if mbuf.is_null() {
             return Ok(None);
         }
-        return Ok(Some(DpdkBuffer::new(mbuf, context)));
+        return Ok(Some(DpdkBuffer::new(mbuf)));
     }
 }
 

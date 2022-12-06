@@ -144,7 +144,7 @@ static int custom_mlx5_mempool_populate(struct custom_mlx5_mempool *m, void *buf
  * @item_len: the length of each item in the pool
  */
 int custom_mlx5_mempool_create(struct custom_mlx5_mempool *m, size_t len,
-		   size_t pgsize, size_t item_len)
+		   size_t pgsize, size_t item_len, uint32_t use_atomic_ops)
 {
 	if (item_len == 0 || !is_power_of_two(pgsize) || len % pgsize != 0) {
         NETPERF_WARN("Invalid params to create mempool.");
@@ -170,6 +170,7 @@ int custom_mlx5_mempool_create(struct custom_mlx5_mempool *m, size_t len,
     m->num_pages = (len / pgsize);
 	m->item_len = item_len;
     m->log_item_len = (size_t)(log2((float)item_len));
+    m->use_atomic_ops = use_atomic_ops;
 
 	return custom_mlx5_mempool_populate(m, buf, len, pgsize, item_len);
 }

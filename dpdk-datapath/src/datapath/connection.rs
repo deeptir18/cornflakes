@@ -51,15 +51,12 @@ const TX_RING_SIZE: u16 = 2048;
 pub struct DpdkBuffer {
     /// Underlying allocated mbuf
     mbuf: *mut rte_mbuf,
-    /// Mempool ID
-    mempool_id: MempoolID,
 }
 
 impl Default for DpdkBuffer {
     fn default() -> Self {
         DpdkBuffer {
             mbuf: ptr::null_mut(),
-            mempool_id: 0,
         }
     }
 }
@@ -69,22 +66,11 @@ impl Clone for DpdkBuffer {
         if self.mbuf != std::ptr::null_mut() {
             unsafe { rte_pktmbuf_refcnt_update_or_free(self.mbuf, 1) }
         }
-        DpdkBuffer {
-            mbuf: self.mbuf,
-            mempool_id: self.mempool_id,
-        }
+        DpdkBuffer { mbuf: self.mbuf }
     }
 }
 
 impl DatapathBufferOps for DpdkBuffer {
-    fn set_mempool_id(&mut self, id: MempoolID) {
-        self.mempool_id = id;
-    }
-
-    fn get_mempool_id(&self) -> MempoolID {
-        self.mempool_id
-    }
-
     fn set_len(&mut self, len: usize) {
         unsafe {
             write_struct_field!(self.mbuf, data_len, len);
@@ -98,11 +84,10 @@ impl DatapathBufferOps for DpdkBuffer {
 }
 
 impl DpdkBuffer {
-    pub fn new(mbuf: *mut rte_mbuf, mempool_id: MempoolID) -> Self {
+    pub fn new(mbuf: *mut rte_mbuf) -> Self {
         unsafe { rte_pktmbuf_refcnt_set(mbuf, 1) }
         DpdkBuffer {
             mbuf: mbuf,
-            mempool_id: mempool_id,
         }
     }
 
@@ -1290,22 +1275,6 @@ impl Datapath for DpdkConnection {
 
         // start ethernet port
         dpdk_check_not_errored!(rte_eth_dev_start(datapath_params.get_physical_port()?));
-
-        // disable rx/tx flow control
-        // TODO: why?
-
-        let mut fc_conf: MaybeUninit<rte_eth_fc_conf> = MaybeUninit::zeroed();
-        dpdk_check_not_errored!(rte_eth_dev_flow_ctrl_get(
-            datapath_params.get_physical_port()?,
-            fc_conf.as_mut_ptr()
-        ));
-        unsafe {
-            (*fc_conf.as_mut_ptr()).mode = rte_eth_fc_mode_RTE_ETH_FC_NONE;
-        }
-        dpdk_check_not_errored!(rte_eth_dev_flow_ctrl_set(
-            datapath_params.get_physical_port()?,
-            fc_conf.as_mut_ptr()
-        ));
 
         wait_for_link_status_up(datapath_params.get_physical_port()?)?;
 

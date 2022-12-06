@@ -20,6 +20,7 @@ mod kv_capnp {
 }
 
 use byteorder::{BigEndian, ByteOrder};
+use bytes::Bytes;
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
     allocator::MempoolID,
@@ -75,8 +76,8 @@ impl MsgType {
             (8, 0) => Ok(MsgType::FollowUnfollow),
             (9, 0) => Ok(MsgType::PostTweet),
             (10, 0) => Ok(MsgType::GetTimeline(0)),
-            _ => {
-                bail!("unrecognized message type for kv store app.");
+            (x, y) => {
+                bail!("unrecognized message type for kv store app: {}, {}", x, y);
             }
         }
     }
@@ -132,19 +133,97 @@ impl MsgType {
     }
 }
 
-pub struct ZeroCopyPutKVServer<D>
+pub struct KVNode<D>
 where
     D: Datapath,
 {
-    map: HashMap<String, D::DatapathMetadata>,
+    buffer: D::DatapathBuffer,
+    next: Option<Box<KVNode<D>>>,
 }
 
-impl<D> ZeroCopyPutKVServer<D>
+/*impl<D> Drop for KVNode<D> where D: Datapath {
+    fn drop(&mut self) {
+        match self.next {
+            Some(x) => {
+
+            }
+        }
+    }
+}*/
+
+impl<D> AsRef<[u8]> for KVNode<D>
+where
+    D: Datapath,
+{
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.buffer.as_ref()
+    }
+}
+
+impl<D> KVNode<D>
+where
+    D: Datapath,
+{
+    pub fn new(buf: D::DatapathBuffer) -> Self {
+        KVNode {
+            buffer: buf,
+            next: None,
+        }
+    }
+
+    pub fn append(&mut self, buf: D::DatapathBuffer) {
+        match &mut self.next {
+            Some(ref mut node) => {
+                node.append(buf);
+            }
+            None => {
+                self.next = Some(Box::new(KVNode::new(buf)));
+            }
+        }
+    }
+
+    pub fn append_node(&mut self, node: KVNode<D>) {
+        match &mut self.next {
+            Some(ref mut our_node) => {
+                our_node.append_node(node);
+            }
+            None => {
+                self.next = Some(Box::new(node));
+            }
+        }
+    }
+
+    pub fn get_buffer(&self) -> &D::DatapathBuffer {
+        &self.buffer
+    }
+
+    pub fn get_data(&self) -> &[u8] {
+        self.buffer.as_ref()
+    }
+
+    pub fn get_next(&self) -> Option<&Box<KVNode<D>>> {
+        self.next.as_ref()
+    }
+
+    pub fn replace_data(&mut self, elt: D::DatapathBuffer) {
+        self.buffer = elt;
+    }
+}
+
+pub struct LinkedListKVServer<D>
+where
+    D: Datapath,
+{
+    map: HashMap<String, Box<KVNode<D>>>,
+}
+
+impl<D> LinkedListKVServer<D>
 where
     D: Datapath,
 {
     pub fn new() -> Self {
-        ZeroCopyPutKVServer {
+        LinkedListKVServer {
             map: HashMap::default(),
         }
     }
@@ -153,55 +232,73 @@ where
         self.map.len()
     }
 
-    pub fn get_map(&self) -> &HashMap<String, D::DatapathMetadata> {
+    pub fn get_map(&self) -> &HashMap<String, Box<KVNode<D>>> {
         &self.map
     }
 
-    pub fn get_mut_map(&mut self) -> &mut HashMap<String, D::DatapathMetadata> {
+    pub fn get_mut_map(&mut self) -> &mut HashMap<String, Box<KVNode<D>>> {
         &mut self.map
     }
 
-    pub fn get(&self, key: &str) -> Option<&D::DatapathMetadata> {
+    pub fn get(&self, key: &str) -> Option<&Box<KVNode<D>>> {
         self.map.get(key)
     }
 
-    pub fn remove(&mut self, key: &str) -> Option<D::DatapathMetadata> {
+    pub fn remove(&mut self, key: &str) -> Option<Box<KVNode<D>>> {
         self.map.remove(key)
     }
 
-    pub fn insert(&mut self, key: String, value: D::DatapathMetadata) {
-        self.map.insert(key, value);
+    pub fn insert(&mut self, key: String, value: D::DatapathBuffer) {
+        match self.map.get_mut(&key) {
+            Some(ref mut node) => {
+                node.as_mut().append(value);
+            }
+            None => {
+                self.map.insert(key, Box::new(KVNode::new(value)));
+            }
+        }
     }
 
-    pub fn insert_with_or_without_copies(
+    pub fn insert_with_copies(
         &mut self,
         key: &str,
         value: &[u8],
-        pkt: &ReceivedPkt<D>,
         datapath: &mut D,
         mempool_ids: &mut Vec<MempoolID>,
-        use_zero_copy: bool,
     ) -> Result<()> {
-        if value.len() >= 512 {
-            if use_zero_copy {
-                if let Some(datapath_buffer) = pkt.contiguous_datapath_metadata_from_buf(value)? {
-                    let key = key.to_string();
-                    self.map.insert(key, datapath_buffer);
-                    return Ok(());
-                } else {
-                    bail!(
-                        "Could not recover contiguous metadata from buffer {:?}",
-                        value.as_ptr()
-                    );
-                }
-            }
-        }
         let key = key.to_string();
         let mut datapath_buffer = allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
         let _ = datapath_buffer.write(value)?;
-        let metadata = datapath.get_metadata(datapath_buffer)?.unwrap();
-        self.map.insert(key, metadata);
+        self.map.insert(key, Box::new(KVNode::new(datapath_buffer)));
         Ok(())
+    }
+
+    pub fn insert_list_with_copies<'a>(
+        &mut self,
+        key: &str,
+        mut values: impl Iterator<Item = &'a [u8]>,
+        datapath: &mut D,
+        mempool_ids: &mut Vec<MempoolID>,
+    ) -> Result<()> {
+        let first_buffer = {
+            let value = values.next().unwrap();
+            let mut datapath_buffer = allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
+            let _ = datapath_buffer.write(value)?;
+            datapath_buffer
+        };
+
+        let mut kv_node = KVNode::new(first_buffer);
+        while let Some(value) = values.next() {
+            let mut datapath_buffer = allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
+            let _ = datapath_buffer.write(value)?;
+            kv_node.append(datapath_buffer);
+        }
+
+        self.map.insert(key.to_string(), Box::new(kv_node));
+        Ok(())
+    }
+    pub fn keys(&self) -> Vec<String> {
+        self.map.keys().cloned().collect::<Vec<String>>()
     }
 }
 
@@ -396,11 +493,11 @@ pub trait ServerLoadGenerator {
         &self,
         file: &str,
         datapath: &mut D,
-        use_zero_copy_puts: bool,
+        use_linked_list_kv: bool,
     ) -> Result<(
         KVServer<D>,
         ListKVServer<D>,
-        ZeroCopyPutKVServer<D>,
+        LinkedListKVServer<D>,
         Vec<MempoolID>,
     )>
     where
@@ -408,18 +505,23 @@ pub trait ServerLoadGenerator {
     {
         let mut kv_server = KVServer::new();
         let mut list_kv_server = ListKVServer::new();
-        let mut zero_copy_server = ZeroCopyPutKVServer::new();
+        let mut linked_list_kv_server = LinkedListKVServer::new();
         let mut mempool_ids: Vec<MempoolID> = Vec::default();
         self.load_file(
             file,
             &mut kv_server,
             &mut list_kv_server,
-            &mut zero_copy_server,
+            &mut linked_list_kv_server,
             &mut mempool_ids,
             datapath,
-            use_zero_copy_puts,
+            use_linked_list_kv,
         )?;
-        Ok((kv_server, list_kv_server, zero_copy_server, mempool_ids))
+        Ok((
+            kv_server,
+            list_kv_server,
+            linked_list_kv_server,
+            mempool_ids,
+        ))
     }
 
     fn read_request(&self, line: &str) -> Result<Self::RequestLine>;
@@ -444,10 +546,10 @@ pub trait ServerLoadGenerator {
         request_file: &str,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
-        zero_copy_server: &mut ZeroCopyPutKVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
-        use_zero_copy_puts: bool,
+        use_linked_list_kv_server: bool,
     ) -> Result<()>
     where
         D: Datapath,
@@ -460,10 +562,10 @@ pub trait ServerLoadGenerator {
                 &request,
                 kv_server,
                 list_kv_server,
-                zero_copy_server,
+                linked_list_kv_server,
                 mempool_ids,
                 datapath,
-                use_zero_copy_puts,
+                use_linked_list_kv_server,
             )?;
         }
         tracing::info!(trace = request_file, mempool_ids =? mempool_ids, "Finished loading trace file");
@@ -482,10 +584,10 @@ pub trait ServerLoadGenerator {
         request: &Self::RequestLine,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
-        zero_copy_server: &mut ZeroCopyPutKVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
-        use_zero_copy_puts: bool,
+        use_linked_list_kv_server: bool,
     ) -> Result<()>
     where
         D: Datapath;
@@ -629,6 +731,7 @@ where
     D: Datapath,
 {
     request_generator: R,
+    requests: Vec<Bytes>,
     serializer: C,
     _datapath: PhantomData<D>,
     last_sent_id: MsgID,
@@ -664,6 +767,7 @@ where
         };
         Ok(KVClient {
             request_generator: request_generator,
+            requests: Vec::default(),
             serializer: C::new(),
             last_sent_id: 0,
             received: 0,
@@ -679,6 +783,21 @@ where
             ref_kv: ref_kv,
             ref_list_kv: ref_list_kv,
         })
+    }
+
+    pub fn write_request_into_new_bytes(
+        &self,
+        request: &R::RequestLine,
+        datapath: &D,
+    ) -> Result<Bytes> {
+        let mut bytes = vec![0u8; 9216];
+        let serialized_len = self.request_generator.serialize_request(
+            &request,
+            &mut bytes.as_mut_slice(),
+            &self.serializer,
+            datapath,
+        )?;
+        Ok(Bytes::copy_from_slice(&bytes.as_slice()[0..serialized_len]))
     }
 
     pub fn write_request<'a>(&mut self, request: &R::RequestLine, datapath: &D) -> Result<usize> {
@@ -739,34 +858,60 @@ where
         self.server_addr.clone()
     }
 
+    fn prep_requests(
+        &mut self,
+        nb_requests: usize,
+        datapath: &<Self as ClientSM>::Datapath,
+    ) -> Result<usize> {
+        self.requests = Vec::with_capacity(nb_requests);
+        for _ in 0..nb_requests {
+            let next_request = match self.request_generator.next_request()? {
+                Some(l) => l,
+                None => {
+                    return Ok(self.requests.len());
+                }
+            };
+            let bytes = self.write_request_into_new_bytes(&next_request, &datapath)?;
+            self.requests.push(bytes);
+        }
+        Ok(nb_requests)
+    }
+
     fn get_next_msg(
         &mut self,
         datapath: &<Self as ClientSM>::Datapath,
     ) -> Result<Option<(MsgID, &[u8])>> {
-        let next_request = match self.request_generator.next_request()? {
-            Some(l) => l,
-            None => {
-                return Ok(None);
+        if (self.last_sent_id as usize) < self.requests.len() {
+            let bytes = &self.requests[self.last_sent_id as usize];
+            Ok(Some((self.last_sent_id, bytes.as_ref())))
+        } else {
+            let next_request = match self.request_generator.next_request()? {
+                Some(l) => l,
+                None => {
+                    return Ok(None);
+                }
+            };
+            let buf_size = self.write_request(&next_request, &datapath)?;
+            tracing::debug!(
+                msg_id = self.last_sent_id,
+                "Sending msg of type {:?}",
+                next_request
+            );
+            if cfg!(debug_assertions) {
+                self.outgoing_msg_types
+                    .insert(self.last_sent_id, next_request.clone());
             }
-        };
-        let buf_size = self.write_request(&next_request, &datapath)?;
-        tracing::debug!(
-            msg_id = self.last_sent_id,
-            "Sending msg of type {:?}",
-            next_request
-        );
-        self.outgoing_msg_types
-            .insert(self.last_sent_id, next_request.clone());
 
-        if self.using_retries {
-            self.outgoing_requests
-                .insert(self.last_sent_id, next_request.clone());
+            if self.using_retries {
+                self.outgoing_requests
+                    .insert(self.last_sent_id, next_request.clone());
+            }
+
+            Ok(Some((
+                self.last_sent_id,
+                &mut self.buf.as_mut_slice()[0..buf_size],
+            )))
         }
-
-        Ok(Some((
-            self.last_sent_id,
-            &mut self.buf.as_mut_slice()[0..buf_size],
-        )))
     }
 
     fn process_received_msg(
@@ -782,19 +927,23 @@ where
                 bail!("Received ID not in in flight map: {}", sga.msg_id());
             }
         }
-        let request_line = match self.outgoing_msg_types.remove(&sga.msg_id()) {
-            Some(m) => m,
-            None => {
-                bail!("Received ID not in in flight map: {}", sga.msg_id());
-            }
-        };
-        self.request_generator.check_response(
-            &request_line,
-            sga.seg(0).as_ref(),
-            &self.serializer,
-            &self.ref_kv,
-            &self.ref_list_kv,
-        )
+        if cfg!(debug_assertions) {
+            let request_line = match self.outgoing_msg_types.remove(&sga.msg_id()) {
+                Some(m) => m,
+                None => {
+                    bail!("Received ID not in in flight map: {}", sga.msg_id());
+                }
+            };
+            self.request_generator.check_response(
+                &request_line,
+                sga.seg(0).as_ref(),
+                &self.serializer,
+                &self.ref_kv,
+                &self.ref_list_kv,
+            )
+        } else {
+            return Ok(true);
+        }
     }
 
     fn init(&mut self, _connection: &mut Self::Datapath) -> Result<()> {

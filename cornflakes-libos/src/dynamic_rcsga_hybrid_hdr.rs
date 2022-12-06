@@ -141,6 +141,7 @@ where
         offset: usize,
         buffer_offset: usize,
     ) -> usize {
+        tracing::debug!(offset, buffer_offset, "In deserialize bitmap");
         let header = pkt.as_ref();
         let bitmap_size = LittleEndian::read_u32(
             &header[(buffer_offset + offset)..(buffer_offset + offset + BITMAP_LENGTH_FIELD)],
@@ -443,6 +444,7 @@ where
                 obj_ref.write_size(object_len as u32);
                 obj_ref.write_offset(offset_to_write as u32);
                 *cur_entry_ptr += object_len;
+                tracing::debug!(len = object_len, ptr =? metadata.as_ref().as_ptr(), "Reached iterate over entries for cf bytes.");
                 Ok(object_len)
             }
             CFBytes::Copied(copy_context_ref) => {
@@ -524,6 +526,11 @@ where
         buffer_offset: usize,
         _arena: &'arena bumpalo::Bump,
     ) -> Result<()> {
+        tracing::debug!(
+            header_offset = header_offset,
+            buffer_offset = buffer_offset,
+            "In deserialize cf bytes"
+        );
         let mut new_metadata = buf.clone();
         let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
         let original_offset = buf.offset();
@@ -531,6 +538,7 @@ where
             forward_pointer.get_size() as usize,
             forward_pointer.get_offset() as usize + original_offset + buffer_offset,
         )?;
+        tracing::debug!("Deserialized cf bytes: {:?}", new_metadata);
         *self = CFBytes::RefCounted(new_metadata);
         Ok(())
     }

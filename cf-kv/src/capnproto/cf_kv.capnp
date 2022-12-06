@@ -39,6 +39,8 @@ struct PutMReq {
 struct GetListReq {
     id @0 :UInt32;
     key @1 :Text;
+    rangestart @2 :Int32;
+    rangeend @3   :Int32;
 }
 
 struct GetListResp {

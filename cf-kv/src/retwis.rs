@@ -1,6 +1,6 @@
 use super::{
-    allocate_datapath_buffer, ClientSerializer, KVServer, ListKVServer, MsgType, RequestGenerator,
-    ServerLoadGenerator, ZeroCopyPutKVServer, REQ_TYPE_SIZE,
+    allocate_datapath_buffer, ClientSerializer, KVServer, LinkedListKVServer, ListKVServer,
+    MsgType, RequestGenerator, ServerLoadGenerator, REQ_TYPE_SIZE,
 };
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_libos::{allocator::MempoolID, datapath::Datapath};
@@ -244,10 +244,10 @@ impl ServerLoadGenerator for RetwisServerLoader {
         request_file: &str,
         kv_server: &mut KVServer<D>,
         list_kv_server: &mut ListKVServer<D>,
-        zero_copy_server: &mut ZeroCopyPutKVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
-        use_zero_copy_puts: bool,
+        use_linked_list_kv_server: bool,
     ) -> Result<()>
     where
         D: Datapath,
@@ -258,17 +258,17 @@ impl ServerLoadGenerator for RetwisServerLoader {
                 &request,
                 kv_server,
                 list_kv_server,
-                zero_copy_server,
+                linked_list_kv_server,
                 mempool_ids,
                 datapath,
-                use_zero_copy_puts,
+                use_linked_list_kv_server,
             )?;
         }
         tracing::info!(
-            "After load, kv_server size: {}, list kv server size: {}, zero copy server size {}",
+            "After load, kv_server size: {}, list kv server size: {}, linked list server size {}",
             kv_server.len(),
             list_kv_server.len(),
-            zero_copy_server.len()
+            linked_list_kv_server.len()
         );
         tracing::info!(trace = request_file, mempool_ids =? mempool_ids, "Finished loading trace file");
         Ok(())
@@ -288,10 +288,10 @@ impl ServerLoadGenerator for RetwisServerLoader {
         request: &Self::RequestLine,
         kv_server: &mut KVServer<D>,
         _list_kv_server: &mut ListKVServer<D>,
-        zero_copy_server: &mut ZeroCopyPutKVServer<D>,
+        linked_list_kv_server: &mut LinkedListKVServer<D>,
         mempool_ids: &mut Vec<MempoolID>,
         datapath: &mut D,
-        use_zero_copy_puts: bool,
+        use_linked_list_kv_server: bool,
     ) -> Result<()>
     where
         D: Datapath,
@@ -300,9 +300,8 @@ impl ServerLoadGenerator for RetwisServerLoader {
         let value: String = std::iter::repeat(char).take(request.value_size).collect();
         let mut datapath_buffer = allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
         let _ = datapath_buffer.write(value.as_bytes())?;
-        if use_zero_copy_puts {
-            let metadata = datapath.get_metadata(datapath_buffer)?.unwrap();
-            zero_copy_server.insert(request.key().to_string(), metadata);
+        if use_linked_list_kv_server {
+            linked_list_kv_server.insert(request.key().to_string(), datapath_buffer);
         } else {
             kv_server.insert(request.key().to_string(), datapath_buffer);
         }

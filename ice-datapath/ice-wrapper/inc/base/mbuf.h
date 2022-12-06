@@ -12,7 +12,7 @@
 
 #include <base/stddef.h>
 #include <base/mempool.h>
-#include <base/rte_memcpy.h>
+#include <rte_memcpy.h>
 #include <base/debug.h>
 
 /* Mbuf data structure. Should be 64 byte aligned. */

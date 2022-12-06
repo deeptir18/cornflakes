@@ -88,7 +88,8 @@ void custom_mlx5_clear_per_thread_context(struct custom_mlx5_global_context *con
 int custom_mlx5_allocate_mempool(struct registered_mempool *mempool,
                     size_t item_len,
                     size_t num_items,
-                    size_t data_pgsize) {
+                    size_t data_pgsize,
+                    uint32_t use_atomic_ops) {
     int ret = 0;
     size_t total_data_len = item_len * num_items;
     if (total_data_len % data_pgsize != 0) {
@@ -97,7 +98,7 @@ int custom_mlx5_allocate_mempool(struct registered_mempool *mempool,
     }
 
     // create the data mempool
-    ret = custom_mlx5_mempool_create(&mempool->data_mempool, total_data_len, data_pgsize, item_len);
+    ret = custom_mlx5_mempool_create(&mempool->data_mempool, total_data_len, data_pgsize, item_len, use_atomic_ops);
     if (ret != 0) {
         NETPERF_ERROR("Data Mempool create failed: %s", strerror(-ret));
         return ret;
@@ -145,11 +146,12 @@ int custom_mlx5_create_and_register_mempool(struct custom_mlx5_global_context *c
                                     size_t item_len,
                                     size_t num_items,
                                     size_t data_pgsize,
-                                    int registry_flags) {
+                                    int registry_flags,
+                                    uint32_t use_atomic_ops) {
     int ret = 0;
 
     // allocate data portions of mempool
-    ret = custom_mlx5_allocate_mempool(mempool, item_len, num_items, data_pgsize);
+    ret = custom_mlx5_allocate_mempool(mempool, item_len, num_items, data_pgsize, use_atomic_ops);
     if (ret != 0) {
         NETPERF_ERROR("Mempool creation failed: %s", strerror(-ret));
         return ret;
@@ -212,7 +214,7 @@ int custom_mlx5_init_rx_mempools(struct custom_mlx5_global_context *context,
         struct custom_mlx5_per_thread_context *thread_context = custom_mlx5_get_per_thread_context(context, i);
         struct registered_mempool *mempool = thread_context->rx_mempool;
         NETPERF_DEBUG("Initializing rx mempool at %p", thread_context->rx_mempool);
-        ret = custom_mlx5_create_and_register_mempool(context, mempool, item_len, num_items, data_pgsize, registry_flags);
+        ret = custom_mlx5_create_and_register_mempool(context, mempool, item_len, num_items, data_pgsize, registry_flags, false);
         if (ret != 0) {
             NETPERF_ERROR("Creation of rx mempool for thread %d failed: %s", i, strerror(-ret));
             RETURN_ON_ERR(free_rx_mempools(context, i), "Cleanup of rx mempools failed");
@@ -236,7 +238,8 @@ int custom_mlx5_free_rx_mempools(struct custom_mlx5_global_context *context, siz
 int custom_mlx5_alloc_tx_pool(struct registered_mempool *mempool,
                                                 size_t item_len,
                                                 size_t num_items,
-                                                size_t data_pgsize) {
+                                                size_t data_pgsize,
+                                                uint32_t use_atomic_ops) {
 
     int ret = 0;
     custom_mlx5_clear_mempool(&(mempool->data_mempool));
@@ -245,7 +248,7 @@ int custom_mlx5_alloc_tx_pool(struct registered_mempool *mempool,
         return -ENOMEM;
     }
 
-    ret = custom_mlx5_allocate_mempool(mempool, item_len, num_items, data_pgsize);
+    ret = custom_mlx5_allocate_mempool(mempool, item_len, num_items, data_pgsize, use_atomic_ops);
     if (ret != 0) {
         NETPERF_WARN("Failed to allocate mempool: %s", strerror(-ret));
         return ret;
@@ -259,8 +262,9 @@ int custom_mlx5_alloc_and_register_tx_pool(struct custom_mlx5_per_thread_context
                                                         size_t item_len,
                                                         size_t num_items,
                                                         size_t data_pgsize,
-                                                        int registry_flags) {
-    int ret = custom_mlx5_alloc_tx_pool(mempool, item_len, num_items, data_pgsize);
+                                                        int registry_flags,
+                                                        uint32_t use_atomic_ops) {
+    int ret = custom_mlx5_alloc_tx_pool(mempool, item_len, num_items, data_pgsize, use_atomic_ops);
     if (ret != 0) {
         NETPERF_WARN("Could not allocate registered mempool: %s", strerror(-ret));
         return 0;
@@ -275,15 +279,37 @@ int custom_mlx5_alloc_and_register_tx_pool(struct custom_mlx5_per_thread_context
     return 0;
 }
 
+uint16_t custom_mlx5_refcnt_read(struct registered_mempool *mempool,
+        size_t refcnt_index) {
+    struct custom_mlx5_mempool *data_mempool = &mempool->data_mempool;
+    return __atomic_load_n(&data_mempool->ref_counts[refcnt_index], __ATOMIC_RELAXED);
+}
+
 int custom_mlx5_refcnt_update_or_free(struct registered_mempool *mempool, 
         void *buf, 
         size_t refcnt_index, 
         int8_t change) {
     //NETPERF_INFO("Calling refcnt change with %d for mempool %p, mempool, data_mempool %p, mempool buf %p, buf %p, refcnt_index %lu; old: %u, new: %u", change, mempool, &mempool->data_mempool, mempool->data_mempool.buf, buf, refcnt_index, mempool->data_mempool.ref_counts[refcnt_index], mempool->data_mempool.ref_counts[refcnt_index] + change);
     struct custom_mlx5_mempool *data_mempool = &mempool->data_mempool;
-    data_mempool->ref_counts[refcnt_index] += change;
-    if (data_mempool->ref_counts[refcnt_index] == 0) {
-        custom_mlx5_mempool_free(data_mempool, buf);
+    if (data_mempool->use_atomic_ops) {
+        // must use atomics to update this as potentially accessing from
+        // multiple threads
+        NETPERF_DEBUG("Original refcnt: %u, change: %d", custom_mlx5_refcnt_read(mempool, refcnt_index), change);
+        if (change > 0) {
+            __atomic_add_fetch(&data_mempool->ref_counts[refcnt_index], (uint16_t)change, __ATOMIC_ACQ_REL);
+        NETPERF_DEBUG("Resulting refcnt: %u", custom_mlx5_refcnt_read(mempool, refcnt_index));
+        } else {
+            uint16_t refcnt = __atomic_sub_fetch(&data_mempool->ref_counts[refcnt_index], (uint16_t)(change * -1), __ATOMIC_ACQ_REL);
+        NETPERF_DEBUG("Resulting refcnt: %u", custom_mlx5_refcnt_read(mempool, refcnt_index));
+            if (refcnt == 0) {
+                custom_mlx5_mempool_free(data_mempool, buf);
+            }
+        }
+    } else {
+        data_mempool->ref_counts[refcnt_index] += change;
+        if (data_mempool->ref_counts[refcnt_index] == 0) {
+            custom_mlx5_mempool_free(data_mempool, buf);
+        }
     }
     return 0;
 }

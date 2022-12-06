@@ -324,8 +324,8 @@ size_t custom_mlx5_copy_inline_data_from_offset_wraparound(struct custom_mlx5_pe
     struct custom_mlx5_txq *v = &per_thread_context->txq;
     char *end_ptr = custom_mlx5_work_requests_end(v);
     size_t first_half = (char *)end_ptr - inline_offset_ptr;
-    custom_mlx5_rte_memcpy(inline_offset_ptr, src, first_half);
-    custom_mlx5_rte_memcpy((char *)v->tx_qp_dv.sq.buf, src + first_half, copy_len - first_half);
+    rte_memcpy(inline_offset_ptr, src, first_half);
+    rte_memcpy((char *)v->tx_qp_dv.sq.buf, src + first_half, copy_len - first_half);
     return copy_len;
 }
 
@@ -346,10 +346,10 @@ size_t custom_mlx5_copy_inline_data(struct custom_mlx5_per_thread_context *per_t
 
     if ((inline_offset_ptr + copy_len) > end_ptr) {
         size_t first_half = (char *)end_ptr - inline_offset_ptr;
-        custom_mlx5_rte_memcpy(inline_offset_ptr, src, first_half);
-        custom_mlx5_rte_memcpy((char *)v->tx_qp_dv.sq.buf, src + first_half, copy_len - first_half);
+        rte_memcpy(inline_offset_ptr, src, first_half);
+        rte_memcpy((char *)v->tx_qp_dv.sq.buf, src + first_half, copy_len - first_half);
     } else {
-        custom_mlx5_rte_memcpy(inline_offset_ptr, src, copy_len);
+        rte_memcpy(inline_offset_ptr, src, copy_len);
     }
 
     return copy_len; 
@@ -367,14 +367,14 @@ void custom_mlx5_inline_ipv4_hdr(struct custom_mlx5_per_thread_context *per_thre
     if (check_inline_copy_crossover(per_thread_context, inline_offset_ptr, sizeof(struct ip_hdr)) == 1) {
         NETPERF_DEBUG("In case for wraparound copy");
         struct ip_hdr tmp;
-        custom_mlx5_rte_memcpy(&tmp, (char *)ipv4, sizeof(struct ip_hdr));
+        rte_memcpy(&tmp, (char *)ipv4, sizeof(struct ip_hdr));
         (&tmp)->len = htons(sizeof(struct ip_hdr) + sizeof(struct udp_hdr) + 4 + payload_size);
         (&tmp)->chksum = 0;
         (&tmp)->chksum = custom_mlx5_get_chksum(&tmp);
         custom_mlx5_copy_inline_data_from_offset_wraparound(per_thread_context, inline_offset_ptr, (char *)(&tmp), sizeof(struct ip_hdr));
     } else {
         // copy ipv4 into ring buffer directly, calculate checksum
-        custom_mlx5_rte_memcpy(inline_offset_ptr, (char *)ipv4, sizeof(struct ip_hdr));
+        rte_memcpy(inline_offset_ptr, (char *)ipv4, sizeof(struct ip_hdr));
         struct ip_hdr *new_ipv4 = (struct ip_hdr *)inline_offset_ptr;
         new_ipv4->chksum = 0;
         new_ipv4->len = htons(sizeof(struct ip_hdr) + sizeof(struct udp_hdr) + 4 + payload_size);
@@ -388,14 +388,14 @@ void custom_mlx5_inline_udp_hdr(struct custom_mlx5_per_thread_context *per_threa
     char *inline_offset_ptr = custom_mlx5_work_request_inline_off(v, sizeof(struct eth_hdr) + sizeof(struct ip_hdr), 0);
     if (check_inline_copy_crossover(per_thread_context, inline_offset_ptr, sizeof(struct udp_hdr)) == 1) {
         struct udp_hdr tmp;
-        custom_mlx5_rte_memcpy(&tmp, (char *)udp, sizeof(struct udp_hdr));
+        rte_memcpy(&tmp, (char *)udp, sizeof(struct udp_hdr));
         (&tmp)->len = htons(sizeof(struct udp_hdr) + 4 + payload_size);
         (&tmp)->chksum = 0;
         (&tmp)->chksum = custom_mlx5_get_chksum(&tmp);
         custom_mlx5_copy_inline_data_from_offset_wraparound(per_thread_context, inline_offset_ptr, (char *)(&tmp), sizeof(struct udp_hdr));
     } else {
         // copy udp into ring buffer directly, calculate checksum
-        custom_mlx5_rte_memcpy(inline_offset_ptr, (char *)udp, sizeof(struct udp_hdr));
+        rte_memcpy(inline_offset_ptr, (char *)udp, sizeof(struct udp_hdr));
         struct udp_hdr *new_udp = (struct udp_hdr *)inline_offset_ptr;
         new_udp->chksum = 0;
         new_udp->len = htons(sizeof(struct udp_hdr) + 4 + payload_size);

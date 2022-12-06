@@ -13,13 +13,24 @@ fn main() {
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let cargo_dir = Path::new(&cargo_manifest_dir);
     let out_dir = env::var("OUT_DIR").unwrap();
-    //println!(
-    //    "cargo:rerun-if-changed={:?}",
-    //    Path::new(&cargo_dir)
-    //        .join("src")
-    //        .join("ice_bindings")
-    //        .join("ice_inlined.c")
-    //);
+    let dpdk_path = canonicalize(
+        cargo_dir
+            .clone()
+            .parent()
+            .unwrap()
+            .join("dpdk-datapath")
+            .join("3rdparty")
+            .join("dpdk"),
+    )
+    .unwrap();
+    let dpdk_dir = dpdk_path.as_path();
+    println!(
+        "cargo:rerun-if-changed={:?}",
+        Path::new(&cargo_dir)
+            .join("src")
+            .join("ice_bindings")
+            .join("inlined.c")
+    );
 
     let header_path = Path::new(&cargo_dir)
         .join("src")
@@ -42,6 +53,12 @@ fn main() {
 
     let mut header_paths: Vec<PathBuf> = Vec::default();
     header_paths.push(canonicalize(ice_wrapper_dir.clone().join("inc")).unwrap());
+    header_paths
+        .push(canonicalize(dpdk_dir.clone().join("lib").join("eal").join("include")).unwrap());
+    header_paths.push(canonicalize(dpdk_dir.clone().join("lib").join("ethdev")).unwrap());
+    header_paths.push(canonicalize(dpdk_dir.clone().join("build").join("include")).unwrap());
+    header_paths
+        .push(canonicalize(dpdk_dir.clone().join("drivers").join("net").join("ice")).unwrap());
 
     for lib_loc in library_locations.iter() {
         println!(
@@ -62,6 +79,35 @@ fn main() {
 
     let bindings = builder
         .header(header_path.to_str().unwrap())
+        .allowlist_recursively(true)
+        .allowlist_type("custom_ice_mempool")
+        .allowlist_type("custom_ice_global_context")
+        .allowlist_type("custom_ice_per_thread_context")
+        .allowlist_function("custom_ice_err_to_str")
+        .allowlist_function("custom_ice_post_data_segment")
+        .allowlist_function("custom_ice_get_per_thread_context")
+        .allowlist_function("custom_ice_clear_per_thread_context")
+        .allowlist_function("custom_ice_get_global_context_size")
+        .allowlist_function("custom_ice_get_per_thread_context_size")
+        .allowlist_function("custom_ice_get_mempool_size")
+        .allowlist_function("custom_ice_get_mempool_size")
+        .allowlist_function("custom_ice_get_raw_threads_ptr")
+        .allowlist_function("custom_ice_init_global_context")
+        .allowlist_function("custom_ice_init_tx_queues")
+        .allowlist_function("custom_ice_mempool_find_index")
+        .allowlist_function("custom_ice_teardown")
+        .allowlist_function("custom_ice_mempool_create")
+        .allowlist_function("custom_ice_mempool_destroy")
+        .allowlist_function("custom_ice_refcnt_update_or_free")
+        .allowlist_function("custom_ice_get_dma_addr")
+        .allowlist_function("custom_ice_mempool_alloc")
+        .allowlist_function("post_queued_segments")
+        .allowlist_function("get_last_tx_id_needed")
+        .allowlist_function("get_current_tx_id")
+        .allowlist_function("custom_ice_get_txd_avail")
+        .allowlist_function("custom_ice_tx_cleanup")
+        .allowlist_function("finish_single_transmission")
+        .allowlist_function("advance_tx_id")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .generate()
         .unwrap_or_else(|e| panic!("Failed to generate bindings: {:?}", e));
@@ -101,17 +147,6 @@ fn main() {
             .join("dpdk-headers.h")
     );
 
-    let dpdk_path = canonicalize(
-        cargo_dir
-            .clone()
-            .parent()
-            .unwrap()
-            .join("dpdk-datapath")
-            .join("3rdparty")
-            .join("dpdk"),
-    )
-    .unwrap();
-    let dpdk_dir = dpdk_path.as_path();
     let dpdk_header_path = Path::new(&cargo_dir)
         .join("src")
         .join("dpdk_bindings")

@@ -15,6 +15,7 @@
 #include <base/mempool.h>
 #include <base/mem.h>
 #include <sys/mman.h>
+#include <base/byteorder.h>
 
 #ifdef DEBUG
 
@@ -87,14 +88,6 @@ void custom_ice_mempool_free(struct custom_ice_mempool *m, void *item) {
 }
 
 
-int custom_ice_is_registered(struct custom_ice_mempool *mempool) {
-    if (mempool->lkey != -1) {
-        return 1;
-    } else {
-        return 0;
-    }
-}
-
 void custom_ice_clear_mempool(struct custom_ice_mempool *mempool) {
     mempool->free_items = NULL;
     mempool->allocated = 0;
@@ -103,7 +96,6 @@ void custom_ice_clear_mempool(struct custom_ice_mempool *mempool) {
     mempool->len = 0;
     mempool->pgsize = 0;
     mempool->item_len = 0;
-    mempool->lkey = -1;
 }
 
 static int custom_ice_mempool_populate(struct custom_ice_mempool *m, void *buf, size_t len,
@@ -123,7 +115,6 @@ static int custom_ice_mempool_populate(struct custom_ice_mempool *m, void *buf, 
         NETPERF_DEBUG("Calloc didn't allocate ref counts list.");
         return -ENOMEM;
     }
-
 	for (i = 0; i < nr_pages; i++) {
 		for (j = 0; j < items_per_page; j++) {
 			m->free_items[m->capacity++] =
@@ -132,8 +123,43 @@ static int custom_ice_mempool_populate(struct custom_ice_mempool *m, void *buf, 
 		}
 	}
 
+    // query and fill in physical address per page
+    m->phys_paddrs = calloc(nr_pages, sizeof(physaddr_t));
+    if (!m->phys_paddrs) {
+        NETPERF_DEBUG("Calloc didn't allocate physical page list.");
+        return -ENOMEM;
+    }
+
+
+    if (custom_ice_mem_lookup_page_phys_addrs(buf, m->len, m->pgsize, m->phys_paddrs) != 0) {
+        NETPERF_DEBUG("Failed to fill in physical address table.");
+        return -EINVAL;
+    }
+    
     NETPERF_DEBUG("Allocated Items per page: %u, item_len: %zu, # pages: %u, LEN: %zu, current capacity: %zu", (unsigned)items_per_page, m->item_len, (unsigned)nr_pages, len, m->capacity);
 	return 0;
+}
+
+/**
+ * mempool_pin - pins memory backing memory pool.
+ */ 
+int custom_ice_mempool_pin(struct custom_ice_mempool *m) {
+    if (m->buf != NULL) {
+        return mlock(m->buf, m->len);
+    } else {
+        return -EINVAL;
+    }
+}
+
+/**
+ * mempool_unpin - unpins memory backing memory pool.
+ */ 
+int custom_ice_mempool_unpin(struct custom_ice_mempool *m) {
+    if (m->buf != NULL) {
+        return munlock(m->buf, m->len);
+    } else {
+        return -EINVAL;
+    }
 }
 
 /**
@@ -144,7 +170,7 @@ static int custom_ice_mempool_populate(struct custom_ice_mempool *m, void *buf, 
  * @item_len: the length of each item in the pool
  */
 int custom_ice_mempool_create(struct custom_ice_mempool *m, size_t len,
-		   size_t pgsize, size_t item_len)
+		   size_t pgsize, size_t item_len, uint32_t use_atomic_ops)
 {
 	if (item_len == 0 || !is_power_of_two(pgsize) || len % pgsize != 0) {
         NETPERF_WARN("Invalid params to create mempool.");
@@ -170,6 +196,13 @@ int custom_ice_mempool_create(struct custom_ice_mempool *m, size_t len,
     m->num_pages = (len / pgsize);
 	m->item_len = item_len;
     m->log_item_len = (size_t)(log2((float)item_len));
+    m->use_atomic_ops = use_atomic_ops;
+
+    // pin the backing memory
+    if (custom_ice_mempool_pin(m) != 0) {
+        NETPERF_WARN("Failed to pin ice mempool.");
+        return -EINVAL;
+    }
 
 	return custom_ice_mempool_populate(m, buf, len, pgsize, item_len);
 }
@@ -182,6 +215,61 @@ int custom_ice_mempool_create(struct custom_ice_mempool *m, size_t len,
  */
 void custom_ice_mempool_destroy(struct custom_ice_mempool *m)
 {
+    // unpin memory
+    if (custom_ice_mempool_unpin(m) != 0) {
+        NETPERF_WARN("Failed to unpin memory.");
+    }
+
+    // free buffer stack
 	free(m->free_items);
+    // free reference count array
+    free(m->ref_counts);
+    // free physical address array
+    free(m->phys_paddrs);
     munmap(m->buf, m->len);
+}
+
+/* Decrement reference count or return buffer to mempool. */
+int custom_ice_refcnt_update_or_free(struct custom_ice_mempool *m,
+        void *buf,
+        size_t refcnt_index, 
+        int8_t change)
+{
+    if (m->use_atomic_ops == 1) {
+        if (change > 0) {
+            __atomic_add_fetch(&m->ref_counts[refcnt_index], (uint16_t)change, __ATOMIC_ACQ_REL);
+        } else {
+            uint16_t refcnt = __atomic_sub_fetch(&m->ref_counts[refcnt_index], (uint16_t)(change * -1), __ATOMIC_ACQ_REL);
+            if (refcnt == 0) {
+                custom_ice_mempool_free_by_idx(m,
+                    buf,
+                    refcnt_index);
+            }
+        }
+    } else {
+	uint8_t cur_refcnt = m->ref_counts[refcnt_index];
+	NETPERF_DEBUG("buf: %p, refcnt before update: %u, change: %d", buf, cur_refcnt, change);
+        NETPERF_ASSERT((cur_refcnt + change) >= 0, "Refcnt cannot be updated to < 0");
+        if ((cur_refcnt + change) == 0) {
+            m->ref_counts[refcnt_index] = 0;
+	    custom_ice_mempool_free(m, buf);
+        } else {
+            m->ref_counts[refcnt_index] += change;
+        } 
+    }
+    return 0;
+}
+
+/* Get physical address associated with buffer. */
+uint64_t custom_ice_get_dma_addr(struct custom_ice_mempool *m,
+        void *buf,
+        size_t refcnt_index,
+        size_t offset)
+{
+   // get page address in mempool 
+   size_t page_number = PGN_2MB((uintptr_t)buf - (uintptr_t)(m->buf));
+   // get physical address of buffer
+   physaddr_t physaddr = m->phys_paddrs[page_number] + PGOFF_2MB(buf);
+   // add offset and convert to hardware format
+   return cpu_to_le64(physaddr + offset);
 }

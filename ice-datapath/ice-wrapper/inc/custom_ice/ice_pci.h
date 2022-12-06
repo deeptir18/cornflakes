@@ -37,9 +37,3 @@ typedef uint64_t        s64;
 
 #define barrier() asm volatile("" ::: "memory")
 
-static inline void
-ICE_PCI_REG_WRITE(volatile void *reg, uint32_t value)
-{
-	barrier();
-	*(volatile uint32_t *)reg = rte_cpu_to_le_32(value);
-}

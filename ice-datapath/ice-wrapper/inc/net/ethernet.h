@@ -9,7 +9,7 @@
 #include <base/types.h>
 #include <base/compiler.h>
 #include <base/debug.h>
-#include <base/rte_memcpy.h>
+#include <rte_memcpy.h>
 
 #define ETH_ADDR_LEN		6
 #define ETH_TYPE_LEN		2
@@ -41,7 +41,7 @@ static const struct eth_addr eth_addr_broadcast = ETH_ADDR_BROADCAST;
 static inline void
 ether_addr_copy(struct eth_addr *from, struct eth_addr *to)
 {
-    custom_ice_rte_memcpy(to, from, sizeof(struct eth_addr));
+    rte_memcpy(to, from, sizeof(struct eth_addr));
 }
 
 
