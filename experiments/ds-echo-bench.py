@@ -368,9 +368,11 @@ class EchoBench(runner.Experiment):
         filtered_df = df[(df["serialization"] == serialization) &
                          (df["size"] == size) &
                          (df["message_type"] == message_type)]
+
+        num_leaves = utils.parse_num_leaves(message_type)
+        factor_name = utils.parse_factor_name(num_leaves, message_type,
+                size)
         print(size, message_type, serialization)
-        # calculate lowest rate, get p99 and median
-        filtered_df = filtered_df[filtered_df["percent_achieved_rate"] >= .95]
 
         def ourstd(x):
             return np.std(x, ddof=0)
@@ -382,38 +384,30 @@ class EchoBench(runner.Experiment):
                                            "offered_load_pps",
                                             "offered_load_gbps"],
                                            as_index=False).agg(
-            achieved_load_pps_mean=pd.NamedAgg(column="achieved_load_pps",
-                                               aggfunc="mean"),
-            achieved_load_pps_sd=pd.NamedAgg(column="achieved_load_pps",
-                                             aggfunc=ourstd),
-            achieved_load_gbps_mean=pd.NamedAgg(column="achieved_load_gbps",
-                                                aggfunc="mean"),
+            achieved_load_pps_median=pd.NamedAgg(column="achieved_load_pps",
+                                               aggfunc="median"),
+            achieved_load_gbps_median=pd.NamedAgg(column="achieved_load_gbps",
+                                                aggfunc="median"),
             percent_achieved_rate=pd.NamedAgg(column="percent_achieved_rate",
-                                              aggfunc="mean"),
-            achieved_load_gbps_sd=pd.NamedAgg(column="achieved_load_gbps",
-                                              aggfunc=ourstd))
+                                              aggfunc="median"))
 
-        max_achieved_pps = clustered_df["achieved_load_pps_mean"].max()
-        max_achieved_gbps = clustered_df["achieved_load_gbps_mean"].max()
-        std_achieved_pps = clustered_df.loc[clustered_df['achieved_load_pps_mean'].idxmax(),
-                                            'achieved_load_pps_sd']
-        std_achieved_gbps = clustered_df.loc[clustered_df['achieved_load_gbps_mean'].idxmax(),
-                                             'achieved_load_gbps_sd']
+        max_achieved_pps = clustered_df["achieved_load_pps_median"].max()
+        max_achieved_gbps = clustered_df["achieved_load_gbps_median"].max()
         as_one = False
         out.write(str(serialization) + "," + str(message_type) + "," +
                   str(size) + "," +
+                  str(factor_name) + "," +
+                  str(num_leaves) + "," +
                   str(max_achieved_pps) + "," +
-                  str(max_achieved_gbps) + "," +
-                  str(std_achieved_pps) + "," +
-                  str(std_achieved_gbps) + os.linesep)
+                  str(max_achieved_gbps) + os.linesep)
 
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
         # TODO: add post processing based on buffer type
         if total_args.loop_mode == "motivation":
             return
         # need to determine: just knee of curve for each situation
-        header_str = "serialization,message_type,size,"\
-            "maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd" + os.linesep
+        header_str = "serialization,message_type,size,factor_name,num_leaves,"\
+            "maxtputpps,maxtputgbps" + os.linesep
         folder_path = Path(total_args.folder)
         out = open(folder_path / new_logfile, "w")
         df = pd.read_csv(folder_path / logfile)
@@ -448,6 +442,25 @@ class EchoBench(runner.Experiment):
         post_process_log = Path(folder) / post_process_logfile
         max_rates = self.parse_max_rates(utils.yaml_get(loop_yaml,
             "max_rates"))
+
+        if "summary_sizes" in loop_yaml:
+            x_axis_label = utils.yaml_get(loop_yaml, "summary_x_axis")
+            summary_sizes = utils.yaml_get(loop_yaml, "summary_sizes")
+            for total_size in summary_sizes:
+                pdf = plot_path /\
+                    "summary_{}_tput.pdf".format(total_size)
+                total_plot_args = [str(plotting_script),
+                                    str(full_log),
+                                    str(post_process_log),
+                                    str(pdf),
+                                    "foo",
+                                    "list-compare",
+                                    str(total_size),
+                                    x_axis_label,
+                                ]
+                print(" ".join(total_plot_args))
+                sh.run(total_plot_args)
+                
 
 
         # make total plot
