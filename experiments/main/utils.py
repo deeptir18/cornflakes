@@ -17,6 +17,20 @@ NUM_RETRIES = 5
 
 PERCENT_ACHIEVED_CUTOFF = 0.98
 DEFAULT_HISTOGRAM_PRECISION = 1000
+def parse_num_leaves(echo_message_type):
+    if "list" in echo_message_type:
+        params = echo_message_type.split("-")
+        return int(params[1])
+    elif "tree" in echo_message_type:
+        utils.warn("Num leaves not supported for ", echo_message_type)
+        exit(1)
+def parse_factor_name(num_leaves, echo_message_type, total_size):
+    if "list" in echo_message_type:
+        return "{} {}-Byte Elements".format(num_leaves, int(total_size /
+                num_leaves))
+    elif "tree" in echo_message_type:
+        utils.warn("Parse factor name not supported for ", echo_message_type)
+        exit(1)
 
 def parse_cornflakes_size_distr_avg(size_distr):
     params = size_distr.split("-")

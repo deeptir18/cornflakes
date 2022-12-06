@@ -4,6 +4,7 @@ library(ggplot2)
 library(plyr)
 library(tidyr)
 library(extrafont)
+library("stringr")  
 library(showtext)
 library(viridis)
 font_add_google("Fira Sans")
@@ -43,19 +44,42 @@ color_values <- c('cornflakes-dynamic' = '#1b9e77',
                     'capnproto' = '#e7298a',
                     'protobuf' = '#e6ab02')
 options(width=10000)
-levels <- c('capnproto', 'protobuf', 'flatbuffers', 'twocopy', 'onecopy', 'manualzerocopy', 'ideal', 'foo')
+levels <- c('capnproto', 'protobuf', 'flatbuffers', 'twocopy', 'onecopy', 'manualzerocopy', 'ideal', 'cornflakes1c-dynamic', 'cornflakes-dynamic')
 
 # filter the serialization labels based on which are present in data
 unique_serialization_labels <- unique(c(d$serialization))
-print(unique_serialization_labels)
-print(levels[unique_serialization_labels])
+subset_flat <- function(original, subset) {
+    x <- c()
+    for (name in original) {
+        if (name %in% subset) {
+            x <- append(x, name)
+        }
+    }
+    return(x)
+}
 
-shape_values <- shape_values[c(unique_serialization_labels)]
-color_values <- color_values[c(unique_serialization_labels)]
-labels <- labels[c(unique_serialization_labels)]
-#levels <- levels[c(unique_serialization_labels)]
+subset_named <- function(original, subset) {
+    x <- c()
+    attr_name <- attributes(original)$name
+    attrs <- c()
+    for (name in attr_name) {
+        if (name %in% subset) {
+            x <- append(x, original[name])
+            attrs <- append(attrs, name)
+        }
+    }
+    names(x) <- attrs
+    return(x)
+}
+
+color_values <- subset_named(color_values, unique_serialization_labels)
+shape_values <- subset_named(shape_values, unique_serialization_labels)
+cr_labels <- subset_named(cr_labels, unique_serialization_labels)
+anon_labels <- subset_named(anon_labels, unique_serialization_labels)
+levels <- subset_flat(levels, unique_serialization_labels)
 
 d$serialization <- factor(d$serialization, levels = levels)
+d_postprocess$serialization <- factor(d_postprocess$serialization, levels = levels)
 
 base_plot <- function(data, metric,labels ) {
     if (metric == "p99") {
@@ -72,9 +96,7 @@ base_p99_plot <- function(data, y_cutoff) {
                     aes(x = maloadgbps,
                         y = mp99,
                         color = serialization,
-                        shape = serialization,
-                        ymin = mp99 - sdp99,
-                        ymax = mp99 + sdp99)) +
+                        shape = serialization)) +
             coord_cartesian(ylim=c(0, y_cutoff)) +
     labs(x = "Achieved Load (Gbps)", y = "p99 Latency (µs)")
     return(plot)
@@ -83,11 +105,9 @@ base_p99_plot <- function(data, y_cutoff) {
 base_median_plot <- function(data, y_cutoff, x_cutoff) {
     plot <- ggplot(data,
                     aes(x = maloadgbps,
-                        y = avgmedian,
+                        y = mmedian,
                         color = serialization,
-                        shape = serialization,
-                        ymin = avgmedian - sdmedian,
-                        ymax = avgmedian + sdmedian)) +
+                        shape = serialization)) +
             coord_cartesian(ylim=c(0, y_cutoff), expand = FALSE) +
     labs(x = "Offered Load (Gbps)", y = "Median Latency (µs)")
     return(plot)
@@ -112,18 +132,16 @@ label_plot <- function(plot,labels) {
                   legend.margin=margin(0,0,0,0),
                     legend.box.margin=margin(-5,-10,-5,-10),
                 axis.title=element_text(size=11,face="plain", colour="#000000"),
-                  axis.text=element_text(size=11, colour="#000000"))
+                  axis.text=element_text(size=11, colour="#000000")) +
+            guides(colour=guide_legend(nrow=2, byrow=TRUE),
+                   fill=guide_legend(nrow=2, byrow=TRUE),
+                   shape=guide_legend(nrow=2, byrow=TRUE))
+            
     return(plot)
 }
 
 individual_plot <- function(data, metric, total_size, msg_type,labels) {
     data <- subset(data, message_type == msg_type & size == total_size)
-    print(total_size)
-    if (total_size == 4096) {
-        print("reaching x cutoff 4096")
-    } else if (total_size == 512) {
-        print("reaching x cutoff")
-    }
     plot <- base_plot(data, metric,labels)
     print(plot)
     return(plot)
@@ -143,58 +161,53 @@ full_plot <- function(data, metric,labels) {
     print(plot)
     return(plot)
 }
-tput_plot <- function(data,labels) {
-    y_name <- "maxtputgbps"
-    y_label <- "round(maxtputgbps, 2)"
-    y_label_height <- "maxtputgbps + maxtputgbpssd"
-    y_axis <- "Highest Achieved\nLoad (Gbps)"
-    y_min = "maxtputgbps - maxtputgbpssd"
-    y_max = "maxtputgbps + maxtputgbpssd"
+tput_plot <- function(data,labels, x_axis_name) {
+    print(data$maxtputgbps)
     plot <- ggplot(data,
-                    aes_string(x = "message_type",
-                        y=y_name,
-                        fill = "serialization")) +
+                    aes(x = reorder(factor_name, num_leaves),
+                        y=maxtputgbps,
+                        fill = serialization)) +
+            geom_text(position = position_dodge(0.8),
+                      stat = "identity",
+                      aes(y = maxtputgbps + 9.5,
+                      label = round(maxtputgbps, 1)),
+                   size = 2.75,
+                   angle = 70) +
                    expand_limits(y = 0) +
-            # geom_segment( aes_string(x="message_type", xend="message_type", y=
-             #                        "0", yend=y_name), position=position_dodge(0.5), stat="identity") +
-            geom_point( size=1, stroke=1, position=position_dodge(0.5), stat="identity", aes(color=serialization, shape=serialization,fill=serialization)) +
-
-            geom_bar(position=position_dodge(0.5), stat="identity", width = 0.1) +
-            scale_color_manual(values = color_values ,labels = labels) +
-            scale_fill_manual(values = color_values, labels = labels, guide = FALSE) +
-            scale_shape_manual(values = shape_values, labels = labels) +
+            geom_point( size=2, stroke=0.2, position=position_dodge(0.8), stat="identity", aes(color=serialization, shape=serialization,fill=serialization)) +
+            geom_bar(position=position_dodge(0.8), stat="identity", width = 0.05) +
+            guides(colour=guide_legend(nrow=2, byrow=TRUE),
+                   shape=guide_legend(nrow=2, byrow=TRUE)) +
+            scale_color_manual(values = color_values ,labels = labels, breaks = levels) +
+            scale_fill_manual(values = color_values, labels = labels, guide = "none", breaks = levels) +
+            scale_shape_manual(values = shape_values, labels = labels, breaks = levels) +
             scale_y_continuous(expand = expansion(mult = c(0, .2))) +
-            labs(x = "Message Type", y = y_axis) +
+            labs(x = x_axis_name, y = "Highest Achieved\nLoad (Gbps)") +
             theme_light() +
+            scale_x_discrete(labels = function(x) str_wrap(x, width = 12)) +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
                   legend.title = element_blank(),
                   legend.key.size = unit(2, 'mm'),
                   legend.spacing.x = unit(0.1, 'cm'),
+                  legend.spacing.y = unit(0.05, 'cm'),
                   legend.text=element_text(size=11),
-                  legend.margin=margin(0,0,0,0),
                 legend.box.margin=margin(-5,-10,-5,-10),
+                  legend.margin=margin(0,0,0,0),
                   axis.title=element_text(size=11,face="plain", colour="#000000"),
                   axis.text.y=element_text(size=11, colour="#000000"),
-                  axis.text.x=element_text(size=11, colour="#000000", angle=0))
+                  axis.text.x=element_text(size=8, colour="#000000", angle=0))
     print(plot)
     return(plot)
 }
-if (!("ideal" %in% colnames(d))) {
-    #d$serialization <- factor(d$system, levels = c('cereal', 'flatbuffers', 'capnproto', 'protobuf', 'cornflakes1c-dynamic', 'cornflakes-dynamic', 'twocopy','onecopy', 'ideal'))
-} else {
-    #d$serialization <- factor(d$system, levels = c('cereal', 'flatbuffers', 'capnproto', 'protobuf', 'cornflakes1c-dynamic', 'cornflakes-dynamic'))
-}
 summarized <- ddply(d, c("serialization", "size", "message_type", "offered_load_pps", "offered_load_gbps"),
                     summarise,
-                    mavg = mean(avg),
-                    mp99 = mean(p99),
-                    mp999 = mean(p999),
-                    avgmedian = mean(median),
-                    sdp99 = sd(p99),
-                    sdmedian = sd(median),
-                    maloadgbps = mean(achieved_load_gbps),
-                    maload = mean(achieved_load_pps))
+                    mavg = median(avg),
+                    mp99 = median(p99),
+                    mp999 = median(p999),
+                    mmedian = median(median),
+                    maloadgbps = median(achieved_load_gbps),
+                    maload = median(achieved_load_pps))
 
 if (plot_type == "full") {
     plot <- full_plot(summarized, metric,cr_labels)
@@ -217,14 +230,14 @@ if (plot_type == "full") {
     embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
 } else if (plot_type == "list-compare") {
     size_arg <- strtoi(args[6])
-    d_postprocess <- subset(d_postprocess, (message_type == "single") | (message_type == "list-2" ) | (message_type == "list-4") | (message_type == "list-8"))
-    d_postprocess <- subset(d_postprocess, size == size_arg)
-    d_postprocess$message_type <- factor(d_postprocess$message_type, levels = c("single", "list-2", "list-4", "list-8"))
-    plot <- tput_plot(d_postprocess, cr_labels)
+    x_axis_name <- args[7]
+    print(size_arg)
+    print(x_axis_name)
+    plot <- tput_plot(d_postprocess, cr_labels, x_axis_name)
     ggsave("tmp.pdf", plot = plot, width=5, height=2)
     embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
 
-    plot <- tput_plot(d_postprocess, anon_labels)
+    plot <- tput_plot(d_postprocess, anon_labels, x_axis_name)
     ggsave("tmp.pdf", plot = plot, width=5, height=2)
     embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
 } else if (plot_type == "tree-compare") {
