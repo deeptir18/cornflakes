@@ -320,7 +320,7 @@ uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf 
     for (uint16_t i = 0; i < nb_pkts; i++) {
         struct rte_mbuf *first_mbuf = tx_pkts[i];
 
-	rte_pktmbuf_dump(stdout, first_mbuf, 128);
+	/*rte_pktmbuf_dump(stdout, first_mbuf, 128);
 	
         printf("First packet addr: %p\n", first_mbuf);
         printf("[rte_eth_tx_burst_] first mbuf num segs: %u\n", first_mbuf->nb_segs);
@@ -354,7 +354,7 @@ uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf 
         printf("[rte_eth_tx_burst_] Queue: %u, Src IP: %u, dst IP: %u, checksum: %u, udp data len: %u, ID: %u\n", queue_id, ipv4->src_addr, ipv4->dst_addr, ipv4->hdr_checksum, ntohs(udp->dgram_len), *id_ptr);
 	print_ip(ipv4->src_addr);
 	print_ip(ipv4->dst_addr);
-    }
+	}*/
     return rte_eth_tx_burst(port_id, queue_id, tx_pkts, nb_pkts);
 }
 
