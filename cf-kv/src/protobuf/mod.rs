@@ -165,9 +165,15 @@ where
         linked_list_kv_server: &LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
     ) -> Result<kv_messages::GetListResp> {
-        let getlist_request =
+        let getlist_request = {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("Deserialize pkt");
             kv_messages::GetListReq::parse_from_bytes(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
-                .wrap_err("Failed to deserialize proto GetListReq")?;
+                .wrap_err("Failed to deserialize proto GetListReq")?
+        };
+        let getlist_resp = {
+        #[cfg(feature = "profiler")]
+        demikernel::timer!("Set message");
         let values_list = match self.use_linked_list() {
             true => {
                 let range_start = getlist_request.range_start;
@@ -230,6 +236,8 @@ where
         let mut getlist_resp = kv_messages::GetListResp::new();
         getlist_resp.val_list = values_list;
         getlist_resp.id = getlist_request.id;
+        getlist_resp
+        };
         Ok(getlist_resp)
     }
 

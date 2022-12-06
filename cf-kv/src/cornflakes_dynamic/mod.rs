@@ -391,8 +391,18 @@ where
     where
         'kv: 'arena,
     {
-        let mut getlist_req = kv_serializer_hybrid::GetListReq::new_in(arena);
-        getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+        #[cfg(feature = "profiler")]
+        demikernel::timer!("handle_getlist_serialize_and_send");
+        let getlist_req = {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("Deserialize pkt");
+            let mut getlist_req = kv_serializer_hybrid::GetListReq::new_in(arena);
+            getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+            getlist_req
+        };
+        let (mut copy_context, getlist_resp) = {
+        #[cfg(feature = "profiler")]
+        demikernel::timer!("Set message");
         let mut getlist_resp = kv_serializer_hybrid::GetListResp::new_in(arena);
         let mut copy_context = CopyContext::new(arena, datapath)?;
         getlist_resp.set_id(getlist_req.get_id());
@@ -458,6 +468,8 @@ where
                 )?);
             }
         }
+        (copy_context, getlist_resp)
+        };
 
         datapath.queue_cornflakes_obj(
             msg_id,

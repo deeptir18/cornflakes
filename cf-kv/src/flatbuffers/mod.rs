@@ -189,7 +189,16 @@ where
         pkt: &ReceivedPkt<D>,
         builder: &mut FlatBufferBuilder,
     ) -> Result<()> {
-        let getlist_request = root::<cf_kv_fbs::GetListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+        #[cfg(feature = "profiler")]
+        demikernel::timer!("handle_getlist");
+        let getlist_request = {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("Deserialize pkt");
+            root::<cf_kv_fbs::GetListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?
+        };
+        {
+        #[cfg(feature = "profiler")]
+        demikernel::timer!("Set message");
         let key = getlist_request.key().unwrap();
         if self.use_linked_list() {
             let range_start = getlist_request.rangestart();
@@ -259,6 +268,7 @@ where
             };
             let getlist_resp = cf_kv_fbs::GetListResp::create(builder, &getlist_resp_args);
             builder.finish(getlist_resp, None);
+        }
         }
         Ok(())
     }
