@@ -107,6 +107,7 @@ fn main() {
         .allowlist_function("custom_ice_get_txd_avail")
         .allowlist_function("custom_ice_tx_cleanup")
         .allowlist_function("finish_single_transmission")
+        .allowlist_function("advance_tx_id")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .generate()
         .unwrap_or_else(|e| panic!("Failed to generate bindings: {:?}", e));

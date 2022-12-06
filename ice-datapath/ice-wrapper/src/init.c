@@ -106,6 +106,13 @@ size_t get_current_tx_id(struct custom_ice_per_thread_context *per_thread_contex
     return per_thread_context->tx_queue->tx_tail;
 }
 
+size_t advance_tx_id(struct custom_ice_per_thread_context *per_thread_context, uint16_t tx_id) {
+    struct custom_ice_tx_entry *completion_entry;
+
+    completion_entry = &per_thread_context->pending_transmissions[tx_id];
+    return completion_entry->next_id;
+}
+
 size_t get_last_tx_id_needed(
         struct custom_ice_per_thread_context *per_thread_context,
         size_t num_needed) {

@@ -76,6 +76,9 @@ size_t get_last_tx_id_needed(
         struct custom_ice_per_thread_context *per_thread_context,
         size_t num_needed);
 
+size_t advance_tx_id(struct custom_ice_per_thread_context *per_thread_context,
+        uint16_t tx_id);
+
 size_t custom_ice_post_data_segment(
     struct custom_ice_per_thread_context *per_thread_context,
     void *buf_addr,
