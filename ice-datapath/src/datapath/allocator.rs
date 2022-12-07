@@ -110,10 +110,10 @@ impl DatapathMemoryPool for IceMempool {
         }
         let data_pool = self.mempool_as_ice();
         let pgsize = unsafe { access!(data_pool, pgsize, usize) };
-        if pgsize != cornflakes_libos::mem::PGSIZE_1GB {
+        if pgsize != cornflakes_libos::mem::PGSIZE_2MB {
             return vec![];
         }
-        tracing::info!("In get 1g pages");
+        tracing::info!("In get 2mb pages");
         let num_pages = unsafe { access!(data_pool, num_pages, usize) };
         let mempool_start = unsafe { access!(data_pool, buf, usize) };
         (0..num_pages)
@@ -219,7 +219,7 @@ impl DatapathMemoryPool for IceMempool {
     {
         let data = unsafe { ice_bindings::custom_ice_mempool_alloc(self.mempool_as_ice()) };
         if data.is_null() {
-            println!("data is null");
+            //tracing::debug!("Data is null, returning ok none");
             return Ok(None);
         }
         // recover the ref count index

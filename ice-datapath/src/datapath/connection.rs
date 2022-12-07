@@ -1391,7 +1391,6 @@ impl Datapath for IceConnection {
             num_copy_entries = 0;
         }
         let num_required = 1 + num_copy_entries + num_zero_copy_entries;
-
         // determine num tx descriptors available
         let mut txd_avail = unsafe { ice_bindings::custom_ice_get_txd_avail(per_thread_context) as usize };
         let mut cur_tx_id = unsafe { ice_bindings::get_current_tx_id(per_thread_context) };
@@ -1440,11 +1439,11 @@ impl Datapath for IceConnection {
                 let next_id = ice_bindings::custom_ice_post_data_segment(per_thread_context, 
                     custom_ice.data(), custom_ice.mempool(), custom_ice.get_refcnt_index() as _,
                     custom_ice.data_len() as _, *ring_buffer_state.0 as _, ring_buffer_state.1 as _);
-                println!("next id: {}", next_id);
                 *ring_buffer_state.0 = next_id;
             };
             Ok(())
         };
+
 
         // circle back and write packet and object header into first segment
         // optionally write copied data into second segment
@@ -1498,10 +1497,10 @@ impl Datapath for IceConnection {
         if copy_context.data_len() > 0 {
             for serialization_copy_buf in copy_context.copy_buffers_slice().iter() {
                 let buffer = serialization_copy_buf.get_buffer();
-                let mut metadata_mbuf = IceMetadata::Ice(IceCustomMetadata::from_buf(buffer));
+                let mut copy_entry_metadata = IceMetadata::Ice(IceCustomMetadata::from_buf(buffer));
                 unsafe {
                     let next_id = self.post_ice_metadata(
-                        &mut ice_metadata,
+                        &mut copy_entry_metadata,
                         *ring_buffer_state.0,
                         ring_buffer_state.1,
                     )?;
@@ -1784,7 +1783,15 @@ impl Datapath for IceConnection {
     /// Vector of memory pool IDs for mempools that were created (datapath may have a maximum size
     /// for the memory pool).
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {
-        unimplemented!();
+        // use 2MB pages for data, 2MB pages for metadata (?)
+        let actual_size = cornflakes_libos::allocator::align_to_pow2(size);
+        let mempool_params = sizes::MempoolAllocationParams::new(min_elts, PGSIZE_2MB, actual_size)
+            .wrap_err("Incorrect mempool allocation params")?;
+        let data_mempool = IceMempool::new(&mempool_params, false)?;
+        let id = self
+            .allocator
+            .add_mempool(mempool_params.get_item_len(), data_mempool)?;
+        Ok(vec![id])
     }
 
     /// Checks whether datapath has mempool of size size given (must be power of 2).
