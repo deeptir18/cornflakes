@@ -322,25 +322,28 @@ class ScatterGatherIteration(runner.Iteration):
         ret["server_mac"] = config_yaml["hosts"][server_host]["mac"]
         ret["server_ip"] = config_yaml["hosts"][server_host]["ip"]
 
+        ret["echo_str"] = ""
+        ret["with_copy"] = ""
+        ret["refcnt_str"] = ""
+        ret["fake_work_str"] = ""
         if self.system == "echo":
             ret["echo_str"] = " --echo_mode"
-            ret["refcnt_str"] = ""
         elif self.system == "copy":
             ret["with_copy"] = " --with_copy"
-            ret["echo_str"] = ""
-            ret["refcnt_str"] = ""
+        elif self.system == "copy_fakework":
+            ret["with_copy"] = " --with_copy"
+            ret["fake_work_str"] = " --using_fake_work"
+        elif self.system == "zero_copy_fakework":
+            ret["fake_work_str"] = " --using_fake_work"
         elif self.system == "zero_copy_refcnt":
-            ret["echo_str"] = ""
-            ret["with_copy"] = ""
             ret["refcnt_str"] = " --using_ref_counting"
+        elif self.system == "zero_copy_refcnt_fakework":
+            ret["refcnt_str"] = " --using_ref_counting"
+            ret["fake_work_str"] = " --using_fake_work"
         else:
             if self.system != "zero_copy":
                 utils.warn("Unknown system name: ", self.system)
                 exit(1)
-            ret["echo_str"] = ""
-            ret["with_copy"] = ""
-            ret["refcnt_str"] = ""
-
         if (self.recv_pkt_size != 0):
             ret["read_pkt_str"] = " --read_incoming_packet"
             ret["send_packet_size"] = self.recv_pkt_size
@@ -556,7 +559,8 @@ class ScatterGather(runner.Experiment):
             parser.add_argument("--system",
                                 help = "Which mode to run.",
                                 choices = ["copy", "zero_copy", "echo",
-                                "zero_copy_refcnt"])
+                                "zero_copy_refcnt", "zero_copy_fakework",
+                                "copy_fakework", "zero_copy_refcnt_fakework"])
         else:
             parser.add_argument("-l", "--logfile",
                                 help="Logfile name",
@@ -581,6 +585,7 @@ class ScatterGather(runner.Experiment):
             recv_pkt_size, 
             num_server_cores,
             busy_cycles):
+        ds_shape_name = "{} {}-Byte Segments".format(int(num_segments), int(segment_size))
         # TODO: change to take into accout mean
         filtered_df = df[(df.array_size == array_size) &
                          (df.recv_pkt_size == recv_pkt_size) &
@@ -612,31 +617,22 @@ class ScatterGather(runner.Experiment):
             "offered_load_pps",
             "offered_load_gbps",
             ], as_index = False).agg(
-            achieved_load_pps_mean = \
+            achieved_load_pps_median = \
                 pd.NamedAgg(column="achieved_load_pps",
-                aggfunc="mean"),
-            achieved_load_pps_sd = \
-                pd.NamedAgg(column="achieved_load_pps",
-                aggfunc=ourstd),
+                aggfunc="median"),
             percent_achieved_rate= \
                 pd.NamedAgg(column="percent_achieved_rate",
-                aggfunc='mean'),
-            achieved_load_gbps_mean= \
+                aggfunc='median'),
+            achieved_load_gbps_median= \
                 pd.NamedAgg(column="achieved_load_gbps",
-                aggfunc="mean"),
-            achieved_load_gbps_sd = \
-                pd.NamedAgg(column="achieved_load_gbps",
-                aggfunc=ourstd))
-        max_achieved_pps = clustered_df["achieved_load_pps_mean"].max()
-        max_achieved_gbps = clustered_df["achieved_load_gbps_mean"].max()
-        std_achieved_pps = clustered_df.loc[clustered_df['achieved_load_pps_mean'].idxmax(),
-                                            'achieved_load_pps_sd']
-        std_achieved_gbps = clustered_df.loc[clustered_df['achieved_load_gbps_mean'].idxmax(),
-                                             'achieved_load_gbps_sd']
+                aggfunc="median"))
+        max_achieved_pps = clustered_df["achieved_load_pps_median"].max()
+        max_achieved_gbps = clustered_df["achieved_load_gbps_median"].max()
         
         out.write(str(system) + "," + \
                     str(segment_size) + "," + \
                     str(num_segments) + "," + \
+                    str(ds_shape_name) + "," + \
                     str(array_size) + "," + \
                     str(recv_pkt_size) + "," + \
                     str(busy_cycles) + "," + \
@@ -646,13 +642,11 @@ class ScatterGather(runner.Experiment):
                     str(median_mean) + "," + \
                     str(median_sd) + "," + \
                     str(max_achieved_pps) + "," + \
-                    str(max_achieved_gbps) + "," + \
-                    str(std_achieved_pps) + "," + \
-                    str(std_achieved_gbps) + os.linesep)
+                    str(max_achieved_gbps) + os.linesep)
 
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
         utils.info("Running post process analysis")
-        header_str = "system,segment_size,num_segments,array_size,recv_pkt_size,busy_cycles,num_server_cores,mp99,p99sd,mmedian,mediansd,maxtputpps,maxtputgbps,maxtputppssd,maxtputgbpssd" + os.linesep
+        header_str = "system,segment_size,num_segments,ds_shape_name,array_size,recv_pkt_size,busy_cycles,num_server_cores,mp99,p99sd,mmedian,mediansd,maxtputpps,maxtputgbps" + os.linesep
         
         folder_path = Path(total_args.folder)
         out = open(folder_path / new_logfile, "w")
@@ -664,6 +658,8 @@ class ScatterGather(runner.Experiment):
         for system in systems:
             for sgbenchinfo in max_rates_dict:
                 print("Running summary analysis for {}".format(sgbenchinfo))
+                if system == "zero_copy_refcnt":
+                    continue
                 self.run_summary_analysis(df,
                                         out,
                                         system,
@@ -694,7 +690,6 @@ class ScatterGather(runner.Experiment):
             "experiments" / "plotting_scripts" / "sg_bench.R"
 
         metrics = ["median", "p99", "tput"]
-        # TODO: correct this at some point
         # metrics = ["tput"]
         pdf = plot_path /\
                     "heatmap_{}.pdf".format('tput')
@@ -704,7 +699,26 @@ class ScatterGather(runner.Experiment):
                                     pdf), 'tput', "heatmap"]
         self.run_plot_cmd(total_plot_args)
 
+        # for each size, run the `num segments` plot
+        loop_yaml = self.get_loop_yaml()
+        max_rates = self.parse_max_rates(utils.yaml_get(loop_yaml,
+            "max_rates"))
+        if "summary_total_sizes"  in loop_yaml:
+            summary_sizes = utils.yaml_get(loop_yaml, "summary_total_sizes")
+            for total_size in summary_sizes:
+                x_axis_name = "Number of Segments for Packet Sized "\
+                "{} Bytes".format(int(total_size))
+                pdf = plot_path/\
+                        "summary_{}_tput.pdf".format(total_size)
+                total_plot_args = [str(plotting_script), str(full_log),
+                        str(post_process_log), str(pdf), "tput_gbps",
+                        "individual", "num_segments", str(int(total_size)),
+                        x_axis_name]
+                self.run_plot_cmd(total_plot_args)
         return
+
+        
+
         if factor_name == "array_size" or factor_name == "recv_size":
             # run SUMMARY
             for metric in metrics:
