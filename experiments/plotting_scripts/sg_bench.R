@@ -5,6 +5,7 @@ library(plyr)
 library(tidyr)
 library(extrafont)
 library(showtext)
+library("stringr")  
 library(viridis)
 font_add_google("Fira Sans")
 showtext_auto()
@@ -39,18 +40,27 @@ x_axis_name_func <- function(factor) {
     } else if (factor == "recv_size") {
         return("Received Packet Size (Bytes)")
     } else if (factor == "num_segments") {
-        return("Number of Segments")
+        return(args[8])
+        #return("Number of Segments")
     } else if (factor == "total_size") {
         return("Total Packet Size (Bytes)")
     }
-    return("")
+    return(factor)
 }
 
+# shape_values <- c('zero_copy' = 19, 'copy' = 15, 'zero_copy_refcnt' = 18)
 
-shape_values <- c('scatter_gather' = 19, 'copy_each_segment' = 15)
+#color_values <- c('zero_copy' = '#1b9e77', 
+  #                  'copy' = '#d95f02',
+ #                   'zero_copy_refcnt' = '#7570b3' )
+#levels <- c('zero_copy', 'zero_copy_refcnt', 'copy')
 
-color_values <- c('scatter_gather' = '#1b9e77', 
-                    'copy_each_segment' = '#d95f02')
+shape_values <- c('zero_copy' = 19, 'copy' = 15)
+
+color_values <- c('zero_copy' = '#1b9e77', 
+                  'copy' = '#d95f02')
+levels <- c('zero_copy', 'copy')
+
 
 args <- commandArgs(trailingOnly=TRUE)
 d_postprocess <- read.csv(args[2], sep=",", header= TRUE, quote="",  encoding="UTF-8")
@@ -63,20 +73,18 @@ factor <- args[6] # array_size or recv_size or num_segments or total_Size
 # argument 7: if individual -- num segments
 # argument 8: if tput-latency -- array size or recv_size or num_segments or
 # total_size
+d_postprocess$system <- factor(d_postprocess$system, levels = levels)
+d_postprocess$total_size = d_postprocess$segment_size * d_postprocess$num_segments
 
 # convert to us
 d$p99 <- d$p99 / 1000.0
 d$median <- d$median / 1000.0
 d$offered_load_pps <- d$offered_load_pps / 1000000.0
 d$achieved_load_pps <- d$achieved_load_pps / 1000000.0
-d_postprocess$mp99 <- d_postprocess$mp99 / 1000.0
-d_postprocess$p99sd <- d_postprocess$p99sd / 1000.0
-d_postprocess$mmedian <- d_postprocess$mmedian / 1000.0
-d_postprocess$mediansd <- d_postprocess$mediansd / 1000.0
-d_postprocess$maxtputpps <- d_postprocess$maxtputpps / 1000000.0
-d_postprocess$maxtputppssd <- d_postprocess$maxtputppssd / 1000000.0
 
-labels <- c("zero_copy" = "Scatter-Gather", "copy" = "Copy Segments")
+#labels <- c("zero_copy" = "SG with 0 Cache Misses", "copy" = "Copy with Data Cache Misses", 
+#"zero_copy_refcnt" = "SG with 2 Cache Misses")
+labels <- c("zero_copy" = "Scatter Gather", "copy" = "Copy Each Segment")
 
 base_median_plot <- function(data, factor_name, x_axis_name, x_axis_labels) {
     factor_name_string <- sprintf("factor(%s)", factor_name)
@@ -136,37 +144,41 @@ base_p99_plot <- function(data, factor_name, x_axis_name, x_axis_labels) {
 }
 
 base_tput_plot <- function(data, factor_name, x_axis_name, x_axis_labels, metric) {
+    print(data)
     factor_name_string <- sprintf("factor(%s)", factor_name)
+    x_name = sprintf("reorder(ds_shape_name, %s)", factor_name)
     y_name <- "maxtputpps"
     y_label <- "round(maxtputpps, 2)"
     y_label_height <- "maxtputpps + maxtputppssd"
     y_axis <- "Highest Achieved Load\n(100K Requests / sec)"
-    y_min = "maxtputpps - maxtputppssd"
-    y_max = "maxtputpps + maxtputppssd"
     if (metric == "tput_gbps") {
         y_name <- "maxtputgbps"
-        y_label <- "round(maxtputgbps, 2)"
-        y_label_height <- "maxtputgbps + maxtputgbpssd"
-        y_axis <- "Highest Achieved Load\n(Gbps)"
-        y_min = "maxtputgbps - maxtputgbpssd"
-        y_max = "maxtputgbps + maxtputgbpssd"
+        y_label <- "round(maxtputgbps, 1)"
+        y_label_height <- "maxtputgbps + 7"
+        y_axis <- "Highest Achieved\nThroughput (Gbps)"
     }
-    print(data)
+    print(color_values)
     plot <- ggplot(data,
-                   aes_string(x=factor_name_string,
+                   aes_string(x = x_name,
                        y = y_name,
                        fill = "system",
-                       color = "system",
+                       shape = "system",
                        group = "system",
-                       shape = "system")) +
+                       color = "system")) +
                 expand_limits(y = 0) +
-            geom_line(size = 1) + geom_point(size = 4) +
-            scale_shape_manual(values = shape_values, labels = labels) +
-            scale_color_manual(values = color_values, labels = labels) +
-            scale_fill_manual(values = color_values, labels = labels) +
-            scale_x_discrete(labels = x_axis_labels) +
+            geom_line(size = 1) +
+            #geom_bar(position=position_dodge(0.7), stat="identity", width = 0.05) +
+            geom_point(size = 2.75) +
+            #geom_text(position = position_dodge(0.7),
+            #        aes_string(y=y_label_height, label = y_label),
+            #       size = 2.75,
+            #       angle = 70, colour = "black") +
+            scale_shape_manual(values = shape_values, labels = labels, breaks = levels) +
+            scale_color_manual(values = color_values, labels = labels, breaks = levels) +
+            scale_fill_manual(values = color_values, labels = labels, breaks = levels) +
+            scale_x_discrete(labels = function(x) str_wrap(x, width = 12)) +
             # add space for the labels
-            # scale_y_continuous(expand = expansion(mult = c(0, .15))) +
+            scale_y_continuous(expand = expansion(mult = c(0, .15))) +
             labs(x = x_axis_name, y = y_axis)
 }
 
@@ -178,10 +190,13 @@ label_plot <- function(plot) {
                   legend.title = element_blank(),
                   legend.key.size = unit(2, 'mm'),
                   legend.spacing.x = unit(0.1, 'cm'),
-                  legend.text=element_text(size=18),
-                  axis.title=element_text(size=18,face="plain", colour="#000000"),
-                  axis.text.y=element_text(size=18, colour="#000000"),
-                  axis.text.x=element_text(size=16, colour="#000000", angle=0))
+                  legend.text=element_text(size=11),
+                  axis.title=element_text(size=11,face="plain", colour="#000000"),
+                  axis.text.y=element_text(size=11, colour="#000000"),
+                  axis.text.x=element_text(size=8, colour="#000000", angle=0)) +
+                guides(colour = guide_legend(nrow = 1, byrow = TRUE),
+                       fill = guide_legend(nrow = 1, byrow = TRUE),
+                       shape = guide_legend(nrow = 1, byrow = TRUE))
 }
 
 base_p99_tput_latency <- function(data, y_cutoff) {
@@ -254,6 +269,10 @@ base_plot <- function(data, metric, factor_name) {
         base_plot <- label_plot(base_plot)
         return(base_plot)
     } else if (metric == "tput_gbps" | metric == "tput_pps") {
+        x_axis_name <- x_axis_name_func(factor_name)
+        if (factor_name == "num_segments") {
+            x_axis_name = args[8]
+        }
         base_plot <- base_tput_plot(data, factor_name, x_axis_name_func(factor_name), x_axis_labels_func(factor_name), metric)
         base_plot <- label_plot(base_plot)
         return(base_plot)
@@ -422,7 +441,7 @@ if (plot_type == "full") {
     num_segments <- strtoi(args[8])
     if (factor == "num_segments") {
         plot <- individual_plot_segments(d_postprocess, metric, total_size)
-        ggsave("tmp.pdf", width=5, height=3)
+        ggsave("tmp.pdf", width=5, height=2)
         embed_fonts("tmp.pdf", outfile=plot_pdf)
     } else if (factor == "total_size") {
         print(num_segments)

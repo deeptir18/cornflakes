@@ -3425,7 +3425,7 @@ impl Datapath for Mlx5Connection {
         }
 
         let mut dpseg =
-            unsafe { custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), 0) };
+            unsafe { custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), inline_len) };
         let mut completion =
             unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
         // inline or copy header as necessary
