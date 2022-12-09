@@ -28,7 +28,7 @@ else
 fi
 
 if [ $2 = "cfkv" ]; then
-	rate=500000
+	rate=20000
 	if [ $3 = "server" ]; then
 		cmd="sudo env LD_LIBRARY_PATH=/mydata/ygina/cornflakes/dpdk-datapath/3rdparty/dpdk/build/lib/x86_64-linux-gnu /mydata/ygina/cornflakes/target/release/ycsb_mlx5 --config_file $CORNFLAKES_CONFIG --mode server --server_ip 192.168.1.1 --debug_level info --trace $YCSB_LOAD_TRACE --num_values 2 --num_keys 1 --value_size UniformOverSizes-2048 --push_buf_type $push_buf_type --inline_mode $inline_mode --serialization $serialization"
 	elif [ $3 = "client" ]; then
@@ -38,7 +38,7 @@ if [ $2 = "cfkv" ]; then
 		exit 1
 	fi
 else
-	rate=50000
+	rate=20000
 	if [ $2 = "echo1" ]; then
 		message="single"
 	elif [ $2 = "echo2" ]; then
