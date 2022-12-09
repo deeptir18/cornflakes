@@ -147,11 +147,7 @@ size_t custom_ice_post_data_segment(
         // write EOP bit
         td_cmd |= ICE_TX_DESC_CMD_EOP;
         // do rs thresh stuff
-        if (txq->nb_tx_used >= txq->tx_rs_thresh) {
-	    td_cmd |= ICE_TX_DESC_CMD_RS;
-	    /* Update txq RS bit counters */
-	    txq->nb_tx_used = 0;
-	}
+	td_cmd |= ICE_TX_DESC_CMD_RS;
     }
 
     // queue onto tx ring
@@ -207,10 +203,9 @@ int custom_ice_tx_cleanup(struct custom_ice_per_thread_context *per_thread_conte
 	struct custom_ice_tx_entry *completion;
 
 	/* Determine the last descriptor needing to be cleaned */
-	desc_to_clean_to = (uint16_t)(last_desc_cleaned + txq->tx_rs_thresh);
+	desc_to_clean_to = (uint16_t)(last_desc_cleaned + 1);
 	if (desc_to_clean_to >= nb_tx_desc)
 		desc_to_clean_to = (uint16_t)(desc_to_clean_to - nb_tx_desc);
-
 	/* Check to make sure the last descriptor to clean is done */
 	desc_to_clean_to = completion_ring[desc_to_clean_to].last_id;
 	if (!(txd[desc_to_clean_to].cmd_type_offset_bsz &
@@ -248,7 +243,7 @@ int custom_ice_tx_cleanup(struct custom_ice_per_thread_context *per_thread_conte
 	/* Update the txq to reflect the last descriptor that was cleaned */
 	txq->last_desc_cleaned = desc_to_clean_to;
 	txq->nb_tx_free = (uint16_t)(txq->nb_tx_free + nb_tx_to_clean);
-
+	txq->nb_tx_used = (uint16_t)(txq->nb_tx_used - nb_tx_to_clean);
 	return 0;
 }
 

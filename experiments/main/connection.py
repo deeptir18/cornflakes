@@ -15,6 +15,9 @@ from main import utils
 class ConnectionWrapper(Connection):
     def __init__(self, addr, user=None, port=22, key=None):
         connect_kwargs = {}
+        connect_kwargs["gss_auth"] = True
+        connect_kwargs["gss_deleg_creds"] = True
+        connect_kwargs["gss_kex"] = True
         utils.debug(addr, user, port, key)
         if key is not None:
             connect_kwargs["key_filename"] = [key]
