@@ -74,12 +74,12 @@ where
                 SimpleMessageType::Single => {
                     let object_deser = {
                         #[cfg(feature = "profiler")]
-                        demikernel::timer!("Deserialize pkt");
+                        demikernel::timer!("Allocate SingleBufferFB and deserialize");
                         root::<echo_fb::SingleBufferFB>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?
                     };
                     {
                         #[cfg(feature = "profiler")]
-                        demikernel::timer!("Set message");
+                        demikernel::timer!("Allocate SingleBufferFB and set value");
                         let args = echo_fb::SingleBufferFBArgs {
                             message: Some(
                                 self.builder
@@ -94,12 +94,12 @@ where
                 SimpleMessageType::List(list_elts) => {
                     let object_deser = {
                         #[cfg(feature = "profiler")]
-                        demikernel::timer!("Deserialize pkt");
+                        demikernel::timer!("Allocate ListFB and deserialize");
                         root::<echo_fb::ListFB>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?
                     };
                     {
                         #[cfg(feature = "profiler")]
-                        demikernel::timer!("Set message");
+                        demikernel::timer!("Allocate SingleBufferFB and set values");
                         let args_vec: Vec<echo_fb::SingleBufferFBArgs> = (0..list_elts)
                             .map(|idx| echo_fb::SingleBufferFBArgs {
                                 message: Some(self.builder.create_vector_direct::<u8>(
@@ -161,14 +161,10 @@ where
                     }
                 },
             }
-            {
-                #[cfg(feature = "profiler")]
-                demikernel::timer!("queue_single_buffer_with_copy");
-                datapath.queue_single_buffer_with_copy(
-                    (pkt.msg_id(), pkt.conn_id(), &self.builder.finished_data()),
-                    i == pkts_len - 1,
-                )?;
-            }
+            datapath.queue_single_buffer_with_copy(
+                (pkt.msg_id(), pkt.conn_id(), &self.builder.finished_data()),
+                i == pkts_len - 1,
+            )?;
         }
         Ok(())
     }

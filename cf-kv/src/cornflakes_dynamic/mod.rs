@@ -395,17 +395,19 @@ where
         demikernel::timer!("handle_getlist_serialize_and_send");
         let getlist_req = {
             #[cfg(feature = "profiler")]
-            demikernel::timer!("Deserialize pkt");
+            demikernel::timer!("Allocate GetListReq and deserialize");
             let mut getlist_req = kv_serializer_hybrid::GetListReq::new_in(arena);
             getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
             getlist_req
         };
-        let (mut copy_context, getlist_resp) = {
-        #[cfg(feature = "profiler")]
-        demikernel::timer!("Set message");
-        let mut getlist_resp = kv_serializer_hybrid::GetListResp::new_in(arena);
         let mut copy_context = CopyContext::new(arena, datapath)?;
-        getlist_resp.set_id(getlist_req.get_id());
+        let mut getlist_resp = {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("Allocate GetListResp");
+            let mut getlist_resp = kv_serializer_hybrid::GetListResp::new_in(arena);
+            getlist_resp.set_id(getlist_req.get_id());
+            getlist_resp
+        };
 
         if self.use_linked_list() {
             let range_start = getlist_req.get_range_start();
@@ -451,25 +453,31 @@ where
                 idx += 1;
             }
         } else {
-            let value_list = match list_kv_server.get(getlist_req.get_key().to_str()?) {
-                Some(v) => v,
-                None => {
-                    bail!("Could not find value for key: {:?}", getlist_req.get_key());
+            let value_list = {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("Get value from kv server without linked list");
+                match list_kv_server.get(getlist_req.get_key().to_str()?) {
+                    Some(v) => v,
+                    None => {
+                        bail!("Could not find value for key: {:?}", getlist_req.get_key());
+                    }
                 }
             };
 
-            getlist_resp.init_val_list(value_list.len(), arena);
-            let list = getlist_resp.get_mut_val_list();
-            for value in value_list.iter() {
-                list.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
-                    value.as_ref(),
-                    datapath,
-                    &mut copy_context,
-                )?);
+            {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("Set values in GetListResp");
+                getlist_resp.init_val_list(value_list.len(), arena);
+                let list = getlist_resp.get_mut_val_list();
+                for value in value_list.iter() {
+                    list.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                        value.as_ref(),
+                        datapath,
+                        &mut copy_context,
+                    )?);
+                }
             }
         }
-        (copy_context, getlist_resp)
-        };
 
         datapath.queue_cornflakes_obj(
             msg_id,

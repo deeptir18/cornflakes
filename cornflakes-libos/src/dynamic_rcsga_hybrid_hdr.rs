@@ -354,6 +354,8 @@ where
         datapath: &mut D,
         copy_context: &mut CopyContext<'a, D>,
     ) -> Result<Self> {
+        #[cfg(feature = "profiler")]
+        demikernel::timer!("Create new CFBytes");
         if copy_context.should_copy(ptr) {
             let copy_context_ref = copy_context.copy(ptr, datapath)?;
             return Ok(CFBytes::Copied(copy_context_ref));

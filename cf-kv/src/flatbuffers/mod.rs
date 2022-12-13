@@ -193,12 +193,9 @@ where
         demikernel::timer!("handle_getlist");
         let getlist_request = {
             #[cfg(feature = "profiler")]
-            demikernel::timer!("Deserialize pkt");
+            demikernel::timer!("Allocate GetListReq and deserialize");
             root::<cf_kv_fbs::GetListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?
         };
-        {
-        #[cfg(feature = "profiler")]
-        demikernel::timer!("Set message");
         let key = getlist_request.key().unwrap();
         if self.use_linked_list() {
             let range_start = getlist_request.rangestart();
@@ -246,12 +243,19 @@ where
                 idx += 1;
             }
         } else {
-            let vals = match list_kv_server.get(key) {
-                Some(v) => v,
-                None => {
-                    bail!("Cannot find value for key in KV store: {:?}", key);
+            let vals = {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("Get value from kv server without linked list");
+                match list_kv_server.get(key) {
+                    Some(v) => v,
+                    None => {
+                        bail!("Cannot find value for key in KV store: {:?}", key);
+                    }
                 }
             };
+            {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("Allocate GetListResp and set values");
             let args_vec: Vec<cf_kv_fbs::ValueArgs> = vals
                 .iter()
                 .map(|v| cf_kv_fbs::ValueArgs {
@@ -268,7 +272,7 @@ where
             };
             let getlist_resp = cf_kv_fbs::GetListResp::create(builder, &getlist_resp_args);
             builder.finish(getlist_resp, None);
-        }
+            }
         }
         Ok(())
     }

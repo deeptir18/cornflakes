@@ -77,26 +77,21 @@ where
     ) -> Result<()> {
         let end = sga.len();
         for (i, pkt) in sga.into_iter().enumerate() {
-            let (end_batch, message_type, mut copy_context) = {
-                #[cfg(feature = "profiler")]
-                demikernel::timer!("Loop overhead");
-                let end_batch = i == (end - 1);
-                let message_type = read_message_type(&pkt)?;
-                let copy_context = CopyContext::new(arena, datapath)?;
-                (end_batch, message_type, copy_context)
-            };
+            let end_batch = i == (end - 1);
+            let message_type = read_message_type(&pkt)?;
+            let mut copy_context = CopyContext::new(arena, datapath)?;
             match message_type {
                 SimpleMessageType::Single => {
                     let single_deser = {
                         #[cfg(feature = "profiler")]
-                        demikernel::timer!("Deserialize pkt");
+                        demikernel::timer!("Allocate SingleBufferCF and deserialize");
                         let mut single_deser = echo_messages_hybrid::SingleBufferCF::new_in(arena);
                         single_deser.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
                         single_deser
                     };
                     let single_ser = {
                         #[cfg(feature = "profiler")]
-                        demikernel::timer!("Set message");
+                        demikernel::timer!("Allocate ListCF and set value");
                         let mut single_ser = echo_messages_hybrid::SingleBufferCF::new_in(arena);
                         single_ser.set_message(dynamic_rcsga_hybrid_hdr::CFBytes::new(
                             single_deser.get_message().as_ref(),
@@ -106,22 +101,18 @@ where
                         tracing::debug!(set_msg =? single_ser.get_message().as_ref());
                         single_ser
                     };
-                    {
-                        #[cfg(feature = "profiler")]
-                        demikernel::timer!("queue_cornflakes_obj");
-                        datapath.queue_cornflakes_obj(
-                            pkt.msg_id(),
-                            pkt.conn_id(),
-                            &mut copy_context,
-                            single_ser,
-                            end_batch,
-                        )?;
-                    }
+                    datapath.queue_cornflakes_obj(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        &mut copy_context,
+                        single_ser,
+                        end_batch,
+                    )?;
                 }
                 SimpleMessageType::List(_list_elts) => {
                     let list_deser = {
                         #[cfg(feature = "profiler")]
-                        demikernel::timer!("Deserialize pkt");
+                        demikernel::timer!("Allocate ListCF and deserialize");
                         let mut list_deser =
                             echo_messages_hybrid::ListCF::<Self::Datapath>::new_in(arena);
                         list_deser.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
@@ -129,7 +120,7 @@ where
                     };
                     let list_ser = {
                         #[cfg(feature = "profiler")]
-                        demikernel::timer!("Set message");
+                        demikernel::timer!("Allocate ListCF and set values");
                         let mut list_ser =
                             echo_messages_hybrid::ListCF::<Self::Datapath>::new_in(arena);
                         list_ser.init_messages(list_deser.get_messages().len(), arena);
@@ -144,17 +135,13 @@ where
                         list_ser
                     };
 
-                    {
-                        #[cfg(feature = "profiler")]
-                        demikernel::timer!("queue_cornflakes_obj");
-                        datapath.queue_cornflakes_obj(
-                            pkt.msg_id(),
-                            pkt.conn_id(),
-                            &mut copy_context,
-                            list_ser,
-                            end_batch,
-                        )?;
-                    }
+                    datapath.queue_cornflakes_obj(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        &mut copy_context,
+                        list_ser,
+                        end_batch,
+                    )?;
                 }
                 SimpleMessageType::Tree(tree_depth) => match tree_depth {
                     TreeDepth::One => {
