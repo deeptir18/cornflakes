@@ -31,6 +31,7 @@ metric <- args[4]
 plot_type <- args[5]
 # argument 6: if individual -- size
 # argument 7: if individual -- num_values
+
 d <- d[ which(d$percent_achieved_rate > 0.95),]
 
 # cut out all data where the percentachieved is less than .95
@@ -62,6 +63,12 @@ color_values <- c('capnproto' = '#e7298a',
                   'cornflakes1c-dynamic' = '#d95f02',
                   'cornflakes-dynamic' = '#1b9e77')
 levels <- c('capnproto', 'protobuf', 'flatbuffers', 'redis', 'cornflakes1c-dynamic', 'cornflakes-dynamic')
+if (plot_type == "individual") {
+    levels <- c('cornflakes-dynamic', 'cornflakes1c-dynamic', 'redis', 'flatbuffers', 'protobuf', 'capnproto')
+}
+if (plot_type == "individual-retwis") {
+    levels <- c('cornflakes-dynamic', 'cornflakes1c-dynamic', 'redis', 'flatbuffers', 'protobuf', 'capnproto')
+}
 # filter the serialization labels based on which are present in data
 unique_serialization_labels <- unique(c(d$serialization))
 subset_flat <- function(original, subset) {
@@ -130,7 +137,7 @@ base_pps_p99_plot <- function(data, x_cutoff) {
                         color = serialization,
                         shape = serialization)) +
             coord_cartesian(xlim=c(0, x_cutoff), ylim = c(0, 225)) +
-    labs(y = "Achieved Load (1000 Packets Per Second)", x = "p99 latency (µs)")
+    labs(y = "Achieved Load\n(1000 Packets Per Second)", x = "p99 latency (µs)")
     return(plot)
 }
 base_p99_plot <- function(data, x_cutoff) {
@@ -168,7 +175,7 @@ base_median_plot <- function(data, x_cutoff) {
 
 label_plot <- function(plot, labels) {
     plot <- plot +
-            geom_point(size=1.5) +
+            geom_point(size=1.75) +
             geom_line(linewidth = 0.5, aes(color=serialization), orientation = "y") +
             scale_shape_manual(values = shape_values, labels = labels, breaks = levels) +
             scale_color_manual(values = color_values ,labels = labels, breaks = levels) +
@@ -181,15 +188,15 @@ label_plot <- function(plot, labels) {
                   legend.title = element_blank(),
                   legend.key.size = unit(2, 'mm'),
                   legend.box="vertical",
-                  legend.spacing.x = unit(0.1, 'cm'),
+                  legend.spacing.x = unit(0.5, 'cm'),
                   legend.spacing.y = unit(0.05, 'cm'),
-                  legend.text=element_text(size=11),
-                  axis.title=element_text(size=11,face="plain", colour="#000000"),
-                  axis.text=element_text(size=11, colour="#000000"),
+                  legend.text=element_text(size=15),
+                  axis.title=element_text(size=15,face="plain", colour="#000000"),
+                  axis.text=element_text(size=15, colour="#000000"),
                   legend.title.align=0.5,
                   legend.margin=margin(0,0,0,0),
                     legend.box.margin=margin(-5,-10,-5,-10)) +
-            guides(colour=guide_legend(nrow=2, byrow=TRUE),
+            guides(colour=guide_legend(nrow=2, byrow=TRUE, override.aes = list(size = 3)),
                    fill=guide_legend(nrow=2, byrow=TRUE),
                    shape=guide_legend(nrow=2, byrow=TRUE))
             
@@ -261,8 +268,6 @@ tput_plot <- function(data, x_label, vary_size_plot, labels) {
     plot <- plot + expand_limits(y = 0) +
             geom_point(size = 2, stroke=0.2, position=position_dodge(0.8), stat="identity", aes(color=serialization, shape=serialization,fill=serialization, size=serialization)) +
             geom_bar(position=position_dodge(0.8), stat="identity", width = 0.05) +
-            guides(colour=guide_legend(nrow=2, byrow=TRUE),
-                   shape=guide_legend(nrow=2, byrow=TRUE)) +
             scale_color_manual(values = color_values ,labels = labels, breaks=levels) +
             scale_fill_manual(values = color_values, labels = labels, guide = "none", breaks=levels) +
             scale_shape_manual(values = shape_values, labels = labels, breaks=levels) +
@@ -282,6 +287,9 @@ tput_plot <- function(data, x_label, vary_size_plot, labels) {
                   axis.text.x=element_text(size=8, colour="#000000", angle=0),
                   legend.margin=margin(0,0,0,0),
                   legend.box.margin=margin(-5,-10,-5,-10))
+            guides(colour=guide_legend(nrow=2, byrow=TRUE, override.aes = list(size = 5)),
+                   fill=guide_legend(nrow=2, byrow=TRUE),
+                   shape=guide_legend(nrow=2, byrow=TRUE))
     print(plot)
     return(plot)
 }
