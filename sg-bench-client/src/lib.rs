@@ -62,13 +62,14 @@ fn get_starting_position(
     total_clients: usize,
     total_threads: usize,
     num_regions: usize,
+    num_refcnt_arrays: usize,
 ) -> Result<usize> {
     // divide regions into client_id * thread_id groups
     // if there are 4 clients and 8 threads each: 32 starting positions
     let total_client_threads = total_clients * total_threads;
     let this_position = client_id * total_threads + thread_id;
-    let region_size = num_regions / total_client_threads;
-    return Ok(this_position * region_size);
+    return Ok(this_position * (num_refcnt_arrays / total_client_threads)
+        + this_position * (num_regions / total_client_threads));
 }
 
 impl<D> SgBenchClient<D>
@@ -87,6 +88,7 @@ where
         client_id: usize,
         total_threads: usize,
         total_clients: usize,
+        num_refcnt_arrays: usize,
     ) -> Result<Self> {
         let server_payload_regions: Vec<Bytes> = match cfg!(debug_assertions) {
             true => {
@@ -95,12 +97,12 @@ where
                     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
                     'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
                 ];
-                for seg in 0..(array_size / segment_size) {
-                    let letter = alphabet[seg % alphabet.len()];
+                for physical_seg in 0..(array_size / segment_size) {
+                    let letter = alphabet[physical_seg % alphabet.len()];
                     let chars: Vec<u8> =
                         std::iter::repeat(letter as u8).take(segment_size).collect();
                     let bytes = Bytes::copy_from_slice(chars.as_slice());
-                    server_payload_regions[seg] = bytes;
+                    server_payload_regions[physical_seg] = bytes;
                 }
                 server_payload_regions
             }
@@ -117,13 +119,10 @@ where
             total_clients,
             total_threads,
             array_size / segment_size,
+            num_refcnt_arrays,
         )?;
-        let mut cur_region_idx = unsafe { REGION_ORDER[0] };
-        for _ in 0..starting_offset {
-            cur_region_idx = unsafe { REGION_ORDER[cur_region_idx] };
-        }
-
-        let mut cur_region_idx_local = cur_region_idx;
+        let cur_region_idx = starting_offset;
+        let mut cur_region_idx_local = starting_offset;
 
         // (3) with starting position, num segments, construct the packet
         let min_send_size = REQUEST_SEGLIST_OFFSET_PADDING_SIZE + 8 * num_segments;
@@ -138,34 +137,39 @@ where
                 .collect(),
             false => Vec::default(),
         };
+        let num_virtual_segments = unsafe { REGION_ORDER.len() };
         for _ in 0..max_num_requests {
             if cfg!(debug_assertions) {
                 let mut segment_indices = Vec::with_capacity(num_segments);
                 for _ in 0..num_segments {
-                    cur_region_idx_local = unsafe { REGION_ORDER[cur_region_idx_local] };
-                    segment_indices.push(cur_region_idx);
+                    let virtual_index = unsafe { REGION_ORDER[cur_region_idx_local] };
+                    segment_indices.push(virtual_index);
+                    cur_region_idx_local += 1;
+                    if cur_region_idx_local == num_virtual_segments {
+                        cur_region_idx_local = 0;
+                    }
                 }
                 request_indices.push(segment_indices);
             }
         }
 
         Ok(SgBenchClient {
-            server_payload_regions: server_payload_regions,
-            request_indices: request_indices,
-            num_segments: num_segments,
-            segment_size: segment_size,
-            echo_mode: echo_mode,
+            server_payload_regions,
+            request_indices,
+            num_segments,
+            segment_size,
+            echo_mode,
             received: 0,
             num_retried: 0,
             num_timed_out: 0,
             last_sent_id: 0,
-            server_addr: server_addr,
+            server_addr,
             rtts: ManualHistogram::new(max_num_requests),
             _datapath: PhantomData::default(),
-            send_packet_size: send_packet_size,
-            min_send_size: min_send_size,
-            cur_region_idx: cur_region_idx,
-            padding: padding,
+            send_packet_size,
+            min_send_size,
+            cur_region_idx,
+            padding,
             last_sent_bytes: Bytes::default(),
         })
     }
@@ -231,8 +235,11 @@ where
             bytes.put_u8(0);
         }
         for _ in 0..self.num_segments {
-            self.cur_region_idx = unsafe { REGION_ORDER[self.cur_region_idx] };
-            bytes.put_u64_le(self.cur_region_idx as u64);
+            let virtual_segment = unsafe { REGION_ORDER[self.cur_region_idx] };
+            if self.cur_region_idx == unsafe { REGION_ORDER.len() } {
+                self.cur_region_idx = 0;
+            }
+            bytes.put_u64_le(virtual_segment as u64);
         }
         bytes.put(self.padding.as_slice());
         self.last_sent_bytes = bytes.freeze();
@@ -269,11 +276,12 @@ where
                 }
                 false => {
                     let seg_sequence = &self.request_indices[sga.msg_id() as usize];
-                    for (idx, seg) in seg_sequence.iter().enumerate() {
+                    for (idx, virtual_seg) in seg_sequence.iter().enumerate() {
+                        let seg = virtual_seg % self.server_payload_regions.len();
                         let msg_to_check = &sga.seg(0).as_ref()[(RESPONSE_DATA_OFF
                             + idx * self.segment_size)
                             ..(RESPONSE_DATA_OFF + (idx + 1) * self.segment_size)];
-                        let expected = &self.server_payload_regions[*seg];
+                        let expected = &self.server_payload_regions[seg];
                         ensure!(
                             msg_to_check == expected,
                             format!("Expected {:?}, got {:?}", expected, msg_to_check)

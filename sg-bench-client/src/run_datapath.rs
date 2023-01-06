@@ -2,7 +2,7 @@ use color_eyre::eyre::Result;
 use cornflakes_libos::loadgen::request_schedule::DistributionType;
 use cornflakes_utils::TraceLevel;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{seq::SliceRandom, thread_rng, Rng, SeedableRng};
 use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
@@ -27,7 +27,7 @@ macro_rules! run_client(
             addresses,
         )?;
         let mut threads: Vec<std::thread::JoinHandle<Result<cornflakes_libos::loadgen::client_threads::ThreadStats>>> = vec![];
-        let region_order = get_region_order($opt.random_seed, $opt.array_size / $opt.segment_size)?;
+        let region_order = get_region_order($opt.random_seed, $opt.array_size / $opt.segment_size, $opt.num_refcnt_arrays)?;
         unsafe {
         REGION_ORDER = region_order.leak();
         }
@@ -62,7 +62,7 @@ macro_rules! run_client(
                 )?;
 
                 connection.set_copying_threshold(usize::MAX);
-                let mut sg_bench_client = SgBenchClient::new(server_addr_clone, opt_clone.segment_size, opt_clone.echo_mode , opt_clone.num_segments, opt_clone.array_size, opt_clone.send_packet_size,max_num_requests, i, opt_clone.client_id, opt_clone.num_threads, opt_clone.num_clients)?;
+                let mut sg_bench_client = SgBenchClient::new(server_addr_clone, opt_clone.segment_size, opt_clone.echo_mode , opt_clone.num_segments, opt_clone.array_size, opt_clone.send_packet_size,max_num_requests, i, opt_clone.client_id, opt_clone.num_threads, opt_clone.num_clients, opt_clone.num_refcnt_arrays)?;
 
                 cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut sg_bench_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, (opt_clone.num_segments * opt_clone.segment_size) as _, schedule, opt_clone.num_threads as _)
             }));
@@ -90,7 +90,11 @@ macro_rules! run_client(
     }
 );
 
-pub fn get_region_order(random_seed: usize, num_regions: usize) -> Result<Vec<usize>> {
+pub fn get_region_order(
+    random_seed: usize,
+    num_regions: usize,
+    num_refcnt_arrays: usize,
+) -> Result<Vec<usize>> {
     let mut r = StdRng::seed_from_u64(random_seed as u64);
     let mut indices: Vec<usize> = (0..num_regions).collect();
     let mut ret: Vec<usize> = (0..num_regions).collect();
@@ -104,7 +108,29 @@ pub fn get_region_order(random_seed: usize, num_regions: usize) -> Result<Vec<us
         ret[i - 1] = indices[i];
     }
     ret[num_regions - 1] = indices[0];
-    return Ok(ret);
+
+    // create num regions random sequences from 0..num_refcnt_arrays
+    let mut random_sequences: Vec<Vec<usize>> = Vec::with_capacity(num_regions);
+    for _ in 0..num_regions {
+        let mut arrays: Vec<usize> = (0..num_refcnt_arrays).collect();
+        let slice = arrays.as_mut_slice();
+        let mut rng = thread_rng();
+        slice.shuffle(&mut rng);
+        random_sequences.push(arrays);
+    }
+    let mut final_indices_order: Vec<usize> = (0..num_regions * num_refcnt_arrays).collect();
+    let mut cur_region_idx = 0;
+    for region in 0..num_regions {
+        let random_sequence = &random_sequences[region];
+        for refcnt_index in random_sequence.iter() {
+            cur_region_idx = ret[cur_region_idx];
+            // corresponding physical segment is:
+            // physical segment = virtual segment % cur_region_idx
+            let virtual_segment = num_regions * refcnt_index + cur_region_idx;
+            final_indices_order.push(virtual_segment);
+        }
+    }
+    return Ok(final_indices_order);
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -192,4 +218,9 @@ pub struct SgBenchOpt {
     pub echo_mode: bool,
     #[structopt(long = "time", help = "max time to run exp for", default_value = "30")]
     pub total_time: usize,
+    #[structopt(
+        long = "num_refcnt_arrays",
+        help = "Multiplicative factor to define number of refcounts"
+    )]
+    pub num_refcnt_arrays: usize,
 }
