@@ -84,6 +84,7 @@ class ScatterGatherIteration(runner.Iteration):
         self.client_rates = client_rates
         self.num_threads = num_threads
         self.segment_size = segment_size
+        self.refcnt_factor = parse_refcnt_factor_from_system(system_name)
         self.num_segments = num_segments
         self.trial = trial
         self.array_size = array_size
@@ -177,7 +178,7 @@ class ScatterGatherIteration(runner.Iteration):
     
     def get_recv_pkt_size(self):
         return self.recv_pkt_size
-    
+
     def get_array_size(self):
         return self.array_size
     
@@ -247,7 +248,7 @@ class ScatterGatherIteration(runner.Iteration):
     
     def get_segment_size_string(self):
         return "segment_size_{}".format(self.segment_size)
-    
+
     def get_array_size_string(self):
         return "array_size_{}".format(self.array_size)
     
@@ -321,25 +322,19 @@ class ScatterGatherIteration(runner.Iteration):
         ret["busy_cycles"] = self.busy_cycles
         ret["server_mac"] = config_yaml["hosts"][server_host]["mac"]
         ret["server_ip"] = config_yaml["hosts"][server_host]["ip"]
+        ret["num_refcnt_arrays"] = self.refcnt_factor
 
         ret["echo_str"] = ""
         ret["with_copy"] = ""
         ret["refcnt_str"] = ""
-        ret["fake_work_str"] = ""
         if self.system == "echo":
             ret["echo_str"] = " --echo_mode"
         elif self.system == "copy":
             ret["with_copy"] = " --with_copy"
-        elif self.system == "copy_fakework":
-            ret["with_copy"] = " --with_copy"
-            ret["fake_work_str"] = " --using_fake_work"
-        elif self.system == "zero_copy_fakework":
-            ret["fake_work_str"] = " --using_fake_work"
-        elif self.system == "zero_copy_refcnt":
+        elif "refcnt" in self.system:
+            # system name could be zero_copy_refcnt_{X} where X is the refcnt
+            # factor
             ret["refcnt_str"] = " --using_ref_counting"
-        elif self.system == "zero_copy_refcnt_fakework":
-            ret["refcnt_str"] = " --using_ref_counting"
-            ret["fake_work_str"] = " --using_fake_work"
         else:
             if self.system != "zero_copy":
                 utils.warn("Unknown system name: ", self.system)

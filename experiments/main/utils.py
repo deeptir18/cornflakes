@@ -17,6 +17,12 @@ NUM_RETRIES = 5
 
 PERCENT_ACHIEVED_CUTOFF = 0.98
 DEFAULT_HISTOGRAM_PRECISION = 1000
+def parse_refcnt_factor_from_system(system_name):
+    if "refcnt" in system_name:
+        params = system_name.split("_")
+        return params[-1]
+    else:
+        return 1
 def parse_num_leaves(echo_message_type):
     if "list" in echo_message_type:
         params = echo_message_type.split("-")
