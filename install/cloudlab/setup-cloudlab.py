@@ -203,9 +203,15 @@ def main():
     parser.add_argument('--clone_with_ssh',
                         action='store_true',
                         help = "Clones cornflakes into machines with ssh")
-    parser.add_argument('--basic_setup',
+    parser.add_argument('--setup_mount',
                         action='store_true',
                         help = "Runs commands for basic setup.")
+    parser.add_argument('--clone_cornflakes',
+                        action='store_true',
+                        help = "Runs commands to clone cornflakes")
+    parser.add_argument('--install_deps',
+                        action='store_true',
+                        help = "Runs commands for installing dependencies.")
     parser.add_argument('--generate_config',
                         action='store_true',
                         help = "Generate config and store on machines.")
@@ -231,10 +237,20 @@ def main():
     for i in range(1, len(args.clients) + 1):
         machine_conns[f"client{i}"] = setup_conn(args, f"client{i}", args.clients[i-1])
 
-    if args.basic_setup:
-        setup_machine(args, "server", args.server, machine_conns)
+    if args.setup_mount:
+        setup_mount(args, "server", args.server, machine_conns)
         for i in range(1, len(args.clients) + 1):
-            setup_machine(args, f"client{i}", args.clients[i-1], machine_conns)
+            setup_mount(args, f"client{i}", args.clients[i-1], machine_conns)
+
+    if args.clone_cornflakes:
+        clone_cornflakes(args, "server", args.server, machine_conns)
+        for i in range(1, len(args.clients) + 1):
+            clone_cornflakes(args, f"client{i}", args.clients[i-1], machine_conns)
+
+    if args.install_deps:
+        install_deps(args, "server", args.server, machine_conns)
+        for i in range(1, len(args.clients) + 1):
+            install_deps(args, f"client{i}", args.clients[i-1], machine_conns)
    
     # query network configuration & create configuration yaml
     if args.generate_config:
@@ -266,10 +282,9 @@ def setup_conn(args, machine_name, machine_ip):
                                 args.cloudlab_key)
     return conn
 
-def setup_machine(args, machine_name, machine_ip, machine_conns):
-    agenda.task(f"[{machine_name}: {machine_ip}] setup machine")
+def setup_mount(args, machine_name, machine_ip, machine_conns):
+    agenda.task(f"[{machine_name}: {machine_ip}] setup mount")
     conn = machine_conns[machine_name]
-
     # create folder with mount
     agenda.subtask(f"[{machine_name}: {machine_ip}] creating "\
     f"{args.mount_file}/{args.user}")
@@ -282,26 +297,41 @@ def setup_machine(args, machine_name, machine_ip, machine_conns):
     conn.run(f"mkdir {args.mount_file}/{args.user}/packages", quiet = True)
     conn.run(f"mkdir {args.mount_file}/{args.user}/config", quiet = True)
 
-
-    # clone cornflakes
-    agenda.subtask(f"[{machine_name}: {machine_ip}] cloning cornflakes")
+def clone_cornflakes(args, machine_name, machine_ip, machine_conns):
+    agenda.task(f"[{machine_name}: {machine_ip}] clone cornflakes")
+    conn = machine_conns[machine_name]
     user_wd = f"{args.mount_file}/{args.user}"
     cornflakes_dir = f"{args.mount_file}/{args.user}/cornflakes"
     packages_dir = f"{args.mount_file}/{args.user}/packages"
+    
     if conn.file_exists(cornflakes_dir):
         conn.run(f"rm -rf {cornflakes_dir}")
     if args.clone_with_ssh:
         # authenticate with git first
         conn.run(f"git -T git@github.com -o StrictHostKeyChecking=no", quiet
                 = False)
-        conn.run(f"git clone {SSH_CORNFLAKES} --recursive", 
+        conn.run(f"git clone {SSH_CORNFLAKES}", 
                 wd = user_wd, 
                 quiet = False)
     else:
-        conn.run(f"git clone {HTTPS_CORNFLAKES} --recursive",
+        conn.run(f"git clone {HTTPS_CORNFLAKES}",
                 wd = user_wd, 
                 quiet = False)
+    conn.run(f"git submodule update --init --recursive",
+                wd = cornflakes_wd, 
+                quiet = False)
+
+
+
+
+def install_deps(args, machine_name, machine_ip, machine_conns):
+    agenda.task(f"[{machine_name}: {machine_ip}] setup dependencies")
     
+    user_wd = f"{args.mount_file}/{args.user}"
+    cornflakes_dir = f"{args.mount_file}/{args.user}/cornflakes"
+    packages_dir = f"{args.mount_file}/{args.user}/packages"
+    conn = machine_conns[machine_name]
+
     # install Rust
     agenda.subtask(f"[{machine_name}: {machine_ip}] installing rust")
     conn.run("curl https://sh.rustup.rs -sSf | sh -s -- -y")
@@ -309,7 +339,7 @@ def setup_machine(args, machine_name, machine_ip, machine_conns):
     agenda.subtask(f"[{machine_name}: {machine_ip}] setting up cornflakes"\
     " dependencies")
     # cornflakes apt-get and python dependencies
-    conn.run("{args.mount_file}/{args.user}/cornflakes/install/install-dependencies.sh", wd = cornflakes_dir,
+    conn.run(f"{args.mount_file}/{args.user}/cornflakes/install/install-dependencies.sh", wd = cornflakes_dir,
             quiet = False)
     # cornflakes package dependencies
     conn.run(f"PRIMARY=y {args.mount_file}/{args.user}/cornflakes/install/install-libraries.sh {packages_dir}", wd = cornflakes_dir)
@@ -332,6 +362,7 @@ def create_and_copy_machine_config(args, machine_conns):
     res = server_conn.run(f"ethtool -i {args.iface_name} | grep 'bus-info'",
             quiet = True)
     pci_addr = res.stdout.strip().split(": ")[1]
+    print(pci_addr)
     yaml_dpdk["eal_init"] = [f"-c", f"0xff", f"-n", f"8",
             f"-a",f"{pci_addr}",f"--proc-type=auto"]
     yaml_dpdk["pci_addr"] = f"{pci_addr}"
@@ -358,6 +389,8 @@ def create_and_copy_machine_config(args, machine_conns):
                 quiet = True).stdout.strip().split(" ")[1]
         private_ip = conn.run(f"ifconfig {args.iface_name} | grep 'inet'",
                 quiet = True).stdout.strip().split(" ")[1]
+        print(ether_addr)
+        print(private_ip)
         addr = conn.get_addr()
         lwip_known_hosts[ether_addr] = private_ip
         hosts[machine_name] = {"addr": addr, "ip": private_ip, "mac":
@@ -431,9 +464,9 @@ def setup_huge_pages_and_cstates(args, machine_name, machine_ip, machine_conns):
     agenda.task(f"[{machine_name}: {machine_ip}] install huge pages")
     cornflakes_dir = f"{args.mount_file}/{args.user}/cornflakes"
     conn = machine_conns[machine_name]
-    conn.run("/etc/init.d/openibd restart",
-                sudo = True,
-                quiet = False)
+    #conn.run("/etc/init.d/openibd restart",
+    #            sudo = True,
+    #            quiet = False)
     conn.run(f"{args.mount_file}/{args.user}/cornflakes/install/install-hugepages.sh 5192", wd = cornflakes_dir)
     # disable c-states and optionally try to disable CPU frequency changes
     conn.run(f"{args.mount_file}/{args.user}/cornflakes/install/set_freq.sh", wd = cornflakes_dir)

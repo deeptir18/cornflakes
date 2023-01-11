@@ -82,10 +82,7 @@ d$median <- d$median / 1000.0
 d$offered_load_pps <- d$offered_load_pps / 1000000.0
 d$achieved_load_pps <- d$achieved_load_pps / 1000000.0
 
-#labels <- c("zero_copy" = "SG with 0 Cache Misses", "copy" = "Copy with Data Cache Misses", 
-#"zero_copy_refcnt" = "SG with 2 Cache Misses")
-labels <- c("zero_copy" = "Scatter Gather", "copy" = "Copy Each Segment")
-
+labels <- c("zero_copy" = "Scatter-Gather", "copy" = "Copy Segments", "zero_copy_refcnt" = "Scatter-Gather With Software Overheads")
 base_median_plot <- function(data, factor_name, x_axis_name, x_axis_labels) {
     factor_name_string <- sprintf("factor(%s)", factor_name)
     plot <- ggplot(data,
