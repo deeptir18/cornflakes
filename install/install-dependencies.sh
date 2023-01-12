@@ -17,6 +17,7 @@ sudo apt update && sudo apt install -y bazel
 sudo apt-get install -y quilt chrpath graphviz swig libnl-route-3-200 libnl-route-3-dev dpatch libnl-3-dev
 sudo apt-get install -y autoconf automake libtool curl make g++ unzip cmake
 sudo apt-get install -y python3 python3-pip python3-setuptools python3-wheel ninja-build clang
+sudo apt-get install -y libkrb5-dev
 sudo apt-get install -y r-base # required for plotting
 sudo apt-get install -y libnuma-dev valgrind
 sudo apt-get install -y libhiredis-dev # for redis experiments
@@ -37,3 +38,4 @@ pip3 install pyelftools
 pip3 install numpy pandas torch
 pip3 install agenda toml
 pip3 install result
+sudo pip install python-gssapi
