@@ -8,7 +8,7 @@ use cornflakes_libos::{
     utils::AddressInfo,
     MsgID,
 };
-pub static mut REGION_ORDER: &[usize] = &[];
+pub static mut REGION_ORDER: &[(usize, usize)] = &[];
 use std::marker::PhantomData;
 const DEFAULT_CHAR: u8 = 'c' as u8;
 const RESPONSE_DATA_OFF: usize = 12;
@@ -24,6 +24,8 @@ where
     /// request segments to check
     /// Only initialized in debug mode.
     request_indices: Vec<Vec<usize>>,
+    /// number of regions
+    num_regions: usize,
     /// Echo mode on server
     echo_mode: bool,
     /// number of mbufs
@@ -90,6 +92,7 @@ where
         total_clients: usize,
         num_refcnt_arrays: usize,
     ) -> Result<Self> {
+        let num_regions = array_size / segment_size;
         let server_payload_regions: Vec<Bytes> = match cfg!(debug_assertions) {
             true => {
                 let mut server_payload_regions = vec![Bytes::default(); array_size / segment_size];
@@ -142,7 +145,9 @@ where
             if cfg!(debug_assertions) {
                 let mut segment_indices = Vec::with_capacity(num_segments);
                 for _ in 0..num_segments {
-                    let virtual_index = unsafe { REGION_ORDER[cur_region_idx_local] };
+                    let (phys_region, refcnt_multiplier) =
+                        unsafe { REGION_ORDER[cur_region_idx_local] };
+                    let virtual_index = num_regions * refcnt_multiplier + phys_region;
                     segment_indices.push(virtual_index);
                     cur_region_idx_local += 1;
                     if cur_region_idx_local == num_virtual_segments {
@@ -156,6 +161,7 @@ where
         Ok(SgBenchClient {
             server_payload_regions,
             request_indices,
+            num_regions,
             num_segments,
             segment_size,
             echo_mode,
@@ -234,8 +240,10 @@ where
         for _i in 0..4 {
             bytes.put_u8(0);
         }
-        for _ in 0..self.num_segments {
-            let virtual_segment = unsafe { REGION_ORDER[self.cur_region_idx] };
+        for _i in 0..self.num_segments {
+            let (phys_region, refcnt_multiplier) = unsafe { REGION_ORDER[self.cur_region_idx] };
+            let virtual_segment = self.num_regions * refcnt_multiplier + phys_region;
+            self.cur_region_idx += 1;
             if self.cur_region_idx == unsafe { REGION_ORDER.len() } {
                 self.cur_region_idx = 0;
             }

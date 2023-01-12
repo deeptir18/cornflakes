@@ -2,7 +2,11 @@ use color_eyre::eyre::Result;
 use cornflakes_libos::loadgen::request_schedule::DistributionType;
 use cornflakes_utils::TraceLevel;
 use rand::rngs::StdRng;
-use rand::{seq::SliceRandom, thread_rng, Rng, SeedableRng};
+use rand::{
+    distributions::{Distribution, Uniform},
+    seq::SliceRandom,
+    thread_rng, SeedableRng,
+};
 use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
@@ -94,21 +98,14 @@ pub fn get_region_order(
     random_seed: usize,
     num_regions: usize,
     num_refcnt_arrays: usize,
-) -> Result<Vec<usize>> {
-    let mut r = StdRng::seed_from_u64(random_seed as u64);
+) -> Result<Vec<(usize, usize)>> {
+    let mut rng = StdRng::seed_from_u64(random_seed as u64);
     let mut indices: Vec<usize> = (0..num_regions).collect();
-    let mut ret: Vec<usize> = (0..num_regions).collect();
-    for i in 0usize..(num_regions - 1) {
-        let j: usize = i + (r.gen::<usize>() % (num_regions - i));
-        if i != j {
-            indices.swap(i, j);
-        }
+    for i in (1..num_regions).rev() {
+        let between = Uniform::from(0..i);
+        let j: usize = between.sample(&mut rng);
+        indices.swap(i, j);
     }
-    for i in 1..num_regions {
-        ret[i - 1] = indices[i];
-    }
-    ret[num_regions - 1] = indices[0];
-
     // create num regions random sequences from 0..num_refcnt_arrays
     let mut random_sequences: Vec<Vec<usize>> = Vec::with_capacity(num_regions);
     for _ in 0..num_regions {
@@ -118,16 +115,13 @@ pub fn get_region_order(
         slice.shuffle(&mut rng);
         random_sequences.push(arrays);
     }
-    let mut final_indices_order: Vec<usize> = (0..num_regions * num_refcnt_arrays).collect();
-    let mut cur_region_idx = 0;
-    for region in 0..num_regions {
-        let random_sequence = &random_sequences[region];
-        for refcnt_index in random_sequence.iter() {
-            cur_region_idx = ret[cur_region_idx];
-            // corresponding physical segment is:
-            // physical segment = virtual segment % cur_region_idx
-            let virtual_segment = num_regions * refcnt_index + cur_region_idx;
-            final_indices_order.push(virtual_segment);
+    let mut final_indices_order: Vec<(usize, usize)> = Vec::default();
+    let mut cur_phys_region = indices[0];
+    for refcnt_index in 0..num_refcnt_arrays {
+        for _ in 0..num_regions {
+            let refcnt_multiplier = &random_sequences[cur_phys_region][refcnt_index];
+            cur_phys_region = indices[cur_phys_region];
+            final_indices_order.push((cur_phys_region, *refcnt_multiplier));
         }
     }
     return Ok(final_indices_order);
