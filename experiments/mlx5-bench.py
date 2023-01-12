@@ -84,7 +84,7 @@ class ScatterGatherIteration(runner.Iteration):
         self.client_rates = client_rates
         self.num_threads = num_threads
         self.segment_size = segment_size
-        self.refcnt_factor = parse_refcnt_factor_from_system(system_name)
+        self.refcnt_factor = utils.parse_refcnt_factor_from_system(system_name)
         self.num_segments = num_segments
         self.trial = trial
         self.array_size = array_size
@@ -553,9 +553,7 @@ class ScatterGather(runner.Experiment):
                                 default=1)
             parser.add_argument("--system",
                                 help = "Which mode to run.",
-                                choices = ["copy", "zero_copy", "echo",
-                                "zero_copy_refcnt", "zero_copy_fakework",
-                                "copy_fakework", "zero_copy_refcnt_fakework"])
+                                default = "zero_copy")
         else:
             parser.add_argument("-l", "--logfile",
                                 help="Logfile name",
