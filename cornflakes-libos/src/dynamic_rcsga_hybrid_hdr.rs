@@ -6,6 +6,7 @@ use bitmaps::Bitmap;
 use byteorder::{ByteOrder, LittleEndian};
 use color_eyre::eyre::{Result, WrapErr};
 use std::{default::Default, marker::PhantomData, ops::Index, slice::Iter, str};
+use zero_copy_cache::data_structures::Stats;
 
 #[inline]
 pub fn write_size_and_offset(write_offset: usize, size: usize, offset: usize, buffer: &mut [u8]) {

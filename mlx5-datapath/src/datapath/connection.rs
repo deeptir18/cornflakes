@@ -31,6 +31,7 @@ use std::{
     time::{Duration, Instant},
 };
 use yaml_rust::{Yaml, YamlLoader};
+use zero_copy_cache::data_structures::Stats;
 
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 const COMPLETION_BUDGET: usize = 32;
