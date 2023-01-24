@@ -1,40 +1,6 @@
 # # Copyright (c) Microsoft Corporation.
 # # Licensed under the MIT license.
 
-# dpdk:
-#     # removing -c 0xff
-#     eal_init: ["-n", "4", "-a", "0000:41:00.0,txq_inline_mpw=256,txqs_min_inline=0","--proc-type=auto"]
-#     pci_addr: "0000:41:00.0"
-#     port: 0
-# mlx5:
-#     pci_addr: "0000:41:00.0"
-
-# lwip:
-#   known_hosts:
-#     "0c:42:a1:dd:57:c0": 10.10.1.1
-#     "0c:42:a1:dd:5b:94": 10.10.1.2
-
-# port: 54323 # for the server
-# client_port: 12345
-
-# hosts:
-#     server:
-#         addr: 10.10.1.1
-#         ip: 10.10.1.1
-#         mac: "0c:42:a1:dd:57:c0"
-#     client1:
-#         addr: 10.10.1.2
-#         ip: 10.10.1.2
-#         mac: "0c:42:a1:dd:5b:94"
-# cornflakes_dir: $HOME/sdb/cornflakes
-# max_clients: 1
-# key: <$HOME/.ssh/id_rsa>
-# user: <username>
-# config_file: $HOME/sdb/cornflakes/example_config.yaml
-
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT license.
-
 dpdk:
     # removing -c 0xff
     eal_init: ["-n", "4", "-a", "0000:41:00.0,txq_inline_mpw=256,txqs_min_inline=0","--proc-type=auto"]

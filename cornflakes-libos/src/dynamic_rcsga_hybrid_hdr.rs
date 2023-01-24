@@ -363,13 +363,11 @@ where
         match datapath.recover_metadata_with_status(ptr)? {
 
             MetadataStatus::Pinned((x,y)) => {
-                println!("Inside pinned buffer");
                 let zcc = datapath.get_mut_zcc();
                 zcc.increment_count(&y);
                 Ok(CFBytes::RefCounted(x))
             },
             MetadataStatus::UnPinned((x,y)) => {
-                println!("Inside unpinned buffer");
                 let zcc = datapath.get_mut_zcc();
                 zcc.increment_count(&y);
                 Ok(CFBytes::Copied(copy_context.copy(ptr, datapath)?))
