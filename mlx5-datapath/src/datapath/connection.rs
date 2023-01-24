@@ -5044,4 +5044,8 @@ impl Datapath for Mlx5Connection {
     fn max_scatter_gather_entries() -> usize {
         33
     }
+
+    fn get_mut_zcc(&mut self) -> &mut ZeroCopyCache<CornflakesSegment> {
+        &mut self.zero_copy_cache
+    }
 }

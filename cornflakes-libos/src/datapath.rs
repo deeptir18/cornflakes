@@ -5,7 +5,7 @@ use super::{
 };
 use color_eyre::eyre::{bail, Result};
 use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
-use zero_copy_cache::data_structures::Segment;
+use zero_copy_cache::data_structures::{ZeroCopyCache, Segment};
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub enum InlineMode {
@@ -628,5 +628,10 @@ pub trait Datapath {
     /// Maximum possible packet size
     fn max_packet_size() -> usize {
         8192
+    }
+
+    /// Zero copy cache stats
+    fn get_mut_zcc(&mut self) -> &mut ZeroCopyCache<CornflakesSegment>{
+        unimplemented!()
     }
 }

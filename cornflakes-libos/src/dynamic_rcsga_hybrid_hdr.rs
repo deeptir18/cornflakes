@@ -1,12 +1,12 @@
 use super::{
-    datapath::{Datapath, MetadataOps, ReceivedPkt},
+    datapath::{Datapath, MetadataOps, ReceivedPkt, MetadataStatus},
     ArenaDatapathSga, CopyContext, CopyContextRef,
 };
 use bitmaps::Bitmap;
 use byteorder::{ByteOrder, LittleEndian};
 use color_eyre::eyre::{Result, WrapErr};
 use std::{default::Default, marker::PhantomData, ops::Index, slice::Iter, str};
-use zero_copy_cache::data_structures::Stats;
+
 
 #[inline]
 pub fn write_size_and_offset(write_offset: usize, size: usize, offset: usize, buffer: &mut [u8]) {
@@ -360,9 +360,25 @@ where
             return Ok(CFBytes::Copied(copy_context_ref));
         }
 
-        match datapath.recover_metadata(ptr)? {
-            Some(m) => Ok(CFBytes::RefCounted(m)),
-            None => Ok(CFBytes::Copied(copy_context.copy(ptr, datapath)?)),
+        match datapath.recover_metadata_with_status(ptr)? {
+
+            MetadataStatus::Pinned((x,y)) => {
+                println!("Inside pinned buffer");
+                let zcc = datapath.get_mut_zcc();
+                zcc.increment_count(&y);
+                Ok(CFBytes::RefCounted(x))
+            },
+            MetadataStatus::UnPinned((x,y)) => {
+                println!("Inside unpinned buffer");
+                let zcc = datapath.get_mut_zcc();
+                zcc.increment_count(&y);
+                Ok(CFBytes::Copied(copy_context.copy(ptr, datapath)?))
+            },
+            MetadataStatus::Arbitrary => {
+                Ok(CFBytes::Copied(copy_context.copy(ptr, datapath)?))
+            }
+            // Some(m) => Ok(CFBytes::RefCounted(m)),
+            // None => Ok(CFBytes::Copied(copy_context.copy(ptr, datapath)?)),
         }
     }
 
