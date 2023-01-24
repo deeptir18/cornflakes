@@ -205,6 +205,14 @@ impl DatapathMemoryPool for DataMempool {
         }
     }
 
+    #[inline]
+    fn get_pagesize(&self) -> usize {
+        unsafe {
+            let data_mempool = self.get_data_mempool();
+            access!(data_mempool, pgsize, usize)
+        }
+    }
+
     #[inline(always)]
     fn has_allocated(&self) -> bool {
         unsafe { access!(get_data_mempool(self.mempool()), allocated, usize) >= 1 }

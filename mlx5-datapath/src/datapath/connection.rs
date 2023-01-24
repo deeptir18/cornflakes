@@ -4959,6 +4959,17 @@ impl Datapath for Mlx5Connection {
         self.allocator.recover_buffer(buf)
     }
 
+    #[inline]
+    fn recover_metadata_with_status(
+        &self,
+        buf: &[u8],
+    ) -> Result<cornflakes_libos::datapath::MetadataStatus<Self>>
+    where
+        Self: Sized,
+    {
+        self.allocator.recover_buffer_with_segment_info(buf)
+    }
+
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {
         // use 2MB pages for data, 2MB pages for metadata (?)
         let actual_size = cornflakes_libos::allocator::align_to_pow2(size);
