@@ -5,7 +5,7 @@ use super::{
 };
 use cornflakes_libos::{
     allocator::{MemoryPoolAllocator, MempoolID},
-    datapath::{Datapath, DatapathBufferOps, InlineMode, MetadataOps, ReceivedPkt},
+    datapath::{CornflakesSegment, Datapath, DatapathBufferOps, InlineMode, MetadataOps, ReceivedPkt},
     dynamic_rcsga_hybrid_hdr::HybridArenaRcSgaHdr,
     dynamic_sga_hdr::SgaHeaderRepr,
     mem::PGSIZE_2MB,
@@ -31,7 +31,7 @@ use std::{
     time::{Duration, Instant},
 };
 use yaml_rust::{Yaml, YamlLoader};
-use zero_copy_cache::data_structures::Stats;
+use zero_copy_cache::data_structures::ZeroCopyCache;
 
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 const COMPLETION_BUDGET: usize = 32;
@@ -571,6 +571,8 @@ pub struct Mlx5Connection {
     mbuf_metadatas: [Option<MbufMetadata>; 32],
     /// header buffer to use while posting entries
     header_buffer: Vec<u8>,
+    /// Zero copy cache object
+    zero_copy_cache: ZeroCopyCache<CornflakesSegment>
 }
 
 impl Mlx5Connection {
@@ -2098,6 +2100,7 @@ impl Datapath for Mlx5Connection {
             first_ctrl_seg: ptr::null_mut(),
             mbuf_metadatas: Default::default(),
             header_buffer: vec![0u8; Self::max_packet_size()],
+            zero_copy_cache: ZeroCopyCache::new(),
         })
     }
 

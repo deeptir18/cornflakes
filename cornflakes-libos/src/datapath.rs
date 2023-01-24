@@ -212,7 +212,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct CornflakesSegment {
     mempool_id: MempoolID,
     page_size: usize,
