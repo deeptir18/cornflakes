@@ -246,6 +246,12 @@ impl DatapathMemoryPool for MempoolInfo {
         true
     }
 
+    fn get_pagesize(&self) -> usize {
+        // TODO: how do we properly detect the pagesize?
+        // For now, just return pgsize 2mb
+        cornflakes_libos::mem::PGSIZE_2MB
+    }
+
     fn has_allocated(&self) -> bool {
         unimplemented!();
     }

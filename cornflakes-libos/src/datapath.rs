@@ -5,6 +5,7 @@ use super::{
 };
 use color_eyre::eyre::{bail, Result};
 use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
+use zero_copy_cache::data_structures::Segment;
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub enum InlineMode {
@@ -209,6 +210,43 @@ where
             .collect();
         bytes
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CornflakesSegment {
+    mempool_id: MempoolID,
+    page_size: usize,
+}
+
+impl Segment for CornflakesSegment {
+    fn get_segment_id(&self) -> i64 {
+        self.mempool_id as _
+    }
+
+    fn get_page_size(&self) -> u64 {
+        self.page_size as _
+    }
+}
+
+impl CornflakesSegment {
+    pub fn new(id: MempoolID, page_size: usize) -> Self {
+        CornflakesSegment {
+            mempool_id: id,
+            page_size,
+        }
+    }
+}
+
+pub enum MetadataStatus<D>
+where
+    D: Datapath,
+{
+    /// Allocated by allocator & is zero-copy-able
+    Pinned((D::DatapathMetadata, CornflakesSegment)),
+    /// Allocated by allocator but currently not pinned
+    UnPinned((D::DatapathMetadata, CornflakesSegment)),
+    /// Not allocated by allocator
+    Arbitrary,
 }
 
 /// Functionality accessible to higher level application on top of datapath metadata objects.
@@ -519,6 +557,17 @@ pub trait Datapath {
     /// Args:
     /// @buf: Buffer.
     fn recover_metadata(&self, buf: &[u8]) -> Result<Option<Self::DatapathMetadata>>;
+
+    /// Takes a buffer and recovers underlying metadata, along with information about whether it is
+    /// currently pinned.
+    /// Args:
+    /// @buf: Buffer.
+    fn recover_metadata_with_status(&self, _buf: &[u8]) -> Result<MetadataStatus<Self>>
+    where
+        Self: Sized,
+    {
+        unimplemented!();
+    }
 
     /// Elastically add a memory pool with a particular size.
     /// Will add a new region of memory registered with the NIC.

@@ -1,3 +1,5 @@
+use crate::datapath::{CornflakesSegment, MetadataStatus};
+
 use super::{datapath::Datapath, mem};
 use ahash::AHashMap;
 use color_eyre::eyre::{bail, Result, WrapErr};
@@ -57,6 +59,9 @@ pub trait DatapathMemoryPool {
 
     /// Whether the entire backing region of the memory pool is registered
     fn is_registered(&self) -> bool;
+
+    /// Get backing pagesize.
+    fn get_pagesize(&self) -> usize;
 
     fn has_allocated(&self) -> bool;
 
@@ -306,6 +311,40 @@ where
             }
             None => {
                 return Ok(None);
+            }
+        }
+    }
+
+    /// Returns metadata associated with this buffer, if it exists, and the buffer is
+    /// registered. Only looks at mempools with aligned size and receive mempools.
+    #[inline]
+    pub fn recover_buffer_with_segment_info(
+        &self,
+        buffer: &[u8],
+    ) -> Result<MetadataStatus<<M as DatapathMemoryPool>::DatapathImpl>> {
+        match self.find_mempool_id(buffer) {
+            Some(id) => {
+                let mempool = self.mempools.get(&id).unwrap();
+                let page_size = mempool.get_pagesize();
+                let metadata = mempool
+                    .recover_buffer(buffer)
+                    .wrap_err("unable to recover metadata")?;
+                if mempool.is_registered() {
+                    // TODO: inefficient to return new CornflakesSegment.
+                    // Perhaps this can eventually return &CornflakesSegment?
+                    return Ok(MetadataStatus::Pinned((
+                        metadata,
+                        CornflakesSegment::new(id, page_size),
+                    )));
+                } else {
+                    return Ok(MetadataStatus::Pinned((
+                        metadata,
+                        CornflakesSegment::new(id, page_size),
+                    )));
+                }
+            }
+            None => {
+                return Ok(MetadataStatus::Arbitrary);
             }
         }
     }
