@@ -5,6 +5,7 @@ use super::{
 use bitmaps::Bitmap;
 use byteorder::{ByteOrder, LittleEndian};
 use color_eyre::eyre::{Result, WrapErr};
+use zero_copy_cache::data_structures::Segment;
 use std::{default::Default, marker::PhantomData, ops::Index, slice::Iter, str};
 
 
@@ -364,19 +365,20 @@ where
 
             MetadataStatus::Pinned((x,y)) => {
                 let zcc = datapath.get_mut_zcc();
-                zcc.increment_count(&y);
+                zcc.update_stats(&y);
+                let segment_id = y.get_segment_id();
+                println!("Stats for pinned segment {} is: {}", segment_id, zcc.get_segment_access_count(y));
                 Ok(CFBytes::RefCounted(x))
             },
             MetadataStatus::UnPinned((x,y)) => {
                 let zcc = datapath.get_mut_zcc();
-                zcc.increment_count(&y);
+                zcc.update_stats(&y);
+                println!("Stats in unpinned is: {}", zcc.get_segment_access_count(y));
                 Ok(CFBytes::Copied(copy_context.copy(ptr, datapath)?))
             },
             MetadataStatus::Arbitrary => {
                 Ok(CFBytes::Copied(copy_context.copy(ptr, datapath)?))
             }
-            // Some(m) => Ok(CFBytes::RefCounted(m)),
-            // None => Ok(CFBytes::Copied(copy_context.copy(ptr, datapath)?)),
         }
     }
 
