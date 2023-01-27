@@ -4975,7 +4975,6 @@ impl Datapath for Mlx5Connection {
 
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {
         // use 2MB pages for data, 2MB pages for metadata (?)
-        println!("Inside add memory pool");
         let actual_size = cornflakes_libos::allocator::align_to_pow2(size);
         let mempool_params = sizes::MempoolAllocationParams::new(min_elts, PGSIZE_2MB, actual_size)
             .wrap_err("Incorrect mempool allocation params")?;
