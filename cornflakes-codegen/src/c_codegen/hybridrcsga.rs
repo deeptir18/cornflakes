@@ -422,6 +422,7 @@ fn add_db_load_functions(compiler: &mut SerializationCompiler, datapath: &str) -
         FunctionArg::CArg(CArgInfo::arg("num_keys", "usize")),
         FunctionArg::CArg(CArgInfo::arg("num_values", "usize")),
         FunctionArg::CArg(CArgInfo::arg("value_size", "*const ::std::os::raw::c_char")),
+        FunctionArg::CArg(CArgInfo::arg("min_mempool_size", "usize")),
     ];
     let func_context =
         FunctionContext::new_extern_c(&format!("{}_load_ycsb_db", datapath), true, args, true);
@@ -444,6 +445,7 @@ fn add_db_load_functions(compiler: &mut SerializationCompiler, datapath: &str) -
     unsafe {
         *db_ptr = Box::into_raw(boxed_kv) as _;
         *list_db_ptr = Box::into_raw(boxed_list_kv) as _;
+        cf_kv::MIN_MEMPOOL_SIZE = min_mempool_size;
     }
         ")?;
     compiler.add_func_call(None, "Box::into_raw", vec!["conn_box".to_string()], false)?;

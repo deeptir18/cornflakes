@@ -37,7 +37,7 @@ use std::{
     marker::PhantomData,
 };
 
-const MIN_MEMPOOL_SIZE: usize = 262144;
+pub static mut MIN_MEMPOOL_SIZE: usize = 262144;
 
 // 8 bytes at front of message for framing
 pub const REQ_TYPE_SIZE: usize = 4;
@@ -464,7 +464,9 @@ where
     match datapath.allocate(size)? {
         Some(buf) => Ok(buf),
         None => {
-            mempool_ids.append(&mut datapath.add_memory_pool(size, MIN_MEMPOOL_SIZE)?);
+            unsafe{
+                mempool_ids.append(&mut datapath.add_memory_pool(size, MIN_MEMPOOL_SIZE)?);
+            }
             tracing::info!("Added mempool");
             match datapath.allocate(size)? {
                 Some(buf) => Ok(buf),

@@ -16,4 +16,4 @@
 	url = https://github.com/DPDK/dpdk.git
 [submodule "redis"]
 	path = redis
-	url = https://github.com/ygina/redis
+	url = https://github.com/vishwanath1306/modified-redis.git
