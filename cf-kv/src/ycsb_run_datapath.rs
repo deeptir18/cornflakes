@@ -220,7 +220,7 @@ pub struct YCSBOpt {
     pub inline_mode: InlineMode,
     #[structopt(
         long = "copy_threshold",
-        help = "Datapath copy threshold. Copies everything below this threshold. If set to infinity, tries to use zero-copy for everything. If set to 0, uses zero-copy for nothing.",
+        help = "Datapath copy threshold. Copies everything below this threshold. If set to 0, tries to use zero-copy for everything. If set to infinity, uses zero-copy for nothing.",
         default_value = "256"
     )]
     pub copying_threshold: CopyingThreshold,
