@@ -4,7 +4,7 @@ CFLAGS = -O2
 FF = g77
 FFLAGS = -O2
 
-all: stream_c.exe
+all: stream_cf.exe
 
 stream_f.exe: stream.f mysecond.o
 	$(CC) $(CFLAGS) -c mysecond.c
@@ -13,6 +13,9 @@ stream_f.exe: stream.f mysecond.o
 
 stream_c.exe: stream.c
 	$(CC) $(CFLAGS) stream.c -o stream_c.exe
+
+stream_cf.exe:
+	gcc -O2 -fopenmp -DSTREAM_ARRAY_SIZE=100000000 -DNTIMES=1000 stream.c -o stream_omp
 
 clean:
 	rm -f stream_f.exe stream_c.exe *.o
