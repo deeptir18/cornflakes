@@ -241,7 +241,7 @@ impl DatapathMemoryPool for DataMempool {
     #[inline]
     fn alloc_data_buf(
         &self,
-        context: MempoolID,
+        _context: MempoolID,
     ) -> Result<Option<<<Self as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>>
     {
         let data = unsafe { custom_mlx5_mempool_alloc(self.get_data_mempool()) };
