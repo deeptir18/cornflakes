@@ -12,3 +12,10 @@ max_rates:
         "segment_size = 256, num_segments = 8, array_size = 655360000, num_server_cores = 1, busy_cycles = 0, recv_pkt_size = 0": 100000
         "segment_size = 128, num_segments = 16, array_size = 655360000, num_server_cores = 1, busy_cycles = 0, recv_pkt_size = 0": 100000
         "segment_size = 64, num_segments = 32, array_size = 655360000, num_server_cores = 1, busy_cycles = 0, recv_pkt_size = 0": 100000
+        "segment_size = 1024, num_segments = 1, array_size = 655360000, num_server_cores = 1, busy_cycles = 0, recv_pkt_size = 0": 100000
+        "segment_size = 512, num_segments = 2, array_size = 655360000, num_server_cores = 1, busy_cycles = 0, recv_pkt_size = 0": 100000
+        "segment_size = 256, num_segments = 4, array_size = 655360000, num_server_cores = 1, busy_cycles = 0, recv_pkt_size = 0": 100000
+        "segment_size = 128, num_segments = 8, array_size = 655360000, num_server_cores = 1, busy_cycles = 0, recv_pkt_size = 0": 100000
+        "segment_size = 64, num_segments = 16, array_size = 655360000, num_server_cores = 1, busy_cycles = 0, recv_pkt_size = 0": 100000
+        "segment_size = 32, num_segments = 32, array_size = 655360000, num_server_cores = 1, busy_cycles = 0, recv_pkt_size = 0": 100000
+
