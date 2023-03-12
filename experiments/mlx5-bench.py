@@ -446,7 +446,8 @@ class ScatterGather(runner.Experiment):
                     parse_result[2],
                     parse_result[3],
                     parse_result[4],
-                    parse_result[5])
+                    parse_result[5],
+                    parse_result[6])
         except:
             utils.error("Error parsing exp_string: {}".format(exp_string))
             exit(1)
