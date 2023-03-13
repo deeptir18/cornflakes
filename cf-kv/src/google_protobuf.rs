@@ -349,7 +349,9 @@ impl RequestGenerator for GoogleProtobufClient {
 
     fn next_request(&mut self) -> Result<Option<Self::RequestLine>> {
         let mut rng = thread_rng();
-        let req = GoogleProtobufRequest(self.key_distr.sample(&mut rng));
+        let idx = self.key_distr.sample(&mut rng);
+        let req = GoogleProtobufRequest(idx);
+        tracing::debug!("Sending key {:?}, string: {}", req, self.keys[idx]);
         Ok(Some(req))
     }
 
@@ -369,7 +371,11 @@ impl RequestGenerator for GoogleProtobufClient {
         D: Datapath,
     {
         MsgType::GetList(0).to_buf(buf);
-        serializer.serialize_get_list(&mut buf[REQ_TYPE_SIZE..], &self.keys[request.0], datapath)
+        Ok(serializer.serialize_get_list(
+            &mut buf[REQ_TYPE_SIZE..],
+            self.keys[request.0].as_str(),
+            datapath,
+        )? + REQ_TYPE_SIZE)
     }
 
     fn check_response<S, D>(
