@@ -276,13 +276,21 @@ where
                         Some(x) => {
                             return Ok(Some(x));
                         }
-                        None => {}
+                        None => {
+                            tracing::debug!(
+                                considering =? mempools,
+                                "Mempool {} didn't have any buffers (size {})",
+                                *mempool_id,
+                                align_size
+                            );
+                        }
                     }
                 }
+                tracing::info!("None of the mempools of size {} had elts", align_size);
                 return Ok(None);
             }
             None => {
-                tracing::debug!("Returning none");
+                tracing::info!("Returning none; no mempools of size {} at all", align_size);
                 return Ok(None);
             }
         }

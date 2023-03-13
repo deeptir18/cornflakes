@@ -246,7 +246,13 @@ impl DatapathMemoryPool for DataMempool {
     {
         let data = unsafe { custom_mlx5_mempool_alloc(self.get_data_mempool()) };
         if data.is_null() {
-            tracing::debug!("Returning ok none ok");
+            // allocator doesn't have anything
+            tracing::debug!(
+                capacity = unsafe {access!(self.get_data_mempool(), capacity, usize)},
+                allocated = unsafe { access!(self.get_data_mempool(), allocated, usize) },
+                buf =? unsafe { access!(self.get_data_mempool(), buf, *mut ::std::os::raw::c_void) },
+                data =? data,
+                "Allocator doesn't have anything; returned none");
             return Ok(None);
         }
         // recover the ref count index

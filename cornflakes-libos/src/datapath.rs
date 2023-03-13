@@ -531,6 +531,12 @@ pub trait Datapath {
     /// for the memory pool).
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>>;
 
+    fn add_memory_pool_with_size(&mut self, size: usize) -> Result<Vec<MempoolID>> {
+        let num_pages = 64;
+        let min_elts = num_pages * 2097152 / size;
+        self.add_memory_pool(size, min_elts)
+    }
+
     /// Checks whether datapath has mempool of size size given (must be power of 2).
     fn has_mempool(&self, size: usize) -> bool;
 

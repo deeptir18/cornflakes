@@ -14,7 +14,7 @@ use std::io::Write;
 // taken from: https://sagark.org/assets/pubs/protoacc-micro2021-preprint.pdf
 // figure 4c
 const DEFAULT_BUCKETS: [(usize, usize, f64); 8] = [
-    (0, 9, 33.8),
+    (1, 9, 33.8),
     (9, 17, 15.3),
     (17, 23, 7.6),
     (23, 33, 13.5),
@@ -145,7 +145,8 @@ impl ValueSizeDistribution {
     pub fn sample(&self) -> usize {
         let mut rng = thread_rng();
         let bucket_index = self.weighted_index.sample(&mut rng);
-        return self.buckets[bucket_index].sample(&mut rng);
+        let s = self.buckets[bucket_index].sample(&mut rng);
+        return s;
     }
 
     pub fn avg_size(&self) -> f64 {

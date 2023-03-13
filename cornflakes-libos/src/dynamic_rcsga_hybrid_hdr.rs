@@ -639,7 +639,15 @@ where
 
     pub fn to_str(&self) -> Result<&str> {
         let slice = self.as_ref();
-        let s = str::from_utf8(slice).wrap_err("Could not turn bytes into string")?;
+        tracing::debug!("Slice: {:?}", slice);
+        let s = str::from_utf8(slice)
+            .wrap_err("Could not turn bytes into string")?
+            .trim_end();
+        tracing::debug!(
+            string_len = s.len(),
+            slice_len = slice.len(),
+            "Length of string and slice"
+        );
         Ok(s)
     }
 
@@ -799,6 +807,7 @@ where
             header_offset,
             buffer_offset,
             ptr_offset = forward_pointer.get_offset(),
+            len = forward_pointer.get_size(),
             "Deserializing cf string"
         );
 

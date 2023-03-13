@@ -25,7 +25,7 @@ macro_rules! run_server_google(
         // init retwis load generator
         let (buckets, probs) = default_buckets();
         let load_generator = GoogleProtobufServerLoader::new($opt.num_keys, $opt.key_size, ValueSizeDistribution::new($opt.max_size, buckets, probs)?,$opt.num_values_distribution);
-        let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, false)?;
+        let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, true)?;
         kv_server.init(&mut connection)?;
         kv_server.write_ready($opt.ready_file.clone())?;
         if is_baseline {

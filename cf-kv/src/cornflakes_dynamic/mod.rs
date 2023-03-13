@@ -90,13 +90,19 @@ where
             true => match linked_list_kv_server.get(get_req.get_key().to_str()?) {
                 Some(v) => v.as_ref().get_buffer(),
                 None => {
-                    bail!("Could not find value for key: {:?}", get_req.get_key());
+                    bail!(
+                        "Could not find value for key: {:?}",
+                        get_req.get_key().to_str()
+                    );
                 }
             },
             false => match kv_server.get(get_req.get_key().to_str()?) {
                 Some(v) => v,
                 None => {
-                    bail!("Could not find value for key: {:?}", get_req.get_key());
+                    bail!(
+                        "Could not find value for key: {:?}",
+                        get_req.get_key().to_str()
+                    );
                 }
             },
         };
@@ -138,13 +144,19 @@ where
             true => match linked_list_kv_server.get(get_req.get_key().to_str()?) {
                 Some(v) => v.as_ref().get_buffer(),
                 None => {
-                    bail!("Could not find value for key: {:?}", get_req.get_key());
+                    bail!(
+                        "Could not find value for key: {:?}",
+                        get_req.get_key().to_str()
+                    );
                 }
             },
             false => match kv_server.get(get_req.get_key().to_str()?) {
                 Some(v) => v,
                 None => {
-                    bail!("Could not find value for key: {:?}", get_req.get_key());
+                    bail!(
+                        "Could not find value for key: {:?}",
+                        get_req.get_key().to_str()
+                    );
                 }
             },
         };
@@ -238,13 +250,13 @@ where
                     true => match linked_list_kv_server.get(key.to_str()?) {
                         Some(v) => v.as_ref().get_buffer(),
                         None => {
-                            bail!("Could not find value for key: {:?}", key);
+                            bail!("Could not find value for key: {:?}", key.to_str());
                         }
                     },
                     false => match kv_server.get(key.to_str()?) {
                         Some(v) => v,
                         None => {
-                            bail!("Could not find value for key: {:?}", key);
+                            bail!("Could not find value for key: {:?}", key.to_str());
                         }
                     },
                 }
@@ -303,13 +315,13 @@ where
                     true => match linked_list_kv_server.get(key.to_str()?) {
                         Some(v) => v.get_buffer(),
                         None => {
-                            bail!("Could not find value for key: {:?}", key);
+                            bail!("Could not find value for key: {:?}", key.to_str());
                         }
                     },
                     false => match kv_server.get(key.to_str()?) {
                         Some(v) => v,
                         None => {
-                            bail!("Could not find value for key: {:?}", key);
+                            bail!("Could not find value for key: {:?}", key.to_str());
                         }
                     },
                 }
@@ -400,12 +412,21 @@ where
         if self.use_linked_list() {
             let range_start = getlist_req.get_range_start();
             let range_end = getlist_req.get_range_end();
+            tracing::debug!("Linked list kv length: {}", linked_list_kv.len());
+            for key in linked_list_kv.get_map().iter() {
+                tracing::debug!("k: {:?}", key.0);
+                break;
+            }
             let mut node_option = linked_list_kv.get(getlist_req.get_key().to_str()?);
-
+            // TODO: likely possible to inline this with iterating over the nodes below
             let range_len = {
                 if range_end == -1 {
                     let mut len = 0;
                     while let Some(node) = node_option {
+                        tracing::debug!(
+                            key = getlist_req.get_key().to_str()?,
+                            "But HERE, node is something"
+                        );
                         len += 1;
                         node_option = node.get_next();
                     }
@@ -430,8 +451,13 @@ where
                     idx += 1;
                     continue;
                 } else if idx as usize == range_len {
+                    tracing::debug!("Got to idx = range len");
                     break;
                 }
+                tracing::debug!(
+                    "Appending value to linked list with size {}",
+                    node.get_data().len()
+                );
                 list.append(dynamic_rcsga_hybrid_hdr::CFBytes::new(
                     node.get_data(),
                     datapath,
@@ -440,11 +466,15 @@ where
                 node_option = node.get_next();
                 idx += 1;
             }
+            tracing::debug!("Done iterating over linked list");
         } else {
             let value_list = match list_kv_server.get(getlist_req.get_key().to_str()?) {
                 Some(v) => v,
                 None => {
-                    bail!("Could not find value for key: {:?}", getlist_req.get_key());
+                    bail!(
+                        "Could not find value for key: {:?}",
+                        getlist_req.get_key().to_str()
+                    );
                 }
             };
 
@@ -533,7 +563,10 @@ where
             let value_list = match list_kv_server.get(getlist_req.get_key().to_str()?) {
                 Some(v) => v,
                 None => {
-                    bail!("Could not find value for key: {:?}", getlist_req.get_key());
+                    bail!(
+                        "Could not find value for key: {:?}",
+                        getlist_req.get_key().to_str()
+                    );
                 }
             };
 
@@ -628,9 +661,9 @@ where
             kv_server: kv,
             list_kv_server: list_kv,
             linked_list_kv_server: linked_list_kv,
-            mempool_ids: mempool_ids,
-            push_buf_type: push_buf_type,
-            serializer: serializer,
+            mempool_ids,
+            push_buf_type,
+            serializer,
         })
     }
 }

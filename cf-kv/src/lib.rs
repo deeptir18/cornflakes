@@ -39,8 +39,7 @@ use std::{
     marker::PhantomData,
 };
 
-const MIN_MEMPOOL_SIZE: usize = 262144;
-
+const MIN_MEMPOOL_BUF_SIZE: usize = 8;
 // 8 bytes at front of message for framing
 pub const REQ_TYPE_SIZE: usize = 4;
 
@@ -455,6 +454,15 @@ where
     }
 }
 
+fn pad_mempool_size(size: usize) -> usize {
+    if size < MIN_MEMPOOL_BUF_SIZE {
+        return MIN_MEMPOOL_BUF_SIZE;
+    } else {
+        // return nearest power of 2 above this
+        return cornflakes_libos::allocator::align_to_pow2(size);
+    }
+}
+
 fn allocate_datapath_buffer<D>(
     datapath: &mut D,
     size: usize,
@@ -463,15 +471,21 @@ fn allocate_datapath_buffer<D>(
 where
     D: Datapath,
 {
-    match datapath.allocate(size)? {
+    match datapath.allocate(pad_mempool_size(size))? {
         Some(buf) => Ok(buf),
         None => {
-            mempool_ids.append(&mut datapath.add_memory_pool(size, MIN_MEMPOOL_SIZE)?);
-            tracing::info!("Added mempool");
-            match datapath.allocate(size)? {
+            tracing::debug!(
+                "Mempool for size {} doesn't exist; allocating (padded size {})",
+                size,
+                pad_mempool_size(size)
+            );
+            let num_mempools = mempool_ids.len();
+            mempool_ids.append(&mut datapath.add_memory_pool_with_size(pad_mempool_size(size))?);
+            tracing::info!("Adding mempool # {}", num_mempools);
+            match datapath.allocate(pad_mempool_size(size))? {
                 Some(buf) => Ok(buf),
                 None => {
-                    unreachable!();
+                    panic!("Could not allocate");
                 }
             }
         }
