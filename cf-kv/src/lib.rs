@@ -7,6 +7,7 @@ pub mod redis;
 pub mod retwis;
 pub mod retwis_run_datapath;
 pub mod run_google_protobuf;
+pub mod twitter;
 pub mod ycsb;
 pub mod ycsb_run_datapath;
 
@@ -318,6 +319,10 @@ where
         KVServer {
             map: HashMap::default(),
         }
+    }
+
+    pub fn contains_key(&self, s: &str) -> bool {
+        self.map.contains_key(s)
     }
 
     pub fn len(&self) -> usize {

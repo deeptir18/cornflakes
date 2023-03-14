@@ -137,9 +137,33 @@ impl PacketSchedule {
         // first packet starts at time 0
         interarrivals[0] = Duration::from_nanos(0);
 
-        Ok(PacketSchedule {
-            interarrivals: interarrivals,
-        })
+        Ok(PacketSchedule { interarrivals })
+    }
+
+    pub fn get_last(&self) -> Option<Duration> {
+        if self.interarrivals.len() > 0 {
+            let last_idx = self.interarrivals.len() - 1;
+            return Some(self.interarrivals[last_idx]);
+        } else {
+            return None;
+        }
+    }
+
+    pub fn set_last(&mut self, dur: Duration) {
+        let last_idx = self.interarrivals.len() - 1;
+        self.interarrivals[last_idx] = dur;
+    }
+
+    pub fn append(&mut self, other: &mut PacketSchedule) {
+        self.interarrivals.append(other.get_mut_interarrivals());
+    }
+
+    pub fn new_from_interrarivals(interarrivals: Vec<Duration>) -> Self {
+        PacketSchedule { interarrivals }
+    }
+
+    pub fn get_mut_interarrivals(&mut self) -> &mut Vec<Duration> {
+        &mut self.interarrivals
     }
 
     pub fn len(&self) -> usize {
