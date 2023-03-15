@@ -2,18 +2,14 @@ use super::{
     allocate_datapath_buffer, ClientSerializer, KVServer, LinkedListKVServer, ListKVServer,
     MsgType, RequestGenerator, ServerLoadGenerator, REQ_TYPE_SIZE,
 };
-use color_eyre::eyre::{bail, ensure, Result, WrapErr};
+use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
     allocator::MempoolID,
     datapath::Datapath,
-    loadgen::request_schedule::{DistributionType, PacketDistribution, PacketSchedule},
+    loadgen::request_schedule::{DistributionType, PacketSchedule},
 };
 use hashbrown::HashMap;
-use rand::{
-    distributions::{Alphanumeric, Distribution},
-    seq::SliceRandom,
-    thread_rng, Rng,
-};
+use rand::{distributions::Alphanumeric, seq::SliceRandom, thread_rng, Rng};
 use std::{
     fs::File,
     io::{prelude::*, BufReader, Lines, Write},
@@ -31,12 +27,8 @@ pub struct TwitterClient {
     total_num_clients: usize,
     // total number of threads
     total_num_threads: usize,
-    // assume clients evenly loaded across trace; use shard twitter clients across client threads
-    max_twitter_clients: usize,
     // end time to run trace until
     twitter_end_time: usize,
-    // requests usually a second should now take speed_factor * a second
-    speed_factor: f64,
 }
 
 impl TwitterClient {
@@ -46,9 +38,7 @@ impl TwitterClient {
         thread_id: usize,
         max_clients: usize,
         max_threads: usize,
-        max_twitter_clients: usize,
         twitter_end_time: usize,
-        speed_factor: f64,
     ) -> Result<Self> {
         let file = File::open(request_file)?;
         let reader = BufReader::new(file);
@@ -57,9 +47,7 @@ impl TwitterClient {
             thread_id,
             total_num_clients: max_clients,
             total_num_threads: max_threads,
-            max_twitter_clients,
             twitter_end_time,
-            speed_factor,
             lines: reader.lines(),
         })
     }
@@ -67,26 +55,20 @@ impl TwitterClient {
     pub fn generate_packet_schedule(
         &self,
         request_file: &str,
-        client_id: usize,
-        thread_id: usize,
-        max_clients: usize,
-        max_threads: usize,
-        max_twitter_clients: usize,
-        twitter_end_time: usize,
         speed_factor: f64,
         dist_type: DistributionType,
     ) -> Result<PacketSchedule> {
         let file = File::open(request_file)?;
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
-        let mut pps: Vec<usize> = vec![0usize; twitter_end_time];
+        let mut pps: Vec<usize> = vec![0usize; self.twitter_end_time];
         while let Some(parsed_line_res) = lines.next() {
             match parsed_line_res {
                 Ok(s) => {
                     let req = self.get_request(s.as_str())?;
                     if self.is_responsible_for(&req) {
                         let time = req.get_time();
-                        if time > twitter_end_time {
+                        if time > self.twitter_end_time {
                             break;
                         }
                         pps[time] += 1;
@@ -125,8 +107,8 @@ impl TwitterClient {
 
     fn is_responsible_for(&self, req: &TwitterLine) -> bool {
         let our_thread_client = self.total_num_threads * self.client_id + self.thread_id;
-        our_thread_client
-            == (self.max_twitter_clients % (self.total_num_threads * self.total_num_clients))
+        let total_thread_clients = self.total_num_threads * self.total_num_clients;
+        our_thread_client == (req.get_client_id() % total_thread_clients)
     }
 
     fn emit_get_data<'a>(
@@ -147,11 +129,11 @@ impl TwitterClient {
 impl RequestGenerator for TwitterClient {
     type RequestLine = TwitterLine;
     fn new(
-        request_file: &str,
-        client_id: usize,
-        thread_id: usize,
-        max_clients: usize,
-        max_threads: usize,
+        _request_file: &str,
+        _client_id: usize,
+        _thread_id: usize,
+        _max_clients: usize,
+        _max_threads: usize,
     ) -> Result<Self>
     where
         Self: Sized,
@@ -275,6 +257,10 @@ impl TwitterLine {
 
         Ok(TwitterLine::new_from(k, v_size, client_id, time, msg_type))
     }
+
+    pub fn get_client_id(&self) -> usize {
+        self.client_id
+    }
     pub fn value_size(&self) -> usize {
         self.value.len()
     }
@@ -316,6 +302,14 @@ pub struct TwitterServerLoader {
     // server should iterate across trace, adding all requests to kv store that show up in a get to
     // have a default value
     twitter_end_time: usize,
+}
+
+impl TwitterServerLoader {
+    pub fn new(end_time: usize) -> Self {
+        TwitterServerLoader {
+            twitter_end_time: end_time,
+        }
+    }
 }
 
 impl ServerLoadGenerator for TwitterServerLoader {

@@ -7,6 +7,7 @@ pub mod redis;
 pub mod retwis;
 pub mod retwis_run_datapath;
 pub mod run_google_protobuf;
+pub mod run_twitter;
 pub mod twitter;
 pub mod ycsb;
 pub mod ycsb_run_datapath;

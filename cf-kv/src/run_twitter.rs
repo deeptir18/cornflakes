@@ -1,4 +1,3 @@
-use super::google_protobuf::NumValuesDistribution;
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
     datapath::{InlineMode, PushBufType},
@@ -9,7 +8,7 @@ use std::net::Ipv4Addr;
 use structopt::StructOpt;
 
 #[macro_export]
-macro_rules! run_server_google(
+macro_rules! run_server_twitter(
     ($kv_server: ty, $datapath: ty, $opt: ident) => {
         let is_baseline = is_baseline(&$opt);
         let mut datapath_params = <$datapath as Datapath>::parse_config_file(&$opt.config_file, &$opt.server_ip)?;
@@ -21,11 +20,8 @@ macro_rules! run_server_google(
         connection.set_copying_threshold($opt.copying_threshold);
         connection.set_inline_mode($opt.inline_mode);
         tracing::info!(threshold = $opt.copying_threshold, "Setting zero-copy copying threshold");
-
-        // init retwis load generator
-        let (buckets, probs) = default_buckets();
-        let load_generator = GoogleProtobufServerLoader::new($opt.num_keys, $opt.key_size, ValueSizeDistribution::new($opt.max_size, buckets, probs)?,$opt.num_values_distribution);
-        let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, true)?;
+        let twitter_server_loader = TwitterServerLoader::new($opt.total_time);
+        let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), twitter_server_loader, &mut connection, $opt.push_buf_type, false)?;
         kv_server.init(&mut connection)?;
         kv_server.write_ready($opt.ready_file.clone())?;
         if is_baseline {
@@ -37,7 +33,7 @@ macro_rules! run_server_google(
 );
 
 #[macro_export]
-macro_rules! run_client_google(
+macro_rules! run_client_twitter(
     ($serializer: ty, $datapath: ty, $opt: ident) => {
         let server_addr = cornflakes_utils::parse_server_addr(&$opt.config_file, &$opt.server_ip)?;
         let mut datapath_params = <$datapath as Datapath>::parse_config_file(&$opt.config_file, &$opt.our_ip)?;
@@ -47,9 +43,6 @@ macro_rules! run_client_google(
                 Some($opt.server_ip.clone()),
                 cornflakes_utils::AppMode::Client,
             )?;
-        let num_rtts = ($opt.rate * $opt.total_time * 2) as usize;
-        let schedules =
-            cornflakes_libos::loadgen::request_schedule::generate_schedules(num_rtts, $opt.rate as _, $opt.distribution, $opt.num_threads)?;
 
         let per_thread_contexts = <$datapath as Datapath>::global_init(
             $opt.num_threads,
@@ -57,18 +50,10 @@ macro_rules! run_client_google(
             addresses,
         )?;
         let mut threads: Vec<std::thread::JoinHandle<Result<cornflakes_libos::loadgen::client_threads::ThreadStats>>> = vec![];
-
-        // spawn a thread to run client for each connection
-        for (i, (schedule, per_thread_context)) in schedules
-            .into_iter()
-            .zip(per_thread_contexts.into_iter())
-            .enumerate()
-        {
+        for (i, per_thread_context) in per_thread_contexts.into_iter().enumerate() {
         let server_addr_clone =
             cornflakes_libos::utils::AddressInfo::new(server_addr.2, server_addr.1.clone(), server_addr.0.clone());
             let datapath_params_clone = datapath_params.clone();
-
-            let max_num_requests = num_rtts;
             let opt_clone = $opt.clone();
             threads.push(std::thread::spawn(move || {
                 match affinity::set_thread_affinity(&vec![i + 1]) {
@@ -83,6 +68,7 @@ macro_rules! run_client_google(
                     }
                 }
 
+                // initialize datapath connection
                 let mut connection = <$datapath as Datapath>::per_thread_init(
                     datapath_params_clone,
                     per_thread_context,
@@ -91,25 +77,19 @@ macro_rules! run_client_google(
 
                 connection.set_copying_threshold(std::usize::MAX);
 
-                tracing::info!("Finished initializing datapath connection for thread {}", i);
-                let (buckets, probs) = default_buckets();
-                let size = ValueSizeDistribution::new($opt.max_size, buckets, probs)?.avg_size();
-
-                let mut retwis_client = GoogleProtobufClient::new($opt.num_keys, $opt.key_size);
-                tracing::info!("Finished initializing google protobuf client");
-
-                let mut server_load_generator_opt: Option<(&str, GoogleProtobufServerLoader)> = None;
-                let mut kv_client: KVClient<GoogleProtobufClient, $serializer, $datapath> = KVClient::new(retwis_client, server_addr_clone, max_num_requests,opt_clone.retries, server_load_generator_opt)?;
-
-
+                // initialize twitter client to read from file
+                let twitter_client = TwitterClient::new_twitter_client(opt_clone.trace_file.as_str(), opt_clone.client_id, i, opt_clone.num_clients, opt_clone.num_threads, opt_clone.total_time)?;
+                let packet_schedule = twitter_client.generate_packet_schedule(opt_clone.trace_file.as_str(), opt_clone.speed_factor, opt_clone.distribution)?;
+                let max_num_requests = packet_schedule.len();
+                let server_load_generator_opt: Option<(&str, TwitterServerLoader)> = None;
+                let mut kv_client: KVClient<TwitterClient, $serializer, $datapath> = KVClient::new(twitter_client, server_addr_clone, max_num_requests, false, server_load_generator_opt)?;
                 kv_client.init(&mut connection)?;
+
                 // TODO: create two custom functions for running with varied sizes at pps, and for
                 // running the twitter trace
-
-                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, size as _, schedule, opt_clone.num_threads as _)
+                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, false, opt_clone.total_time as _, opt_clone.logfile.clone(), 1000, 1024, packet_schedule, opt_clone.num_threads)
             }));
         }
-
         let mut thread_results: Vec<cornflakes_libos::loadgen::client_threads::ThreadStats> = Vec::default();
         for child in threads {
             let s = match child.join() {
@@ -128,22 +108,24 @@ macro_rules! run_client_google(
             thread_results.push(s);
         }
 
+        // TODO: somehow separate latencies by size bucket
         let dump_per_thread = $opt.logfile == None;
         cornflakes_libos::loadgen::client_threads::dump_thread_stats(thread_results, $opt.thread_log.clone(), dump_per_thread)?;
+
     }
 );
 
-fn is_cf(opt: &GoogleProtobufOpt) -> bool {
+fn is_cf(opt: &TwitterOpt) -> bool {
     opt.serialization == SerializationType::CornflakesDynamic
         || opt.serialization == SerializationType::CornflakesOneCopyDynamic
 }
 
-pub fn is_baseline(opt: &GoogleProtobufOpt) -> bool {
+pub fn is_baseline(opt: &TwitterOpt) -> bool {
     !(opt.serialization == SerializationType::CornflakesOneCopyDynamic
         || opt.serialization == SerializationType::CornflakesDynamic)
 }
 
-pub fn check_opt(opt: &mut GoogleProtobufOpt) -> Result<()> {
+pub fn check_opt(opt: &mut TwitterOpt) -> Result<()> {
     if !is_cf(opt) && opt.push_buf_type != PushBufType::SingleBuf {
         bail!("For non-cornflakes serialization, push buf type must be single buffer.");
     }
@@ -158,10 +140,10 @@ pub fn check_opt(opt: &mut GoogleProtobufOpt) -> Result<()> {
 
 #[derive(Debug, StructOpt, Clone)]
 #[structopt(
-    name = "Google Protobuf Distribution KV Store App.",
-    about = "Google Protobuf KV store server and client."
+    name = "Twitter KV store app",
+    about = "Twitter kv store client and server"
 )]
-pub struct GoogleProtobufOpt {
+pub struct TwitterOpt {
     #[structopt(
         short = "debug",
         long = "debug_level",
@@ -177,8 +159,19 @@ pub struct GoogleProtobufOpt {
     pub config_file: String,
     #[structopt(long = "mode", help = "KV server or client mode.")]
     pub mode: AppMode,
+    #[structopt(
+        long = "trace",
+        help = "twitter trace file (postprocessed for cornflakes)"
+    )]
+    pub trace_file: String,
     #[structopt(long = "time", help = "max time to run exp for", default_value = "30")]
     pub total_time: usize,
+    #[structopt(
+        long = "speed_factor",
+        help = "How much to speed up the trace by",
+        default_value = "1.0"
+    )]
+    pub speed_factor: f64,
     #[structopt(
         long = "push_buf_type",
         help = "Push API to use",
@@ -194,16 +187,9 @@ pub struct GoogleProtobufOpt {
     #[structopt(
         long = "copy_threshold",
         help = "Datapath copy threshold. Copies everything below this threshold. If set to 0, tries to use zero-copy for everything. If set to infinity, uses zero-copy for nothing.",
-        default_value = "512"
+        default_value = "256"
     )]
     pub copying_threshold: usize,
-    #[structopt(
-        short = "r",
-        long = "rate",
-        help = "Rate of client (in pkts/sec)",
-        default_value = "2000"
-    )]
-    pub rate: usize,
     #[structopt(
         long = "server_ip",
         help = "Server ip address",
@@ -218,8 +204,6 @@ pub struct GoogleProtobufOpt {
         default_value = "cornflakes-dynamic"
     )]
     pub serialization: SerializationType,
-    #[structopt(long = "retries", help = "Enable client retries.")]
-    pub retries: bool,
     #[structopt(long = "logfile", help = "Logfile to log all client RTTs.")]
     pub logfile: Option<String>,
     #[structopt(long = "threadlog", help = "Logfile to log per thread statistics")]
@@ -243,24 +227,8 @@ pub struct GoogleProtobufOpt {
     #[structopt(long = "distribution", default_value = "exponential")]
     pub distribution: DistributionType,
     #[structopt(
-        long = "num_keys",
-        default_value = "1000000",
-        help = "Default number of keys to initialize the KV store with"
-    )]
-    pub num_keys: usize,
-    #[structopt(long = "key_size", default_value = "64", help = "Default key size")]
-    pub key_size: usize,
-    #[structopt(long = "num_values_distribution", default_value = "SingleValue-1")]
-    pub num_values_distribution: NumValuesDistribution,
-    #[structopt(
         long = "ready_file",
         help = "File to indicate server is ready to receive requests"
     )]
     pub ready_file: Option<String>,
-    #[structopt(
-        long = "max_size",
-        help = "Size for maximum packet size in distribution",
-        default_value = "4096"
-    )]
-    pub max_size: usize,
 }
