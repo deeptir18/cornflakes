@@ -676,8 +676,6 @@ class ScatterGather(runner.Experiment):
         for system in systems:
             for sgbenchinfo in max_rates_dict:
                 print("Running summary analysis for {}".format(sgbenchinfo))
-                if system == "zero_copy_refcnt":
-                    continue
                 self.run_summary_analysis(df,
                                         out,
                                         system,
