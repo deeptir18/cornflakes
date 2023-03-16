@@ -10,7 +10,7 @@ use std::{
     io::Write,
     net::Ipv4Addr,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 #[inline]
@@ -44,6 +44,46 @@ pub fn record(timer: Option<Arc<Mutex<HistogramWrapper>>>, val: u64) -> Result<(
     Ok(())
 }
 
+/// Histogram for storing per size information
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SizedManualHistogram {
+    size_to_hist: HashMap<usize, ManualHistogram>,
+}
+
+impl SizedManualHistogram {
+    pub fn new(max_packet_size: usize, rtts_per_bucket: usize) -> Self {
+        // iterate over powers of two until max packet size
+        let mut bucket_size = 1;
+        let mut map: HashMap<usize, ManualHistogram> = HashMap::new();
+        while bucket_size <= max_packet_size {
+            map.insert(bucket_size, ManualHistogram::new(rtts_per_bucket));
+            bucket_size = bucket_size * 2;
+        }
+        SizedManualHistogram { size_to_hist: map }
+    }
+
+    pub fn record(&mut self, size: usize, rtt: Duration) {
+        let bucket = super::allocator::align_to_pow2(size);
+        self.size_to_hist
+            .get_mut(&bucket)
+            .unwrap()
+            .record(rtt.as_nanos() as u64);
+    }
+
+    pub fn get_buckets(&self) -> &HashMap<usize, ManualHistogram> {
+        &self.size_to_hist
+    }
+
+    pub fn sort(&mut self) -> Result<()> {
+        for (_, hist) in self.size_to_hist.iter_mut() {
+            if hist.len() > 0 {
+                hist.sort()?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManualHistogram {
     current_count: usize,
@@ -60,6 +100,10 @@ impl ManualHistogram {
             sorted_latencies: Vec::default(),
             is_sorted: false,
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.current_count
     }
 
     pub fn init(rate_pps: u64, total_time_sec: u64) -> Self {

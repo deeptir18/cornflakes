@@ -4,7 +4,7 @@ use color_eyre::eyre::{ensure, Result};
 use cornflakes_libos::{
     datapath::{Datapath, ReceivedPkt},
     state_machine::client::ClientSM,
-    timing::ManualHistogram,
+    timing::{ManualHistogram, SizedManualHistogram},
     utils::AddressInfo,
     MsgID,
 };
@@ -45,6 +45,8 @@ where
     /// round trips
     rtts: ManualHistogram,
     /// phantom data
+    sized_rtts: SizedManualHistogram,
+    recording_size_rtts: bool,
     _datapath: PhantomData<D>,
     /// Send packet size
     send_packet_size: usize,
@@ -171,6 +173,8 @@ where
             last_sent_id: 0,
             server_addr,
             rtts: ManualHistogram::new(max_num_requests),
+            sized_rtts: SizedManualHistogram::new(16384, max_num_requests),
+            recording_size_rtts: false,
             _datapath: PhantomData::default(),
             send_packet_size,
             min_send_size,
@@ -219,6 +223,21 @@ where
         self.num_timed_out
     }
 
+    fn get_sized_rtts(&self) -> &cornflakes_libos::timing::SizedManualHistogram {
+        &self.sized_rtts
+    }
+
+    fn get_mut_sized_rtts(&mut self) -> &mut cornflakes_libos::timing::SizedManualHistogram {
+        &mut self.sized_rtts
+    }
+
+    fn set_recording_size_rtts(&mut self) {
+        self.recording_size_rtts = true;
+    }
+
+    fn recording_size_rtts(&self) -> bool {
+        self.recording_size_rtts
+    }
     fn get_mut_rtts(&mut self) -> &mut ManualHistogram {
         &mut self.rtts
     }

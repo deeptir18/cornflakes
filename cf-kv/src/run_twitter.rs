@@ -49,7 +49,7 @@ macro_rules! run_client_twitter(
             &mut datapath_params,
             addresses,
         )?;
-        let mut threads: Vec<std::thread::JoinHandle<Result<cornflakes_libos::loadgen::client_threads::ThreadStats>>> = vec![];
+        let mut threads: Vec<std::thread::JoinHandle<Result<cornflakes_libos::loadgen::client_threads::MeasuredThreadStatsOnly>>> = vec![];
         for (i, per_thread_context) in per_thread_contexts.into_iter().enumerate() {
         let server_addr_clone =
             cornflakes_libos::utils::AddressInfo::new(server_addr.2, server_addr.1.clone(), server_addr.0.clone());
@@ -87,10 +87,10 @@ macro_rules! run_client_twitter(
 
                 // TODO: create two custom functions for running with varied sizes at pps, and for
                 // running the twitter trace
-                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, false, opt_clone.total_time as _, opt_clone.logfile.clone(), 1000, 1024, packet_schedule, opt_clone.num_threads)
+                cornflakes_libos::state_machine::client::run_variable_size_loadgen(i, &mut kv_client, &mut connection, opt_clone.total_time as _, opt_clone.logfile.clone(), packet_schedule, opt_clone.num_threads)
             }));
         }
-        let mut thread_results: Vec<cornflakes_libos::loadgen::client_threads::ThreadStats> = Vec::default();
+        let mut thread_results: Vec<cornflakes_libos::loadgen::client_threads::MeasuredThreadStatsOnly> = Vec::default();
         for child in threads {
             let s = match child.join() {
                 Ok(res) => match res {
@@ -110,7 +110,7 @@ macro_rules! run_client_twitter(
 
         // TODO: somehow separate latencies by size bucket
         let dump_per_thread = $opt.logfile == None;
-        cornflakes_libos::loadgen::client_threads::dump_thread_stats(thread_results, $opt.thread_log.clone(), dump_per_thread)?;
+        cornflakes_libos::loadgen::client_threads::dump_measured_thread_stats(thread_results, $opt.thread_log.clone(), dump_per_thread)?;
 
     }
 );

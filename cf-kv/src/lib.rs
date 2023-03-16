@@ -30,7 +30,7 @@ use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, ReceivedPkt},
     state_machine::client::ClientSM,
-    timing::ManualHistogram,
+    timing::{ManualHistogram, SizedManualHistogram},
     utils::AddressInfo,
     MsgID,
 };
@@ -762,6 +762,8 @@ where
     num_timed_out: usize,
     server_addr: AddressInfo,
     rtts: ManualHistogram,
+    sized_rtts: SizedManualHistogram,
+    recording_size_rtts: bool,
     buf: Vec<u8>,
     outgoing_requests: HashMap<MsgID, R::RequestLine>,
     outgoing_msg_types: HashMap<MsgID, R::RequestLine>,
@@ -797,6 +799,8 @@ where
             num_timed_out: 0,
             server_addr: server_addr,
             rtts: ManualHistogram::new(max_num_requests),
+            sized_rtts: SizedManualHistogram::new(16384, max_num_requests),
+            recording_size_rtts: false,
             _datapath: PhantomData,
             buf: vec![0u8; D::max_packet_size()],
             outgoing_requests: HashMap::default(),
@@ -870,6 +874,22 @@ where
 
     fn num_timed_out(&self) -> usize {
         self.num_timed_out
+    }
+
+    fn get_sized_rtts(&self) -> &cornflakes_libos::timing::SizedManualHistogram {
+        &self.sized_rtts
+    }
+
+    fn get_mut_sized_rtts(&mut self) -> &mut cornflakes_libos::timing::SizedManualHistogram {
+        &mut self.sized_rtts
+    }
+
+    fn set_recording_size_rtts(&mut self) {
+        self.recording_size_rtts = true;
+    }
+
+    fn recording_size_rtts(&self) -> bool {
+        self.recording_size_rtts
     }
 
     fn get_mut_rtts(&mut self) -> &mut ManualHistogram {

@@ -56,7 +56,7 @@ macro_rules! run_client_google(
             &mut datapath_params,
             addresses,
         )?;
-        let mut threads: Vec<std::thread::JoinHandle<Result<cornflakes_libos::loadgen::client_threads::ThreadStats>>> = vec![];
+        let mut threads: Vec<std::thread::JoinHandle<Result<cornflakes_libos::loadgen::client_threads::MeasuredThreadStatsOnly>>> = vec![];
 
         // spawn a thread to run client for each connection
         for (i, (schedule, per_thread_context)) in schedules
@@ -106,11 +106,11 @@ macro_rules! run_client_google(
                 // TODO: create two custom functions for running with varied sizes at pps, and for
                 // running the twitter trace
 
-                cornflakes_libos::state_machine::client::run_client_loadgen(i, &mut kv_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, size as _, schedule, opt_clone.num_threads as _)
+                cornflakes_libos::state_machine::client::run_variable_size_loadgen(i, &mut kv_client, &mut connection, opt_clone.total_time as _, opt_clone.logfile.clone(), schedule, opt_clone.num_threads as _)
             }));
         }
 
-        let mut thread_results: Vec<cornflakes_libos::loadgen::client_threads::ThreadStats> = Vec::default();
+        let mut thread_results: Vec<cornflakes_libos::loadgen::client_threads::MeasuredThreadStatsOnly> = Vec::default();
         for child in threads {
             let s = match child.join() {
                 Ok(res) => match res {
@@ -129,7 +129,7 @@ macro_rules! run_client_google(
         }
 
         let dump_per_thread = $opt.logfile == None;
-        cornflakes_libos::loadgen::client_threads::dump_thread_stats(thread_results, $opt.thread_log.clone(), dump_per_thread)?;
+        cornflakes_libos::loadgen::client_threads::dump_measured_thread_stats(thread_results, $opt.thread_log.clone(), dump_per_thread)?;
     }
 );
 
