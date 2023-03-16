@@ -38,7 +38,6 @@ def main():
                 for i in range(num_max_size_packets):
                     str_i = str(i)
                     new_key = f"{key}{str_i}"
-                    print(new_key)
                     new_value_size = args.max_size
                     new_key_size = len(new_key)
                     insert_into_of(
@@ -53,7 +52,6 @@ def main():
                 if rem_size > 0:
                     str_i = str(num_max_size_packets)
                     new_key = f"{key}{str_i}"
-                    print(new_key)
                     new_value_size = rem_size
                     new_key_size = len(new_key)
                     insert_into_of(
