@@ -61,14 +61,19 @@ impl TwitterClient {
         let file = File::open(request_file)?;
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
-        let mut pps: Vec<usize> = vec![0usize; self.twitter_end_time];
+        let modified_time = (self.twitter_end_time + 1) * speed_factor.ceil() as usize;
+        let mut pps: Vec<usize> = vec![0usize; modified_time + 1];
+        tracing::info!(
+            "Generating schedule for {} twitter seconds worth of packets",
+            modified_time
+        );
         while let Some(parsed_line_res) = lines.next() {
             match parsed_line_res {
                 Ok(s) => {
                     let req = self.get_request(s.as_str())?;
                     if self.is_responsible_for(&req) {
                         let time = req.get_time();
-                        if time > self.twitter_end_time {
+                        if time > modified_time {
                             break;
                         }
                         pps[time] += 1;

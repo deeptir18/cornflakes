@@ -936,6 +936,7 @@ where
             let buf_size = self.write_request(&next_request, &datapath)?;
             tracing::debug!(
                 msg_id = self.last_sent_id,
+                bytes =? &self.buf[0..buf_size],
                 "Sending msg of type {:?}",
                 next_request
             );

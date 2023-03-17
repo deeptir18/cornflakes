@@ -87,7 +87,7 @@ macro_rules! run_client_twitter(
 
                 // TODO: create two custom functions for running with varied sizes at pps, and for
                 // running the twitter trace
-                cornflakes_libos::state_machine::client::run_variable_size_loadgen(i, &mut kv_client, &mut connection, opt_clone.total_time as _, opt_clone.logfile.clone(), packet_schedule, opt_clone.num_threads)
+                cornflakes_libos::state_machine::client::run_variable_size_loadgen(i, &mut kv_client, &mut connection, opt_clone.total_time as _, opt_clone.logfile.clone(), packet_schedule, opt_clone.num_threads, opt_clone.record_per_size_buckets)
             }));
         }
         let mut thread_results: Vec<cornflakes_libos::loadgen::client_threads::MeasuredThreadStatsOnly> = Vec::default();
@@ -231,4 +231,6 @@ pub struct TwitterOpt {
         help = "File to indicate server is ready to receive requests"
     )]
     pub ready_file: Option<String>,
+    #[structopt(long = "per_size_info", help = "Record per size info")]
+    pub record_per_size_buckets: bool,
 }

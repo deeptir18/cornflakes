@@ -584,6 +584,6 @@ pub trait Datapath {
 
     /// Maximum possible packet size
     fn max_packet_size() -> usize {
-        8192
+        9216
     }
 }

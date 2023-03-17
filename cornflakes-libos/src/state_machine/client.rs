@@ -279,10 +279,14 @@ pub fn run_variable_size_loadgen<D>(
     logfile: Option<String>,
     schedule: PacketSchedule,
     num_threads: usize,
+    record_per_size_buckets: bool,
 ) -> Result<MeasuredThreadStatsOnly>
 where
     D: Datapath,
 {
+    if record_per_size_buckets {
+        client.set_recording_size_rtts();
+    }
     let start_run = Instant::now();
     client.run_open_loop(
         connection,

@@ -127,7 +127,7 @@ pub struct PacketSchedule {
 
 impl PacketSchedule {
     pub fn new(num_requests: usize, rate_pps: u64, dist_type: DistributionType) -> Result<Self> {
-        tracing::info!("Initializing packet schedule for {} requests", num_requests);
+        tracing::debug!("Initializing packet schedule for {} requests", num_requests);
         let distribution = PacketDistribution::new(dist_type, rate_pps)
             .wrap_err("Failed to initialize distribution")?;
         let mut interarrivals: Vec<Duration> = Vec::with_capacity(num_requests);
