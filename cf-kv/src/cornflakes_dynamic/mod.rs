@@ -70,6 +70,47 @@ where
         self.with_copies
     }
 
+    fn handle_put_serialize_and_send<'kv, 'arena>(
+        &self,
+        msg_id: MsgID,
+        conn_id: ConnID,
+        end_batch: bool,
+        kv_server: &'kv mut KVServer<D>,
+        linked_list_kv_server: &'kv mut LinkedListKVServer<D>,
+        mempool_ids: &mut Vec<MempoolID>,
+        pkt: &ReceivedPkt<D>,
+        datapath: &mut D,
+        arena: &'arena bumpalo::Bump,
+    ) -> Result<()>
+    where
+        'kv: 'arena,
+    {
+        let mut put_req = kv_serializer_hybrid::PutReq::new_in(arena);
+        put_req.deserialize(pkt, REQ_TYPE_SIZE, arena)?;
+        if self.use_linked_list() {
+            linked_list_kv_server.insert_with_copies(
+                put_req.get_key().to_str()?,
+                put_req.get_val().as_ref(),
+                datapath,
+                mempool_ids,
+            )?;
+        } else {
+            kv_server.insert_with_copies(
+                put_req.get_key().to_str()?,
+                put_req.get_val().as_ref(),
+                datapath,
+                mempool_ids,
+            )?;
+        }
+        let mut put_resp = kv_serializer_hybrid::PutResp::new_in(arena);
+        let mut copy_context = CopyContext::new(arena, datapath)?;
+        put_resp.set_id(put_req.get_id());
+
+        // now serialize and send object
+        datapath.queue_cornflakes_obj(msg_id, conn_id, &mut copy_context, put_resp, end_batch)?;
+        Ok(())
+    }
+
     fn handle_get_serialize_and_send<'kv, 'arena>(
         &self,
         msg_id: MsgID,
@@ -709,7 +750,17 @@ where
                     )?;
                 }
                 MsgType::Put => {
-                    unimplemented!();
+                    self.serializer.handle_put_serialize_and_send(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        end_batch,
+                        &mut self.kv_server,
+                        &mut self.linked_list_kv_server,
+                        &mut self.mempool_ids,
+                        &pkt,
+                        datapath,
+                        &arena,
+                    )?;
                 }
                 MsgType::GetM(_size) => {
                     self.serializer.handle_getm_serialize_and_send(

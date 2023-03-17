@@ -20,7 +20,7 @@ macro_rules! run_server_twitter(
         connection.set_copying_threshold($opt.copying_threshold);
         connection.set_inline_mode($opt.inline_mode);
         tracing::info!(threshold = $opt.copying_threshold, "Setting zero-copy copying threshold");
-        let twitter_server_loader = TwitterServerLoader::new($opt.total_time);
+        let twitter_server_loader = TwitterServerLoader::new($opt.total_time, $opt.min_num_keys);
         let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), twitter_server_loader, &mut connection, $opt.push_buf_type, false)?;
         kv_server.init(&mut connection)?;
         kv_server.write_ready($opt.ready_file.clone())?;
@@ -220,6 +220,12 @@ pub struct TwitterOpt {
         default_value = "1"
     )]
     pub num_clients: usize,
+    #[structopt(
+        long = "min_keys_to_load",
+        help = "Minimum keys to load on server initially",
+        default_value = "1000000"
+    )]
+    pub min_num_keys: usize,
     #[structopt(long = "client_id", default_value = "0")]
     pub client_id: usize,
     #[structopt(long = "start_cutoff", default_value = "0")]

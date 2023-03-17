@@ -240,6 +240,7 @@ impl RequestGenerator for TwitterClient {
 pub struct TwitterLine {
     key: String,
     value: String,
+    value_size: usize,
     client_id: usize,
     twitter_time: usize,
     msg_type: MsgType,
@@ -280,6 +281,7 @@ impl TwitterLine {
         let value = std::iter::repeat(c).take(value_size).collect::<String>();
         TwitterLine {
             key: k.to_string(),
+            value_size: value.len(),
             value,
             client_id,
             twitter_time,
@@ -307,12 +309,15 @@ pub struct TwitterServerLoader {
     // server should iterate across trace, adding all requests to kv store that show up in a get to
     // have a default value
     twitter_end_time: usize,
+    // make sure minimum number of keys are loaded
+    min_keys_to_load: usize,
 }
 
 impl TwitterServerLoader {
-    pub fn new(end_time: usize) -> Self {
+    pub fn new(end_time: usize, min_num_keys: usize) -> Self {
         TwitterServerLoader {
             twitter_end_time: end_time,
+            min_keys_to_load: min_num_keys,
         }
     }
 }
@@ -338,24 +343,34 @@ impl ServerLoadGenerator for TwitterServerLoader {
         D: Datapath,
     {
         let batch_size = 1000;
-        let mut done = false;
+        let mut reached_end_time = false;
+        let mut reached_min_keys = false;
         let file = File::open(request_file)?;
         let reader = BufReader::new(file);
         let mut lines_iterator = reader.lines();
-        while !done {
+        let mut last_time = 0;
+        while !(reached_end_time && reached_min_keys) {
             let mut lines_vec: Vec<Self::RequestLine> = Vec::with_capacity(batch_size);
             for _ in 0..batch_size {
                 match lines_iterator.next() {
                     Some(line) => {
                         let request = self.read_request(&line?)?;
+                        last_time = request.get_time();
                         if request.get_time() > self.twitter_end_time {
-                            done = true;
+                            reached_end_time = true;
+                        }
+                        if kv_server.len() >= self.min_keys_to_load
+                            || linked_list_kv_server.len() >= self.min_keys_to_load
+                            || list_kv_server.len() >= self.min_keys_to_load
+                        {
+                            reached_min_keys = true;
+                        }
+                        if reached_end_time && reached_min_keys {
                             break;
                         }
                         lines_vec.push(request)
                     }
                     None => {
-                        done = true;
                         break;
                     }
                 }
@@ -377,7 +392,7 @@ impl ServerLoadGenerator for TwitterServerLoader {
                 )?;
             }
         }
-        tracing::info!(trace = request_file, mempool_ids =? mempool_ids, "Finished loading trace file");
+        tracing::info!(trace = request_file, mempool_ids =? mempool_ids, "Finished loading trace file until about  time {}", last_time);
         Ok(())
     }
 

@@ -1,6 +1,6 @@
 import argparse
-def insert_into_of(outfile, time, key, key_size, value_size, client_id, op):
-    outfile.write(f"{time},{key},{key_size},{value_size},{client_id},{op}\n")
+def insert_into_of(outfile, time, key, key_size, value_size, client_id, op,ttl):
+    outfile.write(f"{time},{key},{key_size},{value_size},{client_id},{op},{ttl}\n")
 def main():
     parser = argparse.ArgumentParser(
             description = "Twitter preprocess script basic argparser"
@@ -47,7 +47,8 @@ def main():
                             str(new_key_size),
                             str(new_value_size),
                             client_id,
-                            op
+                            op,
+                            ttl
                             )
                 if rem_size > 0:
                     str_i = str(num_max_size_packets)
@@ -61,7 +62,8 @@ def main():
                             str(new_key_size),
                             str(new_value_size),
                             client_id,
-                            op
+                            op,
+                            ttl
                             )
 
 
@@ -74,7 +76,8 @@ def main():
                             key_size,
                             str(value_size),
                             client_id,
-                            op)
+                            op,
+                            ttl)
     of.flush()
     of.close()
 
