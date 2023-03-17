@@ -219,7 +219,7 @@ impl ProtoReprInfo {
 
                 if msg.contains_variable_list(&self.message_map)? {
                     type_params.insert(0, "'arena".to_string());
-                    panic!("Contains variable list true for {:?}", msg);
+                    //panic!("Contains variable list true for {:?}", msg);
                 }
 
                 format!("{}<{}>", msg_name, type_params.join(", "))

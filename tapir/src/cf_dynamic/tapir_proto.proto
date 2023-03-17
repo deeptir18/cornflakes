@@ -1,0 +1,222 @@
+syntax = "proto3";
+
+package tapir_cf;
+
+message TestMessage {
+    string test_string = 1;
+}
+
+message TestMessageTwo {
+    repeated TestMessage arr = 1;
+}
+
+message LockRequest { // change to LockRequest
+  uint64 clientid = 1;
+  string key = 2;
+  //bool type = 3;
+  // true = lock
+  // false = unlock
+}
+message LockReply { // change to LockReply
+  string key = 1;
+  int32 status = 2;
+  // 0 = Operation Success
+  // -1 = Held by someone else (for lock)
+  // -2 = Not held by you (for unlock)
+  // -3 = Invalid command
+}
+
+message LatencyDist {
+    uint32 latencyType = 1;
+    uint64 min = 2;
+    uint64 max = 3;
+    uint64 total = 4;
+    uint64 count = 5;
+    // repeated uint32 buckets = 6; // could be a problem
+}
+
+message Latency {
+    string name = 1;
+    repeated LatencyDist dists = 2;
+}
+
+message LatencyFile {
+    repeated Latency latencies = 1;
+}
+
+//message Request {
+//    bytes op = 1;
+//    uint64 clientid = 2;
+//    uint64 clientreqid = 3;
+//}
+//
+//message UnloggedRequest {
+//    bytes op = 1;
+//    uint64 clientid = 2;
+//    uint64 clientreqid = 3;
+//}
+//
+//message OpID {
+//    uint64 clientid = 1;
+//    uint64 clientreqid = 2;
+//}
+//
+//// For the view change and recovery protocol, a replica stores two things on
+//// disk: (1) its current view and (2) the latest view during which it was
+//// NORMAL. Replicas pack this information into this proto buf and serialize it
+//// to disk.
+//message PersistedViewInfo {
+//  uint64 view = 1;
+//  uint64 latest_normal_view = 2;
+//}
+//
+////enum RecordEntryState {
+////    RECORD_STATE_TENTATIVE = 0;
+////    RECORD_STATE_FINALIZED = 1;
+////}
+//
+////enum RecordEntryType {
+////    RECORD_TYPE_INCONSISTENT = 0;
+////    RECORD_TYPE_CONSENSUS = 1;
+////}
+//
+//message RecordEntryProto {
+//  uint64 view = 1;
+//  OpID opid = 2;
+//  uint32 state = 3;
+//  uint32 type = 4;
+//  bytes op = 5;
+//  bytes result = 6;
+//}
+//
+//// TODO: Currently, replicas send entire records to one another. Figure out if
+//// there is a more efficient way to exchange records.
+//message RecordProto {
+//  repeated RecordEntryProto entry = 1;
+//}
+//
+//message ProposeInconsistentMessage {
+//    Request req = 1;
+//}
+//
+//message ReplyInconsistentMessage {
+//    uint64 view = 1;
+//    uint32 replicaIdx = 2;
+//    OpID opid = 3;
+//    //bool finalized = 4;
+//}
+//
+//message FinalizeInconsistentMessage {
+//    OpID opid = 1;
+//}
+//
+//message ConfirmMessage {
+//    uint64 view = 1;
+//    uint32 replicaIdx = 2;
+//    OpID opid = 3;
+//}
+//
+//message ProposeConsensusMessage {
+//    Request req = 1;
+//}
+//
+//message ReplyConsensusMessage {
+//    uint64 view = 1;
+//    uint32 replicaIdx = 2;
+//    OpID opid = 3;
+//    bytes result = 4;
+//    //bool finalized = 5;
+//}
+//
+//message FinalizeConsensusMessage {
+//    OpID opid = 1;
+//    bytes result = 2;
+//}
+//
+//message DoViewChangeMessage {
+//    uint32 replicaIdx = 1;
+//    // record is because a replica only sends its record to the
+//    // leader of the new view.
+//    RecordProto record = 2;
+//    uint64 new_view = 3;
+//    uint64 latest_normal_view = 4;
+//}
+//message StartViewMessage {
+//    RecordProto record = 1;
+//    uint64 new_view = 2;
+//}
+//
+//message UnloggedRequestMessage {
+//    UnloggedRequest req = 1;
+//}
+//
+//message UnloggedReplyMessage {
+//    bytes reply = 1;
+//    uint64 clientreqid = 2;
+//}
+//
+//message TimestampMessage {
+//    uint64 id = 1;
+//    uint64 timestamp = 2;
+//}
+//
+//message ReadMessage {
+//    string key = 1;
+//    TimestampMessage readtime = 2;
+//}
+//
+//message WriteMessage {
+//    string key = 1;
+//    string value = 2;
+//}
+//
+//// A serialized transaction
+//message TransactionMessage {
+//    repeated ReadMessage readset = 1;
+//    repeated WriteMessage writeset = 2;
+//}
+//
+//message GetMessage {
+//    bytes key = 1;
+//    TimestampMessage timestamp = 2;
+//}
+//
+//message PrepareMessage {
+//    TransactionMessage txn = 1;
+//    TimestampMessage timestamp = 2;
+//}
+//
+//message CommitMessage {
+//    uint64 timestamp = 1;
+//}
+//
+//message AbortMessage {
+//    TransactionMessage txn = 1;
+//}
+//
+//message StoreRequest {
+//    //enum Operation {
+//    //    GET = 0;
+//    //    PREPARE = 1;
+//    //    COMMIT = 2;
+//    //    ABORT = 3;
+//    //}  
+//    //Operation op = 1;
+//    uint32 operation = 1;
+//    uint64 txnid = 2;
+//    GetMessage get = 3;
+//    PrepareMessage prepare = 4;
+//    CommitMessage commit = 5;
+//    AbortMessage abort = 6;
+//}
+//
+//message StoreReply {
+//    // 0 = OK
+//    // -1 = failed
+//    // -2 = retry
+//    // -3 = abstain/no reply
+//    int32 status = 1;
+//    bytes value = 2;
+//    TimestampMessage timestamp = 3;
+//}
+//

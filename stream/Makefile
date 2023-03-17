@@ -15,7 +15,7 @@ stream_c.exe: stream.c
 	$(CC) $(CFLAGS) stream.c -o stream_c.exe
 
 stream_cf.exe:
-	gcc -O2 -fopenmp -DSTREAM_ARRAY_SIZE=100000000 -DNTIMES=1000 stream.c -o stream_omp
+	gcc -O2 -fopenmp -DSTREAM_ARRAY_SIZE=100000000 -DNTIMES=100000 stream.c -o stream_omp
 
 clean:
 	rm -f stream_f.exe stream_c.exe *.o

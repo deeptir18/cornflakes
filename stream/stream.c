@@ -304,8 +304,11 @@ main()
     /*	--- MAIN LOOP --- repeat test cases NTIMES times --- */
 
     scalar = 3.0;
-    for (k=0; k<NTIMES; k++)
+    k = 0;
+    while(1)
 	{
+	k++;
+	if (k == NTIMES) k = 0;
 	times[0][k] = mysecond();
 #ifdef TUNED
         tuned_STREAM_Copy();
