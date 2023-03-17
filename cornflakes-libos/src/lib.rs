@@ -2121,7 +2121,7 @@ where
 
         let current_length = self.current_length;
         // TODO: doesn't work if buffer is > than an MTU
-        if self.remaining < buf.len() {
+        if self.remaining <= buf.len() {
             self.push(datapath)?;
         }
         let copy_buffers_len = self.copy_buffers.len();

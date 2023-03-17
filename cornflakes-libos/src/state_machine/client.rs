@@ -2,11 +2,11 @@ use super::super::{
     datapath::{Datapath, ReceivedPkt},
     high_timeout_at_start,
     loadgen::{
-        client_threads::ThreadStats,
+        client_threads::{MeasuredThreadStatsOnly, ThreadStats},
         request_schedule::{PacketSchedule, SpinTimer},
     },
     no_retries_timeout,
-    timing::ManualHistogram,
+    timing::{ManualHistogram, SizedManualHistogram},
     utils::AddressInfo,
     MsgID,
 };
@@ -63,7 +63,19 @@ pub trait ClientSM {
 
     fn cleanup(&mut self, connection: &mut Self::Datapath) -> Result<()>;
 
+    fn get_mut_sized_rtts(&mut self) -> &mut SizedManualHistogram;
+
+    fn get_sized_rtts(&self) -> &SizedManualHistogram;
+
+    fn set_recording_size_rtts(&mut self);
+
+    fn recording_size_rtts(&self) -> bool;
+
     fn get_mut_rtts(&mut self) -> &mut ManualHistogram;
+
+    fn record_sized_rtt(&mut self, rtt: Duration, msg_size: usize) {
+        self.get_mut_sized_rtts().record(msg_size, rtt);
+    }
 
     fn record_rtt(&mut self, rtt: Duration) {
         self.get_mut_rtts().record(rtt.as_nanos() as u64);
@@ -80,6 +92,10 @@ pub trait ClientSM {
     fn sort_rtts(&mut self, start_cutoff: usize) -> Result<()> {
         self.get_mut_rtts().sort_and_truncate(start_cutoff)?;
         Ok(())
+    }
+
+    fn sort_sized_rtts(&mut self) -> Result<()> {
+        self.get_mut_sized_rtts().sort()
     }
 
     fn log_rtts(&mut self, path: &str, start_cutoff: usize) -> Result<()> {
@@ -163,11 +179,16 @@ pub trait ClientSM {
 
             for (pkt, rtt) in recved_pkts.into_iter() {
                 let msg_id = pkt.msg_id();
+                let size = pkt.data_len();
                 if self.process_received_msg(pkt, &datapath).wrap_err(format!(
                     "Error in processing received response for pkt {}.",
                     msg_id
                 ))? {
                     self.record_rtt(rtt);
+                    if self.recording_size_rtts() {
+                        self.record_sized_rtt(rtt, size);
+                    }
+
                     self.increment_uniq_received();
                     recved += 1;
                 }
@@ -213,11 +234,15 @@ pub trait ClientSM {
                 let recved_pkts = datapath.pop_with_durations()?;
                 for (pkt, rtt) in recved_pkts.into_iter() {
                     let msg_id = pkt.msg_id();
+                    let msg_size = pkt.data_len();
                     if self.process_received_msg(pkt, &datapath).wrap_err(format!(
                         "Error in processing received response for pkt {}.",
                         msg_id
                     ))? {
                         self.record_rtt(rtt);
+                        if self.recording_size_rtts() {
+                            self.record_sized_rtt(rtt, msg_size);
+                        }
                         self.increment_uniq_received();
                     }
                 }
@@ -243,6 +268,61 @@ pub trait ClientSM {
         tracing::debug!("Finished sending");
         Ok(())
     }
+}
+
+/// for traces where calculating gbps doesn't make sense
+pub fn run_variable_size_loadgen<D>(
+    thread_id: usize,
+    client: &mut impl ClientSM<Datapath = D>,
+    connection: &mut D,
+    total_time_seconds: u64,
+    logfile: Option<String>,
+    schedule: PacketSchedule,
+    num_threads: usize,
+    record_per_size_buckets: bool,
+) -> Result<MeasuredThreadStatsOnly>
+where
+    D: Datapath,
+{
+    if record_per_size_buckets {
+        client.set_recording_size_rtts();
+    }
+    let start_run = Instant::now();
+    client.run_open_loop(
+        connection,
+        schedule,
+        Duration::from_secs(total_time_seconds),
+        no_retries_timeout,
+        true,
+        num_threads,
+    )?;
+    tracing::info!(thread = thread_id, "Finished running open loop");
+    let exp_duration = start_run.elapsed().as_nanos();
+    client.sort_rtts(0)?;
+    if client.recording_size_rtts() {
+        client.sort_sized_rtts()?;
+    }
+    // per thread log latency
+    match logfile {
+        Some(x) => {
+            let path = get_thread_latlog(&x, thread_id)?;
+            client.log_rtts(&path, 0)?;
+        }
+        None => {}
+    }
+    tracing::info!(thread = thread_id, "About to calculate stats");
+    let sized_rtts = client.get_sized_rtts().clone();
+    let stats = MeasuredThreadStatsOnly::new(
+        thread_id,
+        client.num_sent_cutoff(0),
+        client.num_received_cutoff(0),
+        client.num_retried(),
+        exp_duration as _,
+        client.get_mut_rtts(),
+        sized_rtts,
+        0,
+    )?;
+    Ok(stats)
 }
 
 pub fn run_client_loadgen<D>(

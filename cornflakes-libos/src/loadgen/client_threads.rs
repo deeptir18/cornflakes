@@ -1,3 +1,5 @@
+use crate::timing::SizedManualHistogram;
+
 use super::super::timing::ManualHistogram;
 use color_eyre::eyre::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -231,6 +233,23 @@ impl ThreadLatencies {
             "thread {} latencies.",
             thread_id
         );
+    }
+    fn dump_with_size(&self, thread_id: usize, max_size: usize) {
+        tracing::info!(
+            p5_ns =? self.p5,
+            p25_ns =? self.p25,
+            p50_ns =? self.p50,
+            p75_ns =? self.p75,
+            p95_ns =? self.p95,
+            p99_ns =? self.p99,
+            p999_ns =? self.p999,
+            avg_ns = ?self.avg,
+            max_ns = ?self.max,
+            min_ns = ?self.min,
+            "thread {} latencies: size {}.",
+            thread_id,
+            max_size,
+        );
 
         tracing::info!(
             p50_ns =? self.p50,
@@ -260,6 +279,131 @@ impl std::ops::Add for ThreadLatencies {
             p999: rolling_avg(self.p999, other.p999, idx),
             min: self.min.min(other.min),
             max: self.max.max(other.max),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct MeasuredThreadStatsOnly {
+    pub thread_id: usize,
+    pub num_sent: usize,
+    pub num_received: usize,
+    pub retries: usize,
+    pub runtime: f64,
+    pub achieved_load_pps_sent: f64,
+    pub achieved_load_pps_rcvd: f64,
+    pub summary_histogram: SummaryHistogram,
+    pub thread_latencies: ThreadLatencies,
+    pub sized_histogram: HashMap<usize, (SummaryHistogram, ThreadLatencies)>,
+}
+
+impl MeasuredThreadStatsOnly {
+    pub fn new(
+        thread_id: usize,
+        num_sent: usize,
+        num_received: usize,
+        retries: usize,
+        runtime: f64,
+        rtts: &mut ManualHistogram,
+        sized_rtts: SizedManualHistogram,
+        cutoff_size: usize,
+    ) -> Result<Self> {
+        let achieved_load_pps_sent = num_sent as f64 / (runtime / NANOS_IN_SEC);
+        let achieved_load_pps_rcvd = num_received as f64 / (runtime / NANOS_IN_SEC);
+
+        if !rtts.is_sorted() {
+            rtts.sort_and_truncate(cutoff_size)?;
+        }
+
+        let summary_histogram = rtts.summary_histogram();
+        let thread_latencies = summary_histogram.get_summary_latencies()?;
+
+        let mut sized_map: HashMap<usize, (SummaryHistogram, ThreadLatencies)> = HashMap::default();
+        for (bucket, hist) in sized_rtts.get_buckets().iter() {
+            if hist.len() > 0 {
+                let summary_hist = hist.summary_histogram();
+                let summary_latencies = summary_hist.get_summary_latencies()?;
+                sized_map.insert(*bucket, (summary_hist, summary_latencies));
+            }
+        }
+
+        Ok(MeasuredThreadStatsOnly {
+            thread_id,
+            num_sent,
+            num_received,
+            retries,
+            runtime: runtime / NANOS_IN_SEC,
+            achieved_load_pps_sent,
+            achieved_load_pps_rcvd,
+            summary_histogram,
+            thread_latencies,
+            sized_histogram: sized_map,
+        })
+    }
+
+    pub fn dump(&self) {
+        tracing::info!(
+            thread = self.thread_id,
+            num_sent = self.num_sent,
+            num_received = self.num_received,
+            num_retries = self.retries,
+            runtime =? self.runtime,
+            achieved_pps_sent = ?self.achieved_load_pps_sent,
+            achieved_pps_rcvd = ?self.achieved_load_pps_rcvd,
+            "thread {} summary stats", self.thread_id
+        );
+        self.thread_latencies.dump(self.thread_id);
+        for (bucket, (_, latencies)) in self.sized_histogram.iter() {
+            latencies.dump_with_size(self.thread_id, *bucket);
+        }
+    }
+
+    pub fn clear_summary_histograms(&mut self) {
+        self.summary_histogram = SummaryHistogram::default();
+        for (_, (ref mut hist, _)) in self.sized_histogram.iter_mut() {
+            *hist = SummaryHistogram::default();
+        }
+    }
+
+    pub fn summary_histogram(&self) -> SummaryHistogram {
+        self.summary_histogram.clone()
+    }
+
+    pub fn buckets(&self) -> &HashMap<usize, (SummaryHistogram, ThreadLatencies)> {
+        &self.sized_histogram
+    }
+}
+
+impl std::ops::Add for MeasuredThreadStatsOnly {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        let histogram = self.summary_histogram() + other.summary_histogram();
+        let latencies = histogram.get_summary_latencies().unwrap();
+        let mut new_sized_hist = self.sized_histogram.clone();
+        for (bucket, (hist, _latencies)) in other.buckets().iter() {
+            match new_sized_hist.get_mut(bucket) {
+                Some((ref mut our_hist, ref mut our_latencies)) => {
+                    let new_hist = our_hist.clone() + hist.clone();
+                    *our_latencies = our_hist.get_summary_latencies().unwrap();
+                    *our_hist = new_hist;
+                }
+                None => {
+                    new_sized_hist.insert(*bucket, (hist.clone(), latencies.clone()));
+                }
+            }
+        }
+        Self {
+            thread_id: other.thread_id,
+            num_sent: self.num_sent + other.num_sent,
+            num_received: self.num_received + other.num_received,
+            retries: self.retries + other.retries,
+            runtime: self.runtime + other.runtime,
+            achieved_load_pps_sent: self.achieved_load_pps_sent + other.achieved_load_pps_sent,
+            achieved_load_pps_rcvd: self.achieved_load_pps_sent + other.achieved_load_pps_rcvd,
+            summary_histogram: histogram,
+            thread_latencies: latencies,
+            sized_histogram: self.sized_histogram,
         }
     }
 }
@@ -354,7 +498,7 @@ impl std::ops::Add for ThreadStats {
             num_sent: self.num_sent + other.num_sent,
             num_received: self.num_received + other.num_received,
             retries: self.retries + other.retries,
-            runtime: self.runtime + other.runtime,
+            runtime: (self.runtime + other.runtime) / 2.0,
             offered_load_pps: self.offered_load_pps + other.offered_load_pps,
             offered_load_gbps: self.offered_load_gbps + other.offered_load_gbps,
             achieved_load_pps: self.achieved_load_pps + other.achieved_load_pps,
@@ -363,6 +507,36 @@ impl std::ops::Add for ThreadStats {
             summary_latencies: latencies,
         }
     }
+}
+
+fn vec_to_measured_only_map(
+    vec: Vec<MeasuredThreadStatsOnly>,
+) -> (
+    SummaryHistogram,
+    HashMap<usize, SummaryHistogram>,
+    HashMap<usize, MeasuredThreadStatsOnly>,
+) {
+    let mut hist = SummaryHistogram::default();
+    let mut thread_map: HashMap<usize, MeasuredThreadStatsOnly> = HashMap::default();
+    let mut latency_buckets: HashMap<usize, SummaryHistogram> = HashMap::default();
+    for (i, mut measured_stats) in vec.into_iter().enumerate() {
+        assert!(measured_stats.thread_id == i);
+        hist += measured_stats.summary_histogram();
+        for (bucket, (summary_hist, _latency_summary)) in measured_stats.buckets().iter() {
+            match latency_buckets.get_mut(bucket) {
+                Some(current_hist) => {
+                    let new_hist = current_hist.clone() + summary_hist.clone();
+                    *current_hist = new_hist;
+                }
+                None => {
+                    latency_buckets.insert(*bucket, summary_hist.clone());
+                }
+            }
+        }
+        measured_stats.clear_summary_histograms();
+        thread_map.insert(i, measured_stats);
+    }
+    (hist, latency_buckets, thread_map)
 }
 
 fn vec_to_map(vec: Vec<ThreadStats>) -> (SummaryHistogram, HashMap<usize, ThreadStats>) {
@@ -375,6 +549,33 @@ fn vec_to_map(vec: Vec<ThreadStats>) -> (SummaryHistogram, HashMap<usize, Thread
         map.insert(i, stats);
     }
     (summary_histogram, map)
+}
+
+pub fn dump_measured_thread_stats(
+    info: Vec<MeasuredThreadStatsOnly>,
+    thread_info_path: Option<String>,
+    dump_per_thread: bool,
+) -> Result<()> {
+    match thread_info_path {
+        Some(p) => {
+            let map = vec_to_measured_only_map(info.clone());
+            to_writer(&File::create(&p)?, &map)?;
+        }
+        None => {}
+    }
+    // now iterate and dump per thread stats
+    let mut mega_info = MeasuredThreadStatsOnly::default();
+    for stats in info.iter() {
+        if dump_per_thread {
+            stats.dump();
+        }
+        mega_info = mega_info + stats.clone();
+    }
+
+    tracing::warn!("About to print out stats for all threads");
+
+    mega_info.dump();
+    Ok(())
 }
 
 pub fn dump_thread_stats(

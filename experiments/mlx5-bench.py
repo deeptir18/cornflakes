@@ -72,6 +72,7 @@ class ScatterGatherIteration(runner.Iteration):
                  busy_cycles=0, 
                  recv_pkt_size=0, 
                  num_server_cores=1,
+                 refcnt_factor=1,
                  trial=None):
         """
         Arguments:
@@ -84,7 +85,7 @@ class ScatterGatherIteration(runner.Iteration):
         self.client_rates = client_rates
         self.num_threads = num_threads
         self.segment_size = segment_size
-        self.refcnt_factor = utils.parse_refcnt_factor_from_system(system_name)
+        self.refcnt_factor = refcnt_factor
         self.num_segments = num_segments
         self.trial = trial
         self.array_size = array_size
@@ -92,6 +93,10 @@ class ScatterGatherIteration(runner.Iteration):
         self.recv_pkt_size = recv_pkt_size
         self.num_server_cores=num_server_cores
         self.system = system_name
+        if (system_name != "zero_copy_refcnt"):
+            self.refcnt_factor = 1
+    def get_num_refcnt_arrays_string(self):
+        return "refcnt_factor_{}".format(self.refcnt_factor)
 
     def __str__(self):
         return "ScatterGather Iteration info: " \
@@ -101,6 +106,7 @@ class ScatterGatherIteration(runner.Iteration):
             "num segments: {}, " \
             "num server cores: {} , "\
             "system: {} , " \
+            "num_refcnt_arrays: {}, " \
             "recv pkt size: {}, "\
             "trial: {}".format(self.get_client_rate_string(),
                                self.num_threads,
@@ -108,6 +114,7 @@ class ScatterGatherIteration(runner.Iteration):
                                self.get_num_segments_string(),
                                self.get_num_server_cores_string(),
                                self.get_system_string(),
+                               self.get_num_refcnt_arrays_string(),
                                self.get_recv_pkt_size_string(),
                                self.get_trial_string())
 
@@ -120,6 +127,7 @@ class ScatterGatherIteration(runner.Iteration):
                 self.recv_pkt_size,
                 self.busy_cycles,
                 self.system,
+                self.refcnt_factor,
                 self.num_threads, 
                 self.get_num_clients(), 
                 self.trial]
@@ -130,6 +138,7 @@ class ScatterGatherIteration(runner.Iteration):
         Returns an array of parameters for this experiment
         """
         return ["system", 
+                "refcnt_factor",
                 "num_segments", 
                 "segment_size", 
                 "array_size",
@@ -161,11 +170,14 @@ class ScatterGatherIteration(runner.Iteration):
                 "recv_pkt_size": self.recv_pkt_size,
                 "num_server_cores": self.num_server_cores,
                 "system": self.get_system_string(),
+                "refcnt_factor": self.get_refcnt_factor(),
                 "num_threads": self.num_threads,
                 "num_clients": self.get_num_clients(),
                 "offered_load_pps": offered_load_pps,
                 "offered_load_gbps": offered_load_gbps,
         }
+    def get_refcnt_factor(self):
+        return self.refcnt_factor
     
     def get_iteration_avg_message_size(self):
         return self.segment_size * self.num_segments
@@ -280,6 +292,7 @@ class ScatterGatherIteration(runner.Iteration):
         # returned path doesn't include the trial
         path = Path(high_level_folder)
         return path / self.get_system_string() /\
+                self.get_num_refcnt_arrays_string() /\
                 self.get_array_size_string() /\
                 self.get_recv_pkt_size_string() /\
                 self.get_busy_cycles_string() /\
@@ -331,8 +344,8 @@ class ScatterGatherIteration(runner.Iteration):
             ret["echo_str"] = " --echo_mode"
         elif self.system == "copy":
             ret["with_copy"] = " --with_copy"
-        elif "refcnt" in self.system:
-            # system name could be zero_copy_refcnt_{X} where X is the refcnt
+        elif self.system == "zero_copy_refcnt":
+            # system name could be zero_copy_refcnt
             # factor
             ret["refcnt_str"] = " --using_ref_counting"
         else:
@@ -364,7 +377,8 @@ SgBenchInfo = collections.namedtuple("SgBenchInfo",
          "array_size",
          "num_server_cores",
          "busy_cycles",
-         "recv_pkt_size"])
+         "recv_pkt_size",
+         "refcnt_factor"])
 
 class ScatterGather(runner.Experiment):
     def __init__(self, exp_yaml, config_yaml):
@@ -420,17 +434,20 @@ class ScatterGather(runner.Experiment):
          "array_size = {}, "\
          "num_server_cores = {}, "\
          "busy_cycles = {}, "\
-         "recv_pkt_size = {}"
+         "recv_pkt_size = {}, "\
+         "refcnt_factor = {}"
+         Refcnt factor only applies if system name == "zero_copy_refcnt"
         """
         try:
-            parse_result = parse.parse("segment_size = {:d}, num_segments = {:d}, array_size = {:d}, num_server_cores = {:d}, busy_cycles = {:d}, recv_pkt_size = {:d}", 
+            parse_result = parse.parse("segment_size = {:d}, num_segments = {:d}, array_size = {:d}, num_server_cores = {:d}, busy_cycles = {:d}, recv_pkt_size = {:d}, refcnt_factor = {:d}", 
                     exp_string)
             return SgBenchInfo(parse_result[0],
                     parse_result[1],
                     parse_result[2],
                     parse_result[3],
                     parse_result[4],
-                    parse_result[5])
+                    parse_result[5],
+                    parse_result[6])
         except:
             utils.error("Error parsing exp_string: {}".format(exp_string))
             exit(1)
@@ -454,7 +471,8 @@ class ScatterGather(runner.Experiment):
                  total_args.array_size,
                  total_args.busy_cycles, 
                  total_args.recv_pkt_size, 
-                 total_args.num_server_cores)
+                 total_args.num_server_cores,
+                 total_args.refcnt_factor)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
             it.set_trial(num_trials_finished)
@@ -482,6 +500,7 @@ class ScatterGather(runner.Experiment):
                             busy_cycles = sgbenchinfo.busy_cycles
                             recv_pkt_size = sgbenchinfo.recv_pkt_size
                             num_server_cores = sgbenchinfo.num_server_cores
+                            refcnt_factor = sgbenchinfo.refcnt_factor
                             rate = int(float(max_rate) *
                                         rate_percentage)
                             client_rates = [(rate, num_clients)]
@@ -496,6 +515,7 @@ class ScatterGather(runner.Experiment):
                                     busy_cycles,
                                     recv_pkt_size,
                                     num_server_cores,
+                                    refcnt_factor,
                                     trial = trial)
                             ret.append(it)
             return ret
@@ -530,6 +550,11 @@ class ScatterGather(runner.Experiment):
                             type=int,
                             default=1,
                             help="Number of server cores.")
+            parser.add_argument("-rf", "--refcnt_factor",
+                                dest = "refcnt_factor",
+                                type = int,
+                                default=1,
+                                help = "Refcnt factor")
             parser.add_argument("-r", "--rate",
                                 dest="rate",
                                 type=int,
@@ -651,8 +676,6 @@ class ScatterGather(runner.Experiment):
         for system in systems:
             for sgbenchinfo in max_rates_dict:
                 print("Running summary analysis for {}".format(sgbenchinfo))
-                if system == "zero_copy_refcnt":
-                    continue
                 self.run_summary_analysis(df,
                                         out,
                                         system,

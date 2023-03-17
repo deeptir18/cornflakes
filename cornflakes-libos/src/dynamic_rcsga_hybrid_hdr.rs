@@ -404,7 +404,10 @@ where
     #[inline]
     fn num_zero_copy_scatter_gather_entries(&self) -> usize {
         match self {
-            CFBytes::RefCounted(_) => 1,
+            CFBytes::RefCounted(x) => match x.as_ref().len() >= 1 {
+                true => 1,
+                false => 0,
+            },
             CFBytes::Copied(_) => 0,
             CFBytes::Raw(_) => 0,
         }
@@ -437,9 +440,11 @@ where
         match self {
             CFBytes::RefCounted(metadata) => {
                 // call the datapath callback on this metadata
-                datapath_callback(&metadata, callback_state)?;
-                let offset_to_write = *cur_entry_ptr;
                 let object_len = metadata.as_ref().len();
+                if object_len > 0 {
+                    datapath_callback(&metadata, callback_state)?;
+                }
+                let offset_to_write = *cur_entry_ptr;
                 let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
                 obj_ref.write_size(object_len as u32);
                 obj_ref.write_offset(offset_to_write as u32);
@@ -484,7 +489,9 @@ where
     ) -> Result<()> {
         match self {
             CFBytes::RefCounted(metadata) => {
-                zero_copy_scatter_gather_entries[0] = metadata.clone();
+                if metadata.as_ref().len() > 0 {
+                    zero_copy_scatter_gather_entries[0] = metadata.clone();
+                }
                 let offset_to_write = *ds_offset;
                 let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
                 obj_ref.write_size(metadata.as_ref().len() as u32);
@@ -639,7 +646,15 @@ where
 
     pub fn to_str(&self) -> Result<&str> {
         let slice = self.as_ref();
-        let s = str::from_utf8(slice).wrap_err("Could not turn bytes into string")?;
+        tracing::debug!("Slice: {:?}", slice);
+        let s = str::from_utf8(slice)
+            .wrap_err("Could not turn bytes into string")?
+            .trim_end();
+        tracing::debug!(
+            string_len = s.len(),
+            slice_len = slice.len(),
+            "Length of string and slice"
+        );
         Ok(s)
     }
 
@@ -684,7 +699,10 @@ where
     #[inline]
     fn num_zero_copy_scatter_gather_entries(&self) -> usize {
         match self {
-            CFString::RefCounted(_) => 1,
+            CFString::RefCounted(x) => match x.as_ref().len() >= 1 {
+                true => 1,
+                false => 0,
+            },
             CFString::Copied(_) => 0,
             CFString::Raw(_) => 0,
         }
@@ -716,10 +734,12 @@ where
     {
         match self {
             CFString::RefCounted(metadata) => {
-                // call the datapath callback on this metadata
-                datapath_callback(&metadata, callback_state)?;
-                let offset_to_write = *cur_entry_ptr;
                 let object_len = metadata.as_ref().len();
+                if object_len > 0 {
+                    // call the datapath callback on this metadata
+                    datapath_callback(&metadata, callback_state)?;
+                }
+                let offset_to_write = *cur_entry_ptr;
                 let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
                 obj_ref.write_size(object_len as u32);
                 obj_ref.write_offset(offset_to_write as u32);
@@ -757,7 +777,9 @@ where
     ) -> Result<()> {
         match self {
             CFString::RefCounted(metadata) => {
-                zero_copy_scatter_gather_entries[0] = metadata.clone();
+                if metadata.as_ref().len() > 0 {
+                    zero_copy_scatter_gather_entries[0] = metadata.clone();
+                }
                 let offset_to_write = *ds_offset;
                 let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
                 obj_ref.write_size(metadata.as_ref().len() as u32);
@@ -799,6 +821,7 @@ where
             header_offset,
             buffer_offset,
             ptr_offset = forward_pointer.get_offset(),
+            len = forward_pointer.get_size(),
             "Deserializing cf string"
         );
 

@@ -1,10 +1,14 @@
 pub mod capnproto;
 pub mod cornflakes_dynamic;
 pub mod flatbuffers;
+pub mod google_protobuf;
 pub mod protobuf;
 pub mod redis;
 pub mod retwis;
 pub mod retwis_run_datapath;
+pub mod run_google_protobuf;
+pub mod run_twitter;
+pub mod twitter;
 pub mod ycsb;
 pub mod ycsb_run_datapath;
 
@@ -26,7 +30,7 @@ use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, ReceivedPkt},
     state_machine::client::ClientSM,
-    timing::ManualHistogram,
+    timing::{ManualHistogram, SizedManualHistogram},
     utils::AddressInfo,
     MsgID,
 };
@@ -37,8 +41,7 @@ use std::{
     marker::PhantomData,
 };
 
-const MIN_MEMPOOL_SIZE: usize = 262144;
-
+const MIN_MEMPOOL_BUF_SIZE: usize = 8;
 // 8 bytes at front of message for framing
 pub const REQ_TYPE_SIZE: usize = 4;
 
@@ -319,6 +322,10 @@ where
         }
     }
 
+    pub fn contains_key(&self, s: &str) -> bool {
+        self.map.contains_key(s)
+    }
+
     pub fn len(&self) -> usize {
         self.map.len()
     }
@@ -453,6 +460,15 @@ where
     }
 }
 
+fn pad_mempool_size(size: usize) -> usize {
+    if size < MIN_MEMPOOL_BUF_SIZE {
+        return MIN_MEMPOOL_BUF_SIZE;
+    } else {
+        // return nearest power of 2 above this
+        return cornflakes_libos::allocator::align_to_pow2(size);
+    }
+}
+
 fn allocate_datapath_buffer<D>(
     datapath: &mut D,
     size: usize,
@@ -461,15 +477,21 @@ fn allocate_datapath_buffer<D>(
 where
     D: Datapath,
 {
-    match datapath.allocate(size)? {
+    match datapath.allocate(pad_mempool_size(size))? {
         Some(buf) => Ok(buf),
         None => {
-            mempool_ids.append(&mut datapath.add_memory_pool(size, MIN_MEMPOOL_SIZE)?);
-            tracing::info!("Added mempool");
-            match datapath.allocate(size)? {
+            tracing::debug!(
+                "Mempool for size {} doesn't exist; allocating (padded size {})",
+                size,
+                pad_mempool_size(size)
+            );
+            let num_mempools = mempool_ids.len();
+            mempool_ids.append(&mut datapath.add_memory_pool_with_size(pad_mempool_size(size))?);
+            tracing::info!("Adding mempool # {}", num_mempools);
+            match datapath.allocate(pad_mempool_size(size))? {
                 Some(buf) => Ok(buf),
                 None => {
-                    unreachable!();
+                    panic!("Could not allocate");
                 }
             }
         }
@@ -740,6 +762,8 @@ where
     num_timed_out: usize,
     server_addr: AddressInfo,
     rtts: ManualHistogram,
+    sized_rtts: SizedManualHistogram,
+    recording_size_rtts: bool,
     buf: Vec<u8>,
     outgoing_requests: HashMap<MsgID, R::RequestLine>,
     outgoing_msg_types: HashMap<MsgID, R::RequestLine>,
@@ -775,6 +799,8 @@ where
             num_timed_out: 0,
             server_addr: server_addr,
             rtts: ManualHistogram::new(max_num_requests),
+            sized_rtts: SizedManualHistogram::new(16384, max_num_requests),
+            recording_size_rtts: false,
             _datapath: PhantomData,
             buf: vec![0u8; D::max_packet_size()],
             outgoing_requests: HashMap::default(),
@@ -850,6 +876,22 @@ where
         self.num_timed_out
     }
 
+    fn get_sized_rtts(&self) -> &cornflakes_libos::timing::SizedManualHistogram {
+        &self.sized_rtts
+    }
+
+    fn get_mut_sized_rtts(&mut self) -> &mut cornflakes_libos::timing::SizedManualHistogram {
+        &mut self.sized_rtts
+    }
+
+    fn set_recording_size_rtts(&mut self) {
+        self.recording_size_rtts = true;
+    }
+
+    fn recording_size_rtts(&self) -> bool {
+        self.recording_size_rtts
+    }
+
     fn get_mut_rtts(&mut self) -> &mut ManualHistogram {
         &mut self.rtts
     }
@@ -894,6 +936,7 @@ where
             let buf_size = self.write_request(&next_request, &datapath)?;
             tracing::debug!(
                 msg_id = self.last_sent_id,
+                bytes =? &self.buf[0..buf_size],
                 "Sending msg of type {:?}",
                 next_request
             );
