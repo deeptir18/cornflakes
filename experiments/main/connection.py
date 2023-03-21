@@ -108,7 +108,7 @@ class ConnectionWrapper(Connection):
         return self.run(stop_command, quiet = quiet, sudo = sudo)
     
     def stop_with_pkill(self, binary_name, quiet = False, sudo = False):
-        stop_command = f"pkill -9 {binary_name}"
+        stop_command = f"pkill -f -9 {binary_name}"
         return self.run(stop_command, quiet = quiet, sudo = sudo)
 
     def file_exists(self, fname):
@@ -136,7 +136,7 @@ class ConnectionWrapper(Connection):
 
 
     def check_proc(self, proc_name):
-        res = self.run(f"pgrep {proc_name}", quiet = True)
+        res = self.run(f"pgrep -f {proc_name}", quiet = True)
         if res.exited != 0:
             agenda.subfailure(f'failed to find running process with name \"{proc_name}\" on {self.addr}')
             return False

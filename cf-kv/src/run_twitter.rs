@@ -20,7 +20,7 @@ macro_rules! run_server_twitter(
         connection.set_copying_threshold($opt.copying_threshold);
         connection.set_inline_mode($opt.inline_mode);
         tracing::info!(threshold = $opt.copying_threshold, "Setting zero-copy copying threshold");
-        let twitter_server_loader = TwitterServerLoader::new($opt.total_time, $opt.min_num_keys);
+        let twitter_server_loader = TwitterServerLoader::new($opt.total_time, $opt.min_num_keys, $opt.value_size.clone());
         let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), twitter_server_loader, &mut connection, $opt.push_buf_type, false)?;
         kv_server.init(&mut connection)?;
         kv_server.write_ready($opt.ready_file.clone())?;
@@ -78,7 +78,7 @@ macro_rules! run_client_twitter(
                 connection.set_copying_threshold(std::usize::MAX);
 
                 // initialize twitter client to read from file
-                let twitter_client = TwitterClient::new_twitter_client(opt_clone.trace_file.as_str(), opt_clone.client_id, i, opt_clone.num_clients, opt_clone.num_threads, opt_clone.total_time)?;
+                let twitter_client = TwitterClient::new_twitter_client(opt_clone.trace_file.as_str(), opt_clone.client_id, i, opt_clone.num_clients, opt_clone.num_threads, opt_clone.total_time, $opt.value_size.clone(), $opt.ignore_sets)?;
                 let packet_schedule = twitter_client.generate_packet_schedule(opt_clone.trace_file.as_str(), opt_clone.speed_factor, opt_clone.distribution)?;
                 let max_num_requests = packet_schedule.len();
                 let server_load_generator_opt: Option<(&str, TwitterServerLoader)> = None;
@@ -239,4 +239,8 @@ pub struct TwitterOpt {
     pub ready_file: Option<String>,
     #[structopt(long = "per_size_info", help = "Record per size info")]
     pub record_per_size_buckets: bool,
+    #[structopt(long = "value_size", help = "Ignore trace values and use value size")]
+    pub value_size: Option<usize>,
+    #[structopt(long = "ignore_sets", help = "Ignore set requests")]
+    pub ignore_sets: bool,
 }

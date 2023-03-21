@@ -1,0 +1,24 @@
+### Experiment runner yaml for KV-server benchmark (Twitter trace)
+
+time: 20
+programs:
+    start_server:
+        ready_file: { "{folder}/ready.log": "ready" }
+        host_type: "server"
+        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/dpdk-datapath/3rdparty/dpdk/build/lib/x86_64-linux-gnu nice -n -19 taskset -c 2 {cornflakes_dir}/target/release/twitter_mlx5 --config_file {config_file} --server_ip {server_ip} --mode server --debug_level info --serialization {library} --push_buf_type {push_buf_type} --inline_mode {inline_mode} --copy_threshold {copy_threshold} --min_keys_to_load {server_keys} --trace {trace_file}{value_size_str} --ready_file {folder}/ready.log
+        perf: sudo perf stat -e task-clock,cycles,instructions,cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses,L1-dcache-stores,dTLB-loads,dTLB-load-misses,dTLB-prefetch-misses,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses -o {folder}/server.perf.log
+        log:
+            out: "{folder}/{host}.log"
+            err: "{folder}/{host}.err.log"
+        binary_to_stop: "{cornflakes_dir}/target/release/twitter_mlx5"
+        binary_name: "twitter_mlx5"
+        stop: kill -9 `ps aux | grep {cornflakes_dir}/target/release/twitter_mlx5 | grep 'bash -c' | grep -v grep | awk '{{print $2}}'`
+
+    start_client:
+        host_type: "client"
+        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/dpdk-datapath/3rdparty/dpdk/build/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/twitter_dpdk --config_file {config_file} --mode client --server_ip {server_ip} --our_ip {client_ip} --push_buf_type singlebuf --serialization {client_library} --time {time} --speed_factor {speed_factor} --trace {trace_file}{value_size_str}{ignore_sets_str} --distribution {distribution} --num_threads {num_threads} --num_clients {num_machines} --client_id {machine_id} --threadlog {folder}/{host}.threads.log --debug_level warn --per_size_info
+        log:
+            out: "{folder}/{host}.log"
+            err: "{folder}/{host}.err.log"
+            results: "{folder}/{host}.threads.log"
+
