@@ -43,7 +43,7 @@ pub type MsgID = u32;
 pub type ConnID = usize;
 
 pub static NOOP_MAGIC: u32 = 0x6e626368; // 'nbch'
-pub static NOOP_LEN: usize = 4;
+pub static NOOP_LEN: usize = 16;
 pub static MAX_SCATTER_GATHER_ENTRIES: usize = 32;
 
 pub fn turn_off_ref_counting() {

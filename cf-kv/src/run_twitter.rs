@@ -87,7 +87,8 @@ macro_rules! run_client_twitter(
 
                 // TODO: create two custom functions for running with varied sizes at pps, and for
                 // running the twitter trace
-                cornflakes_libos::state_machine::client::run_variable_size_loadgen(i, &mut kv_client, &mut connection, opt_clone.total_time as _, opt_clone.logfile.clone(), packet_schedule, opt_clone.num_threads, opt_clone.record_per_size_buckets)
+                let rate = (opt_clone.total_time as f64 / packet_schedule.len() as f64) as u64;
+                cornflakes_libos::state_machine::client::run_variable_size_loadgen(i, &mut kv_client, &mut connection, opt_clone.total_time as _, opt_clone.logfile.clone(), packet_schedule, opt_clone.num_threads, opt_clone.record_per_size_buckets, rate)
             }));
         }
         let mut thread_results: Vec<cornflakes_libos::loadgen::client_threads::MeasuredThreadStatsOnly> = Vec::default();

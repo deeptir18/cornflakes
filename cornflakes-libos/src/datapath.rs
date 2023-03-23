@@ -106,7 +106,7 @@ where
     pub fn is_noop(&self) -> bool {
         // TODO: use magic number for NO-OP
         if self.data_len() == super::NOOP_LEN {
-            let num = LittleEndian::read_u32(&self.pkts[0].as_ref()[0..super::NOOP_LEN]);
+            let num = LittleEndian::read_u32(&self.pkts[0].as_ref()[0..4]);
             return num == super::NOOP_MAGIC;
         }
         return false;

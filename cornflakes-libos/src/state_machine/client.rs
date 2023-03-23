@@ -213,7 +213,7 @@ pub trait ClientSM {
         num_threads: usize,
         noop_time: Duration,
         noop_schedule: PacketSchedule,
-    ) -> Result<()> {
+    ) -> Result<Duration> {
         let conn_id = datapath
             .connect(self.server_addr())
             .wrap_err("No more available connection IDs")?;
@@ -230,7 +230,7 @@ pub trait ClientSM {
         LittleEndian::write_u32(&mut noop_buffer.as_mut_slice(), super::super::NOOP_MAGIC);
         loop {
             if noop_spin_timer.done() {
-                tracing::debug!("Noops done");
+                tracing::info!("Noops done");
                 break;
             }
             // send a noop message
@@ -249,6 +249,7 @@ pub trait ClientSM {
         while GLOBAL_THREAD_COUNT.load(Ordering::SeqCst) != num_threads {}
 
         // run workload
+        let start = Instant::now();
         let mut spin_timer = SpinTimer::new(schedule, total_time);
 
         while let Some((id, msg)) = self.get_next_msg(&datapath)? {
@@ -301,7 +302,7 @@ pub trait ClientSM {
         }
 
         tracing::debug!("Finished sending");
-        Ok(())
+        Ok(start.elapsed())
     }
 }
 
@@ -315,6 +316,7 @@ pub fn run_variable_size_loadgen<D>(
     schedule: PacketSchedule,
     num_threads: usize,
     record_per_size_buckets: bool,
+    avg_rate: u64,
 ) -> Result<MeasuredThreadStatsOnly>
 where
     D: Datapath,
@@ -322,19 +324,26 @@ where
     if record_per_size_buckets {
         client.set_recording_size_rtts();
     }
-    let start_run = Instant::now();
-    client.run_open_loop(
-        connection,
-        schedule,
-        Duration::from_secs(total_time_seconds),
-        no_retries_timeout,
-        true,
-        num_threads,
-        Duration::from_secs(0),
-        PacketSchedule::default(),
+    let noop_secs = total_time_seconds / 2;
+    let noop_time = Duration::from_secs(noop_secs);
+    let noop_schedule = PacketSchedule::new(
+        (avg_rate * noop_secs) as usize,
+        avg_rate,
+        super::super::loadgen::request_schedule::DistributionType::Exponential,
     )?;
+    let exp_duration = client
+        .run_open_loop(
+            connection,
+            schedule,
+            Duration::from_secs(total_time_seconds),
+            no_retries_timeout,
+            true,
+            num_threads,
+            noop_time,
+            noop_schedule,
+        )?
+        .as_nanos();
     tracing::info!(thread = thread_id, "Finished running open loop");
-    let exp_duration = start_run.elapsed().as_nanos();
     client.sort_rtts(0)?;
     if client.recording_size_rtts() {
         client.sort_sized_rtts()?;
@@ -377,7 +386,6 @@ pub fn run_client_loadgen<D>(
 where
     D: Datapath,
 {
-    let start_run = Instant::now();
     let timeout = match retries {
         true => high_timeout_at_start,
         false => no_retries_timeout,
@@ -391,19 +399,19 @@ where
         super::super::loadgen::request_schedule::DistributionType::Exponential,
     )?;
 
-    client.run_open_loop(
-        connection,
-        schedule,
-        Duration::from_secs(total_time_seconds),
-        timeout,
-        !retries,
-        num_threads,
-        noop_time,
-        noop_schedule,
-    )?;
+    let exp_duration = client
+        .run_open_loop(
+            connection,
+            schedule,
+            Duration::from_secs(total_time_seconds),
+            timeout,
+            !retries,
+            num_threads,
+            noop_time,
+            noop_schedule,
+        )?
+        .as_nanos();
     tracing::info!(thread = thread_id, "Finished running open loop");
-
-    let exp_duration = start_run.elapsed().as_nanos();
     client.sort_rtts(0)?;
 
     tracing::info!(thread = thread_id, "Sorted RTTs");
