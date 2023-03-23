@@ -243,4 +243,6 @@ pub struct TwitterOpt {
     pub value_size: Option<usize>,
     #[structopt(long = "ignore_sets", help = "Ignore set requests")]
     pub ignore_sets: bool,
+    #[structopt(long = "analyze", help = "Analyze")]
+    pub analyze: bool,
 }

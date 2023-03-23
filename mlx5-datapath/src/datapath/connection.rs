@@ -573,6 +573,11 @@ pub struct Mlx5Connection {
 }
 
 impl Mlx5Connection {
+    fn process_warmup_noop(&mut self, pkt: ReceivedPkt<Self>) -> Result<()> {
+        self.echo(vec![pkt])?;
+        Ok(())
+    }
+
     fn insert_into_outgoing_map(&mut self, msg_id: MsgID, conn_id: ConnID) {
         if self.mode == AppMode::Client {
             if !self.outgoing_window.contains_key(&(msg_id, conn_id)) {
@@ -4885,7 +4890,7 @@ impl Datapath for Mlx5Connection {
         Ok(ret)
     }
 
-    // TODO: potential optimization to provide the vector the keep received packets
+    // TODO: if the packet is a no-op, simply respond to the caller
     fn pop(&mut self) -> Result<Vec<ReceivedPkt<Self>>>
     where
         Self: Sized,
@@ -4903,7 +4908,13 @@ impl Datapath for Mlx5Connection {
                 .check_received_pkt(i)
                 .wrap_err("Error receiving packets")?
             {
-                ret.push(received_pkt);
+                // if is NO-OP, just return a NO-OP to the caller
+                if received_pkt.is_noop() {
+                    tracing::debug!("Processing NO-OP");
+                    self.process_warmup_noop(received_pkt)?;
+                } else {
+                    ret.push(received_pkt);
+                }
             } else {
                 // free the mbuf
                 let recv_info = self.recv_mbufs.get(i);

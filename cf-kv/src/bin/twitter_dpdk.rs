@@ -5,7 +5,7 @@ use cf_kv::{
     protobuf::{ProtobufClient, ProtobufKVServer},
     run_client_twitter, run_server_twitter,
     run_twitter::*,
-    twitter::{TwitterClient, TwitterServerLoader},
+    twitter::{generate_ws_accessed, TwitterClient, TwitterServerLoader},
     KVClient,
 };
 use color_eyre::eyre::Result;
@@ -19,6 +19,16 @@ use structopt::StructOpt;
 fn main() -> Result<()> {
     let mut opt = TwitterOpt::from_args();
     global_debug_init(opt.trace_level)?;
+
+    if opt.analyze {
+        generate_ws_accessed(
+            &opt.trace_file,
+            opt.speed_factor,
+            opt.total_time,
+            opt.value_size.clone(),
+        )?;
+        return Ok(());
+    }
     check_opt(&mut opt)?;
 
     match opt.mode {

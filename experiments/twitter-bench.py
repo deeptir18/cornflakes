@@ -491,7 +491,8 @@ class TwitterBench(runner.Experiment):
                                 action = 'store_true')
             parser.add_argument("-dist", "--distribution",
                                 dest = "distribution",
-                                choices = ["exponential", "uniform"])
+                                choices = ["exponential", "uniform"],
+                                default  = "exponential")
             parser.add_argument("-mnk", "--min_num_keys",
                                 dest = "min_num_keys",
                                 type = int,

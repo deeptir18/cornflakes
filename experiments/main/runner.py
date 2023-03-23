@@ -344,8 +344,8 @@ class Experiment(metaclass=abc.ABCMeta):
                     utils.warn("Analysis for iteration {} did not exist and failed to rerun".format(str(iteration)))
                     continue
             
-            if True:
-            #if not(os.path.exists(analysis_path)):
+            #if True:
+            if not(os.path.exists(analysis_path)):
                 utils.info("Analyzing iteration {}".format(str(iteration)))
                 host_type_map = self.get_machine_config()["host_types"]
                 program_args_map = iteration.get_program_args_map(self.get_exp_config(),

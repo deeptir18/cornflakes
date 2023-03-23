@@ -12,6 +12,7 @@ pub struct SpinTimer {
     total_time: Duration,
     start_raw: u64,
     last_return: Option<u64>,
+    no_more_pkts: bool,
 }
 
 impl SpinTimer {
@@ -26,16 +27,21 @@ impl SpinTimer {
             cur_idx: 0,
             total_time: total_time,
             last_return: None,
+            no_more_pkts: false,
         }
     }
 
     pub fn done(&self) -> bool {
-        self.clk.delta(self.start_raw, self.clk.raw()) >= self.total_time
+        self.clk.delta(self.start_raw, self.clk.raw()) >= self.total_time || self.no_more_pkts
     }
 
     pub fn wait(&mut self, callback: &mut dyn FnMut() -> Result<()>) -> Result<()> {
         let next_interarrival_ns = self.interarrivals.get(self.cur_idx);
         self.cur_idx += 1;
+        if self.cur_idx == self.interarrivals.len() {
+            // no more packets to send
+            self.no_more_pkts = true;
+        }
 
         // if built up deficit is too high, return
         if self.deficit > next_interarrival_ns {
@@ -134,8 +140,6 @@ impl PacketSchedule {
         for _ in 0..num_requests {
             interarrivals.push(Duration::from_nanos(distribution.sample()));
         }
-        // first packet starts at time 0
-        interarrivals[0] = Duration::from_nanos(0);
 
         Ok(PacketSchedule { interarrivals })
     }

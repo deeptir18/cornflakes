@@ -3,6 +3,7 @@ use super::{
     dynamic_sga_hdr::SgaHeaderRepr, utils::AddressInfo, ArenaDatapathSga, ArenaOrderedRcSga,
     ArenaOrderedSga, ConnID, CopyContext, MsgID, OrderedRcSga, OrderedSga, RcSga, Sga,
 };
+use byteorder::{ByteOrder, LittleEndian};
 use color_eyre::eyre::{bail, Result};
 use std::{io::Write, net::Ipv4Addr, str::FromStr, time::Duration};
 
@@ -100,6 +101,15 @@ where
     pub fn data_len(&self) -> usize {
         let sum: usize = self.pkts.iter().map(|pkt| pkt.data_len()).sum();
         sum
+    }
+
+    pub fn is_noop(&self) -> bool {
+        // TODO: use magic number for NO-OP
+        if self.data_len() == super::NOOP_LEN {
+            let num = LittleEndian::read_u32(&self.pkts[0].as_ref()[0..super::NOOP_LEN]);
+            return num == super::NOOP_MAGIC;
+        }
+        return false;
     }
 
     pub fn conn_id(&self) -> ConnID {

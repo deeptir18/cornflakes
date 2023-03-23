@@ -10,6 +10,7 @@ use super::super::{
     utils::AddressInfo,
     MsgID,
 };
+use byteorder::{ByteOrder, LittleEndian};
 use color_eyre::eyre::{Result, WrapErr};
 use cornflakes_utils::get_thread_latlog;
 use std::time::{Duration, Instant};
@@ -20,6 +21,10 @@ static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub trait ClientSM {
     type Datapath: Datapath;
+
+    fn get_current_id(&self) -> u32;
+
+    fn increment_id(&mut self);
 
     fn uniq_received_so_far(&self) -> usize;
 
@@ -206,6 +211,8 @@ pub trait ClientSM {
         time_out: impl Fn(usize) -> Duration,
         no_retries: bool,
         num_threads: usize,
+        noop_time: Duration,
+        noop_schedule: PacketSchedule,
     ) -> Result<()> {
         let conn_id = datapath
             .connect(self.server_addr())
@@ -216,8 +223,32 @@ pub trait ClientSM {
         // tracing::info!("Done with prepping requests");
 
         // wait for all threads to reach this function and "connect"
+        // Run noops
+        tracing::info!("About to run noops");
+        let mut noop_spin_timer = SpinTimer::new(noop_schedule, noop_time);
+        let mut noop_buffer = vec![0u8; super::super::NOOP_LEN];
+        LittleEndian::write_u32(&mut noop_buffer.as_mut_slice(), super::super::NOOP_MAGIC);
+        loop {
+            if noop_spin_timer.done() {
+                tracing::debug!("Noops done");
+                break;
+            }
+            // send a noop message
+            let id = self.get_current_id();
+            let buffers = vec![(id, conn_id, noop_buffer.as_slice())];
+            datapath.push_buffers_with_copy(buffers.as_slice())?;
+            self.increment_id();
+            // wait on the noop timer
+            noop_spin_timer.wait(&mut || {
+                let _recved_pkts = datapath.pop_with_durations()?;
+                Ok(())
+            })?;
+        }
+
         let _ = GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
         while GLOBAL_THREAD_COUNT.load(Ordering::SeqCst) != num_threads {}
+
+        // run workload
         let mut spin_timer = SpinTimer::new(schedule, total_time);
 
         while let Some((id, msg)) = self.get_next_msg(&datapath)? {
@@ -233,6 +264,10 @@ pub trait ClientSM {
             spin_timer.wait(&mut || {
                 let recved_pkts = datapath.pop_with_durations()?;
                 for (pkt, rtt) in recved_pkts.into_iter() {
+                    if pkt.is_noop() {
+                        // received old noop response
+                        continue;
+                    }
                     let msg_id = pkt.msg_id();
                     let msg_size = pkt.data_len();
                     if self.process_received_msg(pkt, &datapath).wrap_err(format!(
@@ -295,6 +330,8 @@ where
         no_retries_timeout,
         true,
         num_threads,
+        Duration::from_secs(0),
+        PacketSchedule::default(),
     )?;
     tracing::info!(thread = thread_id, "Finished running open loop");
     let exp_duration = start_run.elapsed().as_nanos();
@@ -346,6 +383,14 @@ where
         false => no_retries_timeout,
     };
 
+    let noop_secs = total_time_seconds / 2;
+    let noop_time = Duration::from_secs(noop_secs);
+    let noop_schedule = PacketSchedule::new(
+        (rate * noop_secs) as usize,
+        rate,
+        super::super::loadgen::request_schedule::DistributionType::Exponential,
+    )?;
+
     client.run_open_loop(
         connection,
         schedule,
@@ -353,6 +398,8 @@ where
         timeout,
         !retries,
         num_threads,
+        noop_time,
+        noop_schedule,
     )?;
     tracing::info!(thread = thread_id, "Finished running open loop");
 

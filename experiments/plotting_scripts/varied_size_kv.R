@@ -29,18 +29,25 @@ size_subset_metric <- args[5]
 size_subset_pps <- args[6]
 
 # cut out data where percent achieved is less than 0.95
-# d <- d[ which(d$percent_achieved_rate > 0.95),]
+if("offered_load_pps" %in% colnames(d)) {
+    d$achieved_over_offered <- d$achieved_load_pps / d$offered_load_pps
+    d <- d[ which(d$achieved_over_offered > 0.95),]
+} else {
+    d <- d[ which(d$percent_achieved_rate > 0.95),]
+}
 
 options(width=10000)
 cr_labels_baselines <- c('capnproto' = 'Capnproto', 
             'protobuf' = 'Protobuf', 
             'flatbuffers' = 'Flatbuffers', 
             'redis' = 'Redis',
+            'cornflakes-dynamic-0' = 'Cornflakes (only SG)',
             'cornflakes-dynamic-512' = 'Cornflakes (thresh = 512)')
 anon_labels_baselines <- c('capnproto' = 'Capnproto', 
             'protobuf' = 'Protobuf', 
             'flatbuffers' = 'Flatbuffers', 
             'redis' = 'Redis',
+            'cornflakes-dynamic-0' = 'AnonSys (only SG)',
             'cornflakes-dynamic-512' = 'AnonSys (thresh = 512))')
                   
 cr_labels_cf <- c('cornflakes1c-dynamic' = 'Cornflakes (only copy)',
@@ -59,12 +66,14 @@ shape_values_baselines <- c('capnproto' = 18,
                   'protobuf' = 8, 
                   'flatbuffers' = 17, 
                   'redis' = 7,
+                  'cornflakes-dynamic-0' = 19,
                   'cornflakes-dynamic-512' = 19)
 color_values_baselines <- c(
                   'capnproto' = '#e7298a',
                   'protobuf' = '#e6ab02',
                   'flatbuffers' = '#7570b3',
                   'redis' = '#66a61e',
+                  'cornflakes-dynamic-0' = '#fc8d62',
                   'cornflakes-dynamic-512' = '#1b9e77')
 
 shape_values_cf <- c(
@@ -73,11 +82,11 @@ shape_values_cf <- c(
                   'cornflakes-dynamic-256' = 19,
                   'cornflakes-dynamic-512' = 19)
 color_values_cf <- c(
-                  'cornflakes1c-dynamic' = '#cccccc',
-                  'cornflakes-dynamic-0' = '#969696',
-                  'cornflakes-dynamic-256' = '#636363',
-                  'cornflakes-dynamic-512' = '#252525')    
-levels_baselines <- c('cornflakes-dynamic-512', 'redis', 'flatbuffers', 'protobuf', 'capnproto')
+                  'cornflakes1c-dynamic' = '#66c2a5',
+                  'cornflakes-dynamic-0' = '#fc8d62',
+                  'cornflakes-dynamic-256' = '#8da0cb',
+                  'cornflakes-dynamic-512' = '#e78ac3')    
+levels_baselines <- c('cornflakes-dynamic-512', 'cornflakes-dynamic-0', 'redis', 'flatbuffers', 'protobuf', 'capnproto')
 levels_cf <- c('cornflakes-dynamic-512', 'cornflakes-dynamic-256', 'cornflakes-dynamic-0', 'cornflakes1c-dynamic')
 # filter the serialization labels based on which are present in data
 unique_serialization_labels <- unique(c(d$serialization))
@@ -117,14 +126,13 @@ levels_baselines <- subset_flat(levels_baselines, unique_serialization_labels)
 levels_cf <- subset_flat(levels_cf, unique_serialization_labels)
 
 
-
 base_plot <- function(data, metric, labels, shape_values, color_values, specific_levels) {
     if (metric == "p99") {
-        base_plot <- base_pps_p99_plot(data, 500.0)
+        base_plot <- base_pps_p99_plot(data, 50.0)
         base_plot <- label_plot(base_plot, labels, shape_values, color_values, specific_levels)
         return(base_plot)
     } else if (metric == "median") {
-        base_plot <- base_pps_median_plot(data, 500.0)
+        base_plot <- base_pps_median_plot(data, 100.0)
         base_plot <- label_plot(base_plot, labels, shape_values, color_values, specific_levels)
         return(base_plot)
     }
@@ -143,11 +151,11 @@ base_pps_p99_plot <- function(data, x_cutoff) {
 
     plot <- ggplot(data,
                     aes(y = !!p99_str,
-                        x = !!load_str,
+                        x = !!load_str / 1000,
                         color = serialization,
                         shape = serialization)) +
-            # coord_cartesian(xlim=c(0, x_cutoff)) +
-    labs(x = "Achieved Load\n(Packets Per Second)", y = "p99 latency (µs)")
+            coord_cartesian(ylim=c(0, x_cutoff)) +
+    labs(x = "Achieved Load\n(1000 Packets Per Second)", y = "p99 latency (µs)")
     return(plot)
 }
 base_pps_median_plot <- function(data, x_cutoff) {
@@ -164,11 +172,11 @@ base_pps_median_plot <- function(data, x_cutoff) {
 
     plot <- ggplot(data,
                     aes(y = !!median_str,
-                        x = !!load_str,
+                        x = !!load_str / 1000,
                         color = serialization,
                         shape = serialization)) +
-            # coord_cartesian(xlim=c(0, x_cutoff)) +
-    labs(x = "Achieved Load\n(Packets Per Second)", y = "Median Latency (µs)")
+            coord_cartesian(ylim=c(0, x_cutoff)) +
+    labs(x = "Achieved Load\n(1000 Packets Per Second)", y = "Median Latency (µs)")
     return(plot)
 }
 
@@ -202,6 +210,7 @@ label_plot <- function(plot, labels, shape_values, color_values, specific_levels
 }
 
 if (plot_type == "baselines") {
+    d <- subset(d, d$serialization %in% levels_baselines)
     d$serialization <- factor(d$serialization, levels = levels_baselines)
     plot <- base_plot(d, metric, cr_labels_baselines, shape_values_baselines, color_values_baselines, levels_baselines)
     ggsave("tmp.pdf", width = 9, height = 9)
@@ -211,6 +220,7 @@ if (plot_type == "baselines") {
     ggsave("tmp.pdf", width = 9, height = 9)
     embed_fonts("tmp.pdf", outfile =  anon_plot_pdf)
 } else if (plot_type == "cornflakes") {
+    d <- subset(d, d$serialization %in% levels_cf)
     d$serialization <- factor(d$serialization, levels = levels_cf)
     plot <- base_plot(d, metric, cr_labels_cf, shape_values_cf, color_values_cf, levels_cf)
     ggsave("tmp.pdf", width = 9, height = 9)

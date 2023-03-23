@@ -1,6 +1,6 @@
 ### Experiment runner yaml for KV-server benchmark (Twitter trace)
 
-time: 20
+time: 120
 programs:
     start_server:
         ready_file: { "{folder}/ready.log": "ready" }

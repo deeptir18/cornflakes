@@ -93,6 +93,14 @@ pub struct ManualHistogram {
 }
 
 impl ManualHistogram {
+    pub fn new_from_vec(latencies: Vec<u64>) -> Self {
+        ManualHistogram {
+            current_count: latencies.len(),
+            latencies: latencies,
+            sorted_latencies: Vec::default(),
+            is_sorted: false,
+        }
+    }
     pub fn new(num_values: usize) -> Self {
         ManualHistogram {
             current_count: 0,
