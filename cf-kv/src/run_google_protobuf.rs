@@ -106,7 +106,7 @@ macro_rules! run_client_google(
                 // TODO: create two custom functions for running with varied sizes at pps, and for
                 // running the twitter trace
 
-                cornflakes_libos::state_machine::client::run_variable_size_loadgen(i, &mut kv_client, &mut connection, opt_clone.total_time as _, opt_clone.logfile.clone(), schedule, opt_clone.num_threads as _, opt_clone.record_per_size_buckets)
+                cornflakes_libos::state_machine::client::run_variable_size_loadgen(i, &mut kv_client, &mut connection, opt_clone.total_time as _, opt_clone.logfile.clone(), schedule, opt_clone.num_threads as _, opt_clone.record_per_size_buckets, opt_clone.rate as _)
             }));
         }
 

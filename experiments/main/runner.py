@@ -44,9 +44,24 @@ class ExtraSerializationParameters(object):
                 inline_mode = None,
                 max_sg_segments = None,
                 copy_threshold = None):
+        self.serialization_name = serialization
         self.serialization = serialization
-        
+        if "cornflakes-dynamic" in serialization and serialization != "cornflakes-dynamic":
+            split = serialization.split("-")
+            copy_threshold_parsed = int(split[2])
+            copy_threshold = copy_threshold_parsed
+            self.serialization = "cornflakes-dynamic"
+
         # extra parameters
+        if copy_threshold != None:
+            self.copy_threshold = copy_threshold
+        else:
+            if self.serialization == "cornflakes1c-dynamic":
+                self.copy_threshold = "1000000000" # basically infinity
+            else:
+                self.copy_threshold = 0
+        
+
         if buf_mode != None:
             self.buf_mode = buf_mode
         else:
@@ -63,12 +78,8 @@ class ExtraSerializationParameters(object):
         if inline_mode != None:
             self.inline_mode = inline_mode
         else:
-            if self.serialization == "cornflakes-dynamic":
-                self.inline_mode = "objectheader"
-            elif self.serialization == "cornflakes1c-dynamic":
-                self.inline_mode = "nothing"
-            else:
-                self.inline_mode = "nothing"
+            self.inline_mode = "nothing"
+
 
         if max_sg_segments != None:
             self.max_sg_segments = max_sg_segments
@@ -78,13 +89,11 @@ class ExtraSerializationParameters(object):
             else:
                 self.max_sg_segments = 1
 
-        if copy_threshold != None:
-            self.copy_threshold = copy_threshold
-        else:
-            if self.serialization == "cornflakes-dynamic":
-                self.copy_threshold = 0
-            else:
-                self.copy_threshold = "1000000000" # basically infinity
+    def get_serialization(self):
+        return self.serialization
+
+    def get_serialization_name(self):
+        return self.serialization_name
 
     def fill_in_args(self, ret, program_name):
         ret["library"] = self.serialization
@@ -335,11 +344,23 @@ class Experiment(metaclass=abc.ABCMeta):
                     utils.warn("Analysis for iteration {} did not exist and failed to rerun".format(str(iteration)))
                     continue
             
+            #if True:
             if not(os.path.exists(analysis_path)):
+                utils.info("Analyzing iteration {}".format(str(iteration)))
                 host_type_map = self.get_machine_config()["host_types"]
-                program_args_map = self.get_program_args(self.get_exp_config())
-                client_file_list = self.get_client_file_list(program_args_map, host_type_map)
-                iteration.calculate_iteration_stats(local_folder, client_file_list, False)
+                program_args_map = iteration.get_program_args_map(self.get_exp_config(),
+                        host_type_map,
+                        self.get_machine_config(),
+                        total_args.folder)
+                client_file_list = iteration.get_client_file_list(
+                        self.get_exp_config(), 
+                        program_args_map, 
+                        host_type_map,
+                        total_args.folder)
+                iteration.calculate_iteration_stats(
+                        iteration.get_folder_name(total_args.folder),
+                        client_file_list,
+                        False)
             
             iteration_df = iteration.read_analysis_log(folder_path)
             df = pd.concat([df, iteration_df], ignore_index = True)
@@ -481,7 +502,6 @@ class Iteration(metaclass=abc.ABCMeta):
         """
         return
 
-    @ abc.abstractmethod
     def get_iteration_avg_message_size(self):
         """
         Returns the average message size for the iteration
@@ -753,12 +773,10 @@ class Iteration(metaclass=abc.ABCMeta):
         
         # populate  program args
         for program_name in programs:
-            utils.info("Configuring program: ", program_name)
             program = programs[program_name]
             program_hosts = self.get_program_hosts(program_name,
                     host_type_map)
             for host in program_hosts:
-                utils.info("Configuring host: ", host)
                 # populate program args
                 # NOTE: random seed should be the *same* across all client
                 # hosts
@@ -865,7 +883,6 @@ class Iteration(metaclass=abc.ABCMeta):
 
 
             while not(is_ready(program_name)):
-                utils.debug("NOT READY")
                 time.sleep(1)
                 continue
             ct += 1
@@ -981,17 +998,21 @@ class Iteration(metaclass=abc.ABCMeta):
                     local_results_path, client_file_list, print_stats)
         return True
 
-    def get_program_args_map(self, exp_config):
+    def get_program_args_map(self, 
+            exp_config, 
+            host_type_map,
+            machine_config,
+            local_results):
         programs = exp_config["programs"]
         program_args_map = {}
         for program_name in programs:
-            utils.info("Configuring program: ", program_name)
             program = programs[program_name]
             program_hosts = self.get_program_hosts(program_name,
                     host_type_map)
             for host in program_hosts:
-                utils.info("Configuring host: ", host)
                 # populate program args
+                host_tmp = machine_config["hosts"][host]["tmp_folder"]
+                local_results_path = self.get_folder_name(local_results)
                 program_args = self.get_program_args(host,
                                                      machine_config,
                                                      program_name,
@@ -1001,14 +1022,18 @@ class Iteration(metaclass=abc.ABCMeta):
                 program_args["folder"] = self.get_folder_name(host_tmp)
                 program_args["local_folder"] = local_results_path
                 program_args["host"] = host
-                program_args["time"] = exp_time
+                program_args["time"] = exp_config["time"]
                 program_args_map[(program_name, host)] = program_args
+        return program_args_map
 
-    def get_client_file_list(self, program_args_map, host_type_map):
+    def get_client_file_list(self, exp_config, program_args_map, host_type_map,
+            local_results):
+        programs = exp_config["programs"]
         client_list = self.get_program_hosts("start_client",
                     host_type_map)
         client_file_list = []
         for host in client_list:
+            local_results_path = self.get_folder_name(local_results)
             program_args = program_args_map[("start_client", host)]
             program_args_copy = copy.deepcopy(program_args)
             program_args_copy["folder"] = local_results_path

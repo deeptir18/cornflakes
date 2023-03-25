@@ -86,9 +86,7 @@ impl DatapathBufferOps for DpdkBuffer {
 impl DpdkBuffer {
     pub fn new(mbuf: *mut rte_mbuf) -> Self {
         unsafe { rte_pktmbuf_refcnt_set(mbuf, 1) }
-        DpdkBuffer {
-            mbuf: mbuf,
-        }
+        DpdkBuffer { mbuf: mbuf }
     }
 
     pub fn increment_refcnt(&mut self) {
@@ -1508,6 +1506,7 @@ impl Datapath for DpdkConnection {
             )
         };
 
+        let recv_time = Instant::now();
         let mut ret: Vec<(ReceivedPkt<Self>, Duration)> = Vec::with_capacity(RECEIVE_BURST_SIZE);
         for i in 0..num_received as usize {
             if let Some(received_pkt) = self
@@ -1524,8 +1523,7 @@ impl Datapath for DpdkConnection {
                     .remove(&(received_pkt.msg_id(), received_pkt.conn_id()))
                 {
                     Some(start_time) => {
-                        let dur = start_time.elapsed();
-                        ret.push((received_pkt, dur));
+                        ret.push((received_pkt, recv_time.duration_since(start_time)));
                     }
                     None => {
                         // free the rest of the packets

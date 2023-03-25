@@ -1,0 +1,12 @@
+# debugging: 1 where we ignore sets and change value size, one where we
+# change value size but don't ignore sets, one with varied sizes but we
+# ignore sets
+num_threads: 2
+num_clients: 1
+num_trials: 1
+serialization_libraries: ["cornflakes-dynamic-512", 
+"cornflakes-dynamic-256", "cornflakes-dynamic-0", "cornflakes1c-dynamic", "capnproto", "flatbuffers", "protobuf"]
+graphing_groups: ["baselines", "cornflakes"]
+configurations: ["value_size = 4096, ignore_sets = 1, distribution = uniform", "value_size = 4096, ignore_sets = 1, distribution = exponential", "value_size = 256, ignore_sets = 1, distribution = exponential"]
+speed_factors: [1.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0, 90.0, 95.0, 100.0, 105.0, 110.0, 115.0, 120.0, 125.0, 130.0, 135.0, 140.0, 145.0, 150.0, 155.0, 160.0, 165.0, 170.0, 175.0, 180.0, 185.0, 190.0, 195.0, 200.0]
+min_num_keys: [1000000]

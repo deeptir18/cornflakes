@@ -75,6 +75,11 @@ where
             },
         };
         let mut get_resp = kv_messages::GetResp::new();
+        tracing::debug!(
+            "found value {:?} with length {}",
+            value.as_ref().as_ptr(),
+            value.as_ref().len()
+        );
         get_resp.val = value.to_vec();
         Ok(get_resp)
     }

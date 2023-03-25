@@ -16,6 +16,119 @@ use std::{
     time::Duration,
 };
 
+pub fn generate_ws_accessed(
+    request_file: &str,
+    speed_factor: f64,
+    time: usize,
+    value_size: Option<usize>,
+) -> Result<()> {
+    let file = File::open(request_file)?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    let modified_time = (time + 1) * speed_factor.ceil() as usize;
+    let mut map: HashMap<String, usize> = HashMap::default();
+    let mut reuse_distance: HashMap<String, Vec<usize>> = HashMap::default();
+    let mut i = 0;
+    let mut sets = vec![];
+    let mut gets = vec![];
+    while let Some(parsed_line_res) = lines.next() {
+        match parsed_line_res {
+            Ok(line) => {
+                let req = TwitterLine::new(&line, &value_size)?;
+                if req.msg_type() == MsgType::Put {
+                    let key = req.get_key();
+                    let v_size = req.get_value().len();
+                    map.insert(key.to_string(), v_size);
+                    sets.push(v_size as u64);
+                    continue;
+                }
+                if req.get_time() > modified_time {
+                    break;
+                }
+                let key = req.get_key();
+                let v_size = req.get_value().len();
+                gets.push(v_size as u64);
+                if !map.contains_key(key) {
+                    map.insert(key.to_string(), v_size);
+                }
+
+                // reuse distance
+                match reuse_distance.get_mut(key) {
+                    Some(set) => {
+                        set.push(i);
+                    }
+                    None => {
+                        reuse_distance.insert(key.to_string(), vec![i]);
+                    }
+                }
+                i += 1;
+            }
+            Err(e) => {
+                bail!("Could not get next line in iterator: {:?}", e);
+            }
+        }
+    }
+
+    // analyze actual accessed values for sets and gets
+    let mut gets_size_hist = cornflakes_libos::timing::ManualHistogram::new_from_vec(gets);
+    let mut sets_size_hist = cornflakes_libos::timing::ManualHistogram::new_from_vec(sets);
+
+    // analyze map
+    let mut total_value_size = 0;
+    let mut total_key_size = 0;
+    for (k, v) in map.iter() {
+        total_value_size += *v;
+        total_key_size += k.len();
+    }
+    tracing::info!(
+        num_keys = map.len(),
+        total_key_size = total_key_size,
+        total_value_size = total_value_size,
+        "Map stats"
+    );
+
+    // analyze reuse distance
+    let mut ct = 0;
+    let mut ct_1 = 0;
+    for (_, uses) in reuse_distance.iter() {
+        if uses.len() == 1 {
+            ct_1 += 1;
+        } else {
+            ct += uses.len() + 1;
+        }
+    }
+    let mut hist = cornflakes_libos::timing::ManualHistogram::new(ct);
+    let mut reuse_count = cornflakes_libos::timing::ManualHistogram::new(map.len());
+    for (_, uses) in reuse_distance.iter() {
+        reuse_count.record(uses.len() as u64);
+        if uses.len() == 1 {
+            continue;
+        } else {
+            for idx in 1..uses.len() {
+                let cur = uses[idx];
+                let prev = uses[idx - 1];
+                hist.record((cur - prev) as u64);
+            }
+        }
+    }
+
+    hist.sort()?;
+    reuse_count.sort()?;
+    gets_size_hist.sort()?;
+    sets_size_hist.sort()?;
+    tracing::info!(
+        "{} entries only accessed once = {:?} % of {}",
+        ct_1,
+        ct_1 as f64 / map.len() as f64,
+        map.len()
+    );
+    hist.dump("Reuse distance histogram")?;
+    reuse_count.dump("Reuse count histogram")?;
+    gets_size_hist.dump("Gets value size histogram")?;
+    sets_size_hist.dump("Sets value size histogram")?;
+    Ok(())
+}
+
 pub struct TwitterClient {
     /// view into trace file,
     lines: Lines<BufReader<File>>,
@@ -29,6 +142,10 @@ pub struct TwitterClient {
     total_num_threads: usize,
     // end time to run trace until
     twitter_end_time: usize,
+    // ignore given value size and use this size
+    value_size: Option<usize>,
+    // ignore sets
+    ignore_sets: bool,
 }
 
 impl TwitterClient {
@@ -39,6 +156,8 @@ impl TwitterClient {
         max_clients: usize,
         max_threads: usize,
         twitter_end_time: usize,
+        value_size: Option<usize>,
+        ignore_sets: bool,
     ) -> Result<Self> {
         let file = File::open(request_file)?;
         let reader = BufReader::new(file);
@@ -49,6 +168,8 @@ impl TwitterClient {
             total_num_threads: max_threads,
             twitter_end_time,
             lines: reader.lines(),
+            value_size,
+            ignore_sets,
         })
     }
 
@@ -72,6 +193,9 @@ impl TwitterClient {
                 Ok(s) => {
                     let req = self.get_request(s.as_str())?;
                     if self.is_responsible_for(&req) {
+                        if req.msg_type() == MsgType::Put && self.ignore_sets {
+                            continue;
+                        }
                         let time = req.get_time();
                         if time > modified_time {
                             break;
@@ -107,7 +231,7 @@ impl TwitterClient {
     }
 
     fn get_request(&self, line: &str) -> Result<<Self as RequestGenerator>::RequestLine> {
-        TwitterLine::new(line)
+        TwitterLine::new(line, &self.value_size)
     }
 
     fn is_responsible_for(&self, req: &TwitterLine) -> bool {
@@ -153,6 +277,9 @@ impl RequestGenerator for TwitterClient {
                 match parsed_line_res {
                     Ok(s) => {
                         let req = self.get_request(s.as_str())?;
+                        if req.msg_type() == MsgType::Put && self.ignore_sets {
+                            continue;
+                        }
                         if self.is_responsible_for(&req) {
                             return Ok(Some(req));
                         }
@@ -247,12 +374,15 @@ pub struct TwitterLine {
 }
 
 impl TwitterLine {
-    pub fn new(line: &str) -> Result<Self> {
+    pub fn new(line: &str, value_size: &Option<usize>) -> Result<Self> {
         // parse the comma separated line
         let parts = line.split(",").collect::<Vec<&str>>();
         let time = parts[0].parse::<usize>()?;
         let k = parts[1];
-        let v_size = parts[3].parse::<usize>()?;
+        let mut v_size = parts[3].parse::<usize>()?;
+        if let Some(x) = value_size {
+            v_size = *x;
+        }
         let client_id = parts[4].parse::<usize>()?;
         let msg_type = match parts[5] {
             "get" => MsgType::Get,
@@ -311,13 +441,16 @@ pub struct TwitterServerLoader {
     twitter_end_time: usize,
     // make sure minimum number of keys are loaded
     min_keys_to_load: usize,
+    // optional (override) value size
+    value_size: Option<usize>,
 }
 
 impl TwitterServerLoader {
-    pub fn new(end_time: usize, min_num_keys: usize) -> Self {
+    pub fn new(end_time: usize, min_num_keys: usize, value_size: Option<usize>) -> Self {
         TwitterServerLoader {
             twitter_end_time: end_time,
             min_keys_to_load: min_num_keys,
+            value_size,
         }
     }
 }
@@ -326,7 +459,7 @@ impl ServerLoadGenerator for TwitterServerLoader {
     type RequestLine = TwitterLine;
 
     fn read_request(&self, line: &str) -> Result<Self::RequestLine> {
-        TwitterLine::new(line)
+        TwitterLine::new(line, &self.value_size)
     }
 
     fn load_file<D>(

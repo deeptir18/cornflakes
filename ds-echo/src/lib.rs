@@ -208,6 +208,14 @@ where
 {
     type Datapath = D;
 
+    fn get_current_id(&self) -> u32 {
+        self.last_sent_id
+    }
+
+    fn increment_id(&mut self) {
+        self.last_sent_id += 1;
+    }
+
     fn increment_uniq_received(&mut self) {
         self.received += 1;
     }
