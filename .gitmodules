@@ -17,6 +17,6 @@
 [submodule "redis"]
 	path = redis
 	url = https://github.com/ygina/redis
-[submodule "tapir/c/tapir"]
-	path = tapir/c/tapir
-	url = https://github.com/UWSysLab/tapir.git
+[submodule "tapir/c/tapir-cf"]
+	path = tapir/c/tapir-cf
+	url = https://github.com/ShreyaRavi/tapir-cf.git
