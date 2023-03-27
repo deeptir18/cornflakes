@@ -1,16 +1,19 @@
-#include <stdarg.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdlib.h>
+#include <cstdarg>
+#include <cstdint>
+#include <cstdlib>
+#include <ostream>
+#include <new>
 
-typedef struct ReceivedPkt {
+struct ReceivedPkt {
   const unsigned char *data;
   uintptr_t data_len;
   uint32_t msg_id;
   uintptr_t conn_id;
-} ReceivedPkt;
+};
 
-void Mlx5_global_debug_init(void);
+extern "C" {
+
+void Mlx5_global_debug_init();
 
 void OrderedSga_allocate(uintptr_t size, void **return_ptr);
 
@@ -22,7 +25,7 @@ void Mlx5Connection_set_inline_mode(void *conn, uintptr_t inline_mode);
 
 void Mlx5Connection_add_memory_pool(void *conn, uintptr_t buf_size, uintptr_t min_elts);
 
-struct ReceivedPkt *Mlx5Connection_pop(void *conn, uintptr_t *n);
+ReceivedPkt *Mlx5Connection_pop(void *conn, uintptr_t *n);
 
 void **Mlx5Connection_pop_raw_packets(void *conn, uintptr_t *n);
 
@@ -44,3 +47,5 @@ uint32_t Mlx5Connection_queue_single_buffer_with_copy(void *conn,
                                                       const unsigned char *buffer,
                                                       uintptr_t buffer_len,
                                                       bool end_batch);
+
+} // extern "C"

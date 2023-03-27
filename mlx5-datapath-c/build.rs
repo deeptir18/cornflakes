@@ -12,7 +12,7 @@ fn main() {
         .to_string();
 
     let config = Config {
-        language: Language::C,
+        language: Language::Cxx,
         ..Default::default()
     };
 
