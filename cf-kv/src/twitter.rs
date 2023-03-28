@@ -12,9 +12,150 @@ use hashbrown::HashMap;
 use rand::{distributions::Alphanumeric, seq::SliceRandom, thread_rng, Rng};
 use std::{
     fs::File,
-    io::{prelude::*, BufReader, Lines, Write},
+    io::{prelude::*, BufReader, Write},
     time::Duration,
 };
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TwitterRateMetadata {
+    speed_factor: f64,
+    time: usize,
+    num_lines: usize,
+    num_gets_loaded: usize,
+    num_gets_to_cur_keys: usize,
+    num_puts_to_current_keys: usize,
+    num_new_puts: usize,
+}
+
+impl TwitterRateMetadata {
+    pub fn clone_with_new_time(&self, speed_factor: f64, time: usize) -> Self {
+        TwitterRateMetadata {
+            speed_factor,
+            time,
+            num_lines: self.num_lines,
+            num_gets_loaded: self.num_gets_loaded,
+            num_gets_to_cur_keys: self.num_gets_to_cur_keys,
+            num_puts_to_current_keys: self.num_puts_to_current_keys,
+            num_new_puts: self.num_new_puts,
+        }
+    }
+
+    /// Takes the information in the twitter line and updates the rate metadata.
+    pub fn update_with_line(&mut self, line: &TwitterLine, key_present: bool) {
+        self.num_lines += 1;
+        match line.msg_type() {
+            MsgType::Get => {
+                if !key_present {
+                    self.num_gets_loaded += 1;
+                } else {
+                    self.num_gets_to_cur_keys += 1;
+                }
+            }
+            MsgType::Put => {
+                if !key_present {
+                    self.num_new_puts += 1;
+                } else {
+                    self.num_puts_to_current_keys += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn derive_avg_rate(&self) -> f64 {
+        self.num_lines as f64 / self.time as f64
+    }
+
+    pub fn is_past_time(&self, line: &TwitterLine) -> bool {
+        line.get_time() > (self.speed_factor as usize * self.time)
+    }
+}
+
+#[derive(PartialEq, Clone, Debug, Default)]
+pub struct TwitterFileMetadataPerRate {
+    general_info: TwitterRateMetadata,
+    per_size_info: HashMap<usize, TwitterRateMetadata>,
+}
+
+impl TwitterFileMetadataPerRate {
+    pub fn new(max_size: usize) -> Self {
+        let general_info = TwitterRateMetadata::default();
+        let mut per_size_info: HashMap<usize, TwitterRateMetadata> = HashMap::default();
+        let mut cur_size = 1;
+        while cur_size <= max_size {
+            per_size_info.insert(cur_size, TwitterRateMetadata::default());
+            cur_size = cur_size * 2;
+        }
+        TwitterFileMetadataPerRate {
+            general_info: general_info,
+            per_size_info: per_size_info,
+        }
+    }
+
+    pub fn clone_with_new_time(&self, speed_factor: f64, time: usize) -> Self {
+        let new_info = self.general_info.clone_with_new_time(speed_factor, time);
+        let mut new_map: HashMap<usize, TwitterRateMetadata> = HashMap::default();
+        for (s, info) in self.per_size_info.iter() {
+            new_map.insert(*s, info.clone_with_new_time(speed_factor, time));
+        }
+        TwitterFileMetadataPerRate {
+            general_info: new_info,
+            per_size_info: new_map,
+        }
+    }
+
+    pub fn is_past_time(&self, line: &TwitterLine) -> bool {
+        self.general_info.is_past_time(line)
+    }
+
+    pub fn update_with_line(&mut self, line: &TwitterLine, is_past_key: bool) {
+        self.general_info.update_with_line(line, is_past_key);
+        let size = line.get_value().len();
+        let padded_size = cornflakes_libos::allocator::align_to_pow2(size);
+        self.per_size_info
+            .get_mut(&padded_size)
+            .unwrap()
+            .update_with_line(line, is_past_key);
+    }
+}
+
+#[derive(PartialEq, Clone, Debug, Default)]
+pub struct TwitterFileMetadata {
+    per_rate_info: HashMap<usize, TwitterFileMetadataPerRate>,
+}
+
+impl TwitterFileMetadata {
+    pub fn analyze(request_file: &str, max_speed_factor: f64, time: usize) -> Result<()> {
+        let file = File::open(request_file)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
+
+        let mut rate_metadata =
+            TwitterFileMetadataPerRate::new(8192).clone_with_new_time(max_speed_factor, time);
+        let mut map: HashMap<String, usize> = HashMap::default();
+        while let Some(parsed_line_res) = lines.next() {
+            match parsed_line_res {
+                Ok(line) => {
+                    let req = TwitterLine::new(&line, &None)?;
+                    if rate_metadata.is_past_time(&req) {
+                        break;
+                    }
+                    let already_contains_key = map.contains_key(req.get_key());
+                    if !already_contains_key {
+                        map.insert(req.get_key().to_string(), req.get_value().len());
+                    }
+                    rate_metadata.update_with_line(&req, already_contains_key);
+                }
+                Err(e) => {
+                    bail!("Error getting next line in iterator: {:?}", e);
+                }
+            }
+        }
+
+        tracing::info!(max_speed_factor =? max_speed_factor, time = time, "Final rate metadata: {:?}", rate_metadata);
+        return Ok(());
+    }
+}
 
 pub fn generate_ws_accessed(
     request_file: &str,
@@ -129,9 +270,111 @@ pub fn generate_ws_accessed(
     Ok(())
 }
 
+fn is_responsible_for(
+    line_id: usize,
+    our_client: usize,
+    our_thread: usize,
+    total_num_clients: usize,
+    total_num_threads: usize,
+) -> bool {
+    let our_thread_client = total_num_threads * our_client + our_thread;
+    let total_thread_clients = total_num_threads * total_num_clients;
+    our_thread_client == (line_id % total_thread_clients)
+}
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct TwitterLineMetadata {
+    /// pre-read the key
+    key: String,
+    /// have a list of values to choose from for the set
+    val_index: usize,
+    /// value size to create
+    val_size: usize,
+    /// msg type to send
+    msg_type: MsgType,
+}
+
+impl TwitterLineMetadata {
+    pub fn new(
+        line: &str,
+        client_id: usize,
+        thread_id: usize,
+        total_num_clients: usize,
+        total_num_threads: usize,
+        end_time: usize,
+        val_index: usize,
+        value_size: Option<usize>,
+        ignore_sets: bool,
+    ) -> Result<Option<(Self, usize)>> {
+        // parse the comma separated line
+        let parts = line.split(",").collect::<Vec<&str>>();
+        let time = parts[0].parse::<usize>()?;
+        if time > end_time {
+            return Ok(None);
+        }
+        let msg_type = match parts[5] {
+            "get" => MsgType::Get,
+            "set" => MsgType::Put,
+            "add" => MsgType::Put,
+            x => bail!("Unknown msg type: {}", x),
+        };
+        if msg_type == MsgType::Put && ignore_sets {
+            return Ok(None);
+        }
+        let line_id = parts[4].parse::<usize>()?;
+        if !is_responsible_for(
+            line_id,
+            client_id,
+            thread_id,
+            total_num_clients,
+            total_num_threads,
+        ) {
+            return Ok(None);
+        }
+        let k = parts[1];
+        let mut v_size = parts[3].parse::<usize>()?;
+        if let Some(x) = value_size {
+            v_size = x;
+        }
+
+        Ok(Some((
+            TwitterLineMetadata::new_from(k, val_index, v_size, msg_type),
+            time,
+        )))
+    }
+
+    pub fn new_from(k: &str, val_index: usize, val_size: usize, msg_type: MsgType) -> Self {
+        TwitterLineMetadata {
+            key: k.to_string(),
+            val_index,
+            val_size,
+            msg_type,
+        }
+    }
+
+    pub fn get_key(&self) -> &str {
+        self.key.as_str()
+    }
+
+    pub fn get_val_index(&self) -> usize {
+        self.val_index
+    }
+
+    pub fn get_val_size(&self) -> usize {
+        self.val_size
+    }
+
+    pub fn msg_type(&self) -> MsgType {
+        self.msg_type
+    }
+}
+
 pub struct TwitterClient {
-    /// view into trace file,
-    lines: Lines<BufReader<File>>,
+    /// Values to set from (so they don't need to be generated automatically everytime)
+    set_values: Vec<Vec<u8>>,
+    /// pre-cached metadata for lines that are relevant to this client
+    precached_metadata: Vec<TwitterLineMetadata>,
+    /// Current index into metadata
+    cur_metadata_index: usize,
     // our thread id
     thread_id: usize,
     // our client id
@@ -146,11 +389,12 @@ pub struct TwitterClient {
     value_size: Option<usize>,
     // ignore sets
     ignore_sets: bool,
+    // ignore packets per second,
+    ignore_pps: bool,
 }
 
 impl TwitterClient {
     pub fn new_twitter_client(
-        request_file: &str,
         client_id: usize,
         thread_id: usize,
         max_clients: usize,
@@ -158,23 +402,39 @@ impl TwitterClient {
         twitter_end_time: usize,
         value_size: Option<usize>,
         ignore_sets: bool,
+        ignore_pps: bool,
     ) -> Result<Self> {
-        let file = File::open(request_file)?;
-        let reader = BufReader::new(file);
+        let alphabet = vec![
+            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q",
+            "r", "s", "t", "u", "v", "w", "x", "y", "z",
+        ];
+        let set_values: Vec<Vec<u8>> = alphabet
+            .into_iter()
+            .map(|s| {
+                std::iter::repeat(s.as_bytes()[0])
+                    .take(9216)
+                    .collect::<Vec<u8>>()
+            })
+            .collect();
+        let precached_metadata: Vec<TwitterLineMetadata> = Vec::default();
+
         Ok(TwitterClient {
+            set_values,
             client_id,
             thread_id,
             total_num_clients: max_clients,
             total_num_threads: max_threads,
             twitter_end_time,
-            lines: reader.lines(),
+            precached_metadata,
+            cur_metadata_index: 0,
             value_size,
             ignore_sets,
+            ignore_pps,
         })
     }
 
-    pub fn generate_packet_schedule(
-        &self,
+    pub fn generate_packet_schedule_and_metadata(
+        &mut self,
         request_file: &str,
         speed_factor: f64,
         dist_type: DistributionType,
@@ -183,24 +443,43 @@ impl TwitterClient {
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
         let modified_time = (self.twitter_end_time + 1) * speed_factor.ceil() as usize;
+        let mut precached_metadata: Vec<TwitterLineMetadata> = Vec::new();
         let mut pps: Vec<usize> = vec![0usize; modified_time + 1];
         tracing::info!(
             "Generating schedule for {} twitter seconds worth of packets",
             modified_time
         );
+        let mut cur_val_index = 0;
         while let Some(parsed_line_res) = lines.next() {
             match parsed_line_res {
                 Ok(s) => {
-                    let req = self.get_request(s.as_str())?;
-                    if self.is_responsible_for(&req) {
-                        if req.msg_type() == MsgType::Put && self.ignore_sets {
-                            continue;
+                    match TwitterLineMetadata::new(
+                        s.as_str(),
+                        self.client_id,
+                        self.thread_id,
+                        self.total_num_clients,
+                        self.total_num_threads,
+                        modified_time,
+                        cur_val_index,
+                        self.value_size,
+                        self.ignore_sets,
+                    ) {
+                        Ok(twitter_req_option) => match twitter_req_option {
+                            Some((twitter_req, time)) => {
+                                pps[time] += 1;
+                                precached_metadata.push(twitter_req);
+                                cur_val_index += 1;
+                                if cur_val_index == self.set_values.len() {
+                                    cur_val_index = 0;
+                                }
+                            }
+                            None => {
+                                continue;
+                            }
+                        },
+                        Err(e) => {
+                            bail!("Failed to parse line: {:?}, error: {:?}", s.as_str(), e);
                         }
-                        let time = req.get_time();
-                        if time > modified_time {
-                            break;
-                        }
-                        pps[time] += 1;
                     }
                 }
                 Err(e) => {
@@ -208,36 +487,55 @@ impl TwitterClient {
                 }
             }
         }
+        self.precached_metadata = precached_metadata;
+        for (t, num_packets_to_generate) in pps.iter().enumerate() {
+            tracing::info!(
+                thread_id = self.thread_id,
+                time = t,
+                pps = num_packets_to_generate,
+                "Packets to generate"
+            );
+        }
         // create schedule from rates and speed factor
         let mut schedule = PacketSchedule::default();
         let time_unit = Duration::from_nanos((1_000_000_000 as f64 / speed_factor as f64) as u64);
         let mut time_to_add = Duration::from_nanos(0);
-        for num_packets_to_generate in pps.iter() {
-            let scaled_packet_rate = (*num_packets_to_generate as f64 * speed_factor as f64) as u64;
-            let mut sched =
-                PacketSchedule::new(*num_packets_to_generate, scaled_packet_rate, dist_type)?;
-            schedule.append(&mut sched);
-            // if no packets,
-            // pad previous intersend with skip time
-            if *num_packets_to_generate == 0 {
-                time_to_add += time_unit;
-                if let Some(dur) = schedule.get_last() {
-                    schedule.set_last(dur + time_to_add);
-                    time_to_add = Duration::from_nanos(0);
+        if self.ignore_pps {
+            let mut sum_packets = 0.0f64;
+            for num_packets_to_generate in pps.iter() {
+                sum_packets += *num_packets_to_generate as f64;
+            }
+            let avg_rate = (sum_packets as f64 / (self.twitter_end_time + 1) as f64) as u64;
+            let schedule = PacketSchedule::new(sum_packets as usize, avg_rate, dist_type)?;
+            tracing::info!(
+                "Created schedule with length {} to be completed in {} at rate {:?}",
+                schedule.len(),
+                self.twitter_end_time + 1,
+                avg_rate
+            );
+            /*for i in 0..sum_packets as usize {
+                tracing::info!(i, arrival = ?schedule.get(i), "schedule item");
+            }*/
+            Ok(schedule)
+        } else {
+            for num_packets_to_generate in pps.iter() {
+                let scaled_packet_rate =
+                    (*num_packets_to_generate as f64 * speed_factor as f64) as u64;
+                let mut sched =
+                    PacketSchedule::new(*num_packets_to_generate, scaled_packet_rate, dist_type)?;
+                schedule.append(&mut sched);
+                // if no packets,
+                // pad previous intersend with skip time
+                if *num_packets_to_generate == 0 {
+                    time_to_add += time_unit;
+                    if let Some(dur) = schedule.get_last() {
+                        schedule.set_last(dur + time_to_add);
+                        time_to_add = Duration::from_nanos(0);
+                    }
                 }
             }
+            Ok(schedule)
         }
-        Ok(schedule)
-    }
-
-    fn get_request(&self, line: &str) -> Result<<Self as RequestGenerator>::RequestLine> {
-        TwitterLine::new(line, &self.value_size)
-    }
-
-    fn is_responsible_for(&self, req: &TwitterLine) -> bool {
-        let our_thread_client = self.total_num_threads * self.client_id + self.thread_id;
-        let total_thread_clients = self.total_num_threads * self.total_num_clients;
-        our_thread_client == (req.get_client_id() % total_thread_clients)
     }
 
     fn emit_get_data<'a>(
@@ -250,13 +548,16 @@ impl TwitterClient {
     fn emit_put_data<'a>(
         &self,
         req: &'a <Self as RequestGenerator>::RequestLine,
-    ) -> Result<(&'a str, &'a str)> {
-        Ok((req.get_key(), req.get_value()))
+    ) -> Result<(&'a str, &str)> {
+        let val_index = req.get_val_index();
+        let val_size = req.get_val_size();
+        let value = std::str::from_utf8(&self.set_values[val_index][0..val_size])?;
+        Ok((req.get_key(), value))
     }
 }
 
 impl RequestGenerator for TwitterClient {
-    type RequestLine = TwitterLine;
+    type RequestLine = TwitterLineMetadata;
     fn new(
         _request_file: &str,
         _client_id: usize,
@@ -271,28 +572,11 @@ impl RequestGenerator for TwitterClient {
     }
 
     fn next_request(&mut self) -> Result<Option<Self::RequestLine>> {
-        // find the next request with our client and thread ID
-        loop {
-            if let Some(parsed_line_res) = self.lines.next() {
-                match parsed_line_res {
-                    Ok(s) => {
-                        let req = self.get_request(s.as_str())?;
-                        if req.msg_type() == MsgType::Put && self.ignore_sets {
-                            continue;
-                        }
-                        if self.is_responsible_for(&req) {
-                            return Ok(Some(req));
-                        }
-                        // otherwise, continue iterating until the next line
-                    }
-                    Err(e) => {
-                        bail!("Could not get next line in iterator: {:?}", e);
-                    }
-                }
-            } else {
-                return Ok(None);
-            }
-        }
+        self.cur_metadata_index += 1;
+        return Ok(self
+            .precached_metadata
+            .get(self.cur_metadata_index - 1)
+            .cloned());
     }
 
     fn message_type(&self, req: &<Self as RequestGenerator>::RequestLine) -> Result<MsgType> {
@@ -349,7 +633,7 @@ impl RequestGenerator for TwitterClient {
             MsgType::Get => {
                 if cfg!(debug_assertions) {
                     let val = serializer.deserialize_get_response(buf)?;
-                    if val.len() != request.value_size() {
+                    if val.len() != request.get_val_size() {
                         return Ok(false);
                     }
                 }

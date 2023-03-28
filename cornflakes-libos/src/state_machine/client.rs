@@ -24,7 +24,9 @@ pub trait ClientSM {
 
     fn get_current_id(&self) -> u32;
 
-    fn increment_id(&mut self);
+    fn increment_noop_sent(&mut self);
+
+    fn get_noops_sent(&self) -> usize;
 
     fn uniq_received_so_far(&self) -> usize;
 
@@ -237,7 +239,7 @@ pub trait ClientSM {
             let id = self.get_current_id();
             let buffers = vec![(id, conn_id, noop_buffer.as_slice())];
             datapath.push_buffers_with_copy(buffers.as_slice())?;
-            self.increment_id();
+            self.increment_noop_sent();
             // wait on the noop timer
             noop_spin_timer.wait(&mut || {
                 let _recved_pkts = datapath.pop_with_durations()?;
@@ -245,8 +247,8 @@ pub trait ClientSM {
             })?;
         }
 
-        let _ = GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
-        while GLOBAL_THREAD_COUNT.load(Ordering::SeqCst) != num_threads {}
+        /*let _ = GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
+        while GLOBAL_THREAD_COUNT.load(Ordering::SeqCst) != num_threads {}*/
 
         // run workload
         let start = Instant::now();
@@ -324,7 +326,7 @@ where
     if record_per_size_buckets {
         client.set_recording_size_rtts();
     }
-    let noop_secs = total_time_seconds / 2;
+    let noop_secs = 0;
     let noop_time = Duration::from_secs(noop_secs);
     let noop_schedule = PacketSchedule::new(
         (avg_rate * noop_secs) as usize,
@@ -356,11 +358,17 @@ where
         }
         None => {}
     }
-    tracing::info!(thread = thread_id, "About to calculate stats");
+    tracing::info!(
+        thread = thread_id,
+        noops_sent = client.get_noops_sent(),
+        sent = client.uniq_sent_so_far(),
+        recvd = client.uniq_received_so_far(),
+        "About to calculate stats"
+    );
     let sized_rtts = client.get_sized_rtts().clone();
     let stats = MeasuredThreadStatsOnly::new(
         thread_id,
-        client.num_sent_cutoff(0),
+        client.uniq_sent_so_far() - client.get_noops_sent(),
         client.num_received_cutoff(0),
         client.num_retried(),
         exp_duration as _,
@@ -391,7 +399,7 @@ where
         false => no_retries_timeout,
     };
 
-    let noop_secs = total_time_seconds / 2;
+    let noop_secs = 0;
     let noop_time = Duration::from_secs(noop_secs);
     let noop_schedule = PacketSchedule::new(
         (rate * noop_secs) as usize,
@@ -427,7 +435,7 @@ where
     tracing::info!(thread = thread_id, "About to calculate stats");
     let stats = ThreadStats::new(
         thread_id as u16,
-        client.num_sent_cutoff(0),
+        client.uniq_sent_so_far() - client.get_noops_sent(),
         client.num_received_cutoff(0),
         client.num_retried(),
         exp_duration as _,

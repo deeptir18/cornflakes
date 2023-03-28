@@ -5,7 +5,7 @@ use cf_kv::{
     protobuf::{ProtobufClient, ProtobufKVServer},
     run_client_twitter, run_server_twitter,
     run_twitter::*,
-    twitter::{generate_ws_accessed, TwitterClient, TwitterServerLoader},
+    twitter::{TwitterClient, TwitterFileMetadata, TwitterServerLoader},
     KVClient,
 };
 use color_eyre::eyre::Result;
@@ -21,11 +21,10 @@ fn main() -> Result<()> {
     global_debug_init(opt.trace_level)?;
 
     if opt.analyze {
-        generate_ws_accessed(
-            &opt.trace_file,
-            opt.speed_factor,
-            opt.total_time,
-            opt.value_size.clone(),
+        TwitterFileMetadata::analyze(
+            &opt.trace_file.as_str(),
+            opt.speed_factor as f64,
+            opt.total_time as _,
         )?;
         return Ok(());
     }

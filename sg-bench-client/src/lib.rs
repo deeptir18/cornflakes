@@ -40,6 +40,8 @@ where
     num_timed_out: usize,
     /// last sent
     last_sent_id: usize,
+    /// Noops sent
+    noops_sent: usize,
     /// server address
     server_addr: AddressInfo,
     /// round trips
@@ -171,6 +173,7 @@ where
             num_retried: 0,
             num_timed_out: 0,
             last_sent_id: 0,
+            noops_sent: 0,
             server_addr,
             rtts: ManualHistogram::new(max_num_requests),
             sized_rtts: SizedManualHistogram::new(16384, max_num_requests),
@@ -191,12 +194,17 @@ where
 {
     type Datapath = D;
 
-    fn get_current_id(&self) -> u32 {
-        self.last_sent_id as u32
+    fn increment_noop_sent(&mut self) {
+        self.last_sent_id += 1;
+        self.noops_sent += 1;
     }
 
-    fn increment_id(&mut self) {
-        self.last_sent_id += 1;
+    fn get_noops_sent(&self) -> usize {
+        self.noops_sent
+    }
+
+    fn get_current_id(&self) -> u32 {
+        self.last_sent_id as u32
     }
 
     fn increment_uniq_received(&mut self) {

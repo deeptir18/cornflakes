@@ -78,8 +78,8 @@ macro_rules! run_client_twitter(
                 connection.set_copying_threshold(std::usize::MAX);
 
                 // initialize twitter client to read from file
-                let twitter_client = TwitterClient::new_twitter_client(opt_clone.trace_file.as_str(), opt_clone.client_id, i, opt_clone.num_clients, opt_clone.num_threads, opt_clone.total_time, $opt.value_size.clone(), $opt.ignore_sets)?;
-                let packet_schedule = twitter_client.generate_packet_schedule(opt_clone.trace_file.as_str(), opt_clone.speed_factor, opt_clone.distribution)?;
+                let mut twitter_client = TwitterClient::new_twitter_client(opt_clone.client_id, i, opt_clone.num_clients, opt_clone.num_threads, opt_clone.total_time, $opt.value_size.clone(), $opt.ignore_sets, $opt.ignore_pps)?;
+                let packet_schedule = twitter_client.generate_packet_schedule_and_metadata(opt_clone.trace_file.as_str(), opt_clone.speed_factor, opt_clone.distribution)?;
                 let max_num_requests = packet_schedule.len();
                 let server_load_generator_opt: Option<(&str, TwitterServerLoader)> = None;
                 let mut kv_client: KVClient<TwitterClient, $serializer, $datapath> = KVClient::new(twitter_client, server_addr_clone, max_num_requests, false, server_load_generator_opt)?;
@@ -246,4 +246,9 @@ pub struct TwitterOpt {
     pub ignore_sets: bool,
     #[structopt(long = "analyze", help = "Analyze")]
     pub analyze: bool,
+    #[structopt(
+        long = "ignore_pps",
+        help = "Ignore pps and do distribution over total packets in given time"
+    )]
+    pub ignore_pps: bool,
 }
