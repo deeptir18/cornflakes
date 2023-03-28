@@ -1,7 +1,7 @@
 #[cfg(feature = "profiler")]
 use demikernel::perftools;
 #[cfg(feature = "profiler")]
-const PROFILER_DEPTH: usize = 10;
+const PROFILER_DEPTH: usize = 2;
 use super::super::{
     datapath::{Datapath, PushBufType, ReceivedPkt},
     ArenaOrderedSga,
@@ -118,6 +118,8 @@ pub trait ServerSM {
             if pkts.len() > 0 {
                 match self.push_buf_type() {
                     PushBufType::SingleBuf => {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Process requests singlebuf");
                         self.process_requests_single_buf(pkts, datapath)?;
                     }
                     PushBufType::Echo => {
@@ -187,8 +189,16 @@ pub trait ServerSM {
                         self.process_requests_ordered_sga(pkts, datapath)?;
                     }
                     PushBufType::Object => {
-                        self.process_requests_object(pkts, datapath, &mut arena)?;
-                        arena.reset();
+                        {
+                            #[cfg(feature = "profiler")]
+                            demikernel::timer!("Process requests object");
+                            self.process_requests_object(pkts, datapath, &mut arena)?;
+                        }
+                        {
+                            #[cfg(feature = "profiler")]
+                            demikernel::timer!("Arena reset");
+                            arena.reset();
+                        }
                     }
                     PushBufType::ArenaOrderedSga => {
                         self.process_requests_arena_ordered_sga(pkts, datapath, &mut arena)?;

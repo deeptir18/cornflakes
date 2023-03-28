@@ -9,8 +9,6 @@ const TX_MEMPOOL_ID: u32 = 1;
 
 pub type MempoolID = u32;
 pub fn align_to_pow2(x: usize) -> usize {
-    #[cfg(feature = "profiler")]
-    demikernel::timer!("align to pow2");
     if x & (x - 1) == 0 {
         return x + (x == 0) as usize;
     }

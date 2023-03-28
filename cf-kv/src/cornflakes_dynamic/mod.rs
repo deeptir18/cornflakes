@@ -126,27 +126,36 @@ where
         'kv: 'arena,
     {
         let mut get_req = kv_serializer_hybrid::GetReq::new_in(arena);
-        get_req.deserialize(pkt, REQ_TYPE_SIZE, arena)?;
-        let value = match self.use_linked_list() {
-            true => match linked_list_kv_server.get(get_req.get_key().to_str()?) {
-                Some(v) => v.as_ref().get_buffer(),
-                None => {
-                    bail!(
-                        "Could not find value for key: {:?}",
-                        get_req.get_key().to_str()
-                    );
-                }
-            },
-            false => match kv_server.get(get_req.get_key().to_str()?) {
-                Some(v) => v,
-                None => {
-                    bail!(
-                        "Could not find value for key: {:?}",
-                        get_req.get_key().to_str()
-                    );
-                }
-            },
+        {
+            //#[cfg(feature = "profiler")]
+            //demikernel::timer!("Deserialize pkt");
+            get_req.deserialize(pkt, REQ_TYPE_SIZE, arena)?;
+        }
+        let value = {
+            //#[cfg(feature = "profiler")]
+            //demikernel::timer!("Get value from kv");
+            match self.use_linked_list() {
+                true => match linked_list_kv_server.get(get_req.get_key().to_str()?) {
+                    Some(v) => v.as_ref().get_buffer(),
+                    None => {
+                        bail!(
+                            "Could not find value for key: {:?}",
+                            get_req.get_key().to_str()
+                        );
+                    }
+                },
+                false => match kv_server.get(get_req.get_key().to_str()?) {
+                    Some(v) => v,
+                    None => {
+                        bail!(
+                            "Could not find value for key: {:?}",
+                            get_req.get_key().to_str()
+                        );
+                    }
+                },
+            }
         };
+
         tracing::debug!(
             "For given key {:?}, found value {:?} with length {}",
             get_req.get_key().to_str()?,
@@ -154,14 +163,23 @@ where
             value.as_ref().len()
         );
         let mut get_resp = kv_serializer_hybrid::GetResp::new_in(arena);
-        let mut copy_context = CopyContext::new(arena, datapath)?;
+        let mut copy_context = {
+            //#[cfg(feature = "profiler")]
+            //demikernel::timer!("Allocate cc");
+            CopyContext::new(arena, datapath)?
+        };
+
         get_resp.set_id(get_req.get_id());
 
-        get_resp.set_val(dynamic_rcsga_hybrid_hdr::CFBytes::new(
-            value.as_ref(),
-            datapath,
-            &mut copy_context,
-        )?);
+        {
+            //#[cfg(feature = "profiler")]
+            //demikernel::timer!("Set val inside cornflakes");
+            get_resp.set_val(dynamic_rcsga_hybrid_hdr::CFBytes::new(
+                value.as_ref(),
+                datapath,
+                &mut copy_context,
+            )?);
+        }
 
         // now serialize and send object
         datapath.queue_cornflakes_obj(msg_id, conn_id, &mut copy_context, get_resp, end_batch)?;
@@ -738,6 +756,8 @@ where
             );
             match msg_type {
                 MsgType::Get => {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("handle get serialize and send");
                     self.serializer.handle_get_serialize_and_send(
                         pkt.msg_id(),
                         pkt.conn_id(),
@@ -750,6 +770,8 @@ where
                     )?;
                 }
                 MsgType::Put => {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("handle put serialize and send");
                     self.serializer.handle_put_serialize_and_send(
                         pkt.msg_id(),
                         pkt.conn_id(),

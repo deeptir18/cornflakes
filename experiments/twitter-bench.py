@@ -26,12 +26,14 @@ class TwitterIteration(runner.Iteration):
                  extra_serialization_params,
                  value_size = 0, # if it is not 0, pass in value size
                  ignore_sets = False,
+                 ignore_pps = False,
                  distribution = "exponential",
                  max_bucket = 16384, # TODO: make max bucket configurable
                  trial = None):
         self.trace = trace
         self.value_size = value_size
         self.ignore_sets = ignore_sets
+        self.ignore_pps = ignore_pps
         self.distribution = distribution
         self.speed_factor = speed_factor
         self.min_num_keys = min_num_keys
@@ -182,6 +184,7 @@ class TwitterIteration(runner.Iteration):
                 "speed_factor: {}, " \
                 "value_size: {}, " \
                 "ignore_sets: {}, "\
+                "ignore_pps: {}, "\
                 "distribution: {}, "\
                 "min_num_keys: {}, " \
                 "serialization: {}, "\
@@ -193,6 +196,7 @@ class TwitterIteration(runner.Iteration):
                             self.get_speed_factor_string(),
                             self.get_value_size_string(),
                             self.get_ignore_sets_string(),
+                            self.get_ignore_pps_string(),
                             self.distribution,
                             self.get_min_num_keys_string(),
                             self.serialization,
@@ -202,7 +206,7 @@ class TwitterIteration(runner.Iteration):
                             self.get_trial_string())
     def hash(self):
         # hashes every argument EXCEPT for speed factor.
-        args = [self.trace, self.value_size, self.ignore_sets,
+        args = [self.trace, self.value_size, self.ignore_sets, self.ignore_pps,
                 self.distribution, self.min_num_keys, self.serialization,
                 self.num_clients, self.num_threads,
                 str(self.extra_serialization_params), self.trial]
@@ -213,7 +217,9 @@ class TwitterIteration(runner.Iteration):
         Returns an array of parameters for this experiment.
         """
         params = ["trace", "min_num_keys", "serialization", "num_clients",
-        "num_threads", "speed_factor"]
+        "num_threads", "speed_factor", "value_size", "ignore_sets",
+        "ignore_pps",
+        "distribution"]
         params.extend(self.extra_serialization_params.get_iteration_params())
         return params
 
@@ -224,6 +230,7 @@ class TwitterIteration(runner.Iteration):
                 "value_size": self.value_size,
                 "ignore_sets": self.ignore_sets,
                 "distribution": self.distribution,
+                "ignore_pps": self.ignore_pps,
                 "serialization":
                 self.extra_serialization_params.get_serialization_name(),
                 "num_clients": self.num_clients,
@@ -271,6 +278,8 @@ class TwitterIteration(runner.Iteration):
             return "value_size_{}".format(self.value_size)
     def get_ignore_sets_string(self):
         return "ignore_sets_{}".format(self.ignore_sets)
+    def get_ignore_pps_string(self):
+        return "ignore_pps_{}".format(self.ignore_pps)
 
     def get_distribution_string(self):
         return "distribution_{}".format(self.distribution)
@@ -296,6 +305,7 @@ class TwitterIteration(runner.Iteration):
                 self.extra_serialization_params.get_subfolder() /\
                 self.get_value_size_string() /\
                 self.get_ignore_sets_string() /\
+                self.get_ignore_pps_string() /\
                 self.get_distribution_string() /\
                 self.get_min_num_keys_string() /\
                 self.get_speed_factor_string() /\
@@ -324,6 +334,10 @@ class TwitterIteration(runner.Iteration):
             ret["ignore_sets_str"] = " --ignore_sets"
         else:
             ret["ignore_sets_str"] = ""
+        if self.ignore_pps:
+            ret["ignore_pps_str"] = " --ignore_pps"
+        else:
+            ret["ignore_pps_str"] = ""
 
         self.extra_serialization_params.fill_in_args(ret, program)
         host_type_map = config_yaml["host_types"]
@@ -350,7 +364,8 @@ class TwitterIteration(runner.Iteration):
             exit(1)
         return ret
 
-TwitterExpInfo = collections.namedtuple("TwitterExpInfo", ["value_size", "ignore_sets", "distribution"])
+TwitterExpInfo = collections.namedtuple("TwitterExpInfo", ["value_size",
+    "ignore_sets", "distribution","ignore_pps", "min_num_keys"])
 
 class TwitterBench(runner.Experiment):
     def __init__(self, exp_yaml, config_yaml):
@@ -378,21 +393,28 @@ class TwitterBench(runner.Experiment):
         """
         Returns parsed TwitterExpInfo from exp_string.
         Should be formatted as:
-        value_size = {}, ignore_sets = {1|0}, distribution = {exponential|uniform}
+        value_size = {}, ignore_sets = {1|0}, distribution =
+        {exponential|uniform}, ignore_pps = {1|0}, min_num_keys = {}
         """
         try:
-            parse_result = parse.parse("value_size = {:d}, ignore_sets = {:d}, distribution = {}", exp_string)
+            parse_result = parse.parse("value_size = {:d}, ignore_sets = {:d}, distribution = {}, ignore_pps = {:d}, min_num_keys = {:d}", exp_string)
             ignore_sets = False
+            ignore_pps = False
             if parse_result[1] == 1:
                 ignore_sets = True
+            if parse_result[3] == 1:
+                ignore_pps = True
             return TwitterExpInfo(
                     parse_result[0], 
                     ignore_sets,
-                    parse_result[2])
+                    parse_result[2],
+                    ignore_pps,
+                    parse_result[4])
+            print(TwitterExpInfo)
         except:
             utils.error("Error parsing exp_string: {}".format(exp_string))
             exit(1)
-
+        exit(1)
     def get_iterations(self, total_args):
         if total_args.exp_type == "individual":
             if total_args.num_clients > int(self.config_yaml["max_clients"]):
@@ -416,6 +438,7 @@ class TwitterBench(runner.Experiment):
                     value_size = total_args.value_size,
                     ignore_sets = total_args.ignore_sets,
                     distribution = total_args.distribution,
+                    ignore_pps = total_args.ignore_pps,
                     trial = None)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
@@ -435,33 +458,34 @@ class TwitterBench(runner.Experiment):
             num_trials = utils.yaml_get(loop_yaml, "num_trials")
             num_threads = utils.yaml_get(loop_yaml, "num_threads")
             num_clients = utils.yaml_get(loop_yaml, "num_clients")
-            speed_factors = utils.yaml_get(loop_yaml, "speed_factors")
-            min_num_keys_vec = utils.yaml_get(loop_yaml, "min_num_keys")
-            exp_infos = utils.yaml_get(loop_yaml, "configurations")
-            configs = [self.parse_exp_info_string(c) for c in exp_infos]
+            max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
+            rate_percentages = utils.yaml_get(loop_yaml, "rate_percentages")
+
             # make it easy to parse different serialization libraries
             serialization_libraries = utils.yaml_get(loop_yaml,
                     "serialization_libraries")
             for trial in range(num_trials):
                 for serialization in serialization_libraries:
-                    for speed_factor in speed_factors:
-                        for min_num_keys in min_num_keys_vec:
+                    for rate_percentage in rate_percentages:
                             
-                            extra_serialization_params = runner.ExtraSerializationParameters(serialization)
-                            for config in configs:
-                                it = TwitterIteration(
+                        extra_serialization_params = runner.ExtraSerializationParameters(serialization)
+                        for config in max_rates_dict:
+                            max_speed_factor = max_rates_dict[config]
+                            speed_factor = max_speed_factor * (rate_percentage / 100.0)
+                            it = TwitterIteration(
                                     total_args.trace,
                                     speed_factor,
-                                    min_num_keys,
+                                    config.min_num_keys,
                                     extra_serialization_params.get_serialization(),
                                     num_clients,
                                     num_threads,
                                     extra_serialization_params,
-                                    config.value_size,
-                                    config.ignore_sets,
-                                    config.distribution,
+                                    value_size = config.value_size,
+                                    ignore_sets = config.ignore_sets,
+                                    ignore_pps = config.ignore_pps,
+                                    distribution = config.distribution,
                                     trial = trial)
-                                ret.append(it)
+                            ret.append(it)
                 return ret
 
     def add_specific_args(self, parser, namespace):
@@ -488,6 +512,9 @@ class TwitterBench(runner.Experiment):
                                 default = 0)
             parser.add_argument("-is", "--ignore_sets",
                                 dest = "ignore_sets",
+                                action = 'store_true')
+            parser.add_argument("-is", "--ignore_pps",
+                                dest = "ignore_pps",
                                 action = 'store_true')
             parser.add_argument("-dist", "--distribution",
                                 dest = "distribution",
@@ -529,17 +556,19 @@ class TwitterBench(runner.Experiment):
         plot_path.mkdir(exist_ok=True)
         full_log = Path(folder) / logfile
         plotting_script = Path(cornflakes_repo) / \
-            "experiments" / "plotting_scripts" / "varied_size_kv.R"
+            "experiments" / "plotting_scripts" / "twitter_kv.R"
         base_args = [str(plotting_script), str(full_log)]
 
-        exp_infos = utils.yaml_get(loop_yaml, "configurations")
-        configs = [self.parse_exp_info_string(c) for c in exp_infos]
-
-        for config in configs:
+        max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
+        for config in max_rates_dict:
+            min_num_keys = config.min_num_keys
             base_plot_path = plot_path /\
+                    "min_num_keys_{}".format(config.min_num_keys) /\
                     "value_size_{}".format(config.value_size) /\
                     "ignore_sets_{}".format(config.ignore_sets) /\
-                    "distribution_{}".format(config.distribution)
+                    "ignore_pps_{}".format(config.ignore_pps) /\
+                    "distribution_{}".format(config.distribution) 
+            base_plot_path.mkdir(parents = True, exist_ok = True)
             for metric in ["p99", "median"]:
                 if "baselines" in graphing_groups:
                     pdf = base_plot_path / "baselines_{}.pdf".format(metric)
@@ -547,7 +576,11 @@ class TwitterBench(runner.Experiment):
                                        str(full_log),
                                        str(pdf),
                                        metric,
-                                       "baselines"]
+                                       "baselines",
+                                       str(min_num_keys),
+                                       str(config.value_size),
+                                       str(config.ignore_sets),
+                                       str(config.distribution)]
                     print(" ".join(total_plot_args))
                     sh.run(total_plot_args)
                 if "cornflakes" in graphing_groups:
@@ -556,41 +589,56 @@ class TwitterBench(runner.Experiment):
                                        str(full_log),
                                        str(pdf),
                                        metric,
-                                       "cornflakes"]
+                                       "cornflakes",
+                                       str(min_num_keys),
+                                       str(config.value_size),
+                                       str(config.ignore_sets),
+                                       str(config.distribution)]
                     print(" ".join(total_plot_args))
                     sh.run(total_plot_args)
 
 
                 # debug by size
-                min_bucket = 8
-                while min_bucket < 16384:
-                    min_bucket = min_bucket * 2
-                    metric_subset = "size{}_{}".format(min_bucket, metric)
-                    load_subset = "size{}_pps".format(min_bucket)
-                    individual_plot_path = base_plot_path / "size{}".format(min_bucket)
-                    individual_plot_path.mkdir(exist_ok=True)
-                    if "baselines" in graphing_groups:
-                        pdf = individual_plot_path / "baselines_size_{}_{}.pdf".format(min_bucket, metric)
-                        total_plot_args = [str(plotting_script),
+
+                if config.value_size == 0:
+                    min_bucket = 8
+                    while min_bucket < 16384:
+                        min_bucket = min_bucket * 2
+                        metric_subset = "size{}_{}".format(min_bucket, metric)
+                        load_subset = "size{}_pps".format(min_bucket)
+                        individual_plot_path = base_plot_path / "size{}".format(min_bucket)
+                        individual_plot_path.mkdir(exist_ok=True)
+                        if "baselines" in graphing_groups:
+                            pdf = individual_plot_path / "baselines_size_{}_{}.pdf".format(min_bucket, metric)
+                            total_plot_args = [str(plotting_script),
                                        str(full_log),
                                        str(pdf),
                                        metric,
                                        "baselines",
+                                       str(min_num_keys),
+                                       str(config.value_size),
+                                       str(config.ignore_sets),
+                                       str(config.distribution),
                                        metric_subset,
-                                       load_subset]
-                        print(" ".join(total_plot_args))
-                        sh.run(total_plot_args)
-                    if "cornflakes" in graphing_groups:
-                        pdf = individual_plot_path / "thresholdvary_size_{}_{}.pdf".format(min_bucket, metric)
-                        total_plot_args = [str(plotting_script),
+                                       load_subset,
+                                       ]
+                            print(" ".join(total_plot_args))
+                            sh.run(total_plot_args)
+                        if "cornflakes" in graphing_groups:
+                            pdf = individual_plot_path / "thresholdvary_size_{}_{}.pdf".format(min_bucket, metric)
+                            total_plot_args = [str(plotting_script),
                                        str(full_log),
                                        str(pdf),
                                        metric,
                                        "cornflakes",
+                                       str(min_num_keys),
+                                       str(config.value_size),
+                                       str(config.ignore_sets),
+                                       str(config.distribution),
                                        metric_subset,
                                        load_subset]
-                        print(" ".join(total_plot_args))
-                        sh.run(total_plot_args)
+                            print(" ".join(total_plot_args))
+                            sh.run(total_plot_args)
 
 
 
