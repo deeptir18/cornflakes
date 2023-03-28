@@ -78,3 +78,18 @@ required-features = ["mlx5"]
 name = "retwis_ice"
 required-features = ["ice"]
 
+[[bin]]
+name = "twitter_mlx5"
+required-features = ["mlx5"]
+
+[[bin]]
+name = "twitter_dpdk"
+required-features = ["dpdk"]
+
+[[bin]]
+name = "googleproto_mlx5"
+required-features = ["mlx5"]
+
+[[bin]]
+name = "googleproto_dpdk"
+required-features = ["dpdk"]
