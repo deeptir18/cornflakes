@@ -17,3 +17,5 @@ mlx5-datapath = { path = "../mlx5-datapath" }
 
 [build-dependencies]
 cbindgen = "0.23.0"
+
+

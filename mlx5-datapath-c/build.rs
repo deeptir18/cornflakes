@@ -12,11 +12,27 @@ fn main() {
         .to_string();
 
     let config = Config {
-        language: Language::Cxx,
+        language: Language::C,
         ..Default::default()
     };
 
     cbindgen::generate_with_config(&cargo_manifest_dir, config)
         .unwrap()
         .write_to_file(&output_file);
+
+    let cpp_header_file = PathBuf::from(&cargo_manifest_dir)
+        .join("mlx5_datapath_cpp.h")
+        .display()
+        .to_string();
+
+    let config = Config {
+        language: Language::Cxx,
+        ..Default::default()
+    };
+
+    cbindgen::generate_with_config(&cargo_manifest_dir, config)
+        .unwrap()
+        .write_to_file(&cpp_header_file);
+
+
 }
