@@ -25,6 +25,8 @@ uint32_t Mlx5Connection_RxPacket_msg_id(const void *pkt);
 
 uintptr_t Mlx5Connection_RxPacket_conn_id(const void *pkt);
 
+void Mlx5Connection_RxPacket_free(const void *pkt);
+
 void Mlx5Connection_push_ordered_sgas(void *conn,
                                       uintptr_t n,
                                       uint32_t *msg_ids,

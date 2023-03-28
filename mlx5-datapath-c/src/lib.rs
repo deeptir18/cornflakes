@@ -226,6 +226,7 @@ pub extern "C" fn Mlx5Connection_RxPacket_conn_id(
     value
 }
 
+#[no_mangle]
 pub extern "C" fn Mlx5Connection_RxPacket_free(
     pkt: *const ::std::os::raw::c_void
 ) {
