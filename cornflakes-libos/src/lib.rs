@@ -35,7 +35,7 @@ use std::{
 use timing::HistogramWrapper;
 use utils::AddressInfo;
 #[cfg(feature = "profiler")]
-const PROFILER_DEPTH: usize = 10;
+const PROFILER_DEPTH: usize = 2;
 
 pub static mut USING_REF_COUNTING: bool = true;
 

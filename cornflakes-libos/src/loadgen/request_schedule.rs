@@ -26,7 +26,7 @@ impl SpinTimer {
             deficit: Duration::from_nanos(0),
             cur_idx: 0,
             total_time: total_time,
-            last_return: None,
+            last_return: Some(start_raw),
             no_more_pkts: false,
         }
     }
@@ -174,7 +174,7 @@ impl PacketSchedule {
         self.interarrivals.len()
     }
 
-    fn get(&self, idx: usize) -> Duration {
+    pub fn get(&self, idx: usize) -> Duration {
         self.interarrivals[idx]
     }
 }

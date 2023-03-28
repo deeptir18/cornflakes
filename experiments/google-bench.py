@@ -25,6 +25,7 @@ class GoogleIteration(runner.Iteration):
                 extra_serialization_params,
                 num_threads,
                 max_bucket = 16384, # TODO: make max bucket configurable
+                distribution = "exponential",
                 trial = None):
         self.client_rates = client_rates
         self.total_num_keys = total_num_keys
@@ -34,6 +35,7 @@ class GoogleIteration(runner.Iteration):
         self.extra_serialization_params = extra_serialization_params
         self.max_bucket = max_bucket
         self.num_threads = num_threads
+        self.distribution = distribution
         self.trial = trial
 
     def calculate_iteration_stats(self, local_folder, client_file_list,
@@ -176,6 +178,7 @@ class GoogleIteration(runner.Iteration):
                 "serialization: {}, "\
                 "num_threads: {}, "\
                 "extra serialization_params: {}, "\
+                "distribution: {}, "\
                 "trial: {}".format(
                         self.get_client_rate_string(),
                         self.get_total_num_keys_string(),
@@ -184,12 +187,13 @@ class GoogleIteration(runner.Iteration):
                         self.serialization,
                         self.num_threads,
                         str(self.extra_serialization_params),
+                        self.distribution,
                         self.get_trial_string())
     
     def hash(self):
         # hashes every argument EXCEPT for rates
         args = [self.total_num_keys, self.max_size, self.key_size, self.serialization,
-                self.get_num_clients(), self.num_threads,
+                self.get_num_clients(), self.num_threads, self.distribution,
                 str(self.extra_serialization_params), self.trial]
         return args
 
@@ -198,7 +202,7 @@ class GoogleIteration(runner.Iteration):
         Returns an array of parameters for this experiment.
         """
         params = ["serialization", "total_num_keys", "max_size", "key_size", "num_threads",
-                "num_clients", "offered_load_pps"]
+                "num_clients", "distribution", "offered_load_pps"]
         params.extend(self.extra_serialization_params.get_iteration_params())
         return params
 
@@ -216,6 +220,7 @@ class GoogleIteration(runner.Iteration):
                 "num_threads": self.num_threads,
                 "num_clients": self.get_num_clients(),
                 "serialization": self.extra_serialization_params.get_serialization_name(),
+                "distribution": self.distribution
             }
         ret.update(self.extra_serialization_params.get_iteration_params_values())
         return ret
@@ -278,6 +283,9 @@ class GoogleIteration(runner.Iteration):
     def get_max_size_string(self):
         return "max_size_{}".format(self.max_size)
 
+    def get_distribution_string(self):
+        return "distribution_{}".format(self.distribution)
+
     def get_num_threads_string(self):
         return "{}_threads".format(self.num_threads)
 
@@ -300,6 +308,7 @@ class GoogleIteration(runner.Iteration):
                 self.get_total_num_keys_string() /\
                 self.get_key_size_string() /\
                 self.get_max_size_string() /\
+                self.get_distribution_string() /\
                 self.get_client_rate_string() /\
             self.get_num_threads_string()
 
@@ -317,6 +326,7 @@ class GoogleIteration(runner.Iteration):
         ret["library"] = self.serialization
         ret["client_library"] = self.serialization
         ret["max_size"] = self.max_size
+        ret["distribution"]  = self.distribution
 
         self.extra_serialization_params.fill_in_args(ret, program)
         host_type_map = config_yaml["host_types"]
@@ -344,7 +354,7 @@ class GoogleIteration(runner.Iteration):
         return ret
 
 GoogleExpInfo = collections.namedtuple("GoogleExpInfo", ["total_num_keys",
-    "key_size"])
+    "key_size", "distribution"])
 
 class GoogleBench(runner.Experiment):
     def __init__(self, exp_yaml, config_yaml):
@@ -370,8 +380,10 @@ class GoogleBench(runner.Experiment):
         total_num_keys = {}, key_size = {}
         """
         try:
-            parse_result = parse.parse("total_num_keys = {:d}, key_size = {:d}", exp_string)
-            return GoogleExpInfo(parse_result[0], parse_result[1])
+            parse_result = parse.parse("total_num_keys = {:d}, key_size = {:d}, distribution = {}", exp_string)
+            return GoogleExpInfo(parse_result[0], 
+                    parse_result[1],
+                    parse_result[2])
         except:
             utils.error("Error parsing exp_string: {}".format(exp_string))
             exit(1)
@@ -398,6 +410,7 @@ class GoogleBench(runner.Experiment):
                     total_args.serialization,
                     extra_serialization_params,
                     total_args.num_threads,
+                    distribution = total_args.distribution,
                     trial = None)
             num_trials_finished = utils.parse_number_trials_done(
                 it.get_parent_folder(total_args.folder))
@@ -435,6 +448,7 @@ class GoogleBench(runner.Experiment):
                             rate = int(float(max_rate) * rate_percentage)
                             client_rates = [(rate, num_clients)]
                             extra_serialization_params = runner.ExtraSerializationParameters(serialization)
+                            distribution = exp.distribution
                             it = GoogleIteration(
                                 client_rates,
                                 total_num_keys,
@@ -443,6 +457,7 @@ class GoogleBench(runner.Experiment):
                                 serialization,
                                 extra_serialization_params,
                                 num_threads,
+                                distribution = distribution,
                                 trial = trial)
                             ret.append(it)
             return ret
@@ -484,6 +499,10 @@ class GoogleBench(runner.Experiment):
                                 dest="serialization",
                                 choices=SERIALIZATION_LIBRARIES,
                                 required=True)
+            parser.add_argument("-dist", "--distribution",
+                                dest="distribution",
+                                choices=["exponential", "uniform"],
+                                default = "uniform")
             runner.extend_with_serialization_parameters(parser) 
         args = parser.parse_args(namespace=namespace)
         return args

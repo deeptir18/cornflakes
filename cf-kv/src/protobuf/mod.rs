@@ -51,28 +51,35 @@ where
         linked_list_kv_server: &LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
     ) -> Result<kv_messages::GetResp> {
-        let get_request =
+        let get_request = {
+            //#[cfg(feature = "profiler")]
+            //demikernel::timer!("Protobuf deserialize");
             kv_messages::GetReq::parse_from_bytes(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
-                .wrap_err("Failed to deserialize proto GetReq")?;
-        let value = match self.use_linked_list {
-            true => match linked_list_kv_server.get(&get_request.key) {
-                Some(v) => v.as_ref().as_ref(),
-                None => {
-                    bail!(
-                        "Cannot find value for key in KV store: {:?}",
-                        get_request.key
-                    );
-                }
-            },
-            false => match kv_server.get(&get_request.key) {
-                Some(v) => v.as_ref(),
-                None => {
-                    bail!(
-                        "Cannot find value for key in KV store: {:?}",
-                        get_request.key
-                    );
-                }
-            },
+                .wrap_err("Failed to deserialize proto GetReq")?
+        };
+        let value = {
+            //#[cfg(feature = "profiler")]
+            //demikernel::timer!("Get value from map");
+            match self.use_linked_list {
+                true => match linked_list_kv_server.get(&get_request.key) {
+                    Some(v) => v.as_ref().as_ref(),
+                    None => {
+                        bail!(
+                            "Cannot find value for key in KV store: {:?}",
+                            get_request.key
+                        );
+                    }
+                },
+                false => match kv_server.get(&get_request.key) {
+                    Some(v) => v.as_ref(),
+                    None => {
+                        bail!(
+                            "Cannot find value for key in KV store: {:?}",
+                            get_request.key
+                        );
+                    }
+                },
+            }
         };
         let mut get_resp = kv_messages::GetResp::new();
         tracing::debug!(
@@ -80,7 +87,11 @@ where
             value.as_ref().as_ptr(),
             value.as_ref().len()
         );
-        get_resp.val = value.to_vec();
+        {
+            //#[cfg(feature = "profiler")]
+            //demikernel::timer!("Protobuf set value");
+            get_resp.val = value.to_vec();
+        }
         Ok(get_resp)
     }
 
@@ -321,6 +332,8 @@ where
             let message_type = MsgType::from_packet(&pkt)?;
             match message_type {
                 MsgType::Get => {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("handle get and queue protobuf");
                     let response = self.serializer.handle_get(
                         &self.kv_server,
                         &self.linked_list_kv_server,
@@ -354,6 +367,8 @@ where
                     )?;
                 }
                 MsgType::Put => {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("handle put protobuf and queue protobuf");
                     let response = self.serializer.handle_put(
                         &mut self.kv_server,
                         &mut self.mempool_ids,

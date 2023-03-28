@@ -135,6 +135,7 @@ where
 {
     cerealizer: C,
     last_sent_id: MsgID,
+    noops_sent: usize,
     received: usize,
     num_retried: usize,
     num_timed_out: usize,
@@ -176,6 +177,7 @@ where
         Ok(EchoClient {
             cerealizer: C::new(),
             last_sent_id: 0,
+            noops_sent: 0,
             received: 0,
             num_retried: 0,
             num_timed_out: 0,
@@ -212,8 +214,13 @@ where
         self.last_sent_id
     }
 
-    fn increment_id(&mut self) {
+    fn increment_noop_sent(&mut self) {
         self.last_sent_id += 1;
+        self.noops_sent += 1;
+    }
+
+    fn get_noops_sent(&self) -> usize {
+        self.noops_sent
     }
 
     fn increment_uniq_received(&mut self) {

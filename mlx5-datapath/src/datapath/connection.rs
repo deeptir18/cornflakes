@@ -3500,13 +3500,13 @@ impl Datapath for Mlx5Connection {
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
 
-        let num_zero_copy_entries = cornflakes_obj.num_zero_copy_scatter_gather_entries();
+        let num_zero_copy_entries = { cornflakes_obj.num_zero_copy_scatter_gather_entries() };
         let mut num_copy_entries = copy_context.len();
         if copy_context.data_len() == 0 {
             // doesn't work when there is a "raw" cf bytes
             num_copy_entries = 0;
         }
-        let header_len = cornflakes_obj.total_header_size(false, false);
+        let header_len = { cornflakes_obj.total_header_size(false, false) };
         let (inline_len, total_num_entries) =
             self.cornflakes_obj_shape(header_len, num_copy_entries, num_zero_copy_entries);
         let num_required = unsafe {
@@ -3521,23 +3521,25 @@ impl Datapath for Mlx5Connection {
             num_required,
             "Number of wqes needed for posting"
         );
-        while num_required > curr_available_wqes {
-            if self.first_ctrl_seg != ptr::null_mut() {
-                if unsafe {
-                    custom_mlx5_post_transmissions(
-                        self.thread_context.get_context_ptr(),
-                        self.first_ctrl_seg,
-                    ) != 0
-                } {
-                    bail!("Failed to post transmissions so far");
-                } else {
-                    self.first_ctrl_seg = ptr::null_mut();
+        {
+            while num_required > curr_available_wqes {
+                if self.first_ctrl_seg != ptr::null_mut() {
+                    if unsafe {
+                        custom_mlx5_post_transmissions(
+                            self.thread_context.get_context_ptr(),
+                            self.first_ctrl_seg,
+                        ) != 0
+                    } {
+                        bail!("Failed to post transmissions so far");
+                    } else {
+                        self.first_ctrl_seg = ptr::null_mut();
+                    }
                 }
+                self.poll_for_completions()?;
+                curr_available_wqes = unsafe {
+                    custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr())
+                } as usize;
             }
-            self.poll_for_completions()?;
-            curr_available_wqes =
-                unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
-                    as usize;
         }
 
         // fill in hdr segments
@@ -3640,8 +3642,6 @@ impl Datapath for Mlx5Connection {
         match self.inline_mode {
             InlineMode::Nothing => {
                 let mut allocated_header_buffer = {
-                    #[cfg(feature = "profiler")]
-                    demikernel::timer!("allocating stuff to copy into");
                     match self.allocator.allocate_tx_buffer()? {
                         Some(buf) => buf,
                         None => {
@@ -3649,19 +3649,21 @@ impl Datapath for Mlx5Connection {
                         }
                     }
                 };
-                let data_len = cornflakes_obj.iterate_over_entries(
-                    copy_context,
-                    header_len,
-                    allocated_header_buffer.mutable_slice(
-                        cornflakes_libos::utils::TOTAL_HEADER_SIZE,
-                        cornflakes_libos::utils::TOTAL_HEADER_SIZE + header_len,
-                    )?,
-                    0,
-                    cornflakes_obj.dynamic_header_start(),
-                    &mut cur_entry_ptr,
-                    &mut callback,
-                    &mut ring_buffer_state,
-                )? + header_len;
+                let data_len = {
+                    cornflakes_obj.iterate_over_entries(
+                        copy_context,
+                        header_len,
+                        allocated_header_buffer.mutable_slice(
+                            cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+                            cornflakes_libos::utils::TOTAL_HEADER_SIZE + header_len,
+                        )?,
+                        0,
+                        cornflakes_obj.dynamic_header_start(),
+                        &mut cur_entry_ptr,
+                        &mut callback,
+                        &mut ring_buffer_state,
+                    )? + header_len
+                };
 
                 // copy the packet header into the beginning of the buffer
                 self.copy_hdr(&mut allocated_header_buffer, conn_id, msg_id, data_len)?;
@@ -3683,8 +3685,6 @@ impl Datapath for Mlx5Connection {
             }
             InlineMode::PacketHeader => {
                 let mut allocated_header_buffer = {
-                    #[cfg(feature = "profiler")]
-                    demikernel::timer!("allocating stuff to copy into");
                     match self.allocator.allocate_tx_buffer()? {
                         Some(buf) => buf,
                         None => {
@@ -3726,8 +3726,6 @@ impl Datapath for Mlx5Connection {
                 ring_buffer_state.1 = curr_completion;
             }
             InlineMode::ObjectHeader => {
-                #[cfg(feature = "profiler")]
-                demikernel::timer!("Cornflakes iterate over entries and fill in header");
                 // fill in cornflakes object, and then inline the header
                 let data_len = cornflakes_obj.iterate_over_entries(
                     copy_context,

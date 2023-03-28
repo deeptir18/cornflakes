@@ -1,9 +1,9 @@
-num_threads: 2
+num_threads: 8
 num_clients: 1
 num_trials: 1
-serialization_libraries: ["cornflakes-dynamic-512", 
-"cornflakes-dynamic-256", "cornflakes-dynamic-0", "cornflakes1c-dynamic", "capnproto", "flatbuffers", "protobuf"]
+serialization_libraries: ["cornflakes-dynamic-512", "cornflakes1c-dynamic", "cornflakes-dynamic-0", "protobuf", "flatbuffers", "capnproto"]
 graphing_groups: ["baselines", "cornflakes"]
-configurations: ["value_size = 0, ignore_sets = 0, distribution = exponential"]
-speed_factors: [1.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0, 90.0, 95.0, 100.0, 105.0, 110.0, 115.0, 120.0, 125.0, 130.0, 135.0, 140.0, 145.0, 150.0, 155.0, 160.0, 165.0, 170.0, 175.0, 180.0, 185.0, 190.0, 195.0, 200.0]
-min_num_keys: [1000000]
+rate_percentages: [1.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 30.0, 32.0, 34.0, 36.0, 38.0, 40.0, 42.0, 44.0, 46.0, 48.0, 50.0, 52.0, 54.0, 56.0, 58.0, 60.0, 62.0, 64.0, 66.0, 68.0, 70.0, 72.0, 74.0, 76.0, 78.0, 80.0, 82.0, 84.0, 86.0, 88.0, 90.0, 92.0, 94.0, 96.0, 98.0, 100.0]
+max_rates:
+    "value_size = 0, ignore_sets = 0, distribution = uniform, ignore_pps = 0, min_num_keys = 4000000": 520.0
+    "value_size = 0, ignore_sets = 0, distribution = exponential, ignore_pps = 1, min_num_keys = 4000000": 520.0
