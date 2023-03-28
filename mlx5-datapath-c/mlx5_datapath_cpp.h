@@ -4,13 +4,6 @@
 #include <ostream>
 #include <new>
 
-struct ReceivedPkt {
-  const unsigned char *data;
-  uintptr_t data_len;
-  uint32_t msg_id;
-  uintptr_t conn_id;
-};
-
 extern "C" {
 
 void Mlx5_global_debug_init();
@@ -25,9 +18,15 @@ void Mlx5Connection_set_inline_mode(void *conn, uintptr_t inline_mode);
 
 void Mlx5Connection_add_memory_pool(void *conn, uintptr_t buf_size, uintptr_t min_elts);
 
-ReceivedPkt *Mlx5Connection_pop(void *conn, uintptr_t *n);
-
 void **Mlx5Connection_pop_raw_packets(void *conn, uintptr_t *n);
+
+const unsigned char *Mlx5Connection_RxPacket_data(const void *pkt);
+
+uintptr_t Mlx5Connection_RxPacket_data_len(const void *pkt);
+
+uint32_t Mlx5Connection_RxPacket_msg_id(const void *pkt);
+
+uintptr_t Mlx5Connection_RxPacket_conn_id(const void *pkt);
 
 void Mlx5Connection_push_ordered_sgas(void *conn,
                                       uintptr_t n,

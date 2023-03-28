@@ -1,5 +1,5 @@
 use cornflakes_libos::{
-    datapath::{Datapath, InlineMode},
+    datapath::{Datapath, ReceivedPkt, InlineMode},
     {ArenaOrderedRcSga, OrderedSga},
 };
 use cornflakes_utils::{global_debug_init_env, AppMode};
@@ -20,15 +20,15 @@ fn convert_c_char(ptr: *const ::std::os::raw::c_char) -> String {
 ///////////////////////////////////////////////////////////////////////////////
 // cornflakes-libos/src/lib.rs
 
-// TODO(ygina): move into shared library?
-#[repr(C)]
-#[derive(Debug)]
-pub struct ReceivedPkt {
-    data: *const ::std::os::raw::c_uchar,
-    data_len: usize,
-    msg_id: u32,
-    conn_id: usize,
-}
+// // TODO(ygina): move into shared library?
+// #[repr(C)]
+// #[derive(Debug)]
+// pub struct ReceivedPkt {
+//     data: *const ::std::os::raw::c_uchar,
+//     data_len: usize,
+//     msg_id: u32,
+//     conn_id: usize,
+// }
 
 // TODO(ygina): move into shared library?
 #[no_mangle]
@@ -131,39 +131,39 @@ pub extern "C" fn Mlx5Connection_add_memory_pool(
     Box::into_raw(conn_box);
 }
 
-#[no_mangle]
-pub extern "C" fn Mlx5Connection_pop(
-    conn: *mut ::std::os::raw::c_void,
-    n: *mut usize,
-) -> *mut ReceivedPkt {
-    let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
-    let mut pkts = conn_box
-        .pop()
-        .unwrap()
-        .into_iter()
-        .map(|pkt| {
-            // TODO(ygina): assume one segment
-            let seg = pkt.seg(0);
-            let new_pkt = ReceivedPkt {
-                data_len: seg.as_ref().len(),
-                data: seg.as_ref().as_ptr(),
-                msg_id: pkt.msg_id(),
-                conn_id: pkt.conn_id(),
-            };
-            // TODO(ygina): prevents deallocation of data buffer but leaks other
-            // fields in the received packet -- implement take() function?
-            std::mem::forget(pkt);
-            new_pkt
-        })
-        .collect::<Vec<ReceivedPkt>>();
-    Box::into_raw(conn_box);
-    unsafe {
-        *n = pkts.len();
-    }
-    let ptr = pkts.as_mut_ptr();
-    Box::into_raw(Box::new(pkts)); // should we return a ptr to the ptr?
-    ptr
-}
+// #[no_mangle]
+// pub extern "C" fn Mlx5Connection_pop(
+//     conn: *mut ::std::os::raw::c_void,
+//     n: *mut usize,
+// ) -> *mut ReceivedPkt {
+//     let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
+//     let mut pkts = conn_box
+//         .pop()
+//         .unwrap()
+//         .into_iter()
+//         .map(|pkt| {
+//             // TODO(ygina): assume one segment
+//             let seg = pkt.seg(0);
+//             let new_pkt = ReceivedPkt {
+//                 data_len: seg.as_ref().len(),
+//                 data: seg.as_ref().as_ptr(),
+//                 msg_id: pkt.msg_id(),
+//                 conn_id: pkt.conn_id(),
+//             };
+//             // TODO(ygina): prevents deallocation of data buffer but leaks other
+//             // fields in the received packet -- implement take() function?
+//             std::mem::forget(pkt);
+//             new_pkt
+//         })
+//         .collect::<Vec<ReceivedPkt>>();
+//     Box::into_raw(conn_box);
+//     unsafe {
+//         *n = pkts.len();
+//     }
+//     let ptr = pkts.as_mut_ptr();
+//     Box::into_raw(Box::new(pkts)); // should we return a ptr to the ptr?
+//     ptr
+// }
 
 #[no_mangle]
 pub extern "C" fn Mlx5Connection_pop_raw_packets(
@@ -184,6 +184,52 @@ pub extern "C" fn Mlx5Connection_pop_raw_packets(
     let ptr = pkts.as_mut_ptr();
     Box::into_raw(Box::new(pkts)); // should we return a ptr to the ptr?
     ptr
+}
+
+#[no_mangle]
+pub extern "C" fn Mlx5Connection_RxPacket_data(
+    pkt: *const ::std::os::raw::c_void
+) -> *const ::std::os::raw::c_uchar {
+    let pkt = unsafe { Box::from_raw(pkt as *mut ReceivedPkt<Mlx5Connection>) };
+    let value = pkt.seg(0).as_ref().as_ptr();
+    Box::into_raw(pkt);
+    value
+}
+
+#[no_mangle]
+pub extern "C" fn Mlx5Connection_RxPacket_data_len(
+    pkt: *const ::std::os::raw::c_void
+) -> usize {
+    let pkt = unsafe { Box::from_raw(pkt as *mut ReceivedPkt<Mlx5Connection>) };
+    let value = pkt.seg(0).as_ref().len();
+    Box::into_raw(pkt);
+    value
+}
+
+#[no_mangle]
+pub extern "C" fn Mlx5Connection_RxPacket_msg_id(
+    pkt: *const ::std::os::raw::c_void
+) -> u32 {
+    let pkt = unsafe { Box::from_raw(pkt as *mut ReceivedPkt<Mlx5Connection>) };
+    let value = pkt.msg_id();
+    Box::into_raw(pkt);
+    value
+}
+
+#[no_mangle]
+pub extern "C" fn Mlx5Connection_RxPacket_conn_id(
+    pkt: *const ::std::os::raw::c_void
+) -> usize {
+    let pkt = unsafe { Box::from_raw(pkt as *mut ReceivedPkt<Mlx5Connection>) };
+    let value = pkt.conn_id();
+    Box::into_raw(pkt);
+    value
+}
+
+pub extern "C" fn Mlx5Connection_RxPacket_free(
+    pkt: *const ::std::os::raw::c_void
+) {
+    let _ = unsafe { Box::from_raw(pkt as *mut ReceivedPkt<Mlx5Connection>) };
 }
 
 #[no_mangle]
@@ -256,3 +302,4 @@ pub extern "C" fn Mlx5Connection_queue_single_buffer_with_copy(
     Box::into_raw(conn_box);
     return 0;
 }
+
