@@ -11,6 +11,8 @@ pub mod run_twitter;
 pub mod twitter;
 pub mod ycsb;
 pub mod ycsb_run_datapath;
+pub mod run_cdn;
+pub mod cdn;
 
 // TODO: though capnpc 0.14^ supports generating nested namespace files
 // there seems to be a bug in the code generation, so must include it at crate root
