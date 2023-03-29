@@ -1,3 +1,7 @@
+use crate::{
+    dynamic_object_arena_hdr::CornflakesArenaObject, dynamic_object_hdr::CornflakesObject,
+};
+
 use super::{
     allocator::MempoolID, dynamic_rcsga_hybrid_hdr::HybridArenaRcSgaHdr,
     dynamic_sga_hdr::SgaHeaderRepr, utils::AddressInfo, ArenaDatapathSga, ArenaOrderedRcSga,
@@ -396,6 +400,31 @@ pub trait Datapath {
         unimplemented!();
     }
 
+    fn queue_cornflakes_hybrid_object(
+        &mut self,
+        _msg_id: MsgID,
+        _conn_id: ConnID,
+        _cornflakes_obj: impl CornflakesObject<Self>,
+        _end_batch: bool,
+    ) -> Result<()>
+    where
+        Self: Sized,
+    {
+        unimplemented!();
+    }
+
+    fn queue_cornflakes_arena_object<'arena>(
+        &mut self,
+        _msg_id: MsgID,
+        _conn_id: ConnID,
+        _cornflakes_obj: impl CornflakesArenaObject<'arena, Self>,
+        _end_batch: bool,
+    ) -> Result<()>
+    where
+        Self: Sized,
+    {
+        unimplemented!();
+    }
     fn queue_cornflakes_obj<'arena>(
         &mut self,
         _msg_id: MsgID,

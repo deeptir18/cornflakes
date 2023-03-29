@@ -7,6 +7,8 @@
 //!  3. A DPDK based datapath.
 pub mod allocator;
 pub mod datapath;
+pub mod dynamic_object_arena_hdr;
+pub mod dynamic_object_hdr;
 pub mod dynamic_rcsga_hdr;
 pub mod dynamic_rcsga_hybrid_hdr;
 pub mod dynamic_sga_hdr;
@@ -50,6 +52,14 @@ pub fn turn_off_ref_counting() {
     unsafe {
         USING_REF_COUNTING = false;
     }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
+pub struct SerializationInfo {
+    pub header_size: usize,
+    pub num_zero_copy_entries: usize,
+    pub copy_length: usize,
+    pub zero_copy_length: usize,
 }
 
 struct MutForwardPointer<'a>(&'a mut [u8], usize);
