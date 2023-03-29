@@ -1,4 +1,3 @@
-use super::cdn::NumValuesDistribution;
 use color_eyre::eyre::{bail, Result};
 use cornflakes_libos::{
     datapath::{InlineMode, PushBufType},
@@ -23,8 +22,7 @@ macro_rules! run_server_cdn(
         tracing::info!(threshold = $opt.copying_threshold, "Setting zero-copy copying threshold");
 
         // init retwis load generator
-        let (buckets, probs) = default_buckets();
-        let load_generator = CdnServerLoader::new($opt.num_keys, $opt.key_size, ValueSizeDistribution::new($opt.max_size, buckets, probs)?,$opt.num_values_distribution);
+        let load_generator = CdnServerLoader::new($opt.num_keys, $opt.key_size);
         let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, true)?;
         kv_server.init(&mut connection)?;
         kv_server.write_ready($opt.ready_file.clone())?;
@@ -92,8 +90,6 @@ macro_rules! run_client_cdn(
                 connection.set_copying_threshold(std::usize::MAX);
 
                 tracing::info!("Finished initializing datapath connection for thread {}", i);
-                let (buckets, probs) = default_buckets();
-                let size = ValueSizeDistribution::new($opt.max_size, buckets, probs)?.avg_size();
 
                 let mut retwis_client = CdnClient::new($opt.num_keys, $opt.key_size);
                 tracing::info!("Finished initializing cdn client");
@@ -250,19 +246,11 @@ pub struct CdnOpt {
     pub num_keys: usize,
     #[structopt(long = "key_size", default_value = "64", help = "Default key size")]
     pub key_size: usize,
-    #[structopt(long = "num_values_distribution", default_value = "SingleValue-1")]
-    pub num_values_distribution: NumValuesDistribution,
     #[structopt(
         long = "ready_file",
         help = "File to indicate server is ready to receive requests"
     )]
     pub ready_file: Option<String>,
-    #[structopt(
-        long = "max_size",
-        help = "Size for maximum packet size in distribution",
-        default_value = "4096"
-    )]
-    pub max_size: usize,
     #[structopt(long = "per_size_info", help = "Record per size info")]
     pub record_per_size_buckets: bool,
 }
