@@ -41,7 +41,7 @@ d <- d[ which(d$min_num_keys == min_num_keys),]
 d <- d[ which(d$value_size == size_subset),]
 d <- d[ which(d$ignore_sets == ignore_sets_subset),]
 d <- d[ which(d$distribution == distribution_subset),]
-# d <- d[ which(d$percent_achieved_rate > 0.95),]
+d <- d[ which(d$percent_achieved_rate > 0.95),]
 
 options(width=10000)
 cr_labels_baselines <- c('capnproto' = 'Capnproto', 
