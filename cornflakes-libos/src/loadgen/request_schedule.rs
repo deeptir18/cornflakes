@@ -3,6 +3,7 @@ use quanta::Clock;
 use rand::thread_rng;
 use rand_distr::{Distribution, Exp};
 use std::time::Duration;
+const WARMUP_PERCENTAGE: f64 = 0.10;
 
 pub struct SpinTimer {
     clk: quanta::Clock,
@@ -35,7 +36,12 @@ impl SpinTimer {
         self.clk.delta(self.start_raw, self.clk.raw()) >= self.total_time || self.no_more_pkts
     }
 
-    pub fn wait(&mut self, callback: &mut dyn FnMut() -> Result<()>) -> Result<()> {
+    pub fn warmup_done(&self) -> bool {
+        // drop first x % of requests
+        self.clk.delta(self.start_raw, self.clk.raw()) >= self.total_time.mul_f64(WARMUP_PERCENTAGE)
+    }
+
+    pub fn wait(&mut self, callback: &mut dyn FnMut(bool) -> Result<()>) -> Result<()> {
         let next_interarrival_ns = self.interarrivals.get(self.cur_idx);
         self.cur_idx += 1;
         if self.cur_idx == self.interarrivals.len() {
@@ -55,7 +61,7 @@ impl SpinTimer {
         }
 
         while (self.clk.delta(self.last_return.unwrap(), self.clk.raw())) < next_interarrival_ns {
-            callback()?;
+            callback(self.warmup_done())?;
         }
         self.deficit +=
             self.clk.delta(self.last_return.unwrap(), self.clk.raw()) - next_interarrival_ns;
@@ -111,6 +117,13 @@ impl PacketDistribution {
         }
     }
 
+    fn get_interarrival_avg(&self) -> u64 {
+        match self {
+            PacketDistribution::Uniform(x) => *x,
+            PacketDistribution::Exponential(x) => *x as u64,
+        }
+    }
+
     fn sample(&self) -> u64 {
         // TODO: how do we know the thread rngs are initialized?
         let mut rng = thread_rng();
@@ -129,6 +142,7 @@ impl PacketDistribution {
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct PacketSchedule {
     pub interarrivals: Vec<Duration>,
+    pub avg_interarrival: u64,
 }
 
 impl PacketSchedule {
@@ -141,7 +155,26 @@ impl PacketSchedule {
             interarrivals.push(Duration::from_nanos(distribution.sample()));
         }
 
-        Ok(PacketSchedule { interarrivals })
+        Ok(PacketSchedule {
+            interarrivals,
+            avg_interarrival: distribution.get_interarrival_avg(),
+        })
+    }
+
+    pub fn get_avg_interarrival(&self) -> u64 {
+        self.avg_interarrival
+    }
+
+    pub fn start_at_offset(
+        &mut self,
+        thread_id: usize,
+        client_id: usize,
+        num_threads: usize,
+        num_clients: usize,
+    ) {
+        let multiplier =
+            (num_clients * thread_id + client_id) as f64 / (num_clients * num_threads) as f64;
+        self.interarrivals[0] = self.interarrivals[0].mul_f64(multiplier);
     }
 
     pub fn get_last(&self) -> Option<Duration> {
@@ -159,11 +192,13 @@ impl PacketSchedule {
     }
 
     pub fn append(&mut self, other: &mut PacketSchedule) {
+        // get weighted avg
+        let total_interarrivals = self.len() + other.len();
+        self.avg_interarrival =
+            (self.get_avg_interarrival() as f64 * (self.len() as f64 / total_interarrivals as f64)
+                + other.get_avg_interarrival() as f64
+                    * (other.len() as f64 / total_interarrivals as f64)) as u64;
         self.interarrivals.append(other.get_mut_interarrivals());
-    }
-
-    pub fn new_from_interrarivals(interarrivals: Vec<Duration>) -> Self {
-        PacketSchedule { interarrivals }
     }
 
     pub fn get_mut_interarrivals(&mut self) -> &mut Vec<Duration> {

@@ -3369,7 +3369,7 @@ pub trait ClientSM {
             // Send the next message
             datapath.push_buf(msg, addr_info.clone())?;
 
-            spin_timer.wait(&mut || {
+            spin_timer.wait(&mut |_warmup_done: bool| {
                 let recved_pkts = datapath.pop()?;
                 for (pkt, rtt) in recved_pkts.into_iter() {
                     let msg_id = pkt.get_id();

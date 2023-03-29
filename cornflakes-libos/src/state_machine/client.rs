@@ -241,14 +241,14 @@ pub trait ClientSM {
             datapath.push_buffers_with_copy(buffers.as_slice())?;
             self.increment_noop_sent();
             // wait on the noop timer
-            noop_spin_timer.wait(&mut || {
+            noop_spin_timer.wait(&mut |_warmup_done: bool| {
                 let _recved_pkts = datapath.pop_with_durations()?;
                 Ok(())
             })?;
         }
 
-        /*let _ = GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
-        while GLOBAL_THREAD_COUNT.load(Ordering::SeqCst) != num_threads {}*/
+        let _ = GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
+        while GLOBAL_THREAD_COUNT.load(Ordering::SeqCst) != num_threads {}
 
         // run workload
         let start = Instant::now();
@@ -264,7 +264,7 @@ pub trait ClientSM {
             datapath.push_buffers_with_copy(&vec![(id, conn_id, msg)])?;
             self.increment_uniq_sent();
 
-            spin_timer.wait(&mut || {
+            spin_timer.wait(&mut |warmup_done: bool| {
                 let recved_pkts = datapath.pop_with_durations()?;
                 for (pkt, rtt) in recved_pkts.into_iter() {
                     if pkt.is_noop() {
@@ -277,9 +277,11 @@ pub trait ClientSM {
                         "Error in processing received response for pkt {}.",
                         msg_id
                     ))? {
-                        self.record_rtt(rtt);
-                        if self.recording_size_rtts() {
-                            self.record_sized_rtt(rtt, msg_size);
+                        if warmup_done {
+                            self.record_rtt(rtt);
+                            if self.recording_size_rtts() {
+                                self.record_sized_rtt(rtt, msg_size);
+                            }
                         }
                         self.increment_uniq_received();
                     }
@@ -311,12 +313,14 @@ pub trait ClientSM {
 /// for traces where calculating gbps doesn't make sense
 pub fn run_variable_size_loadgen<D>(
     thread_id: usize,
+    num_threads: usize,
+    client_id: usize,
+    num_clients: usize,
     client: &mut impl ClientSM<Datapath = D>,
     connection: &mut D,
     total_time_seconds: u64,
     logfile: Option<String>,
-    schedule: PacketSchedule,
-    num_threads: usize,
+    mut schedule: PacketSchedule,
     record_per_size_buckets: bool,
     avg_rate: u64,
 ) -> Result<MeasuredThreadStatsOnly>
@@ -333,6 +337,7 @@ where
         avg_rate,
         super::super::loadgen::request_schedule::DistributionType::Exponential,
     )?;
+    schedule.start_at_offset(thread_id, client_id, num_threads, num_clients);
     let exp_duration = client
         .run_open_loop(
             connection,
@@ -381,6 +386,9 @@ where
 
 pub fn run_client_loadgen<D>(
     thread_id: usize,
+    num_threads: usize,
+    client_id: usize,
+    num_clients: usize,
     client: &mut impl ClientSM<Datapath = D>,
     connection: &mut D,
     retries: bool,
@@ -388,8 +396,7 @@ pub fn run_client_loadgen<D>(
     logfile: Option<String>,
     rate: u64,
     message_size: usize,
-    schedule: PacketSchedule,
-    num_threads: usize,
+    mut schedule: PacketSchedule,
 ) -> Result<ThreadStats>
 where
     D: Datapath,
@@ -407,6 +414,7 @@ where
         super::super::loadgen::request_schedule::DistributionType::Exponential,
     )?;
 
+    schedule.start_at_offset(thread_id, client_id, num_threads, num_clients);
     let exp_duration = client
         .run_open_loop(
             connection,
