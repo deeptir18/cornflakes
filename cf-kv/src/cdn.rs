@@ -165,15 +165,15 @@ fn get_key(idx: usize, key_length: usize) -> String {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct CdnServerLine {
     key: String,
-    value_sizes: Vec<usize>,
+    value_size: usize,
 }
 impl CdnServerLine {
-    fn new(key: String, value_sizes: Vec<usize>) -> Self {
-        CdnServerLine { key, value_sizes }
+    fn new(key: String, value_size: usize) -> Self {
+        CdnServerLine { key, value_size }
     }
 
-    pub fn value_sizes(&self) -> &Vec<usize> {
-        &self.value_sizes
+    pub fn value_size(&self) -> usize {
+        self.value_size
     }
 
     pub fn key(&self) -> &str {
@@ -212,10 +212,8 @@ impl ServerLoadGenerator for CdnServerLoader {
         let idx = line.to_string().parse::<usize>().unwrap();
         let key = get_key(idx, self.key_length);
         let num_values = self.num_values_distribution.sample();
-        let value_sizes: Vec<usize> = (0..num_values)
-            .map(|_| self.value_size_generator.sample())
-            .collect();
-        Ok(CdnServerLine::new(key, value_sizes))
+        let value_size = self.value_size_generator.sample();
+        Ok(CdnServerLine::new(key, value_size))
     }
 
     fn load_ref_kv_file(
@@ -290,12 +288,10 @@ impl ServerLoadGenerator for CdnServerLoader {
     {
         // for cdn loader, only used linked list kv server
         let char = thread_rng().sample(&Alphanumeric) as char;
-        for value_size in request.value_sizes().iter() {
-            let value: String = std::iter::repeat(char).take(*value_size).collect();
-            let mut datapath_buffer = allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
-            let _ = datapath_buffer.write(value.as_bytes())?;
-            linked_list_kv_server.insert(request.key().to_string(), datapath_buffer);
-        }
+        let value: String = std::iter::repeat(char).take(request.value_size).collect();
+        let mut datapath_buffer = allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
+        let _ = datapath_buffer.write(value.as_bytes())?;
+        linked_list_kv_server.insert(request.key().to_string(), datapath_buffer);
         Ok(())
     }
 }
