@@ -148,12 +148,9 @@ impl YCSBLine {
             // TODO: what about appends? Not in YCSB.
             "GET" => {
                 let mut msg_type = MsgType::Get;
-                if use_linked_list {
-                    msg_type = MsgType::GetM(1u16);
-                }
                 if num_values > 1 && num_keys == num_values {
                     msg_type = MsgType::GetM(num_values as u16);
-                } else if num_values > 1 && num_keys == 1 {
+                } else if num_values > 1 && num_keys == 1 || use_linked_list {
                     msg_type = MsgType::GetList(num_values as u16);
                 }
                 Ok(YCSBLine {
