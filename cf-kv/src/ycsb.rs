@@ -161,9 +161,13 @@ impl YCSBLine {
             }
             "UPDATE" => {
                 let mut msg_type = MsgType::Put;
-                if num_values > 1 && num_keys == num_values || use_linked_list {
+                if num_values > 1 && num_keys == num_values {
                     msg_type = MsgType::PutM(num_values as u16);
                 } else if num_values > 1 && num_keys == 1 {
+                    msg_type = MsgType::PutList(num_values as u16);
+                }
+
+                if use_linked_list {
                     msg_type = MsgType::PutList(num_values as u16);
                 }
                 let val = &split.next().unwrap();
