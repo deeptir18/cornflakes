@@ -484,20 +484,28 @@ where
         'kv: 'arena,
     {
         let mut getlist_req = kv_serializer_hybrid::GetListReq::new_in(arena);
-        getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+        {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("deserialize");
+            getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+        }
         let mut getlist_resp = kv_serializer_hybrid::GetListResp::new_in(arena);
-        let mut copy_context = CopyContext::new(arena, datapath)?;
+        let mut copy_context = {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("alloc copy context");
+            CopyContext::new(arena, datapath)?
+        };
         getlist_resp.set_id(getlist_req.get_id());
 
         if self.use_linked_list() {
             let range_start = getlist_req.get_range_start();
             let range_end = getlist_req.get_range_end();
             tracing::debug!("Linked list kv length: {}", linked_list_kv.len());
-            for key in linked_list_kv.get_map().iter() {
-                tracing::debug!("k: {:?}", key.0);
-                break;
-            }
-            let mut node_option = linked_list_kv.get(getlist_req.get_key().to_str()?);
+            let mut node_option = {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("do get on key");
+                linked_list_kv.get(getlist_req.get_key().to_str()?)
+            };
             // TODO: likely possible to inline this with iterating over the nodes below
             let range_len = {
                 if range_end == -1 {
@@ -522,7 +530,11 @@ where
 
             getlist_resp.init_val_list(range_len, arena);
             let list = getlist_resp.get_mut_val_list();
-            let mut node_option = linked_list_kv.get(getlist_req.get_key().to_str()?);
+            let mut node_option = {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("do get on key 2nd time");
+                linked_list_kv.get(getlist_req.get_key().to_str()?)
+            };
 
             let mut idx = 0;
             while let Some(node) = node_option {
@@ -534,6 +546,8 @@ where
                     tracing::debug!("Got to idx = range len");
                     break;
                 }
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("append node to list");
                 tracing::debug!(
                     "Appending value to linked list with size {}",
                     node.get_data().len()
@@ -776,17 +790,26 @@ where
             );
             match msg_type {
                 MsgType::GetList(_) => {
-                    let mut getlist_req = kv_serializer_hybrid_object::GetListReq::new();
-                    getlist_req.deserialize(&pkt, REQ_TYPE_SIZE)?;
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("handle getlist hybrid object");
+                    let mut getlist_req = { kv_serializer_hybrid_object::GetListReq::new() };
+                    {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Deserialize pkt");
+                        getlist_req.deserialize(&pkt, REQ_TYPE_SIZE)?;
+                    }
                     let mut getlist_resp = kv_serializer_hybrid_object::GetListResp::new();
                     getlist_resp.set_id(getlist_req.get_id());
 
                     if self.serializer.use_linked_list() {
                         let range_start = getlist_req.get_range_start();
                         let range_end = getlist_req.get_range_end();
-                        let mut node_option = self
-                            .linked_list_kv_server
-                            .get(getlist_req.get_key().to_str()?);
+                        let mut node_option = {
+                            #[cfg(feature = "profiler")]
+                            demikernel::timer!("get key # 1");
+                            self.linked_list_kv_server
+                                .get(getlist_req.get_key().to_str()?)
+                        };
                         let range_len = {
                             if range_end == -1 {
                                 let mut len = 0;
@@ -804,11 +827,19 @@ where
                             }
                         };
 
-                        getlist_resp.init_val_list(range_len);
+                        {
+                            #[cfg(feature = "profiler")]
+                            demikernel::timer!("init val list");
+                            getlist_resp.init_val_list(range_len);
+                        }
                         let list = getlist_resp.get_mut_val_list();
-                        let mut node_option = self
-                            .linked_list_kv_server
-                            .get(getlist_req.get_key().to_str()?);
+
+                        let mut node_option = {
+                            #[cfg(feature = "profiler")]
+                            demikernel::timer!("get key # 2");
+                            self.linked_list_kv_server
+                                .get(getlist_req.get_key().to_str()?)
+                        };
 
                         let mut idx = 0;
                         while let Some(node) = node_option {
@@ -824,10 +855,14 @@ where
                                 "Appending value to linked list with size {}",
                                 node.get_data().len()
                             );
-                            list.append(dynamic_object_hdr::CFBytes::new(
-                                node.get_data(),
-                                datapath,
-                            )?);
+                            {
+                                #[cfg(feature = "profiler")]
+                                demikernel::timer!("append to linked list");
+                                list.append(dynamic_object_hdr::CFBytes::new(
+                                    node.get_data(),
+                                    datapath,
+                                )?);
+                            }
                             node_option = node.get_next();
                             idx += 1;
                         }
@@ -887,9 +922,15 @@ where
             );
             match msg_type {
                 MsgType::GetList(_) => {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("handle getlist hybrid arena object");
                     let mut getlist_req =
                         kv_serializer_hybrid_arena_object::GetListReq::new_in(arena);
-                    getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                    {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("deserialize");
+                        getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                    }
                     let mut getlist_resp =
                         kv_serializer_hybrid_arena_object::GetListResp::new_in(arena);
                     getlist_resp.set_id(getlist_req.get_id());
@@ -897,9 +938,12 @@ where
                     if self.serializer.use_linked_list() {
                         let range_start = getlist_req.get_range_start();
                         let range_end = getlist_req.get_range_end();
-                        let mut node_option = self
-                            .linked_list_kv_server
-                            .get(getlist_req.get_key().to_str()?);
+                        let mut node_option = {
+                            #[cfg(feature = "profiler")]
+                            demikernel::timer!("get key # 1");
+                            self.linked_list_kv_server
+                                .get(getlist_req.get_key().to_str()?)
+                        };
                         let range_len = {
                             if range_end == -1 {
                                 let mut len = 0;
@@ -917,11 +961,18 @@ where
                             }
                         };
 
-                        getlist_resp.init_val_list(range_len, arena);
+                        {
+                            #[cfg(feature = "profiler")]
+                            demikernel::timer!("init val list arena");
+                            getlist_resp.init_val_list(range_len, arena);
+                        }
                         let list = getlist_resp.get_mut_val_list();
-                        let mut node_option = self
-                            .linked_list_kv_server
-                            .get(getlist_req.get_key().to_str()?);
+                        let mut node_option = {
+                            #[cfg(feature = "profiler")]
+                            demikernel::timer!("get key # 2");
+                            self.linked_list_kv_server
+                                .get(getlist_req.get_key().to_str()?)
+                        };
 
                         let mut idx = 0;
                         while let Some(node) = node_option {
@@ -937,11 +988,15 @@ where
                                 "Appending value to linked list with size {}",
                                 node.get_data().len()
                             );
-                            list.append(dynamic_object_arena_hdr::CFBytes::new(
-                                node.get_data(),
-                                datapath,
-                                arena,
-                            )?);
+                            {
+                                #[cfg(feature = "profiler")]
+                                demikernel::timer!("append to list");
+                                list.append(dynamic_object_arena_hdr::CFBytes::new(
+                                    node.get_data(),
+                                    datapath,
+                                    arena,
+                                )?);
+                            }
                             node_option = node.get_next();
                             idx += 1;
                         }
@@ -1046,6 +1101,8 @@ where
                     unimplemented!();
                 }
                 MsgType::GetList(_size) => {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("handle getlist and queue cornflakes obj");
                     self.serializer.handle_getlist_serialize_and_send(
                         pkt.msg_id(),
                         pkt.conn_id(),

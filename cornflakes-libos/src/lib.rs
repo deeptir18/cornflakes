@@ -2086,8 +2086,6 @@ where
 
     #[inline]
     pub fn new(arena: &'a bumpalo::Bump, datapath: &mut D) -> Result<Self> {
-        #[cfg(feature = "profiler")]
-        demikernel::timer!("Allocate new copy context");
         Ok(CopyContext {
             copy_buffers: bumpalo::collections::Vec::with_capacity_in(1, arena),
             threshold: datapath.get_copying_threshold(),
@@ -2128,8 +2126,8 @@ where
     /// Returns (start, end) range of copy context that buffer was copied into.
     #[inline]
     pub fn copy(&mut self, buf: &[u8], datapath: &mut D) -> Result<CopyContextRef<D>> {
-        #[cfg(feature = "profiler")]
-        demikernel::timer!("Copy in copy context");
+        //#[cfg(feature = "profiler")]
+        //demikernel::timer!("Copy in copy context");
 
         let current_length = self.current_length;
         // TODO: doesn't work if buffer is > than an MTU
@@ -2139,7 +2137,11 @@ where
         let copy_buffers_len = self.copy_buffers.len();
         let last_buf = &mut self.copy_buffers[copy_buffers_len - 1];
         let current_offset = last_buf.len();
-        let written = last_buf.write(buf)?;
+        let written = {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("Actual copy");
+            last_buf.write(buf)?
+        };
         if written != buf.len() {
             bail!(
                 "Failed to write entire buf len into copy buffer, only wrote: {:?}",

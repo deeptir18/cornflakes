@@ -181,14 +181,21 @@ where
         linked_list_kv_server: &LinkedListKVServer<D>,
         pkt: &ReceivedPkt<D>,
     ) -> Result<kv_messages::GetListResp> {
-        let getlist_request =
+        let getlist_request = {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("deserialize");
             kv_messages::GetListReq::parse_from_bytes(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
-                .wrap_err("Failed to deserialize proto GetListReq")?;
+                .wrap_err("Failed to deserialize proto GetListReq")?
+        };
         let values_list = match self.use_linked_list() {
             true => {
                 let range_start = getlist_request.range_start;
                 let range_end = getlist_request.range_end;
-                let mut node_option = linked_list_kv_server.get(&getlist_request.key.as_str());
+                let mut node_option = {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("do get on key");
+                    linked_list_kv_server.get(&getlist_request.key.as_str())
+                };
 
                 // todo: again, why is range_end being parsed buggy?
                 let range_len = {
@@ -208,7 +215,11 @@ where
                     }
                 };
 
-                let mut node_option = linked_list_kv_server.get(&getlist_request.key.as_str());
+                let mut node_option = {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("do get on key 2nd time");
+                    linked_list_kv_server.get(&getlist_request.key.as_str())
+                };
                 let mut list: Vec<Vec<u8>> = Vec::with_capacity(range_len);
                 let mut idx = 0;
                 while let Some(node) = node_option {
@@ -219,8 +230,11 @@ where
                     } else if idx as usize == range_len {
                         break;
                     }
-
-                    list.push(node.as_ref().get_data().to_vec());
+                    {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("append node to list");
+                        list.push(node.as_ref().get_data().to_vec());
+                    }
                     node_option = node.get_next();
                     idx += 1;
                 }
@@ -356,6 +370,8 @@ where
                     )?;
                 }
                 MsgType::GetList(_size) => {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("handle getlist and queue protobuf");
                     let response = self.serializer.handle_getlist(
                         &self.list_kv_server,
                         &self.linked_list_kv_server,

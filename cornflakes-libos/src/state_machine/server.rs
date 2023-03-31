@@ -1,7 +1,7 @@
 #[cfg(feature = "profiler")]
 use demikernel::perftools;
 #[cfg(feature = "profiler")]
-const PROFILER_DEPTH: usize = 2;
+const PROFILER_DEPTH: usize = 10;
 use super::super::{
     datapath::{Datapath, PushBufType, ReceivedPkt},
     ArenaOrderedSga,

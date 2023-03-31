@@ -13,3 +13,5 @@ max_rates: # Each experiment encompassed by a single throughput latency curve.
         "num_values = 4, num_keys = 1, size = UniformOverSizes-1024": 55000
         "num_values = 8, num_keys = 1, size = UniformOverSizes-512": 40000
         "num_values = 16, num_keys = 1, size = UniformOverSizes-256": 20000
+        "num_values = 32, num_keys = 1, size = UniformOverSizes-128": 20000
+

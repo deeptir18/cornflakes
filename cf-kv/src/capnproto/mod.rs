@@ -212,12 +212,21 @@ where
     where
         T: Allocator,
     {
-        let segment_array_vec = read_context(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+        let segment_array_vec = {
+            #[cfg(feature = "read context")]
+            demikernel::timer!("deserialize");
+            read_context(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?
+        };
         let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
         let message_reader = Reader::new(segment_array, ReaderOptions::default());
-        let getlist_request = message_reader
-            .get_root::<kv_capnp::get_list_req::Reader>()
-            .wrap_err("Failed to deserialize GetList.")?;
+        let getlist_request = {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("deserialize");
+
+            message_reader
+                .get_root::<kv_capnp::get_list_req::Reader>()
+                .wrap_err("Failed to deserialize GetList.")?
+        };
         tracing::debug!(
             "Received get list request for key: {:?}",
             getlist_request.get_key()
@@ -227,7 +236,11 @@ where
         if self.use_linked_list() {
             let range_start = getlist_request.get_rangestart();
             let range_end = getlist_request.get_rangeend();
-            let mut node_option = linked_list_kv.get(key);
+            let mut node_option = {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("do get on key");
+                linked_list_kv.get(key)
+            };
             let range_len = {
                 // TODO: range parsing is buggy?
                 if range_end == -1 || range_end == 0 {
@@ -246,7 +259,11 @@ where
                 }
             };
             let mut list = response.init_vals(range_len as _);
-            let mut node_option = linked_list_kv.get(key);
+            let mut node_option = {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("do get on key 2nd time");
+                linked_list_kv.get(key)
+            };
 
             let mut idx: i32 = 0;
             while let Some(node) = node_option {
@@ -258,7 +275,11 @@ where
                 if idx == range_len as i32 {
                     break;
                 }
-                list.set((idx - range_start) as u32, node.get_data());
+                {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("append node to list");
+                    list.set((idx - range_start) as u32, node.get_data())
+                };
                 node_option = node.get_next();
                 idx += 1;
             }
@@ -397,6 +418,8 @@ where
                     )?;
                 }
                 MsgType::GetList(_size) => {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("handle getlist capnproto");
                     self.serializer.handle_getlist(
                         &self.list_kv_server,
                         &self.linked_list_kv_server,
@@ -567,20 +590,31 @@ where
                     unimplemented!();
                 }
             }
-
-            let mut framing_vec = bumpalo::collections::Vec::with_capacity_zeroed_in(
-                FRAMING_ENTRY_SIZE * (1 + builder.get_segments_for_output().len()),
-                &self.arena,
-            );
-            let mut sga =
-                ArenaOrderedSga::allocate(builder.get_segments_for_output().len() + 1, &self.arena);
-            fill_in_context(&builder, &mut framing_vec);
-            sga.add_entry(Sge::new(framing_vec.as_slice()));
-            for seg in builder.get_segments_for_output().iter() {
-                sga.add_entry(Sge::new(&seg));
+            {
+                #[cfg(feature = "profiler")]
+                demikernel::timer!("write framing and construct sga");
+                let mut framing_vec = bumpalo::collections::Vec::with_capacity_zeroed_in(
+                    FRAMING_ENTRY_SIZE * (1 + builder.get_segments_for_output().len()),
+                    &self.arena,
+                );
+                let mut outgoing_sga = ArenaOrderedSga::allocate(
+                    builder.get_segments_for_output().len() + 1,
+                    &self.arena,
+                );
+                fill_in_context(&builder, &mut framing_vec);
+                outgoing_sga.add_entry(Sge::new(framing_vec.as_slice()));
+                for seg in builder.get_segments_for_output().iter() {
+                    outgoing_sga.add_entry(Sge::new(&seg));
+                }
+                {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("queue sga with copy");
+                    datapath.queue_sga_with_copy(
+                        (pkt.msg_id(), pkt.conn_id(), &outgoing_sga),
+                        i == (pkts_len - 1),
+                    )?;
+                }
             }
-            datapath
-                .queue_sga_with_copy((pkt.msg_id(), pkt.conn_id(), &sga), i == (pkts_len - 1))?;
         }
         self.arena.reset();
         Ok(())
