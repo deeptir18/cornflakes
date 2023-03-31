@@ -31,10 +31,16 @@ use std::io::{self, BufRead, Write};
 const DEFAULT_NUM_KEYS: usize = 1_000_000;
 const DEFAULT_KEYS_SIZE: usize = 100;
 const DEFAULT_VALUE_SIZE_KB: usize = 10;
-const MAX_VALUE_SIZE_KB: usize = 160;
 
-fn get_key(idx: usize, key_length: usize) -> String {
-    let key_name = format!("key_{}", idx);
+// TODO: Do this in bytes so we're packing e.g. 8192 bytes instead of 8000 bytes
+// into a single segment?
+const MAX_SUBOBJ_SIZE_KB: usize = 8;
+
+/// * obj_id: The object ID in the trace.
+/// * obj_subid: The segment index of the object value.
+/// * key_length: The length of the key in characters.
+fn get_key(obj_id: usize, obj_subid: usize, key_length: usize) -> String {
+    let key_name = format!("key_{}.{}", obj_id, obj_subid);
     let additional_chars: String = std::iter::repeat("a")
         .take(key_length - key_name.len())
         .collect();
@@ -43,20 +49,49 @@ fn get_key(idx: usize, key_length: usize) -> String {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct CdnServerLine {
-    key: String,
-    value_size: usize,
+    /// The key strings of each object segment.
+    keys: Vec<String>,
+    /// The value size, in kB, of the last object segment. The value is at most
+    /// MAX_SUBOBJ_SIZE_KB. Preceding segments are of the maximum segment size.
+    last_value_size_kb: usize,
 }
 impl CdnServerLine {
-    fn new(key: String, value_size: usize) -> Self {
-        CdnServerLine { key, value_size }
+    fn new(obj_id: usize, value_size_kb: usize, key_length: usize) -> Self {
+        let mut segments = value_size_kb / MAX_SUBOBJ_SIZE_KB;
+        let mut last_value_size_kb = value_size_kb - segments * MAX_SUBOBJ_SIZE_KB;
+        if last_value_size_kb == 0 {
+            last_value_size_kb = MAX_SUBOBJ_SIZE_KB;
+        } else {
+            segments += 1;
+        }
+        let keys = (0..segments)
+            .map(|i| get_key(obj_id, i, key_length))
+            .collect::<Vec<_>>();
+        CdnServerLine { keys, last_value_size_kb }
     }
 
-    pub fn value_size(&self) -> usize {
-        self.value_size
+    pub fn take_keys(mut self) -> Vec<String> {
+        self.keys.drain(..).collect()
     }
 
-    pub fn key(&self) -> &str {
-        self.key.as_str()
+    pub fn num_keys(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Panics if the key index does not exist.
+    pub fn get_key(&self, index: usize) -> &str {
+        self.keys[index].as_str()
+    }
+
+    /// Panics if the key index does not exist.
+    pub fn get_key_value_size_kb(&self, index: usize) -> (&str, usize) {
+        let key = self.get_key(index);
+        let value_size_kb = if index + 1 == self.keys.len() {
+            self.last_value_size_kb
+        } else {
+            MAX_SUBOBJ_SIZE_KB
+        };
+        Some((key, value_size_kb))
     }
 }
 
@@ -83,13 +118,10 @@ impl ServerLoadGenerator for CdnServerLoader {
 
     fn read_request(&self, line: &str) -> Result<Self::RequestLine> {
         // Tragen generates lines in the form <timestamp>,<obj_id>,<obj_size_kb>
-        let idx: Vec<usize> =
-            line.split(',').map(|x| x.parse::<usize>().unwrap()).collect();
-        let key = get_key(idx[1], self.key_length);
-
-        // Limit the value size
-        let value_size_kb = std::cmp::min(idx[2], MAX_VALUE_SIZE_KB);
-        Ok(CdnServerLine::new(key, value_size_kb * 1000))
+        let line = line.split(',').collect::<Vec<_>>();
+        let obj_id = line[1].parse::<usize>().unwrap();
+        let value_size_kb = line[2].parse::<usize>().unwrap();
+        Ok(CdnServerLine::new(obj_id, value_size_kb, self.key_length))
     }
 
     fn load_ref_kv_file(
@@ -99,7 +131,7 @@ impl ServerLoadGenerator for CdnServerLoader {
         list_kv_server: &mut HashMap<String, Vec<String>>,
     ) -> Result<()> {
         for i in 0..self.num_keys {
-            let request = self.read_request(&format!("{},0,{}", i, DEFAULT_VALUE_SIZE_KB))?;
+            let request = self.read_request(&format!("0,{},{}", i, DEFAULT_VALUE_SIZE_KB))?;
             self.modify_server_state_ref_kv(&request, kv_server, list_kv_server)?;
         }
         Ok(())
@@ -164,13 +196,14 @@ impl ServerLoadGenerator for CdnServerLoader {
         D: Datapath,
     {
         // for cdn loader, only used linked list kv server
-        let char = thread_rng().sample(&Alphanumeric) as char;
-        let value: String = std::iter::repeat(char).take(request.value_size).collect();
-        // TODO: What if the value length is greater than the max UDP payload?
-        // TODO: Does this have an issue if replacing an existing key?
-        let mut datapath_buffer = allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
-        let _ = datapath_buffer.write(value.as_bytes())?;
-        linked_list_kv_server.insert(request.key().to_string(), datapath_buffer);
+        for i in (0..request.num_keys()) {
+            let (key, value_size_kb) = request.get_key_value_size_kb(i);
+            let char = thread_rng().sample(&Alphanumeric) as char;
+            let value: String = std::iter::repeat(char).take(value_size_kb * 1000).collect();
+            let mut datapath_buffer = allocate_datapath_buffer(datapath, value.len(), mempool_ids)?;
+            let _ = datapath_buffer.write(value.as_bytes())?;
+            linked_list_kv_server.insert(key.to_string(), datapath_buffer);
+        }
         Ok(())
     }
 }
@@ -178,7 +211,7 @@ impl ServerLoadGenerator for CdnServerLoader {
 #[derive(Debug, Clone)]
 pub struct CdnClient {
     cur_request_index: usize,
-    request_keys: Vec<String>,
+    request_keys: Vec<Vec<String>>,
 }
 
 impl CdnClient {
@@ -190,10 +223,14 @@ impl CdnClient {
         let request_keys = vec![];
         let file = std::fs::File::open(request_file).unwrap();
         for line in io::BufReader::new(file).lines() {
-            let idx: Vec<usize> =
-                line.split(',').map(|x| x.parse::<usize>().unwrap()).collect();
-            let key = get_key(idx[1], self.key_length);
-            request_keys.push(key);
+            let line = line.split(',').collect::<Vec<_>>();
+            let obj_id = line[1].parse::<usize>().unwrap();
+            let value_size_kb = line[2].parse::<usize>().unwrap();
+            let mut line = CdnServerLine::new(obj_id, value_size_kb, self.key_length);
+            let keys = line.take_keys();
+            // Push keys for all object segments of a given object.
+            // Initializing a CdnClient is done before the experiment starts.
+            request_keys.push(keys);
             if request_keys.len() == total_keys {
                 break;
             }
@@ -207,7 +244,7 @@ impl CdnClient {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct CdnRequest(usize);
+pub struct CdnRequest(Vec<String>);
 
 impl RequestGenerator for CdnClient {
     type RequestLine = CdnRequest;
@@ -226,9 +263,10 @@ impl RequestGenerator for CdnClient {
     }
 
     fn next_request(&mut self) -> Result<Option<Self::RequestLine>> {
-        Ok(if let Some(key) = self.request_keys.get(self.cur_request_index) {
+        Ok(if let Some(keys) = self.request_keys.get(self.cur_request_index) {
             tracing::debug!("Sending key {:?}", key);
-            Some(CdnRequest(key))
+            self.cur_request_index += 1;
+            Some(CdnRequest(keys))
         } else {
             None
         })
