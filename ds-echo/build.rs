@@ -15,6 +15,11 @@ fn main() {
     println!("cargo:rerun-if-changed=src/protobuf/echo_proto.proto");
     println!("cargo:rerun-if-changed=src/cornflakes_dynamic/echo_dynamic_sga.proto");
     println!("cargo:rerun-if-changed=src/cornflakes_dynamic/echo_dynamic_rcsga.proto");
+    println!("cargo:rerun-if-changed=src/cornflakes_dynamic/echo_dynamic_hybrid.proto");
+    println!("cargo:rerun-if-changed=src/cornflakes_dynamic/echo_dynamic_hybrid_object.proto");
+    println!(
+        "cargo:rerun-if-changed=src/cornflakes_dynamic/echo_dynamic_hybrid_object_arena.proto"
+    );
     println!("cargo:rerun-if-changed=src/capnproto/echo.capnp");
     println!("cargo:rerun-if-changed=src/flatbuffers/echo_fb.fbs");
 
@@ -86,6 +91,12 @@ fn main() {
     // compile cornflakes dynamic
     let input_cf_path = echo_src_path.clone().join("cornflakes_dynamic");
     let input_cf_file_hybrid = input_cf_path.clone().join("echo_dynamic_hybrid.proto");
+    let input_cf_file_hybrid_object = input_cf_path
+        .clone()
+        .join("echo_dynamic_hybrid_object.proto");
+    let input_cf_file_hybrid_object_arena = input_cf_path
+        .clone()
+        .join("echo_dynamic_hybrid_object_arena.proto");
     let input_cf_file_rcsga = input_cf_path.clone().join("echo_dynamic_rcsga.proto");
     let input_cf_file_sga = input_cf_path.clone().join("echo_dynamic_sga.proto");
     // with ref counting
@@ -120,6 +131,32 @@ fn main() {
         Ok(_) => {}
         Err(e) => {
             panic!("cornflakes dynamic sga failed: {:?}", e);
+        }
+    }
+
+    // new hybrid object
+    match compile(
+        input_cf_file_hybrid_object.as_path().to_str().unwrap(),
+        &out_dir,
+        CompileOptions::new_with_datapath_param(HeaderType::HybridObject, Language::Rust),
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("cornflakes hybrid object codegen for echo failed: {:?}", e);
+        }
+    }
+    // new hybrid object with arena
+    match compile(
+        input_cf_file_hybrid_object_arena
+            .as_path()
+            .to_str()
+            .unwrap(),
+        &out_dir,
+        CompileOptions::new_with_datapath_param(HeaderType::HybridObjectArena, Language::Rust),
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("cornflakes hybrid arena object for echo failed: {:?}", e);
         }
     }
 

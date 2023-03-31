@@ -56,6 +56,8 @@ pub enum PushBufType {
     Object,
     ArenaOrderedSga,
     Echo,
+    HybridObject,
+    HybridArenaObject,
 }
 
 impl FromStr for PushBufType {
@@ -74,6 +76,10 @@ impl FromStr for PushBufType {
             }
             "echo" | "ECHO" | "Echo" => Ok(PushBufType::Echo),
             "object" | "OBJECT" | "Object" => Ok(PushBufType::Object),
+            "hybridobject" | "HYBRIDOBJECT" | "HybridObject" => Ok(PushBufType::HybridObject),
+            "hybridarenaobject" | "HYBRIDARENAOBJECT" | "HybridArenaObject" => {
+                Ok(PushBufType::HybridArenaObject)
+            }
             x => {
                 bail!("Unknown push buf type: {:?}", x);
             }

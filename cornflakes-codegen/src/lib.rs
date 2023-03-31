@@ -17,7 +17,9 @@ pub enum HeaderType {
     LinearDeserializationRefCnt,
     Sga,
     RcSga,
-    HybridRcSga, // version that copies data into the buffer on set
+    HybridRcSga,       // version that copies data into the buffer on set
+    HybridObject,      // depends on object serialization, copies into Vec<u8>,
+    HybridArenaObject, // depends on object serialization, copies into arena Vec<u8>,
 }
 
 impl std::str::FromStr for HeaderType {
@@ -30,6 +32,8 @@ impl std::str::FromStr for HeaderType {
             "sga" => HeaderType::Sga,
             "rcsga" => HeaderType::RcSga,
             "hybrid-rcsga" => HeaderType::HybridRcSga,
+            "hybrid-object" => HeaderType::HybridObject,
+            "hybrid-arena-object" => HeaderType::HybridArenaObject,
             x => bail!("{} header type unknown.", x),
         })
     }

@@ -13,6 +13,23 @@ pub trait ServerSM {
 
     fn push_buf_type(&self) -> PushBufType;
 
+    fn process_requests_hybrid_object(
+        &mut self,
+        _pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
+    ) -> Result<()> {
+        unimplemented!();
+    }
+
+    fn process_requests_hybrid_arena_object(
+        &mut self,
+        _pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
+        _arena: &mut bumpalo::Bump,
+    ) -> Result<()> {
+        unimplemented!();
+    }
+
     fn process_requests_echo(
         &mut self,
         _pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
@@ -145,7 +162,7 @@ pub trait ServerSM {
                 Self::Datapath::batch_size(),
                 Self::Datapath::max_packet_size(),
                 Self::Datapath::max_scatter_gather_entries(),
-            ) * 1000,
+            ) * 10000,
         );
 
         loop {
@@ -187,6 +204,19 @@ pub trait ServerSM {
                     }
                     PushBufType::OrderedSga => {
                         self.process_requests_ordered_sga(pkts, datapath)?;
+                    }
+                    PushBufType::HybridObject => {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Process requests hybrid object");
+                        self.process_requests_hybrid_object(pkts, datapath)?;
+                    }
+                    PushBufType::HybridArenaObject => {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Process requests hybrid arena object");
+                        self.process_requests_hybrid_arena_object(pkts, datapath, &mut arena)?;
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Arena reset");
+                        arena.reset();
                     }
                     PushBufType::Object => {
                         {

@@ -4,6 +4,8 @@ use std::{fs::File, io::Write, path::Path, process::Command, str};
 use which::which;
 
 mod constant_codegen;
+mod hybridarenaobject;
+mod hybridobject;
 mod hybridrcsga;
 mod linear_codegen;
 mod linear_codegen_rc;
@@ -36,6 +38,14 @@ pub fn compile(repr: &ProtoReprInfo, output_folder: &str, options: CompileOption
         HeaderType::HybridRcSga => {
             hybridrcsga::compile(&repr, &mut compiler)
                 .wrap_err("Hybrid RcSga codegen failed to generate code.")?;
+        }
+        HeaderType::HybridObject => {
+            hybridobject::compile(&repr, &mut compiler)
+                .wrap_err("Hybrid object codegen failed to generate code")?;
+        }
+        HeaderType::HybridArenaObject => {
+            hybridarenaobject::compile(&repr, &mut compiler)
+                .wrap_err("Hybrid arena object failed to generate code")?;
         }
     }
     compiler.flush(&repr.get_output_file(output_folder).as_path())?;

@@ -157,6 +157,10 @@ where
     /// Dynamic part of header (for lists, nested objects).
     fn dynamic_header_size(&self) -> usize;
 
+    /// Offset to start writing dynamic parts of the header (e.g., variable sized list and nested
+    /// object header data).
+    fn dynamic_header_start(&self) -> usize;
+
     /// Get header size and number of zero copy entries, and  copy length
     fn get_serialization_info(&self) -> SerializationInfo {
         let mut info = SerializationInfo::default();
@@ -173,11 +177,6 @@ where
         <Self as CornflakesArenaObject<'arena, D>>::CONSTANT_HEADER_SIZE * (with_ref as usize)
             + self.dynamic_header_size()
     }
-
-    /// Offset to start writing dynamic parts of the header (e.g., variable sized list and nested
-    /// object header data).
-    fn dynamic_header_start(&self) -> usize;
-
     #[inline]
     fn is_list(&self) -> bool {
         false
@@ -685,6 +684,35 @@ where
     num_set: usize,
     elts: bumpalo::collections::Vec<'arena, T>,
     _phantom_data: PhantomData<D>,
+}
+
+impl<'arena, T, D> Clone for VariableList<'arena, T, D>
+where
+    T: CornflakesArenaObject<'arena, D> + Clone + std::fmt::Debug,
+    D: Datapath,
+{
+    fn clone(&self) -> Self {
+        VariableList {
+            num_space: self.num_space,
+            num_set: self.num_set,
+            elts: self.elts.clone(),
+            _phantom_data: PhantomData::default(),
+        }
+    }
+}
+
+impl<'arena, T, D> std::fmt::Debug for VariableList<'arena, T, D>
+where
+    T: CornflakesArenaObject<'arena, D> + Clone + std::fmt::Debug,
+    D: Datapath,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VariableList")
+            .field("num_space", &self.num_space)
+            .field("num_set", &self.num_set)
+            .field("elts", &self.elts)
+            .finish()
+    }
 }
 
 impl<'arena, T, D> VariableList<'arena, T, D>

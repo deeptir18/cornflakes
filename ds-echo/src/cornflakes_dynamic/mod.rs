@@ -1,3 +1,20 @@
+pub mod echo_messages_hybrid_arena_object {
+    #![allow(unused_variables)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_upper_case_globals)]
+    #![allow(non_snake_case)]
+    include!(concat!(
+        env!("OUT_DIR"),
+        "/echo_dynamic_hybrid_object_arena.rs"
+    ));
+}
+pub mod echo_messages_hybrid_object {
+    #![allow(unused_variables)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_upper_case_globals)]
+    #![allow(non_snake_case)]
+    include!(concat!(env!("OUT_DIR"), "/echo_dynamic_hybrid_object.rs"));
+}
 pub mod echo_messages_hybrid {
     #![allow(unused_variables)]
     #![allow(non_camel_case_types)]

@@ -137,6 +137,41 @@ impl ProtoReprInfo {
         pathbuf
     }
 
+    pub fn get_default_type_object(&self, field: FieldInfo, use_arena: bool) -> Result<String> {
+        let default_val = match &field.0.typ {
+            FieldType::Int32 | FieldType::Int64 | FieldType::Uint32 | FieldType::Uint64 => {
+                "0".to_string()
+            }
+            FieldType::Float => "0.0".to_string(),
+            FieldType::String | FieldType::RefCountedString => {
+                if !use_arena {
+                    "CFString::default()".to_string()
+                } else {
+                    "CFString::new_in(arena)".to_string()
+                }
+            }
+            FieldType::Bytes | FieldType::RefCountedBytes => {
+                if !use_arena {
+                    "CFBytes::default()".to_string()
+                } else {
+                    "CFBytes::new_in(arena)".to_string()
+                }
+            }
+            FieldType::MessageOrEnum(msg_name) => match self.hybrid_mode {
+                true => {
+                    format!("{}::new_in(arena)", msg_name)
+                }
+                false => {
+                    format!("{}::default()", msg_name)
+                }
+            },
+            _ => {
+                bail!("FieldType {:?} not supported by compiler", field.0.typ);
+            }
+        };
+        Ok(default_val)
+    }
+
     pub fn get_default_type(&self, field: FieldInfo) -> Result<String> {
         let default_val = match &field.0.typ {
             FieldType::Int32 | FieldType::Int64 | FieldType::Uint32 | FieldType::Uint64 => {
@@ -180,6 +215,76 @@ impl ProtoReprInfo {
             }
         };
         Ok(base_type)
+    }
+
+    pub fn get_rust_type_hybrid_object(&self, field: FieldInfo, use_arena: bool) -> Result<String> {
+        let base_type = match &field.0.typ {
+            FieldType::Int32 => "i32".to_string(),
+            FieldType::Int64 => "i64".to_string(),
+            FieldType::Uint32 => "u32".to_string(),
+            FieldType::Uint64 => "u64".to_string(),
+            FieldType::Float => "f64".to_string(),
+            FieldType::String | FieldType::RefCountedString => {
+                if use_arena {
+                    format!("CFString<'arena, {}>", self.get_datapath_trait_key())
+                } else {
+                    format!("CFString<{}>", self.get_datapath_trait_key())
+                }
+            }
+            FieldType::Bytes | FieldType::RefCountedBytes => {
+                if use_arena {
+                    format!("CFBytes<'arena, {}>", self.get_datapath_trait_key())
+                } else {
+                    format!("CFBytes<{}>", self.get_datapath_trait_key())
+                }
+            }
+            FieldType::MessageOrEnum(msg_name) => {
+                let mut type_params = vec![self.get_datapath_trait_key()];
+                if use_arena {
+                    type_params.insert(0, "'arena".to_string());
+                }
+                format!("{}<{}>", msg_name, type_params.join(", "))
+            }
+            _ => {
+                bail!("FieldType {:?} not supported by compiler", field.0.typ);
+            }
+        };
+
+        if field.is_list() {
+            match &field.0.typ {
+                FieldType::Int32
+                | FieldType::Int64
+                | FieldType::Uint32
+                | FieldType::Uint64
+                | FieldType::Float => {
+                    bail!("List of Int/Float not supported yet in this codegen mode.");
+                }
+                FieldType::String
+                | FieldType::Bytes
+                | FieldType::RefCountedBytes
+                | FieldType::RefCountedString
+                | FieldType::MessageOrEnum(_) => {
+                    if use_arena {
+                        return Ok(format!(
+                            "VariableList<'arena, {}, {}>",
+                            base_type,
+                            self.get_datapath_trait_key()
+                        ));
+                    } else {
+                        return Ok(format!(
+                            "VariableList<{}, {}>",
+                            base_type,
+                            self.get_datapath_trait_key()
+                        ));
+                    }
+                }
+                _ => {
+                    bail!("FieldType {:?} not supported by compiler", field.0.typ);
+                }
+            }
+        } else {
+            return Ok(base_type);
+        }
     }
 
     pub fn get_rust_type_hybrid(&self, field: FieldInfo) -> Result<String> {
@@ -452,6 +557,19 @@ impl MessageInfo {
         Ok(ret)
     }
 
+    pub fn get_type_params_hybrid_object(
+        &self,
+        fd: &ProtoReprInfo,
+        use_arena: bool,
+    ) -> Result<Vec<String>> {
+        let mut ret: Vec<String> = Vec::default();
+        if use_arena {
+            ret.push("'arena".to_string());
+        }
+        ret.push(fd.get_datapath_trait_key());
+        Ok(ret)
+    }
+
     pub fn get_type_params_with_lifetime(
         &self,
         is_ref_counted: bool,
@@ -505,6 +623,13 @@ impl MessageInfo {
             return Ok(WhereClause::default());
         }
     }*/
+
+    pub fn get_where_clause_hybrid_object(&self, fd: &ProtoReprInfo) -> Result<WhereClause> {
+        return Ok(WhereClause::new(vec![WherePair::new(
+            &fd.get_datapath_trait_key(),
+            &fd.get_datapath_trait(),
+        )]));
+    }
 
     pub fn get_where_clause(
         &self,
@@ -946,6 +1071,48 @@ impl FieldInfo {
             _ => {
                 return Ok(false);
             }
+        }
+    }
+
+    pub fn get_total_header_size_str_hybrid(
+        &self,
+        with_self: bool,
+        with_pointer_size: bool,
+    ) -> Result<String> {
+        let with_pointer_size_str = match with_pointer_size {
+            true => "true",
+            false => "",
+        };
+        if !self.is_list() {
+            match &self.0.typ {
+                FieldType::Int32
+                | FieldType::Int64
+                | FieldType::Uint32
+                | FieldType::Uint64
+                | FieldType::Float => self.get_header_size_str(with_self, true),
+                FieldType::Bytes
+                | FieldType::String
+                | FieldType::RefCountedBytes
+                | FieldType::RefCountedString => Ok(format!(
+                    "self.{}.total_header_size({})",
+                    self.get_name(),
+                    with_pointer_size_str,
+                )),
+                FieldType::MessageOrEnum(_) => Ok(format!(
+                    "self.{}.total_header_size({})",
+                    self.get_name(),
+                    with_pointer_size_str,
+                )),
+                _ => {
+                    bail!("FieldType {:?} not supported by compiler", self.0.typ);
+                }
+            }
+        } else {
+            Ok(format!(
+                "self.{}.total_header_size({})",
+                self.get_name(),
+                with_pointer_size_str,
+            ))
         }
     }
 

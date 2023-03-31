@@ -1,3 +1,20 @@
+pub mod kv_serializer_hybrid_object {
+    #![allow(unused_variables)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_upper_case_globals)]
+    #![allow(non_snake_case)]
+    include!(concat!(env!("OUT_DIR"), "/kv_hybrid_object_cornflakes.rs"));
+}
+pub mod kv_serializer_hybrid_arena_object {
+    #![allow(unused_variables)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_upper_case_globals)]
+    #![allow(non_snake_case)]
+    include!(concat!(
+        env!("OUT_DIR"),
+        "/kv_hybrid_arena_object_cornflakes.rs"
+    ));
+}
 pub mod kv_serializer_hybrid {
     #![allow(unused_variables)]
     #![allow(non_camel_case_types)]
@@ -22,6 +39,10 @@ pub mod kv_serializer {
 use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, PushBufType, ReceivedPkt},
+    dynamic_object_arena_hdr,
+    dynamic_object_arena_hdr::CornflakesArenaObject,
+    dynamic_object_hdr,
+    dynamic_object_hdr::CornflakesObject,
     dynamic_rcsga_hdr::RcSgaHeaderRepr,
     dynamic_rcsga_hdr::*,
     dynamic_rcsga_hybrid_hdr,
@@ -735,6 +756,231 @@ where
     #[inline]
     fn push_buf_type(&self) -> PushBufType {
         self.push_buf_type
+    }
+
+    #[inline]
+    fn process_requests_hybrid_object(
+        &mut self,
+        pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        datapath: &mut Self::Datapath,
+    ) -> Result<()> {
+        let end = pkts.len();
+        for (i, pkt) in pkts.into_iter().enumerate() {
+            let end_batch = i == (end - 1);
+            let msg_type = MsgType::from_packet(&pkt)?;
+            tracing::debug!(
+                msg_type =? msg_type,
+                "Received packet with data {:?} ptr and length {}",
+                pkt.seg(0).as_ref().as_ptr(),
+                pkt.data_len()
+            );
+            match msg_type {
+                MsgType::GetList(_) => {
+                    let mut getlist_req = kv_serializer_hybrid_object::GetListReq::new();
+                    getlist_req.deserialize(&pkt, REQ_TYPE_SIZE)?;
+                    let mut getlist_resp = kv_serializer_hybrid_object::GetListResp::new();
+                    getlist_resp.set_id(getlist_req.get_id());
+
+                    if self.serializer.use_linked_list() {
+                        let range_start = getlist_req.get_range_start();
+                        let range_end = getlist_req.get_range_end();
+                        let mut node_option = self
+                            .linked_list_kv_server
+                            .get(getlist_req.get_key().to_str()?);
+                        let range_len = {
+                            if range_end == -1 {
+                                let mut len = 0;
+                                while let Some(node) = node_option {
+                                    len += 1;
+                                    node_option = node.get_next();
+                                }
+                                len - range_start as usize
+                            } else {
+                                ensure!(
+                                    range_start < range_end,
+                                    "Cannot process get list with range_end < range_start"
+                                );
+                                (range_end - range_start) as usize
+                            }
+                        };
+
+                        getlist_resp.init_val_list(range_len);
+                        let list = getlist_resp.get_mut_val_list();
+                        let mut node_option = self
+                            .linked_list_kv_server
+                            .get(getlist_req.get_key().to_str()?);
+
+                        let mut idx = 0;
+                        while let Some(node) = node_option {
+                            if idx < range_start {
+                                node_option = node.get_next();
+                                idx += 1;
+                                continue;
+                            } else if idx as usize == range_len {
+                                tracing::debug!("Got to idx = range len");
+                                break;
+                            }
+                            tracing::debug!(
+                                "Appending value to linked list with size {}",
+                                node.get_data().len()
+                            );
+                            list.append(dynamic_object_hdr::CFBytes::new(
+                                node.get_data(),
+                                datapath,
+                            )?);
+                            node_option = node.get_next();
+                            idx += 1;
+                        }
+                    } else {
+                        let value_list =
+                            match self.list_kv_server.get(getlist_req.get_key().to_str()?) {
+                                Some(v) => v,
+                                None => {
+                                    bail!(
+                                        "Could not find value for key: {:?}",
+                                        getlist_req.get_key().to_str()
+                                    );
+                                }
+                            };
+
+                        getlist_resp.init_val_list(value_list.len());
+                        let list = getlist_resp.get_mut_val_list();
+                        for value in value_list.iter() {
+                            list.append(dynamic_object_hdr::CFBytes::new(
+                                value.as_ref(),
+                                datapath,
+                            )?);
+                        }
+                    }
+
+                    datapath.queue_cornflakes_hybrid_object(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        getlist_resp,
+                        end_batch,
+                    )?;
+                }
+                _ => {
+                    unimplemented!();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn process_requests_hybrid_arena_object(
+        &mut self,
+        pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        datapath: &mut Self::Datapath,
+        arena: &mut bumpalo::Bump,
+    ) -> Result<()> {
+        let end = pkts.len();
+        for (i, pkt) in pkts.into_iter().enumerate() {
+            let end_batch = i == (end - 1);
+            let msg_type = MsgType::from_packet(&pkt)?;
+            tracing::debug!(
+                msg_type =? msg_type,
+                "Received packet with data {:?} ptr and length {}",
+                pkt.seg(0).as_ref().as_ptr(),
+                pkt.data_len()
+            );
+            match msg_type {
+                MsgType::GetList(_) => {
+                    let mut getlist_req =
+                        kv_serializer_hybrid_arena_object::GetListReq::new_in(arena);
+                    getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                    let mut getlist_resp =
+                        kv_serializer_hybrid_arena_object::GetListResp::new_in(arena);
+                    getlist_resp.set_id(getlist_req.get_id());
+
+                    if self.serializer.use_linked_list() {
+                        let range_start = getlist_req.get_range_start();
+                        let range_end = getlist_req.get_range_end();
+                        let mut node_option = self
+                            .linked_list_kv_server
+                            .get(getlist_req.get_key().to_str()?);
+                        let range_len = {
+                            if range_end == -1 {
+                                let mut len = 0;
+                                while let Some(node) = node_option {
+                                    len += 1;
+                                    node_option = node.get_next();
+                                }
+                                len - range_start as usize
+                            } else {
+                                ensure!(
+                                    range_start < range_end,
+                                    "Cannot process get list with range_end < range_start"
+                                );
+                                (range_end - range_start) as usize
+                            }
+                        };
+
+                        getlist_resp.init_val_list(range_len, arena);
+                        let list = getlist_resp.get_mut_val_list();
+                        let mut node_option = self
+                            .linked_list_kv_server
+                            .get(getlist_req.get_key().to_str()?);
+
+                        let mut idx = 0;
+                        while let Some(node) = node_option {
+                            if idx < range_start {
+                                node_option = node.get_next();
+                                idx += 1;
+                                continue;
+                            } else if idx as usize == range_len {
+                                tracing::debug!("Got to idx = range len");
+                                break;
+                            }
+                            tracing::debug!(
+                                "Appending value to linked list with size {}",
+                                node.get_data().len()
+                            );
+                            list.append(dynamic_object_arena_hdr::CFBytes::new(
+                                node.get_data(),
+                                datapath,
+                                arena,
+                            )?);
+                            node_option = node.get_next();
+                            idx += 1;
+                        }
+                    } else {
+                        let value_list =
+                            match self.list_kv_server.get(getlist_req.get_key().to_str()?) {
+                                Some(v) => v,
+                                None => {
+                                    bail!(
+                                        "Could not find value for key: {:?}",
+                                        getlist_req.get_key().to_str()
+                                    );
+                                }
+                            };
+
+                        getlist_resp.init_val_list(value_list.len(), arena);
+                        let list = getlist_resp.get_mut_val_list();
+                        for value in value_list.iter() {
+                            list.append(dynamic_object_arena_hdr::CFBytes::new(
+                                value.as_ref(),
+                                datapath,
+                                arena,
+                            )?);
+                        }
+                    }
+
+                    datapath.queue_cornflakes_arena_object(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        getlist_resp,
+                        end_batch,
+                    )?;
+                }
+                _ => {
+                    unimplemented!();
+                }
+            }
+        }
+        Ok(())
     }
 
     #[inline]
