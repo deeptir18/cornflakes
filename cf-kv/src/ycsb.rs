@@ -148,7 +148,10 @@ impl YCSBLine {
             // TODO: what about appends? Not in YCSB.
             "GET" => {
                 let mut msg_type = MsgType::Get;
-                if num_values > 1 && num_keys == num_values || use_linked_list {
+                if use_linked_list {
+                    msg_type = MsgType::GetM(1u16);
+                }
+                if num_values > 1 && num_keys == num_values {
                     msg_type = MsgType::GetM(num_values as u16);
                 } else if num_values > 1 && num_keys == 1 {
                     msg_type = MsgType::GetList(num_values as u16);
@@ -384,6 +387,7 @@ impl ServerLoadGenerator for YCSBServerLoader {
     where
         D: Datapath,
     {
+        tracing::info!(num_values = self.num_values);
         if !self.allocate_contiguously {
             for i in 0..self.num_values {
                 let file = File::open(request_file)?;
