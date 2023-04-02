@@ -239,7 +239,7 @@ tput_plot_size <- function(data) {
                 y=maxtputgbps,
                 fill = serialization)) +
         geom_text(position = position_dodge(0.8),
-                    aes(y=maxtputgbps + 7, label = round(maxtputgbps, 1)),
+                    aes(y=maxtputgbps + 7, label = round(maxtputgbps, 2)),
                    size = 2.75,
                    angle = 70)
     print(plot)
@@ -252,7 +252,7 @@ tput_plot_num_values <- function(data) {
                 y=maxtputgbps,
                 fill = serialization)) +
         geom_text(position = position_dodge(0.8),
-                    aes(y=maxtputgbps + 9, label = round(maxtputgbps, 1)),
+                    aes(y=maxtputgbps + 9, label = round(maxtputgbps, 2)),
                    size = 2.75,
                    angle = 70)
     print(plot)
@@ -287,7 +287,7 @@ tput_plot <- function(data, x_label, vary_size_plot, labels) {
                   axis.text.x=element_text(size=8, colour="#000000", angle=0),
                   legend.margin=margin(0,0,0,0),
                   legend.box.margin=margin(-5,-10,-5,-10))
-            guides(colour=guide_legend(nrow=2, byrow=TRUE, override.aes = list(size = 5)),
+            guides(colour=guide_legend(nrow=2, byrow=TRUE, override.aes = list(size = 3)),
                    fill=guide_legend(nrow=2, byrow=TRUE),
                    shape=guide_legend(nrow=2, byrow=TRUE))
     print(plot)
