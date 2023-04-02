@@ -187,6 +187,7 @@ pub struct GoogleProtobufServerLoader {
     key_length: usize,
     num_values_distribution: NumValuesDistribution,
     value_size_generator: ValueSizeDistribution,
+    max_size: usize,
 }
 
 impl GoogleProtobufServerLoader {
@@ -195,12 +196,14 @@ impl GoogleProtobufServerLoader {
         key_length: usize,
         value_size_generator: ValueSizeDistribution,
         num_values_distribution: NumValuesDistribution,
+        max_size: usize,
     ) -> Self {
         GoogleProtobufServerLoader {
             num_keys,
             key_length,
             num_values_distribution,
             value_size_generator,
+            max_size,
         }
     }
 }
@@ -212,9 +215,18 @@ impl ServerLoadGenerator for GoogleProtobufServerLoader {
         let idx = line.to_string().parse::<usize>().unwrap();
         let key = get_key(idx, self.key_length);
         let num_values = self.num_values_distribution.sample();
-        let value_sizes: Vec<usize> = (0..num_values)
+        let mut value_sizes: Vec<usize> = (0..num_values)
             .map(|_| self.value_size_generator.sample())
             .collect();
+        let mut sum = value_sizes.iter().sum::<usize>();
+        // to make sure the entire request won't exceed a jumbo frame
+        while sum > self.max_size {
+            value_sizes = (0..num_values)
+                .map(|_| self.value_size_generator.sample())
+                .collect();
+            sum = value_sizes.iter().sum::<usize>();
+        }
+
         Ok(GoogleProtobufServerLine::new(key, value_sizes))
     }
 
@@ -303,7 +315,8 @@ impl ServerLoadGenerator for GoogleProtobufServerLoader {
 #[derive(Debug, Clone)]
 pub struct GoogleProtobufClient {
     keys: Vec<String>,
-    key_distr: Uniform<usize>,
+    keys_to_sample: Vec<usize>,
+    cur_key: usize,
 }
 
 pub fn google_protobuf_keys(total_keys: usize, key_length: usize) -> Vec<String> {
@@ -314,18 +327,26 @@ pub fn google_protobuf_keys(total_keys: usize, key_length: usize) -> Vec<String>
 }
 
 impl GoogleProtobufClient {
-    pub fn new(total_keys: usize, key_length: usize) -> Self {
+    pub fn new(total_keys: usize, key_length: usize, total_keys_to_sample: usize) -> Self {
         let keys: Vec<String> = (0..total_keys)
             .map(|idx| get_key(idx, key_length))
             .collect();
         let key_distr = Uniform::from(0..total_keys);
-        GoogleProtobufClient { keys, key_distr }
+        let mut rng = thread_rng();
+        let keys_to_sample: Vec<usize> = (0..total_keys_to_sample)
+            .map(|_| key_distr.sample(&mut rng))
+            .collect();
+        GoogleProtobufClient {
+            keys,
+            keys_to_sample,
+            cur_key: 0,
+        }
     }
 }
 
 impl Default for GoogleProtobufClient {
     fn default() -> Self {
-        GoogleProtobufClient::new(DEFAULT_NUM_KEYS, DEFAULT_KEYS_SIZE)
+        GoogleProtobufClient::new(DEFAULT_NUM_KEYS, DEFAULT_KEYS_SIZE, 1000000)
     }
 }
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -348,11 +369,9 @@ impl RequestGenerator for GoogleProtobufClient {
     }
 
     fn next_request(&mut self) -> Result<Option<Self::RequestLine>> {
-        let mut rng = thread_rng();
-        let idx = self.key_distr.sample(&mut rng);
-        let req = GoogleProtobufRequest(idx);
-        tracing::debug!("Sending key {:?}, string: {}", req, self.keys[idx]);
-        Ok(Some(req))
+        let idx = self.keys_to_sample[self.cur_key];
+        self.cur_key += 1;
+        Ok(Some(GoogleProtobufRequest(idx)))
     }
 
     fn message_type(&self, _req: &GoogleProtobufRequest) -> Result<MsgType> {

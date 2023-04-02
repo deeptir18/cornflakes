@@ -24,7 +24,7 @@ macro_rules! run_server_google(
 
         // init retwis load generator
         let (buckets, probs) = default_buckets();
-        let load_generator = GoogleProtobufServerLoader::new($opt.num_keys, $opt.key_size, ValueSizeDistribution::new($opt.max_size, buckets, probs)?,$opt.num_values_distribution);
+        let load_generator = GoogleProtobufServerLoader::new($opt.num_keys, $opt.key_size, ValueSizeDistribution::new($opt.max_size, buckets, probs)?,$opt.num_values_distribution, $opt.max_size);
         let mut kv_server = <$kv_server>::new("", load_generator, &mut connection, $opt.push_buf_type, true)?;
         kv_server.init(&mut connection)?;
         kv_server.write_ready($opt.ready_file.clone())?;
@@ -95,7 +95,7 @@ macro_rules! run_client_google(
                 let (buckets, probs) = default_buckets();
                 let size = ValueSizeDistribution::new($opt.max_size, buckets, probs)?.avg_size();
 
-                let mut retwis_client = GoogleProtobufClient::new($opt.num_keys, $opt.key_size);
+                let mut retwis_client = GoogleProtobufClient::new($opt.num_keys, $opt.key_size, num_rtts);
                 tracing::info!("Finished initializing google protobuf client");
 
                 let mut server_load_generator_opt: Option<(&str, GoogleProtobufServerLoader)> = None;
