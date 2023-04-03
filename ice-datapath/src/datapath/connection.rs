@@ -1364,6 +1364,159 @@ impl Datapath for IceConnection {
         Ok(())
     }
 
+    fn queue_cornflakes_arena_object<'arena>(
+        &mut self,
+        msg_id: MsgID,
+        conn_id: ConnID,
+        cornflakes_obj: impl cornflakes_libos::dynamic_object_arena_hdr::CornflakesArenaObject<
+            'arena,
+            Self,
+        >,
+        end_batch: bool,
+    ) -> Result<()>
+    where
+        Self: Sized,
+    {
+        let per_thread_context = self.thread_context.get_context_ptr();
+
+       // determine num tx descriptors necessary for buffer
+        let serialization_info = cornflakes_obj.get_serialization_info();
+        let num_required = 1 + serialization_info.num_zero_copy_entries;
+
+        // determine num tx descriptors available
+        let mut txd_avail = unsafe { ice_bindings::custom_ice_get_txd_avail(per_thread_context) as usize };
+        let mut cur_tx_id = unsafe { ice_bindings::get_current_tx_id(per_thread_context) };
+        let last_tx_id = unsafe { ice_bindings::get_last_tx_id_needed(per_thread_context, num_required as _) };
+        let cur_tx_id_ptr: *mut u64 = &mut cur_tx_id;
+        let mut ring_buffer_state = (cur_tx_id_ptr, last_tx_id);
+        let first_tx_id = cur_tx_id;
+
+        // wait until enough tx descriptors are available
+        while num_required > txd_avail {
+            // function to get number of tx descriptors available
+            if self.has_queued_data {
+                unsafe {
+                    ice_bindings::post_queued_segments(per_thread_context, last_tx_id as _)
+                }
+                self.has_queued_data = false;
+            }
+            if unsafe {
+                ice_bindings::custom_ice_tx_cleanup(per_thread_context) != 0
+            } {
+                tracing::debug!("custom_ice_tx_cleanup failed to clean");
+            }
+
+            txd_avail = unsafe { ice_bindings::custom_ice_get_txd_avail(per_thread_context) as usize };
+        }
+
+        // skip 1 for the first seg: header + copied data
+        let entries_to_skip = 1;
+        for _ in 0..entries_to_skip {
+            cur_tx_id = unsafe { ice_bindings::advance_tx_id(per_thread_context, cur_tx_id as _) };
+        }
+        // define and call the callback
+        let mut callback = |metadata_mbuf: &IceMetadata, ring_buffer_state: &mut (*mut u64, u64)| -> Result<()> {
+            let mut metadata_clone = metadata_mbuf.clone();
+            metadata_clone.increment_refcnt();
+            let custom_ice_res: Result<IceCustomMetadata> = match metadata_clone {
+                IceMetadata::Dpdk(_) => {
+                    bail!("Cannot be dpdk buffer in callback");
+                }
+                IceMetadata::Ice(custom_ice) => Ok(custom_ice),
+            };
+            let custom_ice = custom_ice_res?;
+
+            unsafe {
+                let next_id = ice_bindings::custom_ice_post_data_segment(per_thread_context,
+                    custom_ice.data(), custom_ice.mempool(), custom_ice.get_refcnt_index() as _,
+                    custom_ice.data_len() as _, *ring_buffer_state.0 as _, ring_buffer_state.1 as _);
+                *ring_buffer_state.0 = next_id;
+            };
+            Ok(())
+        };
+
+        // circle back and write packet and object header into first segment
+        // optionally write copied data into second segment
+        let mut allocated_header_buffer = {
+            match self.allocator.allocate_tx_buffer()? {
+                Some(buf) => buf,
+                None => {
+                    bail!("No tx mempools to allocate outgoing packet hdr");
+                }
+            }
+        };
+        let data_len = serialization_info.header_size 
+            + serialization_info.copy_length
+            + serialization_info.zero_copy_length;
+        
+        // copy the packet header into the beginning of the buffer
+        self.copy_hdr(&mut allocated_header_buffer, conn_id, msg_id, data_len)?;
+
+        let header_buffer = allocated_header_buffer.mutable_slice(
+            cornflakes_libos::utils::TOTAL_HEADER_SIZE,
+            cornflakes_libos::utils::TOTAL_HEADER_SIZE
+                + serialization_info.header_size
+                + serialization_info.copy_length,
+        )?;
+
+        let mut copy_buffer: Option<&mut [u8]> = None;
+        let mut cur_copy_offset = 0;
+        let mut cur_zero_copy_offset = 0;
+        cornflakes_obj.iterate_over_entries(
+            &serialization_info,
+            header_buffer,
+            &mut copy_buffer,
+            0,
+            cornflakes_obj.dynamic_header_start(),
+            &mut cur_copy_offset,
+            &mut cur_zero_copy_offset,
+            &mut callback,
+            &mut ring_buffer_state,
+        )?;
+
+        // copy the packet header into the beginning of the buffer
+        allocated_header_buffer.set_len(
+            cornflakes_libos::utils::TOTAL_HEADER_SIZE
+                + serialization_info.header_size
+                + serialization_info.copy_length,
+        );
+        // reset ring buffer state
+        unsafe {
+            *ring_buffer_state.0 = first_tx_id;
+        }
+        ring_buffer_state.1 = last_tx_id;
+
+        // turn the data buffer into metadata and post it
+        let mut ice_metadata = IceMetadata::Ice(
+            IceCustomMetadata::from_buf(allocated_header_buffer));
+        unsafe {
+            let next_id = self.post_ice_metadata(
+                &mut ice_metadata,
+                *ring_buffer_state.0,
+                ring_buffer_state.1,
+            )?;
+            *ring_buffer_state.0 = next_id;
+        }
+
+        // finish posting data to queue
+        unsafe {
+            ice_bindings::finish_single_transmission(per_thread_context, last_tx_id as _);
+        }
+
+        // end batch
+        if end_batch {
+            unsafe {
+                ice_bindings::post_queued_segments(per_thread_context, last_tx_id as _);
+            }
+            unsafe {
+                ice_bindings::custom_ice_tx_cleanup(per_thread_context);
+            }
+            self.has_queued_data = false;
+        }
+
+        Ok(())
+    }
+
     fn queue_cornflakes_obj<'arena>(
         &mut self,
         msg_id: MsgID,
@@ -1381,7 +1534,6 @@ impl Datapath for IceConnection {
         // then get current value txq->tx_tail
         
         let per_thread_context = self.thread_context.get_context_ptr();
-        let last_id = 0;
 
         // determine num tx descriptors necessary for buffer
         let num_zero_copy_entries = cornflakes_obj.num_zero_copy_scatter_gather_entries();
