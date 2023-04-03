@@ -460,6 +460,7 @@ class GoogleBench(runner.Experiment):
                             client_rates = [(rate, num_clients)]
                             extra_serialization_params = runner.ExtraSerializationParameters(serialization)
                             distribution = exp.distribution
+                            total_num_keys = exp.total_num_keys
                             max_num_values = exp.max_num_values
                             it = GoogleIteration(
                                 client_rates,
