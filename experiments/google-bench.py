@@ -21,6 +21,7 @@ class GoogleIteration(runner.Iteration):
                 total_num_keys,
                 key_size,
                 max_size,
+                max_num_values,
                 serialization_library,
                 extra_serialization_params,
                 num_threads,
@@ -36,6 +37,7 @@ class GoogleIteration(runner.Iteration):
         self.max_bucket = max_bucket
         self.num_threads = num_threads
         self.distribution = distribution
+        self.max_num_values = max_num_values
         self.trial = trial
 
     def calculate_iteration_stats(self, local_folder, client_file_list,
@@ -176,6 +178,7 @@ class GoogleIteration(runner.Iteration):
                 "max_size: {}," \
                 "key size: {}," \
                 "serialization: {}, "\
+                "max_num_values: {}, "\
                 "num_threads: {}, "\
                 "extra serialization_params: {}, "\
                 "distribution: {}, "\
@@ -185,6 +188,7 @@ class GoogleIteration(runner.Iteration):
                         self.get_max_size_string(),
                         self.get_key_size_string(),
                         self.serialization,
+                        self.get_max_num_values_string(),
                         self.num_threads,
                         str(self.extra_serialization_params),
                         self.distribution,
@@ -192,7 +196,7 @@ class GoogleIteration(runner.Iteration):
     
     def hash(self):
         # hashes every argument EXCEPT for rates
-        args = [self.total_num_keys, self.max_size, self.key_size, self.serialization,
+        args = [self.total_num_keys, self.max_size, self.key_size, self.serialization, self.max_num_values,
                 self.get_num_clients(), self.num_threads, self.distribution,
                 str(self.extra_serialization_params), self.trial]
         return args
@@ -201,7 +205,7 @@ class GoogleIteration(runner.Iteration):
         """
         Returns an array of parameters for this experiment.
         """
-        params = ["serialization", "total_num_keys", "max_size", "key_size", "num_threads",
+        params = ["serialization", "max_num_values", "total_num_keys", "max_size", "key_size", "num_threads",
                 "num_clients", "distribution", "offered_load_pps"]
         params.extend(self.extra_serialization_params.get_iteration_params())
         return params
@@ -220,7 +224,8 @@ class GoogleIteration(runner.Iteration):
                 "num_threads": self.num_threads,
                 "num_clients": self.get_num_clients(),
                 "serialization": self.extra_serialization_params.get_serialization_name(),
-                "distribution": self.distribution
+                "distribution": self.distribution,
+                "max_num_values": self.max_num_values
             }
         ret.update(self.extra_serialization_params.get_iteration_params_values())
         return ret
@@ -280,6 +285,9 @@ class GoogleIteration(runner.Iteration):
     def get_key_size_string(self):
         return "key_size_{}".format(self.key_size)
 
+    def get_max_num_values_string(self):
+        return "max_num_values_{}".format(self.max_num_values)
+
     def get_max_size_string(self):
         return "max_size_{}".format(self.max_size)
 
@@ -306,6 +314,7 @@ class GoogleIteration(runner.Iteration):
         return path / self.serialization /\
                 self.extra_serialization_params.get_subfolder() /\
                 self.get_total_num_keys_string() /\
+                self.get_max_num_values_string() /\
                 self.get_key_size_string() /\
                 self.get_max_size_string() /\
                 self.get_distribution_string() /\
@@ -327,6 +336,7 @@ class GoogleIteration(runner.Iteration):
         ret["client_library"] = self.serialization
         ret["max_size"] = self.max_size
         ret["distribution"]  = self.distribution
+        ret["max_num_values"] = self.max_num_values
 
         self.extra_serialization_params.fill_in_args(ret, program)
         host_type_map = config_yaml["host_types"]
@@ -354,7 +364,7 @@ class GoogleIteration(runner.Iteration):
         return ret
 
 GoogleExpInfo = collections.namedtuple("GoogleExpInfo", ["total_num_keys",
-    "key_size", "distribution"])
+    "key_size", "distribution", "max_num_values"])
 
 class GoogleBench(runner.Experiment):
     def __init__(self, exp_yaml, config_yaml):
@@ -377,13 +387,14 @@ class GoogleBench(runner.Experiment):
         """
         Returns parsed GoogleExpInfo from exp_string.
         Should be formatted as:
-        total_num_keys = {}, key_size = {}
+        total_num_keys = {}, key_size = {}, distribution = {}, max_num_values = {}
         """
         try:
-            parse_result = parse.parse("total_num_keys = {:d}, key_size = {:d}, distribution = {}", exp_string)
+            parse_result = parse.parse("total_num_keys = {:d}, key_size = {:d}, distribution = {}, max_num_values = {:d}", exp_string)
             return GoogleExpInfo(parse_result[0], 
                     parse_result[1],
-                    parse_result[2])
+                    parse_result[2],
+                    parse_result[3])
         except:
             utils.error("Error parsing exp_string: {}".format(exp_string))
             exit(1)
@@ -407,6 +418,7 @@ class GoogleBench(runner.Experiment):
                     total_args.total_num_keys,
                     total_args.key_size,
                     total_args.max_size,
+                    total_args.max_num_values,
                     total_args.serialization,
                     extra_serialization_params,
                     total_args.num_threads,
@@ -442,18 +454,19 @@ class GoogleBench(runner.Experiment):
                 for serialization in serialization_libraries:
                     for rate_percentage in rate_percentages:
                         for exp in max_rates_dict:
-                            total_num_keys = exp.total_num_keys
                             key_size = exp.key_size
                             max_rate = max_rates_dict[exp]
                             rate = int(float(max_rate) * rate_percentage)
                             client_rates = [(rate, num_clients)]
                             extra_serialization_params = runner.ExtraSerializationParameters(serialization)
                             distribution = exp.distribution
+                            max_num_values = exp.max_num_values
                             it = GoogleIteration(
                                 client_rates,
                                 total_num_keys,
                                 key_size,
                                 max_size,
+                                max_num_values,
                                 serialization,
                                 extra_serialization_params,
                                 num_threads,
@@ -480,6 +493,10 @@ class GoogleBench(runner.Experiment):
                             type = int,
                             default = 8192,
                             )
+        parser.add_argument("-mnm", "--max_num_values",
+                            dest="max_num_values",
+                            type = int,
+                            default = 1)
         if namespace.exp_type == "individual":
             parser.add_argument("-nt", "--num_threads",
                                 dest="num_threads",
@@ -526,27 +543,37 @@ class GoogleBench(runner.Experiment):
         plotting_script = Path(cornflakes_repo) / \
             "experiments" / "plotting_scripts" / "varied_size_kv.R"
         base_args = [str(plotting_script), str(full_log)]
+        max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
         for metric in ["p99", "median"]:
-            if "baselines" in graphing_groups:
-                pdf = plot_path / "baselines_{}.pdf".format(metric)
-                total_plot_args = [str(plotting_script),
+            for exp in max_rates_dict:
+                max_num_keys = exp.max_num_keys
+                distribution = exp.distribution
+                total_num_keys = exp.total_num_keys
+                key_size = exp.key_size
+                base_plot_path = plot_path /\
+                        "max_num_keys_{}".format(max_num_keys) /\
+                        "total_num_keys_{}".format(total_num_keys) /\
+                        "key_size_{}".format(key_size) /\
+                        "distribution_{}".format(distribution)
+                base_plot_path.mkdir(parents = True, exist_ok = True)
+                if "baselines" in graphing_groups:
+                    pdf = plot_path / "baselines_{}.pdf".format(metric)
+                    total_plot_args = [str(plotting_script),
                                        str(full_log),
                                        str(pdf),
                                        metric,
                                        "baselines"]
-                print(" ".join(total_plot_args))
-                sh.run(total_plot_args)
-            if "cornflakes" in graphing_groups:
-                pdf = plot_path / "thresholdvary_{}.pdf".format(metric)
-                total_plot_args = [str(plotting_script),
+                    print(" ".join(total_plot_args))
+                    sh.run(total_plot_args)
+                if "cornflakes" in graphing_groups:
+                    pdf = plot_path / "thresholdvary_{}.pdf".format(metric)
+                    total_plot_args = [str(plotting_script),
                                        str(full_log),
                                        str(pdf),
                                        metric,
                                        "cornflakes"]
-                print(" ".join(total_plot_args))
-                sh.run(total_plot_args)
-
-
+                    print(" ".join(total_plot_args))
+                    sh.run(total_plot_args)
 
 
 def main():
