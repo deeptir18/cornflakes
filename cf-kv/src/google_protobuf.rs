@@ -13,7 +13,7 @@ use std::io::Write;
 
 // taken from: https://sagark.org/assets/pubs/protoacc-micro2021-preprint.pdf
 // figure 4c
-const DEFAULT_BUCKETS: [(usize, usize, f64); 8] = [
+const DEFAULT_BUCKETS: [(usize, usize, f64); 9] = [
     (1, 9, 33.8),
     (9, 17, 15.3),
     (17, 23, 7.6),
@@ -21,7 +21,8 @@ const DEFAULT_BUCKETS: [(usize, usize, f64); 8] = [
     (33, 65, 10.6),
     (65, 129, 6.1),
     (129, 513, 8.0),
-    (513, usize::MAX, 5.6),
+    (513, 4097, 3.7),
+    (4097, usize::MAX, 1.36),
 ];
 const DEFAULT_NUM_KEYS: usize = 1_000_000;
 const DEFAULT_KEYS_SIZE: usize = 100;
