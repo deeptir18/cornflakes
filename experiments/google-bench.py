@@ -547,12 +547,12 @@ class GoogleBench(runner.Experiment):
         max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
         for metric in ["p99", "median"]:
             for exp in max_rates_dict:
-                max_num_keys = exp.max_num_keys
-                distribution = exp.distribution
                 total_num_keys = exp.total_num_keys
+                distribution = exp.distribution
+                max_num_values = exp.max_num_values
                 key_size = exp.key_size
                 base_plot_path = plot_path /\
-                        "max_num_keys_{}".format(max_num_keys) /\
+                        "max_num_values_{}".format(max_num_values) /\
                         "total_num_keys_{}".format(total_num_keys) /\
                         "key_size_{}".format(key_size) /\
                         "distribution_{}".format(distribution)
