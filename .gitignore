@@ -11,7 +11,7 @@ experiments/tmp.pdf
 mlx5-datapath/mlx5-wrapper/build/*
 ice-datapath/ice-wrapper/build/*
 ds-echo/c/server
-cf-kv/c/kv-sga-cornflakes-c
+cf-kv/c/kv-redis-c
 ds-echo/c/echo-dynamic-sga-c
 
 experiments/main/__pycache__

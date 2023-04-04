@@ -528,6 +528,14 @@ impl MessageInfo {
         self.0.fields.clone()
     }
 
+    pub fn get_function_params_hybrid(&self, use_arena: bool) -> Result<Vec<String>> {
+        let mut ret = vec![];
+        if use_arena {
+            ret.push("'arena".to_string());
+        }
+        Ok(ret)
+    }
+
     pub fn get_function_params(&self, fd: &ProtoReprInfo) -> Result<Vec<String>> {
         let mut ret: Vec<String> = Vec::default();
         if fd.hybrid_mode() {
@@ -541,6 +549,19 @@ impl MessageInfo {
             return Ok(ret);
         }
         ret.push(fd.get_lifetime());
+        Ok(ret)
+    }
+
+    pub fn get_type_params_hybrid_object_ffi(
+        &self,
+        use_arena: bool,
+        datapath: &str,
+    ) -> Result<Vec<String>> {
+        let mut ret = vec![];
+        if use_arena {
+            ret.push("'arena".to_string());
+        }
+        ret.push(datapath.to_string());
         Ok(ret)
     }
 

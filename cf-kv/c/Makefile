@@ -8,9 +8,9 @@ CORNFLAKES_DIR = $(HOME)/cornflakes
 CF_KV_OUT_DIR = $(CORNFLAKES_DIR)/cf-kv/c
 # CF_KV_OUT_DIR = $(CORNFLAKES_DIR)
 
-INCLUDE_FLAGS = -I$(CF_KV_OUT_DIR)/kv-sga-cornflakes-c -I$(CORNFLAKES_DIR)/linux-datapath-c
+INCLUDE_FLAGS = -I$(CF_KV_OUT_DIR)/kv-redis-c -I$(CORNFLAKES_DIR)/linux-datapath-c
 LINKING_FLAGS = -L$(CORNFLAKES_DIR)/target/release -llinux_datapath_c \
-	-L$(CF_KV_OUT_DIR)/kv-sga-cornflakes-c/target/release -lkv_proto_c
+	-L$(CF_KV_OUT_DIR)/kv-redis-c/target/release -lkv_proto_c
 
 build: deps
 # 	$(CC) server.c $(INCLUDE_FLAGS) $(LINKING_FLAGS) -o $(BINARY)
@@ -18,7 +18,7 @@ build: deps
 deps:
 # 	cd $(CORNFLAKES_DIR)/linux-datapath-c/ && cargo b --release
 	cd $(CORNFLAKES_DIR)/cf-kv/ && cargo b --release
-	cd $(CF_KV_OUT_DIR)/kv-sga-cornflakes-c/ && cargo b --release
+	cd $(CF_KV_OUT_DIR)/kv-redis-c/ && cargo b --release
 	cd $(CURRENT_DIR)
 
 run:

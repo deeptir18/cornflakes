@@ -41,7 +41,7 @@ CARGOFEATURES := $(subst $(space),$(comma),$(CARGOFEATURES))
 redis: mlx5-datapath
 	cargo b --package mlx5-datapath-c $(CARGOFLAGS)
 	cargo b --package cf-kv $(CARGOFLAGS)
-	cd $(PWD)/cf-kv/c/kv-sga-cornflakes-c && cargo b $(CARGOFLAGS)
+	cd $(PWD)/cf-kv/c/kv-redis-c && cargo b $(CARGOFLAGS)
 	cd ../../..
 	CORNFLAKES_PATH=$(PWD) make -C redis -j
 

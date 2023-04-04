@@ -71,12 +71,12 @@ fn main() {
         }
     }
 
-    let input_cf_file_c = input_cf_path.clone().join("kv_nonrefcounted_c.proto");
+    let input_cf_file_c = input_cf_path.clone().join("kv_c.proto");
     let out_dir_c_path = Path::new(&cargo_manifest_dir).join("c");
     match compile(
         input_cf_file_c.as_path().to_str().unwrap(),
         &out_dir_c_path.into_os_string().into_string().unwrap(),
-        CompileOptions::new(HeaderType::HybridRcSga, Language::C),
+        CompileOptions::new(HeaderType::HybridArenaObject, Language::C),
     ) {
         Ok(_) => {}
         Err(e) => {

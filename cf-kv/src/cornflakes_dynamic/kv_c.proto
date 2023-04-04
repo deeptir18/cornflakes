@@ -1,5 +1,5 @@
 syntax = "proto3";
-package kv_sga_cornflakes;
+package kv_redis;
 
 message GetReq {
     uint32 id = 1;
