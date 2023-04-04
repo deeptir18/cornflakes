@@ -55,6 +55,8 @@ pub trait ClientSM {
                         Ok(x) => {
                             if x.trim() == "ready".to_string() {
                                 return Ok(true);
+                            } else {
+                                tracing::info!("File there but says {}", x);
                             }
                         }
                         Err(e) => {
@@ -62,10 +64,12 @@ pub trait ClientSM {
                         }
                     }
                 }
+                tracing::info!("Did not ready ready from {}", f);
                 return Ok(false);
             }
             None => {
-                return Ok(false);
+                tracing::info!("No ready file arg; ready");
+                return Ok(true);
             }
         }
     }
@@ -356,6 +360,7 @@ where
     while !client.check_ready(&ready_file)? {
         continue;
     }
+    tracing::warn!("Got past ready check");
     if record_per_size_buckets {
         client.set_recording_size_rtts();
     }
@@ -435,6 +440,7 @@ where
     while !client.check_ready(&ready_file)? {
         continue;
     }
+    tracing::warn!("Got past ready check");
     let timeout = match retries {
         true => high_timeout_at_start,
         false => no_retries_timeout,

@@ -300,7 +300,6 @@ impl TwitterLineMetadata {
         thread_id: usize,
         total_num_clients: usize,
         total_num_threads: usize,
-        end_time: usize,
         val_index: usize,
         value_size: Option<usize>,
         ignore_sets: bool,
@@ -308,9 +307,6 @@ impl TwitterLineMetadata {
         // parse the comma separated line
         let parts = line.split(",").collect::<Vec<&str>>();
         let time = parts[0].parse::<usize>()?;
-        if time > end_time {
-            return Ok(None);
-        }
         let msg_type = match parts[5] {
             "get" => MsgType::Get,
             "set" => MsgType::Put,
@@ -459,13 +455,16 @@ impl TwitterClient {
                         self.thread_id,
                         self.total_num_clients,
                         self.total_num_threads,
-                        modified_time,
                         cur_val_index,
                         self.value_size,
                         self.ignore_sets,
                     ) {
                         Ok(twitter_req_option) => match twitter_req_option {
                             Some((twitter_req, time)) => {
+                                if time > modified_time {
+                                    tracing::info!("Reached end; breaking");
+                                    break;
+                                }
                                 pps[time] += 1;
                                 precached_metadata.push(twitter_req);
                                 cur_val_index += 1;
@@ -488,20 +487,13 @@ impl TwitterClient {
             }
         }
         self.precached_metadata = precached_metadata;
-        for (t, num_packets_to_generate) in pps.iter().enumerate() {
-            tracing::info!(
-                thread_id = self.thread_id,
-                time = t,
-                pps = num_packets_to_generate,
-                "Packets to generate"
-            );
-        }
+        tracing::info!("Finished reading file");
         // create schedule from rates and speed factor
         let mut schedule = PacketSchedule::default();
         let time_unit = Duration::from_nanos((1_000_000_000 as f64 / speed_factor as f64) as u64);
         let mut time_to_add = Duration::from_nanos(0);
+        let mut sum_packets = 0f64;
         if self.ignore_pps {
-            let mut sum_packets = 0.0f64;
             for num_packets_to_generate in pps.iter() {
                 sum_packets += *num_packets_to_generate as f64;
             }
@@ -516,6 +508,7 @@ impl TwitterClient {
             /*for i in 0..sum_packets as usize {
                 tracing::info!(i, arrival = ?schedule.get(i), "schedule item");
             }*/
+            tracing::info!("Done with scehedule");
             Ok(schedule)
         } else {
             for num_packets_to_generate in pps.iter() {
@@ -534,6 +527,7 @@ impl TwitterClient {
                     }
                 }
             }
+            tracing::info!("Done with schedule");
             Ok(schedule)
         }
     }
