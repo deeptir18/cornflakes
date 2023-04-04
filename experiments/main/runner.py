@@ -902,22 +902,23 @@ class Iteration(metaclass=abc.ABCMeta):
                 program_run_kwargs[(program_name, host)]})
             for program_name, host in client_command_queue]
             [c.start() for c in clients]
-            [c.join() for c in clients]
 
         ## if client has ready, wait on servers to be done
         ## and write client ready files
-        if (client_has_ready_file()):
-            for program_name, host in server_command_queue:
-                while not(is_ready(program_name)):
-                    time.sleep(1)
-                    continue
-            for program_name, host in client_command_queue:
-                client_program = programs[program_name]
-                client_program_args = program_args_map[(program_name, host)]
-                for (ready_file, ready_string) in client_program["ready_file"].items():
-                    ready_file = ready_file.format(**client_program_args)
-                    connections[host].write_ready(ready_file, ready_string)
-                utils.info("Writing ready for client host {}".format(host))
+            if (client_has_ready_file()):
+                utils.info("Spawned clients, waiting for server ready")
+                for program_name, host in server_command_queue:
+                    while not(is_ready(program_name)):
+                        time.sleep(1)
+                        continue
+                for program_name, host in client_command_queue:
+                    client_program = programs[program_name]
+                    client_program_args = program_args_map[(program_name, host)]
+                    for (ready_file, ready_string) in client_program["ready_file"].items():
+                        ready_file = ready_file.format(**client_program_args)
+                        connections[host].write_ready(ready_file, ready_string)
+                    utils.info("Writing ready for client host {}".format(host))
+            [c.join() for c in clients]
 
         ## kill the server
         if not(server_failed):
