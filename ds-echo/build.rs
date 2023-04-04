@@ -152,7 +152,7 @@ fn main() {
             .to_str()
             .unwrap(),
         &out_dir,
-        CompileOptions::new_with_datapath_param(HeaderType::HybridObjectArena, Language::Rust),
+        CompileOptions::new_with_datapath_param(HeaderType::HybridArenaObject, Language::Rust),
     ) {
         Ok(_) => {}
         Err(e) => {

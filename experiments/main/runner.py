@@ -832,6 +832,12 @@ class Iteration(metaclass=abc.ABCMeta):
                             "res_map": status_dict,
                             "res_key": (program_name, host)
                             }
+        def client_has_ready_file():
+            for program_name, host in client_command_queue:
+                program = programs[program_name]
+                if "ready_file" in program:
+                    return True
+            return False
         # function to check whether a certain program can be started
         def is_ready(other_program_name):
             other_program = programs[other_program_name]
@@ -881,11 +887,11 @@ class Iteration(metaclass=abc.ABCMeta):
                 break
             if server_failed:
                 break
-
-
-            while not(is_ready(program_name)):
-                time.sleep(1)
-                continue
+            if not(client_has_ready_file()): 
+               # if no client wait for ready, wait for server
+                while not(is_ready(program_name)):
+                    time.sleep(1)
+                    continue
             ct += 1
         
         # wait for input
@@ -897,6 +903,21 @@ class Iteration(metaclass=abc.ABCMeta):
             for program_name, host in client_command_queue]
             [c.start() for c in clients]
             [c.join() for c in clients]
+
+        ## if client has ready, wait on servers to be done
+        ## and write client ready files
+        if (client_has_ready_file()):
+            for program_name, host in server_command_queue:
+                while not(is_ready(program_name)):
+                    time.sleep(1)
+                    continue
+            for program_name, host in client_command_queue:
+                client_program = programs[program_name]
+                client_program_args = program_args_map[(program_name, host)]
+                for (ready_file, ready_string) in client_program["ready_file"].items():
+                    ready_file = ready_file.format(**client_program_args)
+                    connections[host].write_ready(ready_file, ready_string)
+                utils.info("Writing ready for client host {}".format(host))
 
         ## kill the server
         if not(server_failed):

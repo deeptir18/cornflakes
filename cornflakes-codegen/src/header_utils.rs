@@ -162,7 +162,11 @@ impl ProtoReprInfo {
                     format!("{}::new_in(arena)", msg_name)
                 }
                 false => {
-                    format!("{}::default()", msg_name)
+                    if use_arena {
+                        format!("{}::new_in(arena)", msg_name)
+                    } else {
+                        format!("{}::new()", msg_name)
+                    }
                 }
             },
             _ => {

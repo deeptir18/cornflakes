@@ -8,6 +8,13 @@ use color_eyre::eyre::{Result, WrapErr};
 use std::{default::Default, marker::PhantomData, ops::Index, slice::Iter};
 
 #[inline]
+pub fn write_size_and_offset(write_offset: usize, size: usize, offset: usize, buffer: &mut [u8]) {
+    let mut forward_pointer = MutForwardPointer(buffer, write_offset);
+    forward_pointer.write_size(size as u32);
+    forward_pointer.write_offset(offset as u32);
+}
+
+#[inline]
 pub fn read_size_and_offset<D>(
     offset: usize,
     buffer: &D::DatapathMetadata,
@@ -167,6 +174,9 @@ where
         // TODO: can we recursively calculate the header size at the same time?
         info.header_size = self.total_header_size(false);
         self.modify_serialization_info_inner(&mut info);
+        if info.zero_copy_length == 0 {
+            info.num_zero_copy_entries = 0;
+        }
         info
     }
 

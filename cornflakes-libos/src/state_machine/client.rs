@@ -11,7 +11,7 @@ use super::super::{
     MsgID,
 };
 use byteorder::{ByteOrder, LittleEndian};
-use color_eyre::eyre::{Result, WrapErr};
+use color_eyre::eyre::{bail, Result, WrapErr};
 use cornflakes_utils::get_thread_latlog;
 use std::time::{Duration, Instant};
 
@@ -45,6 +45,30 @@ pub trait ClientSM {
     fn increment_num_timed_out(&mut self);
 
     fn server_addr(&self) -> AddressInfo;
+
+    fn check_ready(&self, ready_file: &Option<String>) -> Result<bool> {
+        match ready_file {
+            Some(f) => {
+                let exists = std::path::Path::new(f.as_str()).is_file();
+                if exists {
+                    match std::fs::read_to_string(f.as_str()) {
+                        Ok(x) => {
+                            if x.trim() == "ready".to_string() {
+                                return Ok(true);
+                            }
+                        }
+                        Err(e) => {
+                            bail!("Could not read file: {:?}", e);
+                        }
+                    }
+                }
+                return Ok(false);
+            }
+            None => {
+                return Ok(false);
+            }
+        }
+    }
 
     fn get_next_msg(
         &mut self,
@@ -323,10 +347,15 @@ pub fn run_variable_size_loadgen<D>(
     mut schedule: PacketSchedule,
     record_per_size_buckets: bool,
     avg_rate: u64,
+    ready_file: Option<String>,
 ) -> Result<MeasuredThreadStatsOnly>
 where
     D: Datapath,
 {
+    // wait on ready file
+    while !client.check_ready(&ready_file)? {
+        continue;
+    }
     if record_per_size_buckets {
         client.set_recording_size_rtts();
     }
@@ -397,10 +426,15 @@ pub fn run_client_loadgen<D>(
     rate: u64,
     message_size: usize,
     mut schedule: PacketSchedule,
+    ready_file: Option<String>,
 ) -> Result<ThreadStats>
 where
     D: Datapath,
 {
+    // wait on ready file
+    while !client.check_ready(&ready_file)? {
+        continue;
+    }
     let timeout = match retries {
         true => high_timeout_at_start,
         false => no_retries_timeout,

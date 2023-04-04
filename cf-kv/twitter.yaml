@@ -16,7 +16,8 @@ programs:
 
     start_client:
         host_type: "client"
-        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/dpdk-datapath/3rdparty/dpdk/build/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/twitter_dpdk --config_file {config_file} --mode client --server_ip {server_ip} --our_ip {client_ip} --push_buf_type singlebuf --serialization {client_library} --time {time} --speed_factor {speed_factor} --trace {trace_file}{value_size_str}{ignore_sets_str}{ignore_pps_str} --distribution {distribution} --num_threads {num_threads} --num_clients {num_machines} --client_id {machine_id} --threadlog {folder}/{host}.threads.log --debug_level warn --per_size_info
+        ready_file: { "{folder}/{host}.ready.log": "ready" }
+        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/dpdk-datapath/3rdparty/dpdk/build/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/twitter_dpdk --config_file {config_file} --mode client --server_ip {server_ip} --our_ip {client_ip} --push_buf_type singlebuf --serialization {client_library} --time {time} --speed_factor {speed_factor} --trace {trace_file}{value_size_str}{ignore_sets_str}{ignore_pps_str} --distribution {distribution} --num_threads {num_threads} --num_clients {num_machines} --client_id {machine_id} --threadlog {folder}/{host}.threads.log --debug_level warn --per_size_info --ready_file {folder}/{host}.ready.log
         log:
             out: "{folder}/{host}.log"
             err: "{folder}/{host}.err.log"

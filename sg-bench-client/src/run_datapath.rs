@@ -68,7 +68,7 @@ macro_rules! run_client(
                 connection.set_copying_threshold(usize::MAX);
                 let mut sg_bench_client = SgBenchClient::new(server_addr_clone, opt_clone.segment_size, opt_clone.echo_mode , opt_clone.num_segments, opt_clone.array_size, opt_clone.send_packet_size,max_num_requests, i, opt_clone.client_id, opt_clone.num_threads, opt_clone.num_clients, opt_clone.num_refcnt_arrays)?;
 
-                cornflakes_libos::state_machine::client::run_client_loadgen(i, opt_clone.num_threads as _, opt_clone.machine_id as _, opt_clone.num_clients as _, &mut sg_bench_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, (opt_clone.num_segments * opt_clone.segment_size) as _, schedule, opt_clone.num_threads as _)
+                cornflakes_libos::state_machine::client::run_client_loadgen(i, opt_clone.num_threads as _, opt_clone.client_id as _, opt_clone.num_clients as _, &mut sg_bench_client, &mut connection, opt_clone.retries, opt_clone.total_time as _, opt_clone.logfile.clone(), opt_clone.rate as _, (opt_clone.num_segments * opt_clone.segment_size) as _, schedule, opt_clone.ready_file.clone())
             }));
         }
         let mut thread_results: Vec<cornflakes_libos::loadgen::client_threads::ThreadStats> = Vec::default();
@@ -217,4 +217,6 @@ pub struct SgBenchOpt {
         help = "Multiplicative factor to define number of refcounts"
     )]
     pub num_refcnt_arrays: usize,
+    #[structopt(long = "ready_file", help = "Ready file")]
+    pub ready_file: Option<String>,
 }

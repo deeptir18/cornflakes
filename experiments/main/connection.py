@@ -115,6 +115,11 @@ class ConnectionWrapper(Connection):
         res = self.run(f"ls {fname}", quiet = True)
         return res.exited == 0
 
+    def write_ready(self, fname, fstring):
+        res = self.run(f"echo {fstring}", stdout = fname)
+        if not(self.file_exists(fname)):
+            util.warn("Failed to write into ready file {}".format(fname))
+
     def check_ready(self, fname, fstring):
         if not(self.file_exists(fname)):
             return False
