@@ -1,4 +1,5 @@
 pub mod capnproto;
+pub mod cdn;
 pub mod cornflakes_dynamic;
 pub mod flatbuffers;
 pub mod google_protobuf;
@@ -6,6 +7,7 @@ pub mod protobuf;
 pub mod redis;
 pub mod retwis;
 pub mod retwis_run_datapath;
+pub mod run_cdn;
 pub mod run_google_protobuf;
 pub mod run_twitter;
 pub mod twitter;
@@ -58,6 +60,7 @@ pub enum MsgType {
     FollowUnfollow,     // follow unfollow retwis
     PostTweet,          // Post Tweet Retwis,
     GetTimeline(usize), // Get timeline
+    GetFromList,        // Get item from list kv. List index should be encoded in message itself.
 }
 
 impl MsgType {
@@ -79,6 +82,7 @@ impl MsgType {
             (8, 0) => Ok(MsgType::FollowUnfollow),
             (9, 0) => Ok(MsgType::PostTweet),
             (10, 0) => Ok(MsgType::GetTimeline(0)),
+            (11, 0) => Ok(MsgType::GetFromList),
             (x, y) => {
                 bail!("unrecognized message type for kv store app: {}, {}", x, y);
             }
@@ -130,6 +134,10 @@ impl MsgType {
             }
             MsgType::GetTimeline(_size) => {
                 BigEndian::write_u16(&mut buf[0..2], 10);
+                BigEndian::write_u16(&mut buf[2..4], 0);
+            }
+            MsgType::GetFromList => {
+                BigEndian::write_u16(&mut buf[0..2], 11);
                 BigEndian::write_u16(&mut buf[2..4], 0);
             }
         }
@@ -241,6 +249,10 @@ where
 
     pub fn get_mut_map(&mut self) -> &mut HashMap<String, Box<KVNode<D>>> {
         &mut self.map
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.map.contains_key(key)
     }
 
     pub fn get(&self, key: &str) -> Option<&Box<KVNode<D>>> {
@@ -742,6 +754,14 @@ where
         buf: &mut [u8],
         keys: &Vec<&str>,
         _values: &Vec<String>,
+        _datapath: &D,
+    ) -> Result<usize>;
+
+    fn serialize_get_from_list(
+        &self,
+        buf: &mut [u8],
+        key: &str,
+        idx: usize,
         _datapath: &D,
     ) -> Result<usize>;
 }

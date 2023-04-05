@@ -83,6 +83,48 @@ where
         Ok(())
     }
 
+    fn handle_get_from_list(
+        &self,
+        list_kv_server: &ListKVServer<D>,
+        pkt: &ReceivedPkt<D>,
+        builder: &mut FlatBufferBuilder,
+    ) -> Result<()> {
+        let get_request = root::<cf_kv_fbs::GetFromListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+        let value = match list_kv_server.get(get_request.key().unwrap()) {
+            Some(list) => match list.get(get_request.idx() as usize) {
+                Some(v) => v,
+                None => {
+                    bail!(
+                        "Could not find idx {} for key {} in list kv server",
+                        get_request.idx(),
+                        get_request.key().unwrap(),
+                    );
+                }
+            },
+            None => {
+                bail!(
+                    "Could not find value for key: {:?}",
+                    get_request.key().unwrap()
+                );
+            }
+        };
+
+        tracing::debug!(
+            "For given key {:?}, found value {:?} with length {}",
+            get_request.key().unwrap(),
+            value.as_ref(),
+            value.as_ref().len()
+        );
+        let args = cf_kv_fbs::GetRespArgs {
+            val: Some(builder.create_vector_direct::<u8>(value.as_ref())),
+            id: get_request.id(),
+        };
+
+        let get_resp = cf_kv_fbs::GetResp::create(builder, &args);
+        builder.finish(get_resp, None);
+        Ok(())
+    }
+
     fn handle_put(
         &self,
         kv_server: &mut KVServer<D>,
@@ -392,6 +434,13 @@ where
                         &mut self.builder,
                     )?;
                 }
+                MsgType::GetFromList => {
+                    self.serializer.handle_get_from_list(
+                        &self.list_kv_server,
+                        &pkt,
+                        &mut self.builder,
+                    )?;
+                }
                 MsgType::GetM(_size) => {
                     self.serializer.handle_getm(
                         &self.kv_server,
@@ -696,6 +745,25 @@ where
             key: Some(builder.create_string(key.as_ref())),
         };
         let get_req = cf_kv_fbs::GetReq::create(&mut builder, &args);
+        builder.finish(get_req, None);
+        Ok(copy_into_buf(buf, &builder))
+    }
+
+    fn serialize_get_from_list(
+        &self,
+        buf: &mut [u8],
+        key: &str,
+        idx: usize,
+        _datapath: &D,
+    ) -> Result<usize> {
+        let mut builder = FlatBufferBuilder::new();
+        let args = cf_kv_fbs::GetFromListReqArgs {
+            // TODO: actually add in ID
+            id: 0,
+            idx: idx as u32,
+            key: Some(builder.create_string(key.as_ref())),
+        };
+        let get_req = cf_kv_fbs::GetFromListReq::create(&mut builder, &args);
         builder.finish(get_req, None);
         Ok(copy_into_buf(buf, &builder))
     }

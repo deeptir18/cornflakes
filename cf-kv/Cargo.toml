@@ -93,3 +93,12 @@ required-features = ["mlx5"]
 [[bin]]
 name = "googleproto_dpdk"
 required-features = ["dpdk"]
+
+[[bin]]
+name = "cdn_mlx5"
+required-features = ["mlx5"]
+
+[[bin]]
+name = "cdn_dpdk"
+required-features = ["dpdk"]
+

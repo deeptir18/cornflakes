@@ -9,6 +9,12 @@ table GetReq {
     key:string;
 }
 
+table GetFromListReq {
+    id:uint32;
+    key:string;
+    idx:uint32;
+}
+
 table GetMReq {
     id:uint32;
     keys:[string];

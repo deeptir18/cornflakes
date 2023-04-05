@@ -6,6 +6,12 @@ message GetReq {
     string key = 2;
 }
 
+message GetFromListReq {
+    uint32 id = 1;
+    string key = 2;
+    uint32 idx = 3;
+}
+
 message GetMReq {
     uint32 id = 1;
     repeated string keys = 2;

@@ -64,6 +64,16 @@ where
         Ok(data.len())
     }
 
+    fn serialize_get_from_list(
+        &self,
+        _buf: &mut [u8],
+        _key: &str,
+        _idx: usize,
+        _datapath: &D,
+    ) -> Result<usize> {
+        unimplemented!();
+    }
+
     fn serialize_put(
         &self,
         buf: &mut [u8],

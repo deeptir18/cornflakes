@@ -5,6 +5,12 @@ struct GetReq {
     key @1 :Text;
 }
 
+struct GetFromListReq {
+    id @0 :UInt32;
+    key @1 :Text;
+    idx @2 :UInt32;
+}
+
 struct GetResp {
     id @0 :UInt32;
     val @1 :Data;

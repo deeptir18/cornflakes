@@ -90,10 +90,51 @@ where
 
         // construct response
         let mut response = builder.init_root::<kv_capnp::get_resp::Builder>();
+        response.set_id(get_request.get_id());
         response.set_val(value.as_ref());
         Ok(())
     }
 
+    fn handle_get_from_list<T>(
+        &mut self,
+        list_kv_server: &ListKVServer<D>,
+        pkt: &ReceivedPkt<D>,
+        builder: &mut Builder<T>,
+    ) -> Result<()>
+    where
+        T: Allocator,
+    {
+        let segment_array_vec = read_context(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
+        let segment_array = SegmentArray::new(&segment_array_vec.as_slice());
+        let message_reader = Reader::new(segment_array, ReaderOptions::default());
+        let get_request = message_reader
+            .get_root::<kv_capnp::get_from_list_req::Reader>()
+            .wrap_err("Failed to deserialize GetFromListReq.")?;
+        tracing::debug!("Received get request for key: {:?}", get_request.get_key());
+        let key = get_request.get_key()?;
+        let value = match list_kv_server.get(key) {
+            Some(list) => match list.get(get_request.get_idx() as usize) {
+                Some(v) => v,
+                None => {
+                    bail!(
+                        "Could not find idx {} for key {} in list kv server",
+                        get_request.get_idx(),
+                        key
+                    );
+                }
+            },
+            None => {
+                bail!("Could not find value for key: {:?}", key);
+            }
+        };
+        tracing::debug!("Value len: {:?}", value.as_ref().len());
+
+        // construct response
+        let mut response = builder.init_root::<kv_capnp::get_resp::Builder>();
+        response.set_id(get_request.get_id());
+        response.set_val(value.as_ref());
+        Ok(())
+    }
     fn handle_put<T>(
         &self,
         kv_server: &mut KVServer<D>,
@@ -144,7 +185,8 @@ where
             .wrap_err("Failed to deserialize GetMReq.")?;
         let keys = getm_request.get_keys()?;
 
-        let response = builder.init_root::<kv_capnp::get_m_resp::Builder>();
+        let mut response = builder.init_root::<kv_capnp::get_m_resp::Builder>();
+        response.set_id(getm_request.get_id());
         let mut list = response.init_vals(keys.len());
         for (i, key_res) in keys.iter().enumerate() {
             let key = key_res?;
@@ -232,7 +274,8 @@ where
             getlist_request.get_key()
         );
         let key = getlist_request.get_key()?;
-        let response = builder.init_root::<kv_capnp::get_list_resp::Builder>();
+        let mut response = builder.init_root::<kv_capnp::get_list_resp::Builder>();
+        response.set_id(getlist_request.get_id());
         if self.use_linked_list() {
             let range_start = getlist_request.get_rangestart();
             let range_end = getlist_request.get_rangeend();
@@ -405,6 +448,13 @@ where
                     self.serializer.handle_get(
                         &self.kv_server,
                         &self.linked_list_kv_server,
+                        &pkt,
+                        &mut builder,
+                    )?;
+                }
+                MsgType::GetFromList => {
+                    self.serializer.handle_get_from_list(
+                        &self.list_kv_server,
                         &pkt,
                         &mut builder,
                     )?;
@@ -818,6 +868,27 @@ where
         let mut builder = Builder::new_default();
         let mut get_req = builder.init_root::<kv_capnp::get_req::Builder>();
         get_req.set_key(&key);
+        let framing_size = fill_in_context_without_arena(&builder, buf)?;
+        let full_size = copy_into_buf(buf, framing_size, &builder)?;
+        tracing::debug!(
+            "Full buffer: {:?}, full buffer length: {}",
+            &buf[0..full_size],
+            full_size
+        );
+        return Ok(full_size);
+    }
+
+    fn serialize_get_from_list(
+        &self,
+        buf: &mut [u8],
+        key: &str,
+        idx: usize,
+        _datapath: &D,
+    ) -> Result<usize> {
+        let mut builder = Builder::new_default();
+        let mut get_req = builder.init_root::<kv_capnp::get_from_list_req::Builder>();
+        get_req.set_key(&key);
+        get_req.set_idx(idx as u32);
         let framing_size = fill_in_context_without_arena(&builder, buf)?;
         let full_size = copy_into_buf(buf, framing_size, &builder)?;
         tracing::debug!(

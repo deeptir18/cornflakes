@@ -1454,6 +1454,60 @@ where
                         end_batch,
                     )?;
                 }
+                MsgType::GetFromList => {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("handle get from list hybrid arena object");
+                    let mut get_req =
+                        { kv_serializer_hybrid_arena_object::GetFromListReq::new_in(arena) };
+                    {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Deserialize pkt");
+                        get_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                    }
+                    let mut get_resp = kv_serializer_hybrid_arena_object::GetResp::new_in(arena);
+                    get_resp.set_id(get_req.get_id());
+
+                    let key = get_req.get_key().to_str()?;
+                    let value = match self.list_kv_server.get(key) {
+                        Some(list) => match list.get(get_req.get_idx() as usize) {
+                            Some(v) => v,
+                            None => {
+                                bail!(
+                                    "Could not find idx {} for key {} in list kv server",
+                                    get_req.get_idx(),
+                                    key
+                                );
+                            }
+                        },
+                        None => {
+                            bail!("Could not find value for key: {:?}", key);
+                        }
+                    };
+
+                    tracing::debug!(
+                        "For given key {:?}, found value {:?} with length {}",
+                        get_req.get_key().to_str()?,
+                        value.as_ref().as_ptr(),
+                        value.as_ref().len()
+                    );
+
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("Set value get hybrid arena");
+                    {
+                        get_resp.set_val(dynamic_object_arena_hdr::CFBytes::new(
+                            value.as_ref(),
+                            datapath,
+                            arena,
+                        )?);
+                    }
+
+                    datapath.queue_cornflakes_arena_object(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        get_resp,
+                        end_batch,
+                    )?;
+                }
                 MsgType::GetM(_) => {
                     let mut getm_req = kv_serializer_hybrid_arena_object::GetMReq::new_in(arena);
                     getm_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
@@ -2945,6 +2999,19 @@ where
     fn serialize_get(&self, buf: &mut [u8], key: &str, datapath: &D) -> Result<usize> {
         let mut get = GetReq::<D>::new();
         get.set_key(CFString::new_from_str(key));
+        get.serialize_into_buf(datapath, buf)
+    }
+
+    fn serialize_get_from_list(
+        &self,
+        buf: &mut [u8],
+        key: &str,
+        idx: usize,
+        datapath: &D,
+    ) -> Result<usize> {
+        let mut get = GetFromListReq::<D>::new();
+        get.set_key(CFString::new_from_str(key));
+        get.set_idx(idx as u32);
         get.serialize_into_buf(datapath, buf)
     }
 

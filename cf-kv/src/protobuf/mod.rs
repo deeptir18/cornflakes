@@ -82,6 +82,7 @@ where
             }
         };
         let mut get_resp = kv_messages::GetResp::new();
+        get_resp.id = get_request.id;
         tracing::debug!(
             "found value {:?} with length {}",
             value.as_ref().as_ptr(),
@@ -92,6 +93,39 @@ where
             //demikernel::timer!("Protobuf set value");
             get_resp.val = value.to_vec();
         }
+        Ok(get_resp)
+    }
+
+    fn handle_get_from_list(
+        &self,
+        list_kv_server: &ListKVServer<D>,
+        pkt: &ReceivedPkt<D>,
+    ) -> Result<kv_messages::GetResp> {
+        let get_request =
+            kv_messages::GetFromListReq::parse_from_bytes(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
+                .wrap_err("Failed to deserialzie Proto GetFromList Req")?;
+        let mut get_resp = kv_messages::GetResp::new();
+        get_resp.id = get_request.id;
+
+        let value = match list_kv_server.get(&get_request.key) {
+            Some(list) => match list.get(get_request.idx as usize) {
+                Some(v) => v,
+                None => {
+                    bail!(
+                        "Could not find value index {} for key {} in KVStore",
+                        get_request.idx,
+                        get_request.key
+                    );
+                }
+            },
+            None => {
+                bail!(
+                    "Cannot find value for key in KV store: {:?}",
+                    get_request.key,
+                );
+            }
+        };
+        get_resp.val = value.as_ref().to_vec();
         Ok(get_resp)
     }
 
@@ -153,6 +187,7 @@ where
             }
         }
         let mut getm_resp = kv_messages::GetMResp::new();
+        getm_resp.id = getm_request.id;
         getm_resp.vals = vals;
         Ok(getm_resp)
     }
@@ -353,6 +388,15 @@ where
                         &self.linked_list_kv_server,
                         &pkt,
                     )?;
+                    datapath.queue_protobuf_message(
+                        (pkt.msg_id(), pkt.conn_id(), &response),
+                        i == (pkts_len - 1),
+                    )?;
+                }
+                MsgType::GetFromList => {
+                    let response = self
+                        .serializer
+                        .handle_get_from_list(&self.list_kv_server, &pkt)?;
                     datapath.queue_protobuf_message(
                         (pkt.msg_id(), pkt.conn_id(), &response),
                         i == (pkts_len - 1),
@@ -589,6 +633,27 @@ where
         let mut output_stream = CodedOutputStream::bytes(buf);
         let mut get_req = kv_messages::GetReq::new();
         get_req.key = key.to_string();
+        get_req
+            .write_to(&mut output_stream)
+            .wrap_err("Failed to write into CodedOutputStream for GetReq proto")?;
+        output_stream
+            .flush()
+            .wrap_err("Failed to flush output stream.")?;
+
+        Ok(output_stream.total_bytes_written() as _)
+    }
+
+    fn serialize_get_from_list(
+        &self,
+        buf: &mut [u8],
+        key: &str,
+        idx: usize,
+        _datapath: &D,
+    ) -> Result<usize> {
+        let mut output_stream = CodedOutputStream::bytes(buf);
+        let mut get_req = kv_messages::GetFromListReq::new();
+        get_req.key = key.to_string();
+        get_req.idx = idx as u32;
         get_req
             .write_to(&mut output_stream)
             .wrap_err("Failed to write into CodedOutputStream for GetReq proto")?;
