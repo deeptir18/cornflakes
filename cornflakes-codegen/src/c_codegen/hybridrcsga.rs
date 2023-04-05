@@ -744,7 +744,8 @@ pub fn add_received_pkt_functions(
             *size_ptr = 1;
         },
         MsgType::Put => {
-            unimplemented!();
+            *return_ptr = 1;
+            *size_ptr = 1;
         }
         MsgType::GetM(s) => {
         unsafe {

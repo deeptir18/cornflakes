@@ -61,6 +61,9 @@ fn main() -> Result<()> {
             SerializationType::Protobuf => {
                 run_client_twitter!(ProtobufClient<DpdkConnection>, DpdkConnection, opt);
             }
+            SerializationType::Redis => {
+                run_client_twitter!(RedisClient<DpdkConnection>, DpdkConnection, opt);
+            }
             _ => {
                 unimplemented!();
             }
