@@ -20,7 +20,7 @@ macro_rules! run_server_cdn(
         connection.set_copying_threshold($opt.copying_threshold);
         connection.set_inline_mode($opt.inline_mode);
         tracing::info!(threshold = $opt.copying_threshold, "Setting zero-copy copying threshold");
-        let cdn_server_loader = CdnServerLoader::new($opt.key_size);
+        let cdn_server_loader = CdnServerLoader::new($opt.key_size, $opt.max_num_lines);
         let mut kv_server = <$kv_server>::new($opt.trace_file.as_str(), cdn_server_loader, &mut connection, $opt.push_buf_type, false)?;
         kv_server.init(&mut connection)?;
         kv_server.write_ready($opt.ready_file.clone())?;
@@ -88,7 +88,7 @@ macro_rules! run_client_cdn(
                 connection.set_copying_threshold(std::usize::MAX);
 
                 tracing::info!("Finished initializing datapath connection for thread {}", i);
-                let mut cdn_client = CdnClient::new(opt_clone.trace_file.as_str(),num_rtts, opt_clone.key_size, i, opt_clone.client_id as _, opt_clone.num_threads as _, opt_clone.num_clients as _)?;
+                let mut cdn_client = CdnClient::new(opt_clone.trace_file.as_str(),num_rtts, opt_clone.key_size, i, opt_clone.client_id as _, opt_clone.num_threads as _, opt_clone.num_clients as _, opt_clone.max_num_lines)?;
                 tracing::info!(thread = i, "Finished initializing cdn client");
 
                 let mut server_load_generator_opt: Option<(&str, CdnServerLoader)> = None;
@@ -238,4 +238,10 @@ pub struct CdnOpt {
     pub ready_file: Option<String>,
     #[structopt(long = "per_size_info", help = "Record per size info")]
     pub record_per_size_buckets: bool,
+    #[structopt(
+        long = "max_num_lines",
+        help = "Maximum number of lines to read in the file",
+        default_value = "1000000"
+    )]
+    pub max_num_lines: usize,
 }

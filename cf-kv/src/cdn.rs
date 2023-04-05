@@ -106,11 +106,15 @@ impl CdnServerLine {
 
 pub struct CdnServerLoader {
     key_length: usize,
+    max_num_lines: usize,
 }
 
 impl CdnServerLoader {
-    pub fn new(key_length: usize) -> Self {
-        CdnServerLoader { key_length }
+    pub fn new(key_length: usize, max_num_lines: usize) -> Self {
+        CdnServerLoader {
+            key_length,
+            max_num_lines,
+        }
     }
 }
 
@@ -148,7 +152,10 @@ impl ServerLoadGenerator for CdnServerLoader {
         D: Datapath,
     {
         let file = std::fs::File::open(request_file).unwrap();
-        for line in io::BufReader::new(file).lines() {
+        for (i, line) in io::BufReader::new(file).lines().enumerate() {
+            if i == self.max_num_lines {
+                break;
+            }
             let request = self.read_request(line?.as_str())?;
             self.modify_server_state(
                 &request,
@@ -242,11 +249,15 @@ impl CdnClient {
         client_id: usize,
         total_num_threads: usize,
         total_num_clients: usize,
+        max_num_lines: usize,
     ) -> Result<Self> {
         let mut request_ids = Vec::with_capacity(num_total_requests);
         let mut all_keys: HashMap<KeyMetadata, String> = HashMap::default();
         let file = std::fs::File::open(request_file)?;
-        for file_line_res in io::BufReader::new(file).lines() {
+        for (i, file_line_res) in io::BufReader::new(file).lines().enumerate() {
+            if i == max_num_lines {
+                break;
+            }
             let file_line = file_line_res?;
             let line = file_line.as_str().split(',').collect::<Vec<&str>>();
             let obj_id = line[1].parse::<usize>()?;
