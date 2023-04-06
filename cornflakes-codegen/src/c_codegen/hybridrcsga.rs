@@ -743,7 +743,7 @@ pub fn add_received_pkt_functions(
             *return_ptr = 0;
             *size_ptr = 1;
         },
-        MsgType::Put => {
+        MsgType::Put => unsafe {
             *return_ptr = 1;
             *size_ptr = 1;
         }
@@ -778,6 +778,9 @@ pub fn add_received_pkt_functions(
             unimplemented!();
         }
         MsgType::GetTimeline(_s) => {
+            unimplemented!();
+        }
+        MsgType::GetFromList => {
             unimplemented!();
         }
     }",
