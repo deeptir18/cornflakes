@@ -22,6 +22,10 @@ static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub trait ClientSM {
     type Datapath: Datapath;
 
+    fn update_received_and_sent(&mut self, _unique_msgids_received: Vec<MsgID>) -> Result<()> {
+        Ok(())
+    }
+
     fn get_current_id(&self) -> u32;
 
     fn increment_noop_sent(&mut self);
@@ -243,6 +247,7 @@ pub trait ClientSM {
         num_threads: usize,
         noop_time: Duration,
         noop_schedule: PacketSchedule,
+        mut msg_ids_received: Option<&mut Vec<MsgID>>,
     ) -> Result<Duration> {
         let conn_id = datapath
             .connect(self.server_addr())
@@ -311,6 +316,9 @@ pub trait ClientSM {
                                 self.record_sized_rtt(rtt, msg_size);
                             }
                         }
+                        if let Some(ref mut msg_ids) = &mut msg_ids_received {
+                            msg_ids.push(msg_id);
+                        }
                         self.increment_uniq_received();
                     }
                 }
@@ -352,6 +360,7 @@ pub fn run_variable_size_loadgen<D>(
     record_per_size_buckets: bool,
     avg_rate: u64,
     ready_file: Option<String>,
+    record_msg_ids: bool,
 ) -> Result<MeasuredThreadStatsOnly>
 where
     D: Datapath,
@@ -372,6 +381,11 @@ where
         super::super::loadgen::request_schedule::DistributionType::Exponential,
     )?;
     schedule.start_at_offset(thread_id, client_id, num_threads, num_clients);
+    let mut msg_ids_vec = Vec::with_capacity(schedule.len());
+    let msg_ids_option = match record_msg_ids {
+        true => Some(&mut msg_ids_vec),
+        false => None,
+    };
     let exp_duration = client
         .run_open_loop(
             connection,
@@ -382,9 +396,13 @@ where
             num_threads,
             noop_time,
             noop_schedule,
+            msg_ids_option,
         )?
         .as_nanos();
     tracing::info!(thread = thread_id, "Finished running open loop");
+    if record_msg_ids {
+        client.update_received_and_sent(msg_ids_vec)?;
+    }
     client.sort_rtts(0)?;
     if client.recording_size_rtts() {
         client.sort_sized_rtts()?;
@@ -465,6 +483,7 @@ where
             num_threads,
             noop_time,
             noop_schedule,
+            None,
         )?
         .as_nanos();
     tracing::info!(thread = thread_id, "Finished running open loop");

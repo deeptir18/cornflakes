@@ -20,7 +20,7 @@ use super::{
     MsgType, RequestGenerator, ServerLoadGenerator, REQ_TYPE_SIZE,
 };
 use color_eyre::eyre::{bail, Result};
-use cornflakes_libos::{allocator::MempoolID, datapath::Datapath};
+use cornflakes_libos::{allocator::MempoolID, datapath::Datapath, MsgID};
 use hashbrown::HashMap;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use std::io::{self, BufRead, Write};
@@ -106,11 +106,15 @@ impl CdnServerLine {
 
 pub struct CdnServerLoader {
     key_length: usize,
+    max_num_lines: usize,
 }
 
 impl CdnServerLoader {
-    pub fn new(key_length: usize) -> Self {
-        CdnServerLoader { key_length }
+    pub fn new(key_length: usize, max_num_lines: usize) -> Self {
+        CdnServerLoader {
+            key_length,
+            max_num_lines,
+        }
     }
 }
 
@@ -148,7 +152,10 @@ impl ServerLoadGenerator for CdnServerLoader {
         D: Datapath,
     {
         let file = std::fs::File::open(request_file).unwrap();
-        for line in io::BufReader::new(file).lines() {
+        for (i, line) in io::BufReader::new(file).lines().enumerate() {
+            if i == self.max_num_lines {
+                break;
+            }
             let request = self.read_request(line?.as_str())?;
             self.modify_server_state(
                 &request,
@@ -219,6 +226,8 @@ pub struct CdnClient {
     all_keys: HashMap<KeyMetadata, String>,
     /// Vector of request IDs to be sent by this client.
     request_ids: Vec<KeyMetadata>,
+    /// Obj id lengths
+    obj_id_lengths: HashMap<usize, usize>,
 }
 
 impl CdnClient {
@@ -242,11 +251,16 @@ impl CdnClient {
         client_id: usize,
         total_num_threads: usize,
         total_num_clients: usize,
+        max_num_lines: usize,
     ) -> Result<Self> {
         let mut request_ids = Vec::with_capacity(num_total_requests);
         let mut all_keys: HashMap<KeyMetadata, String> = HashMap::default();
         let file = std::fs::File::open(request_file)?;
-        for file_line_res in io::BufReader::new(file).lines() {
+        let mut obj_id_lengths: HashMap<usize, usize> = HashMap::default();
+        for (i, file_line_res) in io::BufReader::new(file).lines().enumerate() {
+            if i == max_num_lines {
+                break;
+            }
             let file_line = file_line_res?;
             let line = file_line.as_str().split(',').collect::<Vec<&str>>();
             let obj_id = line[1].parse::<usize>()?;
@@ -264,6 +278,7 @@ impl CdnClient {
             let line = CdnServerLine::new(obj_id, value_size_kb, key_length);
             let key = line.get_key_string(key_length);
             let mut key_metadatas = line.take_keys();
+            obj_id_lengths.insert(obj_id, key_metadatas.len());
             for metadata in key_metadatas.iter() {
                 if all_keys.contains_key(&metadata) {
                     break;
@@ -278,6 +293,7 @@ impl CdnClient {
             cur_request_index: 0,
             all_keys,
             request_ids,
+            obj_id_lengths,
         })
     }
 
@@ -302,6 +318,44 @@ impl CdnRequest {
 impl RequestGenerator for CdnClient {
     type RequestLine = CdnRequest;
 
+    fn full_packets_sent(&self, num_sent: usize) -> Result<usize> {
+        let mut full_count = 0;
+        for cur in 0..num_sent {
+            let req_idx = cur % self.request_ids.len();
+            let req = &self.request_ids[req_idx];
+            if req.obj_subid == 0 {
+                full_count += 1;
+            }
+        }
+        if self.request_ids[num_sent % self.request_ids.len()].obj_subid != 0 {
+            full_count -= 1;
+        }
+        Ok(full_count)
+    }
+
+    fn full_packets_received(&self, mut unique_msgids_received: Vec<MsgID>) -> Result<usize> {
+        unique_msgids_received.sort();
+        let mut full_count = 0;
+        let mut cur_obj_id: Option<(usize, usize)> = None;
+        for cur in unique_msgids_received.iter() {
+            let req_idx = *cur as usize % self.request_ids.len();
+            let req = &self.request_ids[req_idx];
+            if let Some((ref mut cur_id, ref mut cur_count)) = cur_obj_id {
+                if *cur_id == req.obj_id {
+                    *cur_count += 1;
+                } else {
+                    if self.obj_id_lengths.get(cur_id).unwrap() == cur_count {
+                        full_count += 1;
+                    }
+                    cur_obj_id = Some((req.obj_id, 1));
+                }
+            } else {
+                cur_obj_id = Some((req.obj_id, 1));
+            }
+        }
+        Ok(full_count)
+    }
+
     fn new(
         _file: &str,
         _client_id: usize,
@@ -320,6 +374,9 @@ impl RequestGenerator for CdnClient {
             if let Some(key) = self.request_ids.get(self.cur_request_index) {
                 tracing::debug!("Sending key {:?}", key);
                 self.cur_request_index += 1;
+                if self.cur_request_index == self.request_ids.len() {
+                    self.cur_request_index = 0;
+                }
                 Some(CdnRequest(key.clone()))
             } else {
                 None

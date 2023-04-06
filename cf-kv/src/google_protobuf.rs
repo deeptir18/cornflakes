@@ -121,7 +121,7 @@ pub struct ValueSizeDistribution {
 impl ValueSizeDistribution {
     pub fn new(max_size: usize, mut buckets: Vec<(usize, usize)>, probs: Vec<f64>) -> Result<Self> {
         let buckets_len = buckets.len();
-        buckets[buckets_len - 1].1 = max_size;
+        buckets[buckets_len - 1].1 = max_size + 1;
         ensure!(
             probs.len() == buckets.len(),
             "Probability length must match bucket length"

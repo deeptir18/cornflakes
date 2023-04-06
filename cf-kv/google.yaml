@@ -17,7 +17,7 @@ programs:
     start_client:
         host_type: "client"
         ready_file: { "{folder}/{host}.ready.log": "ready" }
-        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/dpdk-datapath/3rdparty/dpdk/build/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/googleproto_dpdk --config_file {config_file} --mode client --server_ip {server_ip} --our_ip {client_ip} --push_buf_type singlebuf --serialization {client_library} --time {time} --rate {rate} --key_size {key_size} --num_keys {total_num_keys} --num_threads {num_threads} --num_clients {num_machines} --client_id {machine_id} --threadlog {folder}/{host}.threads.log --debug_level warn --per_size_info --distribution {distribution} --ready_file {folder}/{host}.ready.log
+        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/dpdk-datapath/3rdparty/dpdk/build/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/googleproto_dpdk --config_file {config_file} --mode client --server_ip {server_ip} --our_ip {client_ip} --push_buf_type singlebuf --serialization {client_library} --time {time} --rate {rate} --key_size {key_size} --max_size {max_size} --num_keys {total_num_keys} --num_threads {num_threads} --num_clients {num_machines} --client_id {machine_id} --threadlog {folder}/{host}.threads.log --debug_level warn --per_size_info --distribution {distribution} --ready_file {folder}/{host}.ready.log
         log:
             out: "{folder}/{host}.log"
             err: "{folder}/{host}.err.log"
