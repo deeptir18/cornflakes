@@ -475,9 +475,40 @@ class CdnBench(runner.Experiment):
     def get_machine_config(self):
         return self.config_yaml
 
+    def run_summary_analysis(self, df, out, serialization, expinfo, trace_file):
+        filtered_df = df[(df["serialization"] == serialization) &
+                         (df["key_size"] == expinfo.key_size) &
+                         (df["max_num_lines"] == expinfo.max_num_lines) &
+                         (df["trace_file"] == trace_file)]
+        # CURRENT KNEE CALCULATION:
+        # just find maximum achieved rate across all rates
+        max_achieved_pps = filtered_df["achieved_load_pps"].max()
+        percent_achieved = filtered_df.loc[filtered_df['achieved_load_pps'].idxmax(), "percent_achieved_rate"]
+        out.write(str(serialization) + "," + str(expinfo.key_size) + "," +
+                 str(expinfo.max_num_lines) + "," +
+                  trace_file + "," +
+                  str(max_achieved_pps) + "," +
+                  str(percent_achieved) + os.linesep)
+
+
+
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
-        # todo: calculate max throughput
-        pass
+        header_str = "serialization,key_size,max_num_lines,trace_file,"\
+                "max_achieved_load_pps,percentachieved" + os.linesep
+        folder_path = Path(total_args.folder)
+        out = open(folder_path / new_logfile, "w")
+        df = pd.read_csv(folder_path / logfile)
+        out.write(header_str)
+        loop_yaml = self.get_loop_yaml()
+        max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
+        serialization_libraries = utils.yaml_get(loop_yaml, "serialization_libraries")
+        max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
+        for serialization in serialization_libraries:
+            for expinfo in max_rates_dict:
+                self.run_summary_analysis(df, out, serialization, expinfo,
+                        total_args.trace_file)
+        out.close()
+
 
     def graph_results(self, args, folder, logfile, post_process_logfile):
         pass
