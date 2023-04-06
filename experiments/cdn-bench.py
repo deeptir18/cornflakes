@@ -348,13 +348,13 @@ class CdnBench(runner.Experiment):
 
     def parse_exp_info_string(self, exp_string):
         """
-        Returns parsed GoogleExpInfo from exp_string.
+        Returns parsed CdnExpInfo from exp_string.
         Should be formatted as:
         max_num_lines = {}, key_size = {}, 
         """
         try:
             parse_result = parse.parse("max_num_lines = {:d}, key_size = {:d}", exp_string)
-            return GoogleExpInfo(parse_result[0], 
+            return CdnExpInfo(parse_result[0], 
                     parse_result[1])
         except:
             utils.error("Error parsing exp_string: {}".format(exp_string))
@@ -411,6 +411,7 @@ class CdnBench(runner.Experiment):
                         for exp in max_rates_dict:
                             key_size = exp.key_size
                             max_num_lines = exp.max_num_lines
+                            max_rate = max_rates_dict[exp]
                             rate = int(float(max_rate) * rate_percentage)
                             client_rates = [(rate, num_clients)]
                             extra_serialization_params = runner.ExtraSerializationParameters(serialization)
@@ -422,7 +423,7 @@ class CdnBench(runner.Experiment):
                                     serialization,
                                     extra_serialization_params,
                                     num_threads,
-                                    trial = None)
+                                    trial = trial)
                             ret.append(it)
             return ret
     
