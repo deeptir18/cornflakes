@@ -400,7 +400,7 @@ impl std::ops::Add for MeasuredThreadStatsOnly {
             retries: self.retries + other.retries,
             runtime: self.runtime + other.runtime,
             achieved_load_pps_sent: self.achieved_load_pps_sent + other.achieved_load_pps_sent,
-            achieved_load_pps_rcvd: self.achieved_load_pps_sent + other.achieved_load_pps_rcvd,
+            achieved_load_pps_rcvd: self.achieved_load_pps_rcvd + other.achieved_load_pps_rcvd,
             summary_histogram: histogram,
             thread_latencies: latencies,
             sized_histogram: self.sized_histogram,

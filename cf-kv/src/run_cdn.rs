@@ -95,7 +95,7 @@ macro_rules! run_client_cdn(
                 let mut kv_client: KVClient<CdnClient, $serializer, $datapath> = KVClient::new(cdn_client, server_addr_clone, max_num_requests,opt_clone.retries, server_load_generator_opt)?;
 
                 kv_client.init(&mut connection)?;
-                cornflakes_libos::state_machine::client::run_variable_size_loadgen(i, opt_clone.num_threads as _, opt_clone.client_id as _, opt_clone.num_clients as _, &mut kv_client, &mut connection, opt_clone.total_time as _, opt_clone.logfile.clone(), schedule, opt_clone.record_per_size_buckets, opt_clone.rate as _, opt_clone.ready_file.clone())
+                cornflakes_libos::state_machine::client::run_variable_size_loadgen(i, opt_clone.num_threads as _, opt_clone.client_id as _, opt_clone.num_clients as _, &mut kv_client, &mut connection, opt_clone.total_time as _, opt_clone.logfile.clone(), schedule, opt_clone.record_per_size_buckets, opt_clone.rate as _, opt_clone.ready_file.clone(), true)
             }));
         }
 

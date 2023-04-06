@@ -642,6 +642,14 @@ pub trait RequestGenerator {
         unimplemented!();
     }
 
+    fn full_packets_sent(&self, num_sent: usize) -> Result<usize> {
+        Ok(num_sent)
+    }
+
+    fn full_packets_received(&self, unique_msgids_received: Vec<MsgID>) -> Result<usize> {
+        Ok(unique_msgids_received.len())
+    }
+
     fn next_request(&mut self) -> Result<Option<Self::RequestLine>>;
 
     fn message_type(&self, req: &Self::RequestLine) -> Result<MsgType>;
@@ -865,6 +873,20 @@ where
     D: Datapath,
 {
     type Datapath = D;
+
+    fn update_received_and_sent(&mut self, unique_msgids_received: Vec<MsgID>) -> Result<()> {
+        let full_packets_sent = self
+            .request_generator
+            .full_packets_sent(self.last_sent_id as _)?;
+        self.last_sent_id = full_packets_sent as _;
+
+        let full_received = self
+            .request_generator
+            .full_packets_received(unique_msgids_received as _)?;
+
+        self.received = full_received as _;
+        Ok(())
+    }
 
     fn get_current_id(&self) -> u32 {
         self.last_sent_id
