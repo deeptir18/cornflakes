@@ -1,0 +1,25 @@
+### Experiment runner yaml for KV-server benchmark (cdn trace)
+
+time: 10
+programs:
+    start_server:
+        ready_file: { "{folder}/ready.log": "ready" }
+        host_type: "server"
+        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/dpdk-datapath/3rdparty/dpdk/build/lib/x86_64-linux-gnu nice -n -19 taskset -c 2 {cornflakes_dir}/target/release/cdn_mlx5 --config_file {config_file} --server_ip {server_ip} --mode server --serialization {library} --copy_threshold {copy_threshold} --inline_mode {inline_mode} --push_buf_type {push_buf_type} --trace {trace_file} --key_size {key_size} --max_num_lines {max_num_lines} --debug_level info --ready_file {folder}/ready.log
+        perf: sudo perf stat -e task-clock,cycles,instructions,cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses,L1-dcache-stores,dTLB-loads,dTLB-load-misses,dTLB-prefetch-misses,LLC-loads,LLC-load-misses,LLC-stores,LLC-store-misses -o {folder}/server.perf.log
+        log:
+            out: "{folder}/{host}.log"
+            err: "{folder}/{host}.err.log"
+        binary_to_stop: "{cornflakes_dir}/target/release/cdn_mlx5"
+        binary_name: "cdn_mlx5"
+        stop: kill -9 `ps aux | grep {cornflakes_dir}/target/release/cdn_mlx5 | grep 'bash -c' | grep -v grep | awk '{{print $2}}'`
+
+    start_client:
+        host_type: "client"
+        ready_file: { "{folder}/{host}.ready.log": "ready" }
+        start: sudo env LD_LIBRARY_PATH={cornflakes_dir}/dpdk-datapath/3rdparty/dpdk/build/lib/x86_64-linux-gnu {cornflakes_dir}/target/release/cdn_dpdk --config_file {config_file} --mode client --server_ip {server_ip} --our_ip {client_ip} --push_buf_type singlebuf --serialization {client_library} --time {time} --rate {rate} --trace {trace_file} --max_num_lines {max_num_lines} --key_size {key_size} --num_threads {num_threads} --num_clients {num_machines} --client_id {machine_id} --threadlog {folder}/{host}.threads.log --debug_level warn --per_size_info --ready_file {folder}/{host}.ready.log
+        log:
+            out: "{folder}/{host}.log"
+            err: "{folder}/{host}.err.log"
+            results: "{folder}/{host}.threads.log"
+
