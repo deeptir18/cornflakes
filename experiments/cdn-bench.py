@@ -484,17 +484,19 @@ class CdnBench(runner.Experiment):
         # just find maximum achieved rate across all rates
         max_achieved_pps = filtered_df["achieved_load_pps"].max()
         percent_achieved = filtered_df.loc[filtered_df['achieved_load_pps'].idxmax(), "percent_achieved_rate"]
+        pps_sent_at_max = filtered_df.loc[filtered_df['achieved_load_pps'].idxmax(), "achieved_load_pps_sent"]
         out.write(str(serialization) + "," + str(expinfo.key_size) + "," +
                  str(expinfo.max_num_lines) + "," +
                   trace_file + "," +
                   str(max_achieved_pps) + "," +
-                  str(percent_achieved) + os.linesep)
+                  str(percent_achieved) + "," +
+                  str(pps_sent_at_max) + "," + os.linesep)
 
 
 
     def exp_post_process_analysis(self, total_args, logfile, new_logfile):
         header_str = "serialization,key_size,max_num_lines,trace_file,"\
-                "max_achieved_load_pps,percentachieved" + os.linesep
+                "max_achieved_load_pps,percentachieved,pps_sent_at_max" + os.linesep
         folder_path = Path(total_args.folder)
         out = open(folder_path / new_logfile, "w")
         df = pd.read_csv(folder_path / logfile)
