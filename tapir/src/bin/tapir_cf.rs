@@ -1,5 +1,5 @@
 use tapir::{
-    cf_dynamic::tapir_serializer::TestMessage,
+    cf_dynamic::tapir_serializer::RecordEntryProto,
 };
 
 fn main() {
