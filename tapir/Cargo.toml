@@ -3,6 +3,11 @@ name = "tapir"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "tapir"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -19,10 +24,9 @@ bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collectio
 [build-dependencies]
 protobuf-codegen = "3.0.3"
 cornflakes-codegen = { path = "../cornflakes-codegen" }
+cbindgen = "0.23.0"
 
 [dev-dependencies]
 tracing-error = "*"
 cornflakes-utils = { path = "../cornflakes-utils" }
 
-[[bin]]
-name = "tapir_cf"
