@@ -779,6 +779,9 @@ pub fn add_received_pkt_functions(
         MsgType::GetTimeline(_s) => {
             unimplemented!();
         }
+        MsgType::GetFromList => {
+            unimplemented!();
+        }
     }",
     )?;
     compiler.add_func_call(None, "Box::into_raw", vec!["pkt".to_string()], false)?;

@@ -39,3 +39,14 @@ message GetListResp {
     repeated bytes val_list = 2;
 }
 
+message PutReq {
+    uint32 id = 1;
+    string key = 2;
+    bytes val = 3;
+}
+
+message PutResp {
+    uint32 id = 1;
+}
+
+
