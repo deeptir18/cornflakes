@@ -87,6 +87,9 @@ impl std::str::FromStr for NumValuesDistribution {
                     numbers
                 );
             }
+            if numbers[0] == numbers[1] {
+                return Ok(NumValuesDistribution::from_single_size(numbers[0]));
+            }
 
             Ok(NumValuesDistribution::from_range(numbers[0], numbers[1]))
         } else if split[0] == "SingleValue" {

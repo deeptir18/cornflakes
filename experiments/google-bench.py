@@ -542,7 +542,7 @@ class GoogleBench(runner.Experiment):
         plot_path.mkdir(exist_ok=True)
         full_log = Path(folder) / logfile
         plotting_script = Path(cornflakes_repo) / \
-            "experiments" / "plotting_scripts" / "varied_size_kv.R"
+            "experiments" / "plotting_scripts" / "google_kv.R"
         base_args = [str(plotting_script), str(full_log)]
         max_rates_dict = self.parse_max_rates(utils.yaml_get(loop_yaml, "max_rates"))
         for metric in ["p99", "median"]:
@@ -558,21 +558,29 @@ class GoogleBench(runner.Experiment):
                         "distribution_{}".format(distribution)
                 base_plot_path.mkdir(parents = True, exist_ok = True)
                 if "baselines" in graphing_groups:
-                    pdf = plot_path / "baselines_{}.pdf".format(metric)
+                    pdf = base_plot_path / "baselines_{}.pdf".format(metric)
                     total_plot_args = [str(plotting_script),
                                        str(full_log),
                                        str(pdf),
                                        metric,
-                                       "baselines"]
+                                       "baselines",
+                                       str(max_num_values),
+                                       str(total_num_keys),
+                                       str(key_size),
+                                       distribution]
                     print(" ".join(total_plot_args))
                     sh.run(total_plot_args)
                 if "cornflakes" in graphing_groups:
-                    pdf = plot_path / "thresholdvary_{}.pdf".format(metric)
+                    pdf = base_plot_path / "thresholdvary_{}.pdf".format(metric)
                     total_plot_args = [str(plotting_script),
                                        str(full_log),
                                        str(pdf),
                                        metric,
-                                       "cornflakes"]
+                                       "cornflakes",
+                                       str(max_num_values),
+                                       str(total_num_keys),
+                                       str(key_size),
+                                       distribution]
                     print(" ".join(total_plot_args))
                     sh.run(total_plot_args)
 

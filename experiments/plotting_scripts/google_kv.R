@@ -24,9 +24,19 @@ metric <- args[3]
 # argument 4: either "baselines" or "cornflakes" (to compare copy thresholds)
 plot_type <- args[4]
 
+max_num_values_subset <- args[5]
+total_num_keys_subset <- args[6]
+key_size_subset <- args[7]
+distribution_subset <- args[8]
+d <- d[ which(d$max_num_values == max_num_values_subset),]
+d <- d[ which(d$total_num_keys == total_num_keys_subset),]
+d <- d[ which(d$key_size == key_size_subset),]
+d <- d[ which(d$distribution == distribution_subset),]
+
 # size arg (if non 0 -> graph size subset)
-size_subset_metric <- args[5]
-size_subset_pps <- args[6]
+size_subset_metric <- args[9]
+size_subset_pps <- args[10]
+
 
 # cut out data where percent achieved is less than 0.95
 if("offered_load_pps" %in% colnames(d)) {
