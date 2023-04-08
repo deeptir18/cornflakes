@@ -2,7 +2,7 @@ pub mod cf_dynamic;
 use bumpalo;
 use cornflakes_libos::ArenaOrderedSga;
 use cf_dynamic::tapir_serializer::*;
-use mlx5_datapath::datapath::connection::Mlx5Connection;
+use mlx5_datapath::datapath::connection::{Mlx5Connection, MbufMetadata};
 use cornflakes_libos::datapath::{Datapath, ReceivedPkt};
 use cornflakes_libos::dynamic_object_arena_hdr::*;
 
@@ -124,15 +124,16 @@ pub extern "C" fn ReplyInconsistentMessage_get_mut_opid<'registered>(
 #[no_mangle]
 pub extern "C" fn ReplyInconsistentMessage_deserialize<'arena>(
     self_: *mut ::std::os::raw::c_void,
-    pkt: *mut ::std::os::raw::c_void,
+    data: *const ::std::os::raw::c_void,
     offset: usize,
     arena: *mut ::std::os::raw::c_void,
 ) -> u32 {
     let mut self_ = unsafe { Box::from_raw(self_ as *mut ReplyInconsistentMessage<'arena, Mlx5Connection>) };
-    let arg0 = pkt as *const ReceivedPkt<Mlx5Connection>;
+    let arg0 = data as *const MbufMetadata;
     let arg1 = offset;
     let arg2 = arena as *const bumpalo::Bump;
-    let value = self_.deserialize(unsafe { &*arg0 }, arg1, unsafe { &*arg2 });
+    let value = self_.inner_deserialize(unsafe { &*arg0 }, 0, arg1, unsafe { &*arg2 });
+    //let value = self_.deserialize(unsafe { &*arg0 }, arg1, unsafe { &*arg2 });
     match value {
         Ok(value) => value,
         Err(_) => {

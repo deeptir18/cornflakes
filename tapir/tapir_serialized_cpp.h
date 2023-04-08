@@ -29,7 +29,7 @@ void ReplyInconsistentMessage_set_finalized(void *self_, uint32_t finalized);
 void ReplyInconsistentMessage_get_mut_opid(void *self_, void **return_ptr);
 
 uint32_t ReplyInconsistentMessage_deserialize(void *self_,
-                                              void *pkt,
+                                              const void *data,
                                               uintptr_t offset,
                                               void *arena);
 
