@@ -2,10 +2,7 @@ use super::{
     super::header_utils::{MessageInfo, ProtoReprInfo},
     super::rust_codegen::{CArgInfo, Context, FunctionArg, FunctionContext, SerializationCompiler},
     common::{self, add_extern_c_wrapper_function, ArgType, SelfArgType},
-    hybridrcsga::{
-        add_db_load_functions, add_received_pkt_functions, has_cf_bytes, has_cf_string,
-        has_variable_list,
-    },
+    hybridrcsga::{has_cf_bytes, has_cf_string, has_variable_list},
 };
 use color_eyre::eyre::Result;
 use std::collections::HashSet;
@@ -18,10 +15,6 @@ pub fn compile(fd: &ProtoReprInfo, compiler: &mut SerializationCompiler) -> Resu
     compiler.add_newline()?;
     add_cornflakes_structs(fd, compiler, datapath)?;
     compiler.add_newline()?;
-
-    add_received_pkt_functions(compiler, datapath)?;
-    compiler.add_newline()?;
-    add_db_load_functions(compiler, datapath)?;
 
     for message in fd.get_repr().messages.iter() {
         compiler.add_newline()?;
@@ -47,7 +40,6 @@ fn add_hybrid_arena_object_dependencies(
     compiler.add_dependency("cornflakes_libos::datapath::{Datapath, ReceivedPkt}")?;
     compiler.add_dependency("cornflakes_libos::dynamic_object_arena_hdr::*")?;
     compiler.add_dependency("cornflakes_libos::ArenaOrderedSga")?;
-    compiler.add_dependency("cf_kv::{MsgType, ServerLoadGenerator}")?;
     compiler.add_dependency("mlx5_datapath::datapath::connection::Mlx5Connection")?;
     compiler.add_dependency("std::str::FromStr")?;
 

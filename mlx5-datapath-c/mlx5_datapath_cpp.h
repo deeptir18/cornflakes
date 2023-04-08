@@ -16,6 +16,21 @@ void Mlx5Connection_set_copying_threshold(void *conn, uintptr_t copying_threshol
 
 void Mlx5Connection_set_inline_mode(void *conn, uintptr_t inline_mode);
 
+void Mlx5Connection_free_datapath_buffer(void *datapath_buffer);
+
+void Mlx5Connection_retrieve_raw_ptr(void *datapath_buffer, void **return_ptr);
+
+void *Mlx5Connection_allocate_and_copy_into_original_datapath_buffer(void *conn,
+                                                                     void *mempool_ids_vec,
+                                                                     const unsigned char *data_buffer,
+                                                                     uintptr_t data_buffer_len,
+                                                                     void **return_raw_ptr);
+
+void *Mlx5Connection_allocate_datapath_buffer(void *conn,
+                                              uintptr_t size,
+                                              void *mempool_ids_vec,
+                                              void **return_ptr);
+
 void Mlx5Connection_add_memory_pool(void *conn, uintptr_t buf_size, uintptr_t min_elts);
 
 void **Mlx5Connection_pop_raw_packets(void *conn, uintptr_t *n);
@@ -48,5 +63,69 @@ uint32_t Mlx5Connection_queue_single_buffer_with_copy(void *conn,
                                                       const unsigned char *buffer,
                                                       uintptr_t buffer_len,
                                                       bool end_batch);
+
+void ReceivedPkt_msg_type(const void *pkt, uint16_t *size_ptr, uint16_t *return_ptr);
+
+void ReceivedPkt_size(const void *pkt, uint16_t *return_ptr);
+
+void ReceivedPkt_data(const void *pkt, const unsigned char **return_ptr);
+
+void ReceivedPkt_data_len(const void *pkt, uintptr_t *return_ptr);
+
+void ReceivedPkt_msg_id(void *self_, uint32_t *return_ptr);
+
+void ReceivedPkt_conn_id(void *self_, uintptr_t *return_ptr);
+
+void ReceivedPkt_free(const void *self_);
+
+uintptr_t Mlx5Connection_load_twitter_db(void *conn,
+                                         const char *trace_file,
+                                         uintptr_t end_time,
+                                         uintptr_t min_keys_to_load,
+                                         void **db_ptr,
+                                         void **list_db_ptr,
+                                         void **mempools_ptr);
+
+void Mlx5Connection_drop_dbs(void *db_ptr, void *list_db_ptr);
+
+uint32_t Mlx5Connection_load_ycsb_db(void *conn,
+                                     const char *trace_file,
+                                     void **db_ptr,
+                                     void **list_db_ptr,
+                                     void **mempool_ids_ptr,
+                                     uintptr_t num_keys,
+                                     uintptr_t num_values,
+                                     const char *value_size,
+                                     bool use_linked_list);
+
+void Mlx5Connection_get_db_keys_vec(void *db, void **db_keys_vec, uintptr_t *db_keys_len);
+
+void Mlx5Connection_get_list_db_keys_vec(void **list_db,
+                                         void **list_db_keys_vec,
+                                         uintptr_t *list_db_keys_len);
+
+void Mlx5Connection_get_db_value_at(void *db,
+                                    void *db_keys_vec,
+                                    uintptr_t key_idx,
+                                    void **key_ptr,
+                                    uintptr_t *key_len,
+                                    void **value_ptr,
+                                    uintptr_t *value_len,
+                                    void **value_box_ptr);
+
+void Mlx5Connection_list_db_get_list_size(void *list_db,
+                                          void *list_db_keys_vec,
+                                          uintptr_t key_idx,
+                                          void **key_ptr,
+                                          uintptr_t *key_len,
+                                          uintptr_t *list_size);
+
+void Mlx5Connection_list_db_get_value_at_idx(void *list_db,
+                                             void *list_db_keys_vec,
+                                             uintptr_t key_idx,
+                                             uintptr_t list_idx,
+                                             void **value_ptr,
+                                             uintptr_t *value_len,
+                                             void **value_box_ptr);
 
 } // extern "C"
