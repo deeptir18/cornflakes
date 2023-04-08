@@ -125,14 +125,15 @@ pub extern "C" fn ReplyInconsistentMessage_get_mut_opid<'registered>(
 pub extern "C" fn ReplyInconsistentMessage_deserialize<'arena>(
     self_: *mut ::std::os::raw::c_void,
     data: *const ::std::os::raw::c_void,
+    data_len: usize,
     offset: usize,
     arena: *mut ::std::os::raw::c_void,
 ) -> u32 {
     let mut self_ = unsafe { Box::from_raw(self_ as *mut ReplyInconsistentMessage<'arena, Mlx5Connection>) };
-    let arg0 = data as *const MbufMetadata;
+    let data_slice = unsafe { std::slice::from_raw_parts(data as _, data_len as _) };
     let arg1 = offset;
     let arg2 = arena as *const bumpalo::Bump;
-    let value = self_.inner_deserialize(unsafe { &*arg0 }, 0, arg1, unsafe { &*arg2 });
+    let value = self_.deserialize_from_raw(data_slice, arg1, unsafe { &*arg2 });
     //let value = self_.deserialize(unsafe { &*arg0 }, arg1, unsafe { &*arg2 });
     match value {
         Ok(value) => value,
