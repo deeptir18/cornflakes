@@ -26,7 +26,7 @@ fn main() {
     match compile(
         input_cf_file.as_path().to_str().unwrap(),
         &out_dir,
-        CompileOptions::new_with_datapath_param(HeaderType::HybridRcSga, Language::Rust),
+        CompileOptions::new_with_datapath_param(HeaderType::HybridArenaObject, Language::Rust),
     ) {
         Ok(_) => {}
         Err(e) => {

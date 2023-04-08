@@ -20,6 +20,8 @@ tracing = "*"
 bitmaps = "3.2.0"
 byteorder = "1.3.4"
 bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }
+mlx5-datapath = { path = "../mlx5-datapath" }
+
 
 [build-dependencies]
 protobuf-codegen = "3.0.3"
