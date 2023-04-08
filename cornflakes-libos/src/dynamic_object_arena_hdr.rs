@@ -15,6 +15,15 @@ pub fn write_size_and_offset(write_offset: usize, size: usize, offset: usize, bu
 }
 
 #[inline]
+pub fn read_size_and_offset_from_buffer(offset: usize, buffer: &[u8]) -> Result<(usize, usize)> {
+    let forward_pointer = ForwardPointer(buffer.as_ref(), offset);
+    Ok((
+        forward_pointer.get_size() as usize,
+        forward_pointer.get_offset() as usize,
+    ))
+}
+
+#[inline]
 pub fn read_size_and_offset<D>(
     offset: usize,
     buffer: &D::DatapathMetadata,
@@ -135,6 +144,30 @@ where
 
     /// Copies bitmap into object's bitmap, returning the space from offset that the bitmap
     /// in the serialized header format takes.
+    fn deserialize_bitmap_from_raw(
+        &mut self,
+        header: &[u8],
+        offset: usize,
+        buffer_offset: usize,
+    ) -> usize {
+        tracing::debug!(offset, buffer_offset, "In deserialize bitmap");
+        let bitmap_size = LittleEndian::read_u32(
+            &header[(buffer_offset + offset)..(buffer_offset + offset + BITMAP_LENGTH_FIELD)],
+        );
+        self.set_bitmap(
+            (0..std::cmp::min(bitmap_size, Self::NUM_U32_BITMAPS as u32) as usize).map(|i| {
+                let num = LittleEndian::read_u32(
+                    &header[(buffer_offset + offset + BITMAP_LENGTH_FIELD + i * 4)
+                        ..(buffer_offset + offset + BITMAP_LENGTH_FIELD + (i + 1) * 4)],
+                );
+                Bitmap::<32>::from_value(num)
+            }),
+        );
+        bitmap_size as usize * 4
+    }
+
+    /// Copies bitmap into object's bitmap, returning the space from offset that the bitmap
+    /// in the serialized header format takes.
     fn deserialize_bitmap(
         &mut self,
         pkt: &D::DatapathMetadata,
@@ -207,6 +240,14 @@ where
     where
         F: FnMut(&D::DatapathMetadata, &mut D::CallbackEntryState) -> Result<()>;
 
+    fn inner_deserialize_from_raw(
+        &mut self,
+        buf: &[u8],
+        header_offset: usize,
+        buffer_offset: usize,
+        arena: &'arena bumpalo::Bump,
+    ) -> Result<()>;
+
     fn inner_deserialize(
         &mut self,
         buf: &D::DatapathMetadata,
@@ -225,6 +266,18 @@ where
         // Right now, for deserialize we assume one contiguous buffer
         let metadata = pkt.seg(0);
         self.inner_deserialize(metadata, 0, offset, arena)?;
+        Ok(())
+    }
+
+    #[inline]
+    fn deserialize_from_raw(
+        &mut self,
+        buf: &[u8],
+        offset: usize,
+        arena: &'arena bumpalo::Bump,
+    ) -> Result<()> {
+        // Right now, for deserialize we assume one contiguous buffer
+        self.inner_deserialize_from_raw(buf, 0, offset, arena)?;
         Ok(())
     }
 }
@@ -422,6 +475,34 @@ where
                 *cur_copy_offset += vec.len();
             }
         }
+        Ok(())
+    }
+
+    fn inner_deserialize_from_raw(
+        &mut self,
+        buf: &[u8],
+        header_offset: usize,
+        buffer_offset: usize,
+        arena: &'arena bumpalo::Bump,
+    ) -> Result<()> {
+        tracing::debug!(
+            header_offset = header_offset,
+            buffer_offset = buffer_offset,
+            "In deserialize from raw cf bytes"
+        );
+        let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
+        let mut arr = bumpalo::collections::Vec::with_capacity_zeroed_in(
+            forward_pointer.get_size() as usize,
+            arena,
+        );
+        arr.copy_from_slice(
+            &buf[forward_pointer.get_offset() as usize + buffer_offset
+                ..(forward_pointer.get_offset() as usize
+                    + buffer_offset
+                    + forward_pointer.get_size() as usize)],
+        );
+        tracing::debug!("Deserialized cf bytes: {:?}", arr);
+        *self = CFBytes::Copied(arr);
         Ok(())
     }
 
@@ -657,6 +738,34 @@ where
                 *cur_copy_offset += vec.len();
             }
         }
+        Ok(())
+    }
+
+    fn inner_deserialize_from_raw(
+        &mut self,
+        buf: &[u8],
+        header_offset: usize,
+        buffer_offset: usize,
+        arena: &'arena bumpalo::Bump,
+    ) -> Result<()> {
+        tracing::debug!(
+            header_offset = header_offset,
+            buffer_offset = buffer_offset,
+            "In deserialize from raw cf bytes"
+        );
+        let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
+        let mut arr = bumpalo::collections::Vec::with_capacity_zeroed_in(
+            forward_pointer.get_size() as usize,
+            arena,
+        );
+        arr.copy_from_slice(
+            &buf[forward_pointer.get_offset() as usize + buffer_offset
+                ..(forward_pointer.get_offset() as usize
+                    + buffer_offset
+                    + forward_pointer.get_size() as usize)],
+        );
+        tracing::debug!("Deserialized cf bytes: {:?}", arr);
+        *self = CFString::Copied(arr);
         Ok(())
     }
 
@@ -928,6 +1037,42 @@ where
             cur_dynamic_off += elt.dynamic_header_size();
         }
 
+        Ok(())
+    }
+
+    fn inner_deserialize_from_raw(
+        &mut self,
+        buf: &[u8],
+        header_offset: usize,
+        buffer_offset: usize,
+        arena: &'arena bumpalo::Bump,
+    ) -> Result<()> {
+        let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
+        let size = forward_pointer.get_size() as usize;
+        let dynamic_offset = forward_pointer.get_offset() as usize;
+
+        self.num_set = size;
+        if self.elts.len() < size {
+            self.elts.resize(size, T::new_in(arena));
+        }
+        self.num_space = size;
+
+        for (i, elt) in self.elts.iter_mut().take(size).enumerate() {
+            if elt.dynamic_header_size() == 0 {
+                elt.inner_deserialize_from_raw(
+                    buf,
+                    dynamic_offset + i * T::CONSTANT_HEADER_SIZE,
+                    buffer_offset,
+                    arena,
+                )?;
+            } else {
+                let (_size, dynamic_off) = read_size_and_offset_from_buffer(
+                    dynamic_offset + i * T::CONSTANT_HEADER_SIZE,
+                    buf,
+                )?;
+                elt.inner_deserialize_from_raw(buf, dynamic_off, buffer_offset, arena)?;
+            }
+        }
         Ok(())
     }
 
