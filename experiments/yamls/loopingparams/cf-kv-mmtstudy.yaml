@@ -3,7 +3,7 @@ num_clients: 1
 num_trials: 1
 serialization_libraries: ["cornflakes-dynamic", "cornflakes1c-dynamic"]
 summary_sizes: [4096, 512]
-summary_num_values: [2, 8]
+summary_num_values: [1, 2, 4, 8]
 summary_x_axis: "KV Linked List Shape"
 rate_percentages: [0.025, 0.05, 0.075, 0.10, 0.125, 0.15, 0.175, 0.20, 0.225, 0.25, 0.275, 0.30, 0.325, 0.350, 0.375, 0.40, 0.425, 0.45, 0.475, 0.50, 0.525, 0.55, 0.575, 0.60, 0.625, 0.65, 0.675, 0.70, 0.725, 0.75, 0.775, 0.80, 0.825, 0.85, 0.875, 0.90, 0.925, 0.95, 0.975, 1.00] # Rate percentages for single configuration
 max_rates:
@@ -13,12 +13,21 @@ max_rates:
         "num_values = 8, num_keys = 1, size = UniformOverSizes-512": 40000
         "num_values = 16, num_keys = 1, size = UniformOverSizes-256": 20000
         "num_values = 32, num_keys = 1, size = UniformOverSizes-128": 20000
-        "num_values = 1, num_keys = 1, size = UniformOverSizes-256": 100000
+        "num_values = 1, num_keys = 1, size = UniformOverSizes-256": 120000
         "num_values = 2, num_keys = 1, size = UniformOverSizes-128": 65000
         "num_values = 4, num_keys = 1, size = UniformOverSizes-64": 55000
         "num_values = 8, num_keys = 1, size = UniformOverSizes-32": 40000
         "num_values = 16, num_keys = 1, size = UniformOverSizes-16": 20000
         "num_values = 32, num_keys = 1, size = UniformOverSizes-8": 20000
+
+        # DUPLICATE: "num_values = 1, num_keys = 1, size = UniformOverSizes-4096": 80000
+        "num_values = 1, num_keys = 1, size = UniformOverSizes-2048": 85000
+        "num_values = 1, num_keys = 1, size = UniformOverSizes-1024": 90000
+        "num_values = 1, num_keys = 1, size = UniformOverSizes-512": 100000
+        # DUPLICATE: "num_values = 1, num_keys = 1, size = UniformOverSizes-256": 120000
+        "num_values = 1, num_keys = 1, size = UniformOverSizes-128": 130000
+        "num_values = 1, num_keys = 1, size = UniformOverSizes-64": 150000
+
         # DUPLICATE: "num_values = 2, num_keys = 1, size = UniformOverSizes-2048": 65000
         "num_values = 2, num_keys = 1, size = UniformOverSizes-1024": 65000
         "num_values = 2, num_keys = 1, size = UniformOverSizes-512": 65000
@@ -26,6 +35,16 @@ max_rates:
         # DUPLICATE: "num_values = 2, num_keys = 1, size = UniformOverSizes-128": 65000
         "num_values = 2, num_keys = 1, size = UniformOverSizes-64": 65000
         "num_values = 2, num_keys = 1, size = UniformOverSizes-32": 65000
+        
+        # duplicate: "num_values = 4, num_keys = 1, size = UniformOverSizes-1024": 55000
+        "num_values = 4, num_keys = 1, size = UniformOverSizes-512": 60000
+        "num_values = 4, num_keys = 1, size = UniformOverSizes-256": 70000
+        "num_values = 4, num_keys = 1, size = UniformOverSizes-128": 70000
+        # duplicate: "num_values = 4, num_keys = 1, size = UniformOverSizes-64": 55000
+        "num_values = 4, num_keys = 1, size = UniformOverSizes-32": 60000
+        "num_values = 4, num_keys = 1, size = UniformOverSizes-16": 60000
+
+
         # DUPLICATE: "num_values = 8, num_keys = 1, size = UniformOverSizes-512": 40000
         "num_values = 8, num_keys = 1, size = UniformOverSizes-256": 40000
         "num_values = 8, num_keys = 1, size = UniformOverSizes-128": 40000
