@@ -799,8 +799,11 @@ fn add_serialization_iteration_for_field(
                         "serialization_info".to_string(),
                         "header_buffer".to_string(),
                         "copy_data_buffer".to_string(),
-                        "cur_constant_offset".to_string(),
                         "cur_dynamic_offset".to_string(),
+                        format!(
+                            "cur_dynamic_offset + self.{}.dynamic_header_start()",
+                            field_info.get_name()
+                        ),
                         "cur_copy_offset".to_string(),
                         "cur_zero_copy_offset".to_string(),
                         "datapath_callback".to_string(),
