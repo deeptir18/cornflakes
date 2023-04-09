@@ -50,4 +50,30 @@ void OpID_get_clientreqid(void *self_, uint64_t *return_ptr);
 
 void OpID_set_clientreqid(void *self_, uint64_t clientreqid);
 
+void ConfirmMessage_new_in(void *arena, void **return_ptr);
+
+void ConfirmMessage_get_view(void *self_, uint64_t *return_ptr);
+
+void ConfirmMessage_set_view(void *self_, uint64_t view);
+
+void ConfirmMessage_get_replicaIdx(void *self_, uint32_t *return_ptr);
+
+void ConfirmMessage_set_replicaIdx(void *self_, uint32_t replicaIdx);
+
+void ConfirmMessage_get_mut_opid(void *self_, void **return_ptr);
+
+uint32_t ConfirmMessage_deserialize(void *self_,
+                                    const void *data,
+                                    uintptr_t data_len,
+                                    uintptr_t offset,
+                                    void *arena);
+
+uint32_t Mlx5Connection_ConfirmMessage_queue_cornflakes_arena_object(void *self_,
+                                                                     uint32_t msg_id,
+                                                                     uintptr_t conn_id,
+                                                                     void *cornflakes_obj,
+                                                                     bool end_batch);
+
+void ConfirmMessage_free(const void *self_);
+
 } // extern "C"
