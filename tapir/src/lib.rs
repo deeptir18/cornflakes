@@ -400,6 +400,30 @@ pub extern "C" fn ReplyConsensusMessage_set_replicaIdx<'registered>(self_: *mut 
 
 #[inline]
 #[no_mangle]
+pub extern "C" fn ReplyConsensusMessage_get_result<'registered>(
+    self_: *mut ::std::os::raw::c_void,
+    return_ptr: *mut *mut ::std::os::raw::c_void,
+) {
+    let self_ = unsafe { Box::from_raw(self_ as *mut ReplyConsensusMessage<'registered, Mlx5Connection>) };
+    let value: *const CFBytes<Mlx5Connection> = self_.get_val();
+    unsafe { *return_ptr = value as _ };
+    Box::into_raw(self_);
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn ReplyConsensusMessage_set_result<'registered>(
+    self_: *mut ::std::os::raw::c_void,
+    val: *const ::std::os::raw::c_void,
+) {
+    let mut self_ = unsafe { Box::from_raw(self_ as *mut ReplyConsensusMessage<'registered, Mlx5Connection>) };
+    let arg0 = unsafe { *Box::from_raw(val as *mut CFBytes<Mlx5Connection>) };
+    self_.set_val(arg0);
+    Box::into_raw(self_);
+}
+
+#[inline]
+#[no_mangle]
 pub extern "C" fn ReplyConsensusMessage_get_finalized<'registered>(
     self_: *mut ::std::os::raw::c_void,
     return_ptr: *mut u32,
