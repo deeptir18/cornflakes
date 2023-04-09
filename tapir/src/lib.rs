@@ -183,19 +183,16 @@ pub extern "C" fn OpID_get_clientid<'registered>(
     self_: *mut ::std::os::raw::c_void,
     return_ptr: *mut u64,
 ) {
-    let self_ = unsafe { Box::from_raw(self_ as *mut OpID<'registered, Mlx5Connection>) };
-    let value = self_.get_clientid();
+    let opid = self_ as *mut OpID<'registered, Mlx5Connection>;
+    let value = unsafe { (*opid).get_clientid() };
     unsafe { *return_ptr = value };
-    Box::into_raw(self_);
 }
 
 #[inline]
 #[no_mangle]
 pub extern "C" fn OpID_set_clientid<'registered>(self_: *mut ::std::os::raw::c_void, clientid: u64) {
-    let mut self_ =
-        unsafe { Box::from_raw(self_ as *mut OpID<'registered, Mlx5Connection>) };
-    self_.set_clientid(clientid);
-    Box::into_raw(self_);
+    let opid = self_ as *mut OpID<'registered, Mlx5Connection>;
+    unsafe { (*opid).set_clientid(clientid) };
 }
 
 #[inline]
@@ -204,19 +201,16 @@ pub extern "C" fn OpID_get_clientreqid<'registered>(
     self_: *mut ::std::os::raw::c_void,
     return_ptr: *mut u64,
 ) {
-    let self_ = unsafe { Box::from_raw(self_ as *mut OpID<'registered, Mlx5Connection>) };
-    let value = self_.get_clientreqid();
+    let opid = self_ as *mut OpID<'registered, Mlx5Connection>;
+    let value = unsafe { (*opid).get_clientreqid() };
     unsafe { *return_ptr = value };
-    Box::into_raw(self_);
 }
 
 #[inline]
 #[no_mangle]
 pub extern "C" fn OpID_set_clientreqid<'registered>(self_: *mut ::std::os::raw::c_void, clientreqid: u64) {
-    let mut self_ =
-        unsafe { Box::from_raw(self_ as *mut OpID<'registered, Mlx5Connection>) };
-    self_.set_clientreqid(clientreqid);
-    Box::into_raw(self_);
+    let opid = self_ as *mut OpID<'registered, Mlx5Connection>;
+    unsafe { (*opid).set_clientreqid(clientreqid) } ;
 }
 
 
