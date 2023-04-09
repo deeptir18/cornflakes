@@ -278,6 +278,12 @@ fn add_get_mut(
         &format!("&mut {}", rust_type),
     );
     compiler.add_context(Context::Function(func_context))?;
+    let bitmap_idx_str = field.get_bitmap_idx_str(true);
+    let bitmap_offset_str = field.get_u32_bitmap_offset_str(true);
+    compiler.add_line(&format!(
+        "self.bitmap[{}].set({}, true);",
+        bitmap_offset_str, bitmap_idx_str
+    ))?;
     compiler.add_return_val(&format!("&mut self.{}", &field_name), false)?;
     compiler.pop_context()?;
     Ok(())
