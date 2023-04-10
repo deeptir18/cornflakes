@@ -3,6 +3,7 @@ use cf_kv::{
     cornflakes_dynamic::{CornflakesClient, CornflakesKVServer},
     flatbuffers::{FlatbuffersClient, FlatbuffersKVServer},
     protobuf::{ProtobufClient, ProtobufKVServer},
+    redis::RedisClient,
     run_client_twitter, run_server_twitter,
     run_twitter::*,
     twitter::{TwitterClient, TwitterFileMetadata, TwitterServerLoader},
@@ -19,7 +20,6 @@ use structopt::StructOpt;
 fn main() -> Result<()> {
     let mut opt = TwitterOpt::from_args();
     global_debug_init(opt.trace_level)?;
-
     if opt.analyze {
         TwitterFileMetadata::analyze(
             &opt.trace_file.as_str(),
@@ -51,6 +51,9 @@ fn main() -> Result<()> {
         AppMode::Client => match opt.serialization {
             SerializationType::CornflakesDynamic | SerializationType::CornflakesOneCopyDynamic => {
                 run_client_twitter!(CornflakesClient<DpdkConnection>, DpdkConnection, opt);
+            }
+            SerializationType::Redis => {
+                run_client_twitter!(RedisClient<DpdkConnection>, DpdkConnection, opt);
             }
             SerializationType::Flatbuffers => {
                 run_client_twitter!(FlatbuffersClient<DpdkConnection>, DpdkConnection, opt);
