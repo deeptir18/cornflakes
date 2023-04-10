@@ -2,8 +2,8 @@ pub mod cf_dynamic;
 use bumpalo;
 use cornflakes_libos::ArenaOrderedSga;
 use cf_dynamic::tapir_serializer::*;
-use mlx5_datapath::datapath::connection::{Mlx5Connection, MbufMetadata};
-use cornflakes_libos::datapath::{Datapath, ReceivedPkt};
+use mlx5_datapath::datapath::connection::{Mlx5Connection};
+use cornflakes_libos::datapath::{Datapath};
 use cornflakes_libos::dynamic_object_arena_hdr::*;
 
 // Arena functions
@@ -84,10 +84,10 @@ pub extern "C" fn ReplyInconsistentMessage_get_replicaIdx<'registered>(
 
 #[inline]
 #[no_mangle]
-pub extern "C" fn ReplyInconsistentMessage_set_replicaIdx<'registered>(self_: *mut ::std::os::raw::c_void, replicaIdx: u32) {
+pub extern "C" fn ReplyInconsistentMessage_set_replicaIdx<'registered>(self_: *mut ::std::os::raw::c_void, replica_idx: u32) {
     let mut self_ =
         unsafe { Box::from_raw(self_ as *mut ReplyInconsistentMessage<'registered, Mlx5Connection>) };
-    self_.set_replicaIdx(replicaIdx);
+    self_.set_replicaIdx(replica_idx);
     Box::into_raw(self_);
 }
 
@@ -267,10 +267,10 @@ pub extern "C" fn ConfirmMessage_get_replicaIdx<'registered>(
 
 #[inline]
 #[no_mangle]
-pub extern "C" fn ConfirmMessage_set_replicaIdx<'registered>(self_: *mut ::std::os::raw::c_void, replicaIdx: u32) {
+pub extern "C" fn ConfirmMessage_set_replicaIdx<'registered>(self_: *mut ::std::os::raw::c_void, replica_idx: u32) {
     let mut self_ =
         unsafe { Box::from_raw(self_ as *mut ConfirmMessage<'registered, Mlx5Connection>) };
-    self_.set_replicaIdx(replicaIdx);
+    self_.set_replicaIdx(replica_idx);
     Box::into_raw(self_);
 }
 
@@ -391,10 +391,10 @@ pub extern "C" fn ReplyConsensusMessage_get_replicaIdx<'registered>(
 
 #[inline]
 #[no_mangle]
-pub extern "C" fn ReplyConsensusMessage_set_replicaIdx<'registered>(self_: *mut ::std::os::raw::c_void, replicaIdx: u32) {
+pub extern "C" fn ReplyConsensusMessage_set_replicaIdx<'registered>(self_: *mut ::std::os::raw::c_void, replica_idx: u32) {
     let mut self_ =
         unsafe { Box::from_raw(self_ as *mut ReplyConsensusMessage<'registered, Mlx5Connection>) };
-    self_.set_replicaIdx(replicaIdx);
+    self_.set_replicaIdx(replica_idx);
     Box::into_raw(self_);
 }
 
