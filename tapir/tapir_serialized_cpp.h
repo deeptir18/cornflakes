@@ -110,4 +110,14 @@ uint32_t Mlx5Connection_ReplyConsensusMessage_queue_cornflakes_arena_object(void
 
 void ReplyConsensusMessage_free(const void *self_);
 
+void CFBytes_new_in(void *arena, void **return_ptr);
+
+uint32_t CFBytes_new(const unsigned char *ptr,
+                     uintptr_t ptr_len,
+                     void *datapath,
+                     void *arena,
+                     void **return_ptr);
+
+void CFBytes_unpack(const void *self_, const unsigned char **return_ptr, uintptr_t *return_len_ptr);
+
 } // extern "C"
