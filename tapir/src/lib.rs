@@ -510,3 +510,53 @@ pub extern "C" fn Mlx5Connection_ReplyConsensusMessage_queue_cornflakes_arena_ob
 pub extern "C" fn ReplyConsensusMessage_free<'arena>(self_: *const ::std::os::raw::c_void) {
     let _ = unsafe { Box::from_raw(self_ as *mut ReplyConsensusMessage<'arena, Mlx5Connection>) };
 }
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn CFBytes_new_in(
+    arena: *mut ::std::os::raw::c_void,
+    return_ptr: *mut *mut ::std::os::raw::c_void,
+) {
+    let arg0 = arena as *const bumpalo::Bump;
+    let value = CFBytes::<Mlx5Connection>::new_in(unsafe { &*arg0 });
+    let value = Box::into_raw(Box::new(value));
+    unsafe { *return_ptr = value as _ };
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn CFBytes_new(
+    ptr: *const ::std::os::raw::c_uchar,
+    ptr_len: usize,
+    datapath: *mut ::std::os::raw::c_void,
+    arena: *mut ::std::os::raw::c_void,
+    return_ptr: *mut *mut ::std::os::raw::c_void,
+) -> u32 {
+    let arg0 = unsafe { std::slice::from_raw_parts(ptr, ptr_len) };
+    let arg1 = datapath as *mut Mlx5Connection;
+    let arg2 = arena as *const bumpalo::Bump;
+    let value = CFBytes::<Mlx5Connection>::new(arg0, unsafe { &mut *arg1 }, unsafe { &*arg2 });
+    let value = match value {
+        Ok(value) => value,
+        Err(_) => {
+            return 1;
+        }
+    };
+    let value = Box::into_raw(Box::new(value));
+    unsafe { *return_ptr = value as _ };
+    0
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn CFBytes_unpack(
+    self_: *const ::std::os::raw::c_void,
+    return_ptr: *mut *const ::std::os::raw::c_uchar,
+    return_len_ptr: *mut usize,
+) {
+    let self_ = unsafe { Box::from_raw(self_ as *mut CFBytes<Mlx5Connection>) };
+    let ptr = (*self_).as_ref();
+    unsafe { *return_ptr = ptr.as_ptr() };
+    unsafe { *return_len_ptr = self_.len() };
+    Box::into_raw(self_);
+}
