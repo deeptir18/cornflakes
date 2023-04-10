@@ -13,7 +13,7 @@ import numpy as np
 import collections
 STRIP_THRESHOLD = 0.03
 SERIALIZATION_LIBRARIES = ["cornflakes-dynamic", "cornflakes1c-dynamic",
-                           "capnproto", "flatbuffers", "protobuf"]
+                           "capnproto", "flatbuffers", "protobuf", "redis"]
 
 class TwitterIteration(runner.Iteration):
     def __init__(self,

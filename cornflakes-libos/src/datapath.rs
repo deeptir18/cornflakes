@@ -582,6 +582,10 @@ pub trait Datapath {
         self.add_memory_pool(size, min_elts)
     }
 
+    fn allocate_fallback_mempools(&mut self, _mempool_ids: &mut Vec<MempoolID>) -> Result<()> {
+        unimplemented!();
+    }
+
     /// Checks whether datapath has mempool of size size given (must be power of 2).
     fn has_mempool(&self, size: usize) -> bool;
 

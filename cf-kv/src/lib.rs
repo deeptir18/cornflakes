@@ -550,6 +550,8 @@ pub trait ServerLoadGenerator {
             datapath,
             use_linked_list_kv,
         )?;
+
+        datapath.allocate_fallback_mempools(&mut mempool_ids)?;
         Ok((
             kv_server,
             list_kv_server,

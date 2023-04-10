@@ -52,3 +52,11 @@ max_rates:
         # DUPLICATE "num_values = 8, num_keys = 1, size = UniformOverSizes-32": 40000
         "num_values = 8, num_keys = 1, size = UniformOverSizes-16": 40000
         "num_values = 8, num_keys = 1, size = UniformOverSizes-8": 40000
+
+        # DUPLICATE "num_values = 16, num_keys = 1, size = UniformOverSizes-256": 20000
+        "num_values = 16, num_keys = 1, size = UniformOverSizes-128": 20000
+        "num_values = 16, num_keys = 1, size = UniformOverSizes-64": 20000
+        "num_values = 16, num_keys = 1, size = UniformOverSizes-32": 20000
+        # DUPLICATE "num_values = 16, num_keys = 1, size = UniformOverSizes-16": 20000
+        "num_values = 16, num_keys = 1, size = UniformOverSizes-8": 20000
+        "num_values = 16, num_keys = 1, size = UniformOverSizes-4": 20000

@@ -117,6 +117,10 @@ impl Mlx5Buffer {
         }
     }
 
+    pub fn read_refcnt(&self) -> u16 {
+        unsafe { custom_mlx5_refcnt_read(self.mempool, self.refcnt_index as _) }
+    }
+
     pub fn update_refcnt(&mut self, change: i8) {
         unsafe {
             custom_mlx5_refcnt_update_or_free(
@@ -5599,11 +5603,21 @@ impl Datapath for Mlx5Connection {
         self.allocator.recover_buffer(buf)
     }
 
+    fn allocate_fallback_mempools(&mut self, mempool_ids: &mut Vec<MempoolID>) -> Result<()> {
+        for size in self.allocator.get_cur_sizes().iter() {
+            tracing::info!("Allocating one more mempool with size {}", *size);
+            mempool_ids.append(&mut self.add_memory_pool_with_size(*size)?);
+        }
+        Ok(())
+    }
+
     fn add_memory_pool(&mut self, size: usize, min_elts: usize) -> Result<Vec<MempoolID>> {
         // use 2MB pages for data, 2MB pages for metadata (?)
+        //println!("In add memory pool: size {}, min_elts {}", size, min_elts);
         let actual_size = cornflakes_libos::allocator::align_to_pow2(size);
         let mempool_params = sizes::MempoolAllocationParams::new(min_elts, PGSIZE_2MB, actual_size)
             .wrap_err("Incorrect mempool allocation params")?;
+        //println!("About to call data mempool new  past params check");
         tracing::info!(mempool_params = ?mempool_params, "Adding mempool");
         let data_mempool = DataMempool::new(&mempool_params, &self.thread_context, true)?;
         let id = self

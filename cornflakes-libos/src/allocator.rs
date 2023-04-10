@@ -341,4 +341,11 @@ where
     pub fn has_mempool(&self, size: usize) -> bool {
         return self.mempool_ids.contains_key(&size);
     }
+
+    #[inline]
+    pub fn get_cur_sizes(&self) -> Vec<usize> {
+        // return list of sizes currently that can be allocated
+        let sizes = self.mempool_ids.iter().map(|(k, _)| *k).collect();
+        sizes
+    }
 }

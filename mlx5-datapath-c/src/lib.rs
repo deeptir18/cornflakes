@@ -137,6 +137,11 @@ pub extern "C" fn Mlx5Connection_free_datapath_buffer(
     datapath_buffer: *mut ::std::os::raw::c_void,
 ) {
     let _datapath_buffer_box = unsafe { Box::from_raw(datapath_buffer as *mut Mlx5Buffer) };
+    tracing::debug!(
+        "In free datapath buffer, with datapath buffer ptr: {:?}; has cur refcnt {}",
+        _datapath_buffer_box.as_ref().as_ref().as_ptr(),
+        _datapath_buffer_box.as_ref().read_refcnt()
+    );
 }
 #[no_mangle]
 pub extern "C" fn Mlx5Connection_retrieve_raw_ptr(
@@ -166,18 +171,20 @@ pub extern "C" fn Mlx5Connection_allocate_and_copy_into_original_datapath_buffer
     {
         Some(buf) => buf,
         None => {
-            tracing::debug!(
+            println!(
                 "Mempool for size {} doesn't exist; allocating (padded size {})",
                 data_buffer_len,
                 pad_mempool_size(data_buffer_len)
             );
+            println!("Probably crashing at mempool ids box line",);
             let num_mempools = mempool_ids_vec_box.len();
+            println!("Didn't make it past mempool ids box line");
             mempool_ids_vec_box.append(
                 &mut datapath
                     .add_memory_pool_with_size(pad_mempool_size(data_buffer_len))
                     .unwrap(),
             );
-            tracing::info!("Adding mempool # {}", num_mempools);
+            println!("Adding mempool # {}", num_mempools);
             match datapath
                 .allocate(pad_mempool_size(data_buffer_len))
                 .unwrap()

@@ -786,6 +786,7 @@ impl ServerLoadGenerator for TwitterServerLoader {
                     }
                 }
             }
+            println!("Loaded: {} keys", kv_server.len());
 
             // shuffle the vector to randomize where values are loaded
             let mut vec: Vec<usize> = (0..lines_vec.len()).collect();
