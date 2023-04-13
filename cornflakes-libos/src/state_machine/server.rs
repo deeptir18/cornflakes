@@ -13,6 +13,15 @@ pub trait ServerSM {
 
     fn push_buf_type(&self) -> PushBufType;
 
+    fn process_requests_hybrid_arena_sga(
+        &mut self,
+        _pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        _datapath: &mut Self::Datapath,
+        _arena: &mut bumpalo::Bump,
+    ) -> Result<()> {
+        unimplemented!();
+    }
+
     fn process_requests_hybrid_object(
         &mut self,
         _pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
@@ -216,6 +225,10 @@ pub trait ServerSM {
                         self.process_requests_hybrid_arena_object(pkts, datapath, &mut arena)?;
                         #[cfg(feature = "profiler")]
                         demikernel::timer!("Arena reset");
+                        arena.reset();
+                    }
+                    PushBufType::HybridArenaSga => {
+                        self.process_requests_hybrid_arena_sga(pkts, datapath, &mut arena)?;
                         arena.reset();
                     }
                     PushBufType::Object => {

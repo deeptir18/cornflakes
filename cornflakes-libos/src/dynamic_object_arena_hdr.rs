@@ -1,10 +1,10 @@
 use super::{
-    datapath::{Datapath, MetadataOps, ReceivedPkt},
+    datapath::{Datapath, DatapathBufferOps, MetadataOps, ReceivedPkt},
     SerializationInfo,
 };
 use bitmaps::Bitmap;
 use byteorder::{ByteOrder, LittleEndian};
-use color_eyre::eyre::{Result, WrapErr};
+use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use std::{default::Default, marker::PhantomData, ops::Index, slice::Iter};
 
 #[inline]
@@ -215,6 +215,58 @@ where
 
     fn modify_serialization_info_inner(&self, info: &mut SerializationInfo);
 
+    // represents serializing the object into an intermediate SG array
+    // can compare performance to plain object API
+    fn serialize_into_metadata_vec(&self, datapath: &mut D) -> Result<Vec<D::DatapathMetadata>> {
+        let serialization_info = self.get_serialization_info();
+        let mut copy_buffer = match datapath.allocate_tx_buffer()? {
+            (Some(x), size) => {
+                ensure!(
+                    size >= (serialization_info.copy_length + serialization_info.header_size),
+                    "Allocate tx buffer too small"
+                );
+                x
+            }
+            (None, _) => {
+                bail!("Not enough datapath tx buffers to serialize");
+            }
+        };
+        let mut metadata_vec = Vec::with_capacity(serialization_info.num_zero_copy_entries);
+        let mut cur_copy_offset = 0;
+        let mut cur_zero_copy_offset = 0;
+        self.iterate_and_fill_in_metadata_vec(
+            &serialization_info,
+            &mut copy_buffer,
+            0,
+            self.dynamic_header_start(),
+            &mut cur_copy_offset,
+            &mut cur_zero_copy_offset,
+            &mut metadata_vec,
+        )?;
+        copy_buffer.set_len(serialization_info.header_size + serialization_info.copy_length);
+        let copy_buffer_metadata = match datapath.get_metadata(copy_buffer)? {
+            Some(x) => x,
+            None => {
+                bail!("Failed to get metadata from allocated copy buf");
+            }
+        };
+        // insert buffer with header and copy data into front
+        metadata_vec.insert(0, copy_buffer_metadata);
+
+        Ok(metadata_vec)
+    }
+
+    fn iterate_and_fill_in_metadata_vec(
+        &self,
+        serialization_info: &SerializationInfo,
+        copy_buffer: &mut D::DatapathBuffer,
+        constant_header_offset: usize,
+        dynamic_header_offset: usize,
+        cur_copy_offset: &mut usize,
+        cur_zero_copy_offset: &mut usize,
+        metadata_vec: &mut Vec<D::DatapathMetadata>,
+    ) -> Result<()>;
+
     /// Total header size: constant (if referenced) + dynamic
     fn total_header_size(&self, with_ref: bool) -> usize {
         <Self as CornflakesArenaObject<'arena, D>>::CONSTANT_HEADER_SIZE * (with_ref as usize)
@@ -424,6 +476,55 @@ where
         false
     }
 
+    fn iterate_and_fill_in_metadata_vec(
+        &self,
+        serialization_info: &SerializationInfo,
+        copy_buffer: &mut D::DatapathBuffer,
+        constant_header_offset: usize,
+        _dynamic_header_offset: usize,
+        cur_copy_offset: &mut usize,
+        cur_zero_copy_offset: &mut usize,
+        metadata_vec: &mut Vec<D::DatapathMetadata>,
+    ) -> Result<()> {
+        match self {
+            CFBytes::RefCounted(metadata) => {
+                let object_len = metadata.as_ref().len();
+                let header_buffer =
+                    copy_buffer.get_mutable_slice(0, serialization_info.header_size)?;
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                obj_ref.write_size(object_len as u32);
+                obj_ref.write_offset(
+                    (*cur_zero_copy_offset
+                        + serialization_info.header_size
+                        + serialization_info.copy_length) as u32,
+                );
+                *cur_zero_copy_offset += object_len;
+                tracing::debug!(len = object_len, ptr =? metadata.as_ref().as_ptr(), "Reached iterate over entries for cf bytes.");
+                // in datapath, check for 0-length entries
+                metadata_vec.push(metadata.clone());
+            }
+            CFBytes::Copied(vec) => {
+                let header_buffer =
+                    copy_buffer.get_mutable_slice(0, serialization_info.header_size)?;
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                obj_ref.write_size(vec.len() as u32);
+                obj_ref.write_offset((*cur_copy_offset + serialization_info.header_size) as u32);
+                tracing::debug!(
+                    offset_to_write = *cur_copy_offset + serialization_info.header_size,
+                    size = vec.len(),
+                    "Reached inner serialize for cf bytes"
+                );
+                // copy into metadata vec
+                let copy_vec = copy_buffer.get_mutable_slice(
+                    *cur_copy_offset + serialization_info.header_size,
+                    *cur_copy_offset + serialization_info.header_size + vec.len(),
+                )?;
+                copy_vec.copy_from_slice(vec.as_slice());
+                *cur_copy_offset += vec.len();
+            }
+        }
+        Ok(())
+    }
     fn iterate_over_entries<F>(
         &self,
         serialization_info: &SerializationInfo,
@@ -686,6 +787,55 @@ where
     #[inline]
     fn is_list(&self) -> bool {
         false
+    }
+
+    fn iterate_and_fill_in_metadata_vec(
+        &self,
+        serialization_info: &SerializationInfo,
+        copy_buffer: &mut D::DatapathBuffer,
+        constant_header_offset: usize,
+        _dynamic_header_offset: usize,
+        cur_copy_offset: &mut usize,
+        cur_zero_copy_offset: &mut usize,
+        metadata_vec: &mut Vec<D::DatapathMetadata>,
+    ) -> Result<()> {
+        match self {
+            CFString::RefCounted(metadata) => {
+                let object_len = metadata.as_ref().len();
+                let header_buffer =
+                    copy_buffer.get_mutable_slice(0, serialization_info.header_size)?;
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                obj_ref.write_size(object_len as u32);
+                obj_ref.write_offset(
+                    (*cur_zero_copy_offset
+                        + serialization_info.header_size
+                        + serialization_info.copy_length) as u32,
+                );
+                *cur_zero_copy_offset += object_len;
+                tracing::debug!(len = object_len, ptr =? metadata.as_ref().as_ptr(), "Reached iterate over entries for cf bytes.");
+                // in datapath, check for 0-length entries
+                metadata_vec.push(metadata.clone());
+            }
+            CFString::Copied(vec) => {
+                let header_buffer =
+                    copy_buffer.get_mutable_slice(0, serialization_info.header_size)?;
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                obj_ref.write_size(vec.len() as u32);
+                obj_ref.write_offset((*cur_copy_offset + serialization_info.header_size) as u32);
+                tracing::debug!(
+                    offset_to_write = *cur_copy_offset + serialization_info.header_size,
+                    size = vec.len(),
+                    "Reached inner serialize for cf bytes"
+                );
+                let copy_slice = copy_buffer.get_mutable_slice(
+                    *cur_copy_offset + serialization_info.header_size,
+                    *cur_copy_offset + serialization_info.header_size + vec.len(),
+                )?;
+                copy_slice.copy_from_slice(vec.as_slice());
+                *cur_copy_offset += vec.len();
+            }
+        }
+        Ok(())
     }
 
     fn iterate_over_entries<F>(
@@ -1073,6 +1223,70 @@ where
                 elt.inner_deserialize_from_raw(buf, dynamic_off, buffer_offset, arena)?;
             }
         }
+        Ok(())
+    }
+
+    fn iterate_and_fill_in_metadata_vec(
+        &self,
+        serialization_info: &SerializationInfo,
+        copy_buffer: &mut D::DatapathBuffer,
+        constant_header_offset: usize,
+        dynamic_header_offset: usize,
+        cur_copy_offset: &mut usize,
+        cur_zero_copy_offset: &mut usize,
+        metadata_vec: &mut Vec<D::DatapathMetadata>,
+    ) -> Result<()> {
+        {
+            let header_buffer = copy_buffer.get_mutable_slice(0, serialization_info.header_size)?;
+            let mut forward_pointer = MutForwardPointer(header_buffer, constant_header_offset);
+            forward_pointer.write_size(self.num_set as u32);
+            forward_pointer.write_offset(dynamic_header_offset as u32);
+        }
+
+        tracing::debug!(
+            num_set = self.num_set,
+            dynamic_offset = dynamic_header_offset,
+            num_set = self.num_set,
+            "Writing in forward pointer at position {}",
+            constant_header_offset
+        );
+
+        let mut cur_dynamic_off = dynamic_header_offset + self.dynamic_header_start();
+        for (i, elt) in self.elts.iter().take(self.num_set).enumerate() {
+            if elt.dynamic_header_size() != 0 {
+                let mut forward_offset = MutForwardPointer(
+                    copy_buffer.get_mutable_slice(0, serialization_info.header_size)?,
+                    dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
+                );
+                forward_offset.write_size(elt.dynamic_header_size() as u32);
+                forward_offset.write_offset(cur_dynamic_off as u32);
+                elt.iterate_and_fill_in_metadata_vec(
+                    &serialization_info,
+                    copy_buffer,
+                    cur_dynamic_off,
+                    cur_dynamic_off + elt.dynamic_header_start(),
+                    cur_copy_offset,
+                    cur_zero_copy_offset,
+                    metadata_vec,
+                )?;
+            } else {
+                tracing::debug!(
+                    constant = dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
+                    "Calling inner serialize recursively in list inner serialize"
+                );
+                elt.iterate_and_fill_in_metadata_vec(
+                    &serialization_info,
+                    copy_buffer,
+                    cur_dynamic_off,
+                    cur_dynamic_off + elt.dynamic_header_start(),
+                    cur_copy_offset,
+                    cur_zero_copy_offset,
+                    metadata_vec,
+                )?;
+            }
+            cur_dynamic_off += elt.dynamic_header_size();
+        }
+
         Ok(())
     }
 
