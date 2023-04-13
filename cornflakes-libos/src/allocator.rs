@@ -251,7 +251,7 @@ where
     pub fn allocate_tx_buffer(
         &self,
     ) -> Result<Option<<<M as DatapathMemoryPool>::DatapathImpl as Datapath>::DatapathBuffer>> {
-        tracing::debug!("Allocating from tx mempool: {:?}", self.tx_mempool);
+        //tracing::debug!("Allocating from tx mempool: {:?}", self.tx_mempool);
         self.tx_mempool.alloc_data_buf(TX_MEMPOOL_ID)
     }
 
@@ -275,12 +275,12 @@ where
                             return Ok(Some(x));
                         }
                         None => {
-                            tracing::debug!(
+                            /*tracing::debug!(
                                 considering =? mempools,
                                 "Mempool {} didn't have any buffers (size {})",
                                 *mempool_id,
                                 align_size
-                            );
+                            );*/
                         }
                     }
                 }

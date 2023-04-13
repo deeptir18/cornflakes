@@ -492,6 +492,14 @@ where
                 let header_buffer =
                     copy_buffer.get_mutable_slice(0, serialization_info.header_size)?;
                 let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                tracing::debug!(
+                    zero_copy_offset = *cur_zero_copy_offset
+                        + serialization_info.header_size
+                        + serialization_info.copy_length,
+                    len = object_len,
+                    constant_header_offset = constant_header_offset,
+                    "Reached iterate and fill in metadata vec cf bytes"
+                );
                 obj_ref.write_size(object_len as u32);
                 obj_ref.write_offset(
                     (*cur_zero_copy_offset
@@ -1272,12 +1280,13 @@ where
             } else {
                 tracing::debug!(
                     constant = dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
-                    "Calling inner serialize recursively in list inner serialize"
+                    cur_dynamic_off = cur_dynamic_off,
+                    "Calling inner serialize recursively in list inner iterate over metadata vec"
                 );
                 elt.iterate_and_fill_in_metadata_vec(
                     &serialization_info,
                     copy_buffer,
-                    cur_dynamic_off,
+                    dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
                     cur_dynamic_off + elt.dynamic_header_start(),
                     cur_copy_offset,
                     cur_zero_copy_offset,

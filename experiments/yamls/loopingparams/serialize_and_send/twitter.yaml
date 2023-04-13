@@ -1,0 +1,8 @@
+num_threads: 16
+num_clients: 1
+num_trials: 1
+serialization_libraries: ["cornflakes-dynamic-512-hybridarenasga"]
+rate_percentages: [1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 61.25, 62.5, 63.75, 65, 66.25, 67.5, 68.75, 70, 71.25, 72.5, 73.75, 75, 76.25, 77.5, 78.13, 78.75, 79.80, 80.0, 81, 82, 83, 84, 85, 90, 95, 100]
+max_rates:
+    "value_size = 0, ignore_sets = 0, distribution = exponential, ignore_pps = 1, min_num_keys = 4000000": 520.0
+
