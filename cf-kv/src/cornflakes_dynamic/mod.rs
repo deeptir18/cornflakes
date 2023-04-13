@@ -773,6 +773,236 @@ where
     }
 
     #[inline]
+    fn process_requests_hybrid_arena_sga(
+        &mut self,
+        pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
+        datapath: &mut Self::Datapath,
+        arena: &mut bumpalo::Bump,
+    ) -> Result<()> {
+        // queue as metadata vec in the datapath
+        // for microbenchmark
+        let end = pkts.len();
+        for (i, pkt) in pkts.into_iter().enumerate() {
+            let end_batch = i == (end - 1);
+            let msg_type = MsgType::from_packet(&pkt)?;
+            tracing::debug!(
+                msg_type =? msg_type,
+                "Received packet with data {:?} ptr and length {}",
+                pkt.seg(0).as_ref().as_ptr(),
+                pkt.data_len()
+            );
+            match msg_type {
+                MsgType::Get => {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("handle get hybrid object");
+                    let mut get_req = { kv_serializer_hybrid_arena_object::GetReq::new_in(arena) };
+                    {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Deserialize pkt");
+                        get_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                    }
+                    let mut get_resp = kv_serializer_hybrid_arena_object::GetResp::new_in(arena);
+                    get_resp.set_id(get_req.get_id());
+
+                    let value = {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Get value from kv");
+                        match self.serializer.use_linked_list() {
+                            true => {
+                                match self.linked_list_kv_server.get(get_req.get_key().to_str()?) {
+                                    Some(v) => v.as_ref().get_buffer(),
+                                    None => {
+                                        bail!(
+                                            "Could not find value for key: {:?}",
+                                            get_req.get_key().to_str()
+                                        );
+                                    }
+                                }
+                            }
+                            false => match self.kv_server.get(get_req.get_key().to_str()?) {
+                                Some(v) => v,
+                                None => {
+                                    bail!(
+                                        "Could not find value for key: {:?}",
+                                        get_req.get_key().to_str()
+                                    );
+                                }
+                            },
+                        }
+                    };
+
+                    tracing::debug!(
+                        "For given key {:?}, found value {:?} with length {}",
+                        get_req.get_key().to_str()?,
+                        value.as_ref().as_ptr(),
+                        value.as_ref().len()
+                    );
+
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("Set value get hybrid arena");
+                    {
+                        get_resp.set_val(dynamic_object_arena_hdr::CFBytes::new(
+                            value.as_ref(),
+                            datapath,
+                            arena,
+                        )?);
+                    }
+                    let metadata_vec = get_resp.serialize_into_metadata_vec(datapath)?;
+
+                    datapath.queue_metadata_vec(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        metadata_vec,
+                        end_batch,
+                    )?;
+                }
+                MsgType::GetList(_) => {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("handle getlist hybrid arena object");
+                    let mut getlist_req =
+                        kv_serializer_hybrid_arena_object::GetListReq::new_in(arena);
+                    {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("deserialize");
+                        getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                    }
+                    let mut getlist_resp =
+                        kv_serializer_hybrid_arena_object::GetListResp::new_in(arena);
+                    getlist_resp.set_id(getlist_req.get_id());
+
+                    if self.serializer.use_linked_list() {
+                        let range_start = getlist_req.get_range_start();
+                        let range_end = getlist_req.get_range_end();
+                        let mut node_option = {
+                            #[cfg(feature = "profiler")]
+                            demikernel::timer!("get key # 1");
+                            self.linked_list_kv_server
+                                .get(getlist_req.get_key().to_str()?)
+                        };
+                        let range_len = {
+                            if range_end == -1 {
+                                let mut len = 0;
+                                while let Some(node) = node_option {
+                                    len += 1;
+                                    node_option = node.get_next();
+                                }
+                                len - range_start as usize
+                            } else {
+                                ensure!(
+                                    range_start < range_end,
+                                    "Cannot process get list with range_end < range_start"
+                                );
+                                (range_end - range_start) as usize
+                            }
+                        };
+
+                        {
+                            #[cfg(feature = "profiler")]
+                            demikernel::timer!("init val list arena");
+                            getlist_resp.init_val_list(range_len, arena);
+                        }
+                        let list = getlist_resp.get_mut_val_list();
+                        let mut node_option = {
+                            #[cfg(feature = "profiler")]
+                            demikernel::timer!("get key # 2");
+                            self.linked_list_kv_server
+                                .get(getlist_req.get_key().to_str()?)
+                        };
+
+                        let mut idx = 0;
+                        while let Some(node) = node_option {
+                            if idx < range_start {
+                                node_option = node.get_next();
+                                idx += 1;
+                                continue;
+                            } else if idx as usize == range_len {
+                                tracing::debug!("Got to idx = range len");
+                                break;
+                            }
+                            tracing::debug!(
+                                "Appending value to linked list with size {}",
+                                node.get_data().len()
+                            );
+                            {
+                                #[cfg(feature = "profiler")]
+                                demikernel::timer!("append to list");
+                                list.append(dynamic_object_arena_hdr::CFBytes::new(
+                                    node.get_data(),
+                                    datapath,
+                                    arena,
+                                )?);
+                            }
+                            node_option = node.get_next();
+                            idx += 1;
+                        }
+                    } else {
+                        let value_list =
+                            match self.list_kv_server.get(getlist_req.get_key().to_str()?) {
+                                Some(v) => v,
+                                None => {
+                                    bail!(
+                                        "Could not find value for key: {:?}",
+                                        getlist_req.get_key().to_str()
+                                    );
+                                }
+                            };
+
+                        getlist_resp.init_val_list(value_list.len(), arena);
+                        let list = getlist_resp.get_mut_val_list();
+                        for value in value_list.iter() {
+                            list.append(dynamic_object_arena_hdr::CFBytes::new(
+                                value.as_ref(),
+                                datapath,
+                                arena,
+                            )?);
+                        }
+                    }
+                    let metadata_vec = getlist_resp.serialize_into_metadata_vec(datapath)?;
+
+                    datapath.queue_metadata_vec(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        metadata_vec,
+                        end_batch,
+                    )?;
+                }
+                MsgType::Put => {
+                    let mut put_req = kv_serializer_hybrid_arena_object::PutReq::new_in(arena);
+                    put_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
+                    if self.serializer.use_linked_list() {
+                        self.linked_list_kv_server.insert_with_copies(
+                            put_req.get_key().to_str()?,
+                            put_req.get_val().as_ref(),
+                            datapath,
+                            &mut self.mempool_ids,
+                        )?;
+                    } else {
+                        self.kv_server.insert_with_copies(
+                            put_req.get_key().to_str()?,
+                            put_req.get_val().as_ref(),
+                            datapath,
+                            &mut self.mempool_ids,
+                        )?;
+                    }
+                    let mut put_resp = kv_serializer_hybrid_arena_object::PutResp::new_in(arena);
+                    put_resp.set_id(put_req.get_id());
+                    let metadata_vec = put_resp.serialize_into_metadata_vec(datapath)?;
+                    datapath.queue_metadata_vec(
+                        pkt.msg_id(),
+                        pkt.conn_id(),
+                        metadata_vec,
+                        end_batch,
+                    )?;
+                }
+                _ => {
+                    unimplemented!();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[inline]
     fn process_requests_hybrid_object(
         &mut self,
         pkts: Vec<ReceivedPkt<<Self as ServerSM>::Datapath>>,
