@@ -452,10 +452,10 @@ pub extern "C" fn ReplyConsensusMessage_set_result<'registered>(
     let mut self_ =
         unsafe { Box::from_raw(self_ as *mut ReplyConsensusMessage<'registered, Mlx5Connection>) };
     // Should do box from raw if the Reply was created with new
-    let tapirReply = unsafe { Box::from_raw(result as *mut Reply<'registered, Mlx5Connection>) }; 
-    unsafe { self_.set_result(*tapirReply) };
+    let tapir_reply = unsafe { Box::from_raw(result as *mut Reply<'registered, Mlx5Connection>) }; 
+    self_.set_result((*tapir_reply).clone());
     Box::into_raw(self_);
-    Box::into_raw(tapirReply);
+    Box::into_raw(tapir_reply);
 }
 
 #[inline]
@@ -622,10 +622,10 @@ pub extern "C" fn UnloggedReplyMessage_set_reply<'registered>(
     let mut self_ =
         unsafe { Box::from_raw(self_ as *mut UnloggedReplyMessage<'registered, Mlx5Connection>) };
     // Should do box from raw if the Reply was created with new
-    let tapirReply = unsafe { Box::from_raw(reply as *mut Reply<'registered, Mlx5Connection>) }; 
-    unsafe { self_.set_reply(*tapirReply) };
+    let tapir_reply = unsafe { Box::from_raw(reply as *mut Reply<'registered, Mlx5Connection>) }; 
+    self_.set_reply((*tapir_reply).clone());
     Box::into_raw(self_);
-    Box::into_raw(tapirReply);
+    Box::into_raw(tapir_reply);
 }
 
 #[inline]
