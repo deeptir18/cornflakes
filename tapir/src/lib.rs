@@ -663,8 +663,8 @@ pub extern "C" fn Reply_get_mut_result<'registered>(
     return_ptr: *mut *mut ::std::os::raw::c_void,
 ) {
     let reply = self_ as *mut Reply<'registered, Mlx5Connection>;
-    let value = unsafe { (*reply).get_mut_result() };
-    unsafe { *return_ptr = value };
+    let value: *mut TapirReply<'registered, Mlx5Connection> = unsafe { (*reply).get_mut_result() };
+    unsafe { *return_ptr = value as _ };
 }
 
 // #[inline]
@@ -739,8 +739,8 @@ pub extern "C" fn TapirReply_get_mut_timestampe<'registered>(
     return_ptr: *mut *mut ::std::os::raw::c_void,
 ) {
     let reply = self_ as *mut TapirReply<'registered, Mlx5Connection>;
-    let value = unsafe { (*reply).get_mut_timestamp() };
-    unsafe { *return_ptr = value };
+    let value: *mut TimestampMessage<'registered, Mlx5Connection> = unsafe { (*reply).get_mut_timestamp() };
+    unsafe { *return_ptr = value as _ };
 }
 
 #[inline]
@@ -778,10 +778,9 @@ pub extern "C" fn TapirReply_set_value<'registered>(
     self_: *mut ::std::os::raw::c_void,
     val: *const ::std::os::raw::c_void,
 ) {
-    let mut reply = self_ as *mut TapirReply<'registered, Mlx5Connection>;
+    let reply = self_ as *mut TapirReply<'registered, Mlx5Connection>;
     let arg0 = unsafe { *Box::from_raw(val as *mut CFString<Mlx5Connection>) };
-    unsafe { (*reply).set_value(arg0)};
-    Box::into_raw(val);
+    unsafe { (*reply).set_value(arg0) };
 }
 
 // TimestampMesssage
@@ -792,16 +791,16 @@ pub extern "C" fn TimestampMessage_get_id<'registered>(
     self_: *mut ::std::os::raw::c_void,
     return_ptr: *mut u64,
 ) {
-    let tsMsg = self_ as *mut TimestampMessage<'registered, Mlx5Connection>;
-    let value = unsafe { (*tsMsg).get_id() };
+    let ts_msg = self_ as *mut TimestampMessage<'registered, Mlx5Connection>;
+    let value = unsafe { (*ts_msg).get_id() };
     unsafe { *return_ptr = value };
 }
 
 #[inline]
 #[no_mangle]
 pub extern "C" fn TimestampMessage_set_id<'registered>(self_: *mut ::std::os::raw::c_void, id: u64) {
-    let tsMsg = self_ as *mut TimestampMessage<'registered, Mlx5Connection>;
-    unsafe { (*tsMsg).set_id(id) };
+    let ts_msg = self_ as *mut TimestampMessage<'registered, Mlx5Connection>;
+    unsafe { (*ts_msg).set_id(id) };
 }
 
 #[inline]
@@ -810,14 +809,14 @@ pub extern "C" fn TimestampMessage_get_timestamp<'registered>(
     self_: *mut ::std::os::raw::c_void,
     return_ptr: *mut u64,
 ) {
-    let tsMsg = self_ as *mut TimestampMessage<'registered, Mlx5Connection>;
-    let value = unsafe { (*tsMsg).get_id() };
+    let ts_msg = self_ as *mut TimestampMessage<'registered, Mlx5Connection>;
+    let value = unsafe { (*ts_msg).get_id() };
     unsafe { *return_ptr = value };
 }
 
 #[inline]
 #[no_mangle]
 pub extern "C" fn TimestampMessage_set_timestamp<'registered>(self_: *mut ::std::os::raw::c_void, timestamp: u64) {
-    let tsMsg = self_ as *mut TimestampMessage<'registered, Mlx5Connection>;
-    unsafe { (*tsMsg).set_timestamp(timestamp) };
+    let ts_msg = self_ as *mut TimestampMessage<'registered, Mlx5Connection>;
+    unsafe { (*ts_msg).set_timestamp(timestamp) };
 }
