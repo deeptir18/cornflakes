@@ -46,7 +46,7 @@ def parse_cornflakes_size_distr_avg(size_distr):
             sum_size += int(params[i])
         return sum_size / (len(params) - 1)
     else:
-        utils.error("Parsing size_distr_avg not implemented for ", params[0])
+        error("Parsing size_distr_avg not implemented for ", params[0])
         exit(1)
 
 def yaml_get(yaml_obj, var):

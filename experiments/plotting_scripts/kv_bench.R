@@ -32,24 +32,23 @@ plot_type <- args[5]
 # argument 6: if individual -- size
 # argument 7: if individual -- num_values
 
-d <- d[ which(d$percent_achieved_rate > 0.95),]
-
-# cut out all data where the percentachieved is less than .95
-# d <- subset(d, percent_achieved_rate > .95)
+# d <- d[ which(d$percent_achieved_rate > 0.95),]
+d$actual_percent_achieved_rate = d$achieved_load_pps / d$achieved_load_pps_sent
+d <- d[ which(d$actual_percent_achieved_rate > 0.95),]
 
 options(width=10000)
 cr_labels <- c('capnproto' = 'Capnproto', 
             'protobuf' = 'Protobuf', 
             'flatbuffers' = 'Flatbuffers', 
             'redis' = 'Redis',
-            'cornflakes1c-dynamic' = 'Cornflakes (Copy)',
-            'cornflakes-dynamic' = 'Cornflakes (SG)')
+            'cornflakes1c-dynamic' = 'Only Copy',
+            'cornflakes-dynamic' = 'Only SG')
 anon_labels <- c('capnproto' = 'Capnproto', 
             'protobuf' = 'Protobuf', 
             'flatbuffers' = 'Flatbuffers', 
             'redis' = 'Redis',
-            'cornflakes1c-dynamic' = 'AnonSys (Copy)',
-            'cornflakes-dynamic' = 'AnonSys (SG)')
+            'cornflakes1c-dynamic' = 'Only Copy',
+            'cornflakes-dynamic' = 'Only SG')
 shape_values <- c('capnproto' = 18, 
                   'protobuf' = 8, 
                   'flatbuffers' = 17, 
@@ -175,7 +174,7 @@ base_median_plot <- function(data, x_cutoff) {
 
 label_plot <- function(plot, labels) {
     plot <- plot +
-            geom_point(size=1.75) +
+            geom_point(size=1) +
             geom_line(linewidth = 0.5, aes(color=serialization), orientation = "y") +
             scale_shape_manual(values = shape_values, labels = labels, breaks = levels) +
             scale_color_manual(values = color_values ,labels = labels, breaks = levels) +
@@ -196,9 +195,9 @@ label_plot <- function(plot, labels) {
                   legend.title.align=0.5,
                   legend.margin=margin(0,0,0,0),
                     legend.box.margin=margin(-5,-10,-5,-10)) +
-            guides(colour=guide_legend(nrow=2, byrow=TRUE, override.aes = list(size = 3)),
-                   fill=guide_legend(nrow=2, byrow=TRUE),
-                   shape=guide_legend(nrow=2, byrow=TRUE))
+            guides(colour=guide_legend(nrow=1, byrow=TRUE, override.aes = list(size = 3)),
+                   fill=guide_legend(nrow=1, byrow=TRUE),
+                   shape=guide_legend(nrow=1, byrow=TRUE))
             
 
     return(plot)
@@ -258,6 +257,80 @@ tput_plot_num_values <- function(data) {
     print(plot)
     return(plot)
 }
+calculate_difference <- function(row) {
+    res <- (row["cornflakes-dynamic"] - row["cornflakes1c-dynamic"]) / row["cornflakes1c-dynamic"] * 100.0
+    return(res)
+}
+
+label_heatmap <- function(row) {
+    scatter_gather <- round(row["cornflakes-dynamic"], digits = 2)
+    copy <- round(row["cornflakes1c-dynamic"], digits = 2)
+    difference <- round(row["difference"], digits = 1)
+    label <- ""
+    if (difference > 0) {
+        label <- paste0(label, "+")
+    } else {
+        label <- paste0(label, "-")
+    }
+    difference <- abs(difference)
+    label <- paste0(label, difference)
+    label <- paste0(label, "%")
+    return (label)
+}
+
+heatmap_plot <- function(data) {
+    summarized <- ddply(data, c("serialization", "total_size", "num_values"),
+                    summarise,
+                    maxtput = mean(maxtputgbps))
+    heatmap_data <- summarized %>% spread(key = serialization, value = maxtput)
+    ## make a new row based on % better / % difference
+    heatmap_data$difference <- apply(heatmap_data, 1, calculate_difference)
+    heatmap_data$label <- apply(heatmap_data, 1, label_heatmap)
+    plot <- ggplot(heatmap_data,
+            aes(x = factor(total_size),
+                y = factor(num_values),
+                fill = difference),
+                    margins = c(0,0)) +
+            geom_tile() +
+             coord_fixed() +
+            theme_void() +
+            xlab(label = "Total Request Payload Size (Bytes)") +
+            ylab(label = "Number of Elements Per Request") +
+            ggtitle("SG Throughput Relative to Copy") + 
+            geom_text(aes(label=label, family = "Fira Sans")) +
+            scale_fill_gradient2(low = "#f1a340", mid = "#f7f7f7", high = "#998ec3",
+                                  guide="colorbar", 
+                                  breaks = c(-30, -20, -10,0, 10,20,35),
+                                  labels = c("Copy Better", "-20%", "-10%", "Equal", "+10%", "+20%", "SG Better")) +
+            # expand_limits(x = 0, y = 1) +
+            scale_x_discrete(expand = c(0,0)) +
+            theme(legend.position="right",
+                  legend.title=element_blank(),
+                  plot.title = element_text(hjust = 0.5, size=15),
+                  text = element_text(family = "Fira Sans"),
+                  axis.title.x=element_text(size=15,face="plain", colour="#000000",vjust=-0.7),
+                  plot.margin = unit(c(0, 0, 0.2, 0), "cm"),
+                  axis.title.y=element_text(size=15,face="plain", colour="#000000", angle=90,vjust =1),
+                  axis.text.y=element_text(size=15, colour="#000000"),
+                  axis.text.x=element_text(size=15, colour="#000000", angle=0),
+            )
+            #theme(legend.position = "right",
+            #      text = element_text(family="Fira Sans"),
+            #      #legend.title = element_blank(),
+             #     legend.key.size = unit(10, 'mm'),
+             #     legend.spacing.x = unit(0.1, 'cm'),
+             #     #plot.margin = unit(c(0, 0, 0, 0), "cm"),
+             #     legend.text=element_text(size=15),
+             #     axis.title=element_text(size=15,face="plain", colour="#000000"),
+              #    axis.ticks.y = element_blank(),
+              #   axis.ticks.x= element_blank(),
+               #  axis.text.y=element_text(size=10, colour="#000000"),
+               # axis.text.x=element_text(size=10, colour="#000000", angle=45)
+               #  )
+            print(plot)
+            return(plot)
+}
+
 
 tput_plot <- function(data, x_label, vary_size_plot, labels) {
     y_axis <- "Highest Achieved\nLoad (Gbps)"
@@ -386,5 +459,9 @@ if (plot_type == "full") {
     ggsave("tmp.pdf", plot = plot, width=5, height=2)
     embed_fonts("tmp.pdf", outfile=cr_plot_pdf)
 
+} else if (plot_type == "heatmap") {
+    plot <- heatmap_plot(d_postprocess)
+    ggsave("tmp.pdf", plot = plot, width=6, height=4)
+    embed_fonts("tmp.pdf", outfile=anon_plot_pdf)
 }
 

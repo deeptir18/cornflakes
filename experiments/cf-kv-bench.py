@@ -490,6 +490,15 @@ class KVBench(runner.Experiment):
         post_process_log = Path(folder) / post_process_logfile
         max_rates = self.parse_max_rates(utils.yaml_get(loop_yaml,
             "max_rates"))
+        
+        heatmap_pdf = plot_path / "heatmap.pdf"
+        total_plot_args = [str(plotting_script),
+                               str(full_log),
+                               str(post_process_log),
+                               str(heatmap_pdf),
+                               "tputputgbps", "heatmap"]
+        print(" ".join(total_plot_args))
+        sh.run(total_plot_args)
 
         # make total plot
         for metric in metrics:
