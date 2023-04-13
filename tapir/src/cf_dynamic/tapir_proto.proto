@@ -3,15 +3,15 @@ syntax = "proto3";
 package tapir_cf;
 
 message Request {
-     bytes op = 1;
-     uint64 clientid = 2;
-     uint64 clientreqid = 3;
+    bytes op = 1;
+    uint64 clientid = 2;
+    uint64 clientreqid = 3;
 }
 
 message UnloggedRequest {
-     bytes op = 1;
-     uint64 clientid = 2;
-     uint64 clientreqid = 3;
+    bytes op = 1;
+    uint64 clientid = 2;
+    uint64 clientreqid = 3;
 }
 
 message OpID {
@@ -24,27 +24,31 @@ message OpID {
 // NORMAL. Replicas pack this information into this proto buf and serialize it
 // to disk.
 message PersistedViewInfo {
-  uint64 view = 1;
-  uint64 latest_normal_view = 2;
+    uint64 view = 1;
+    uint64 latest_normal_view = 2;
 }
 
 message RecordEntryProto {
-  uint64 view = 1;
-  OpID opid = 2;
-  uint32 state = 3;
-  uint32 record_type = 4;
-  bytes op = 5;
-  bytes result = 6;
+    uint64 view = 1;
+    OpID opid = 2;
+    uint32 state = 3;
+    uint32 record_type = 4;
+    bytes op = 5;
+    bytes result = 6;
 }
 
 // TODO: Currently, replicas send entire records to one another. Figure out if
 // there is a more efficient way to exchange records.
 message RecordProto {
-  RecordEntryProto entry = 1;
+    RecordEntryProto entry = 1;
 }
 
 message ProposeInconsistentMessage {
     Request req = 1;
+}
+
+message Reply {
+    TapirReply result = 1;
 }
 
 message ReplyInconsistentMessage {
@@ -72,7 +76,7 @@ message ReplyConsensusMessage {
     uint64 view = 1;
     uint32 replicaIdx = 2;
     OpID opid = 3;
-    bytes result = 4;
+    Reply result = 4;
     uint32 finalized = 5;
 }
 
@@ -86,7 +90,7 @@ message UnloggedRequestMessage {
 }
 
 message UnloggedReplyMessage {
-    bytes reply = 1;
+    Reply reply = 1;
     uint64 clientreqid = 2;
 }
 
@@ -107,8 +111,8 @@ message WriteMessage {
 
 // A serialized transaction
 message TransactionMessage {
-    ReadMessage readset = 1;
-    WriteMessage writeset = 2;
+    repeated ReadMessage readset = 1;
+    repeated WriteMessage writeset = 2;
 }
 
 message GetMessage {
@@ -126,21 +130,21 @@ message CommitMessage {
 }
 
 message AbortMessage {
-     TransactionMessage txn = 1;
+    TransactionMessage txn = 1;
 }
 
 message TapirRequest {
-     uint32 op = 1;
-     uint64 txnid = 2;
-     GetMessage get = 3;
-     PrepareMessage prepare = 4;
-     CommitMessage commit = 5;
-     AbortMessage abort = 6;
+    uint32 op = 1;
+    uint64 txnid = 2;
+    GetMessage get = 3;
+    PrepareMessage prepare = 4;
+    CommitMessage commit = 5;
+    AbortMessage abort = 6;
 }
 
 message TapirReply {
-     int32 status = 1;
-     string value = 2;
-     TimestampMessage timestamp = 3;
+    int32 status = 1;
+    string value = 2;
+    TimestampMessage timestamp = 3;
 }
 

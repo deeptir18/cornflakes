@@ -400,30 +400,6 @@ pub extern "C" fn ReplyConsensusMessage_set_replicaIdx<'registered>(self_: *mut 
 
 #[inline]
 #[no_mangle]
-pub extern "C" fn ReplyConsensusMessage_get_result<'registered>(
-    self_: *mut ::std::os::raw::c_void,
-    return_ptr: *mut *mut ::std::os::raw::c_void,
-) {
-    let self_ = unsafe { Box::from_raw(self_ as *mut ReplyConsensusMessage<'registered, Mlx5Connection>) };
-    let value: *const CFBytes<Mlx5Connection> = self_.get_result();
-    unsafe { *return_ptr = value as _ };
-    Box::into_raw(self_);
-}
-
-#[inline]
-#[no_mangle]
-pub extern "C" fn ReplyConsensusMessage_set_result<'registered>(
-    self_: *mut ::std::os::raw::c_void,
-    val: *const ::std::os::raw::c_void,
-) {
-    let mut self_ = unsafe { Box::from_raw(self_ as *mut ReplyConsensusMessage<'registered, Mlx5Connection>) };
-    let arg0 = unsafe { *Box::from_raw(val as *mut CFBytes<Mlx5Connection>) };
-    self_.set_result(arg0);
-    Box::into_raw(self_);
-}
-
-#[inline]
-#[no_mangle]
 pub extern "C" fn ReplyConsensusMessage_get_finalized<'registered>(
     self_: *mut ::std::os::raw::c_void,
     return_ptr: *mut u32,
@@ -451,6 +427,18 @@ pub extern "C" fn ReplyConsensusMessage_get_mut_opid<'registered>(
 ) {
     let mut self_ = unsafe { Box::from_raw(self_ as *mut ReplyConsensusMessage<'registered, Mlx5Connection>) };
     let value: *mut OpID<'registered, Mlx5Connection> = self_.get_mut_opid();
+    unsafe { *return_ptr = value as _ };
+    Box::into_raw(self_);
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn ReplyConsensusMessage_get_mut_result<'registered>(
+    self_: *mut ::std::os::raw::c_void,
+    return_ptr: *mut *mut ::std::os::raw::c_void,
+) {
+    let mut self_ = unsafe { Box::from_raw(self_ as *mut ReplyConsensusMessage<'registered, Mlx5Connection>) };
+    let value: *mut Reply<'registered, Mlx5Connection> = self_.get_mut_result();
     unsafe { *return_ptr = value as _ };
     Box::into_raw(self_);
 }
@@ -600,25 +588,13 @@ pub extern "C" fn UnloggedReplyMessage_set_clientreqid<'registered>(self_: *mut 
 
 #[inline]
 #[no_mangle]
-pub extern "C" fn UnloggedReplyMessage_get_reply<'registered>(
+pub extern "C" fn UnloggedReplyMessage_get_mut_reply<'registered>(
     self_: *mut ::std::os::raw::c_void,
     return_ptr: *mut *mut ::std::os::raw::c_void,
 ) {
-    let self_ = unsafe { Box::from_raw(self_ as *mut UnloggedReplyMessage<'registered, Mlx5Connection>) };
-    let value: *const CFBytes<Mlx5Connection> = self_.get_reply();
-    unsafe { *return_ptr = value as _ };
-    Box::into_raw(self_);
-}
-
-#[inline]
-#[no_mangle]
-pub extern "C" fn UnloggedReplyMessage_set_reply<'registered>(
-    self_: *mut ::std::os::raw::c_void,
-    val: *const ::std::os::raw::c_void,
-) {
     let mut self_ = unsafe { Box::from_raw(self_ as *mut UnloggedReplyMessage<'registered, Mlx5Connection>) };
-    let arg0 = unsafe { *Box::from_raw(val as *mut CFBytes<Mlx5Connection>) };
-    self_.set_reply(arg0);
+    let value: *mut Reply<'registered, Mlx5Connection> = self_.get_mut_reply();
+    unsafe { *return_ptr = value as _ };
     Box::into_raw(self_);
 }
 
@@ -676,4 +652,172 @@ pub extern "C" fn Mlx5Connection_UnloggedReplyMessage_queue_cornflakes_arena_obj
 #[no_mangle]
 pub extern "C" fn UnloggedReplyMessage_free<'arena>(self_: *const ::std::os::raw::c_void) {
     let _ = unsafe { Box::from_raw(self_ as *mut UnloggedReplyMessage<'arena, Mlx5Connection>) };
+}
+
+// Reply
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn Reply_get_mut_result<'registered>(
+    self_: *mut ::std::os::raw::c_void,
+    return_ptr: *mut *mut ::std::os::raw::c_void,
+) {
+    let reply = self_ as *mut Reply<'registered, Mlx5Connection>;
+    let value = unsafe { (*reply).get_mut_result() };
+    unsafe { *return_ptr = value };
+}
+
+// #[inline]
+// #[no_mangle]
+// pub extern "C" fn Reply_set_result<'registered>(
+//     self_: *mut ::std::os::raw::c_void,
+//     result: *mut ::std::os::raw::c_void,
+// ) {
+//     let reply = self_ as *mut Reply<'registered, Mlx5Connection>; 
+//     let tapirReply = // Should do box from raw if the TapirReply was created with new
+//     unsafe { (*reply).set_result(*result as *mut TapirReply<'registered, Mlx5Connection>) };
+// }
+
+
+// CFString
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn CFString_new_in(
+    arena: *mut ::std::os::raw::c_void,
+    return_ptr: *mut *mut ::std::os::raw::c_void,
+) {
+    let arg0 = arena as *const bumpalo::Bump;
+    let value = CFString::<Mlx5Connection>::new_in(unsafe { &*arg0 });
+    let value = Box::into_raw(Box::new(value));
+    unsafe { *return_ptr = value as _ };
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn CFString_new(
+    ptr: *const ::std::os::raw::c_uchar,
+    ptr_len: usize,
+    datapath: *mut ::std::os::raw::c_void,
+    arena: *mut ::std::os::raw::c_void,
+    return_ptr: *mut *mut ::std::os::raw::c_void,
+) -> u32 {
+    let arg0 = unsafe { std::slice::from_raw_parts(ptr, ptr_len) };
+    let arg1 = datapath as *mut Mlx5Connection;
+    let arg2 = arena as *const bumpalo::Bump;
+    let value = CFString::<Mlx5Connection>::new(arg0, unsafe { &mut *arg1 }, unsafe { &*arg2 });
+    let value = match value {
+        Ok(value) => value,
+        Err(_) => {
+            return 1;
+        }
+    };
+    let value = Box::into_raw(Box::new(value));
+    unsafe { *return_ptr = value as _ };
+    0
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn CFString_unpack(
+    self_: *const ::std::os::raw::c_void,
+    return_ptr: *mut *const ::std::os::raw::c_uchar,
+    return_len_ptr: *mut usize,
+) {
+    let self_ = unsafe { Box::from_raw(self_ as *mut CFString<Mlx5Connection>) };
+    let ptr = (*self_).as_ref();
+    unsafe { *return_ptr = ptr.as_ptr() };
+    unsafe { *return_len_ptr = self_.len() };
+    Box::into_raw(self_);
+}
+
+// TapirReply
+#[inline]
+#[no_mangle]
+pub extern "C" fn TapirReply_get_mut_timestampe<'registered>(
+    self_: *mut ::std::os::raw::c_void,
+    return_ptr: *mut *mut ::std::os::raw::c_void,
+) {
+    let reply = self_ as *mut TapirReply<'registered, Mlx5Connection>;
+    let value = unsafe { (*reply).get_mut_timestamp() };
+    unsafe { *return_ptr = value };
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn TapirReply_get_status<'registered>(
+    self_: *mut ::std::os::raw::c_void,
+    return_ptr: *mut i32,
+) {
+    let reply = self_ as *mut TapirReply<'registered, Mlx5Connection>;
+    let value = unsafe { (*reply).get_status() };
+    unsafe { *return_ptr = value };
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn TapirReply_set_status<'registered>(self_: *mut ::std::os::raw::c_void, status: i32) {
+    let reply = self_ as *mut TapirReply<'registered, Mlx5Connection>;
+    unsafe { (*reply).set_status(status)};
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn TapirReply_get_value<'registered>(
+    self_: *mut ::std::os::raw::c_void,
+    return_ptr: *mut *mut ::std::os::raw::c_void,
+) {
+    let reply = self_ as *mut TapirReply<'registered, Mlx5Connection>;
+    let value: *const CFString<Mlx5Connection> = unsafe { (*reply).get_value() };
+    unsafe { *return_ptr = value as _ };
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn TapirReply_set_value<'registered>(
+    self_: *mut ::std::os::raw::c_void,
+    val: *const ::std::os::raw::c_void,
+) {
+    let mut reply = self_ as *mut TapirReply<'registered, Mlx5Connection>;
+    let arg0 = unsafe { *Box::from_raw(val as *mut CFString<Mlx5Connection>) };
+    unsafe { (*reply).set_value(arg0)};
+    Box::into_raw(val);
+}
+
+// TimestampMesssage
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn TimestampMessage_get_id<'registered>(
+    self_: *mut ::std::os::raw::c_void,
+    return_ptr: *mut u64,
+) {
+    let tsMsg = self_ as *mut TimestampMessage<'registered, Mlx5Connection>;
+    let value = unsafe { (*tsMsg).get_id() };
+    unsafe { *return_ptr = value };
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn TimestampMessage_set_id<'registered>(self_: *mut ::std::os::raw::c_void, id: u64) {
+    let tsMsg = self_ as *mut TimestampMessage<'registered, Mlx5Connection>;
+    unsafe { (*tsMsg).set_id(id) };
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn TimestampMessage_get_timestamp<'registered>(
+    self_: *mut ::std::os::raw::c_void,
+    return_ptr: *mut u64,
+) {
+    let tsMsg = self_ as *mut TimestampMessage<'registered, Mlx5Connection>;
+    let value = unsafe { (*tsMsg).get_id() };
+    unsafe { *return_ptr = value };
+}
+
+#[inline]
+#[no_mangle]
+pub extern "C" fn TimestampMessage_set_timestamp<'registered>(self_: *mut ::std::os::raw::c_void, timestamp: u64) {
+    let tsMsg = self_ as *mut TimestampMessage<'registered, Mlx5Connection>;
+    unsafe { (*tsMsg).set_timestamp(timestamp) };
 }
