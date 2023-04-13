@@ -23,7 +23,8 @@ def extend_with_serialization_parameters(parser):
                                 dest="buf_mode",
                                 choices=["singlebuf",
                                     "arenaorderedsga", "object", "echo",
-                                    "hybridobject", "hybridarenaobject"],
+                                    "hybridobject", "hybridarenaobject",
+                                    "hybridarenasga"],
                                 required=True)
     parser.add_argument("-inline", "--inline_mode",
                                 dest="inline_mode",
@@ -51,6 +52,8 @@ class ExtraSerializationParameters(object):
             split = serialization.split("-")
             copy_threshold_parsed = int(split[2])
             copy_threshold = copy_threshold_parsed
+            if len(split) > 3:
+                buf_mode = int(split[3]) # e.g. could be cornflakes-dynamic-512-hybridarenasga
             self.serialization = "cornflakes-dynamic"
 
         # extra parameters
