@@ -101,31 +101,42 @@ where
         list_kv_server: &ListKVServer<D>,
         pkt: &ReceivedPkt<D>,
     ) -> Result<kv_messages::GetResp> {
-        let get_request =
+        let get_request = {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("Deserialize pkt");
             kv_messages::GetFromListReq::parse_from_bytes(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])
-                .wrap_err("Failed to deserialzie Proto GetFromList Req")?;
+                .wrap_err("Failed to deserialzie Proto GetFromList Req")?
+        };
         let mut get_resp = kv_messages::GetResp::new();
         get_resp.id = get_request.id;
 
-        let value = match list_kv_server.get(&get_request.key) {
-            Some(list) => match list.get(get_request.idx as usize) {
-                Some(v) => v,
+        let value = {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("Retrieve value");
+            match list_kv_server.get(&get_request.key) {
+                Some(list) => match list.get(get_request.idx as usize) {
+                    Some(v) => v,
+                    None => {
+                        bail!(
+                            "Could not find value index {} for key {} in KVStore",
+                            get_request.idx,
+                            get_request.key
+                        );
+                    }
+                },
                 None => {
                     bail!(
-                        "Could not find value index {} for key {} in KVStore",
-                        get_request.idx,
-                        get_request.key
+                        "Cannot find value for key in KV store: {:?}",
+                        get_request.key,
                     );
                 }
-            },
-            None => {
-                bail!(
-                    "Cannot find value for key in KV store: {:?}",
-                    get_request.key,
-                );
             }
         };
-        get_resp.val = value.as_ref().to_vec();
+        {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("Set value get hybrid arena");
+            get_resp.val = value.as_ref().to_vec();
+        }
         Ok(get_resp)
     }
 
