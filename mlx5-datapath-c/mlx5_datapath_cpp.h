@@ -93,6 +93,8 @@ uintptr_t Mlx5Connection_load_twitter_db(void *conn,
                                          void **list_db_ptr,
                                          void **mempools_ptr);
 
+void Mlx5Connection_drop_db(void *db_ptr);
+
 void Mlx5Connection_drop_dbs(void *db_ptr, void *list_db_ptr);
 
 uint32_t Mlx5Connection_load_ycsb_db(void *conn,

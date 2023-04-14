@@ -602,6 +602,15 @@ pub extern "C" fn Mlx5Connection_load_twitter_db(
 
 #[inline]
 #[no_mangle]
+pub extern "C" fn Mlx5Connection_drop_db(
+    db_ptr: *mut ::std::os::raw::c_void,
+) {
+    // loading these objects into boxes will drop them
+    let _db_box = unsafe { Box::from_raw(db_ptr as *mut KVServer<Mlx5Connection>) };
+}
+
+#[inline]
+#[no_mangle]
 pub extern "C" fn Mlx5Connection_drop_dbs(
     db_ptr: *mut ::std::os::raw::c_void,
     list_db_ptr: *mut ::std::os::raw::c_void,
