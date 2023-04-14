@@ -1698,19 +1698,23 @@ where
                     get_resp.set_id(get_req.get_id());
 
                     let key = get_req.get_key().to_str()?;
-                    let value = match self.list_kv_server.get(key) {
-                        Some(list) => match list.get(get_req.get_idx() as usize) {
-                            Some(v) => v,
+                    let value = {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Retrieve value");
+                        match self.list_kv_server.get(key) {
+                            Some(list) => match list.get(get_req.get_idx() as usize) {
+                                Some(v) => v,
+                                None => {
+                                    bail!(
+                                        "Could not find idx {} for key {} in list kv server",
+                                        get_req.get_idx(),
+                                        key
+                                    );
+                                }
+                            },
                             None => {
-                                bail!(
-                                    "Could not find idx {} for key {} in list kv server",
-                                    get_req.get_idx(),
-                                    key
-                                );
+                                bail!("Could not find value for key: {:?}", key);
                             }
-                        },
-                        None => {
-                            bail!("Could not find value for key: {:?}", key);
                         }
                     };
 
@@ -1721,9 +1725,9 @@ where
                         value.as_ref().len()
                     );
 
-                    #[cfg(feature = "profiler")]
-                    demikernel::timer!("Set value get hybrid arena");
                     {
+                        #[cfg(feature = "profiler")]
+                        demikernel::timer!("Set value get hybrid arena");
                         get_resp.set_val(dynamic_object_arena_hdr::CFBytes::new(
                             value.as_ref(),
                             datapath,
