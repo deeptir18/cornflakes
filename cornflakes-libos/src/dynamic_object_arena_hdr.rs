@@ -522,10 +522,9 @@ where
                     size = vec.len(),
                     "Reached inner serialize for cf bytes"
                 );
-                // copy into metadata vec
                 let copy_vec = copy_buffer.get_mutable_slice(
                     *cur_copy_offset + serialization_info.header_size,
-                    *cur_copy_offset + serialization_info.header_size + vec.len(),
+                    vec.len(),
                 )?;
                 copy_vec.copy_from_slice(vec.as_slice());
                 *cur_copy_offset += vec.len();
@@ -837,7 +836,7 @@ where
                 );
                 let copy_slice = copy_buffer.get_mutable_slice(
                     *cur_copy_offset + serialization_info.header_size,
-                    *cur_copy_offset + serialization_info.header_size + vec.len(),
+                    vec.len(),
                 )?;
                 copy_slice.copy_from_slice(vec.as_slice());
                 *cur_copy_offset += vec.len();
