@@ -89,23 +89,31 @@ where
         pkt: &ReceivedPkt<D>,
         builder: &mut FlatBufferBuilder,
     ) -> Result<()> {
-        let get_request = root::<cf_kv_fbs::GetFromListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?;
-        let value = match list_kv_server.get(get_request.key().unwrap()) {
-            Some(list) => match list.get(get_request.idx() as usize) {
-                Some(v) => v,
+        let get_request = {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("Deserialize pkt");
+            root::<cf_kv_fbs::GetFromListReq>(&pkt.seg(0).as_ref()[REQ_TYPE_SIZE..])?
+        };
+        let value = {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("Retrieve value");
+            match list_kv_server.get(get_request.key().unwrap()) {
+                Some(list) => match list.get(get_request.idx() as usize) {
+                    Some(v) => v,
+                    None => {
+                        bail!(
+                            "Could not find idx {} for key {} in list kv server",
+                            get_request.idx(),
+                            get_request.key().unwrap(),
+                        );
+                    }
+                },
                 None => {
                     bail!(
-                        "Could not find idx {} for key {} in list kv server",
-                        get_request.idx(),
-                        get_request.key().unwrap(),
+                        "Could not find value for key: {:?}",
+                        get_request.key().unwrap()
                     );
                 }
-            },
-            None => {
-                bail!(
-                    "Could not find value for key: {:?}",
-                    get_request.key().unwrap()
-                );
             }
         };
 
@@ -115,13 +123,23 @@ where
             value.as_ref(),
             value.as_ref().len()
         );
-        let args = cf_kv_fbs::GetRespArgs {
-            val: Some(builder.create_vector_direct::<u8>(value.as_ref())),
-            id: get_request.id(),
+        let args = {
+            cf_kv_fbs::GetRespArgs {
+                val: {
+                    #[cfg(feature = "profiler")]
+                    demikernel::timer!("Generate response args");
+                    Some(builder.create_vector_direct::<u8>(value.as_ref()))
+                },
+                id: get_request.id(),
+            }
         };
 
         let get_resp = cf_kv_fbs::GetResp::create(builder, &args);
-        builder.finish(get_resp, None);
+        {
+            #[cfg(feature = "profiler")]
+            demikernel::timer!("finish serialize");
+            builder.finish(get_resp, None);
+        }
         Ok(())
     }
 
