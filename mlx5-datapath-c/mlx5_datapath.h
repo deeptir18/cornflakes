@@ -75,6 +75,13 @@ void ReceivedPkt_conn_id(void *self_, uintptr_t *return_ptr);
 
 void ReceivedPkt_free(const void *self_);
 
+uintptr_t Mlx5Connection_load_retwis_db(void *conn,
+                                        uintptr_t key_size,
+                                        uintptr_t value_size,
+                                        uintptr_t num_keys,
+                                        void **db_ptr,
+                                        void **mempools_ptr);
+
 uintptr_t Mlx5Connection_load_twitter_db(void *conn,
                                          const char *trace_file,
                                          uintptr_t end_time,

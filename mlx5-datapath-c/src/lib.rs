@@ -1,4 +1,8 @@
-use cf_kv::{twitter::TwitterServerLoader, KVServer, ListKVServer, MsgType, ServerLoadGenerator, retwis::RetwisServerLoader};
+use cf_kv::{
+    retwis::{RetwisServerLoader, RetwisValueSizeGenerator},
+    twitter::TwitterServerLoader,
+    KVServer, ListKVServer, MsgType, ServerLoadGenerator,
+};
 use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, InlineMode, ReceivedPkt},
@@ -536,7 +540,6 @@ pub extern "C" fn ReceivedPkt_free(self_: *const ::std::os::raw::c_void) {
     let _ = unsafe { Box::from_raw(self_ as *mut ReceivedPkt<Mlx5Connection>) };
 }
 
-
 #[inline]
 #[no_mangle]
 pub extern "C" fn Mlx5Connection_load_retwis_db(
@@ -548,10 +551,13 @@ pub extern "C" fn Mlx5Connection_load_retwis_db(
     mempools_ptr: *mut *mut ::std::os::raw::c_void,
 ) -> usize {
     let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
-    let file_str = unsafe { std::ffi::CStr::from_ptr(trace_file).to_str().unwrap() };
-    let load_generator = RetwisServerLoader(num_keys, key_size, RetwisValueSizeGenerator::SingleValue(value_size));
+    let load_generator = RetwisServerLoader::new(
+        num_keys,
+        key_size,
+        RetwisValueSizeGenerator::SingleValue(value_size),
+    );
     let (kv, _, _, mempool_ids) = load_generator
-        .new_kv_state(file_str, conn_box.as_mut(), false)
+        .new_kv_state("", conn_box.as_mut(), false)
         .unwrap();
     let boxed_kv = Box::new(kv);
     let boxed_mempool_ids = Box::new(mempool_ids);
@@ -563,7 +569,6 @@ pub extern "C" fn Mlx5Connection_load_retwis_db(
     Box::into_raw(conn_box);
     0
 }
-
 
 #[inline]
 #[no_mangle]
