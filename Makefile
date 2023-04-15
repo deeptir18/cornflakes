@@ -41,8 +41,7 @@ CARGOFEATURES := $(subst $(space),$(comma),$(CARGOFEATURES))
 tapir: mlx5-datapath
 	cargo b --package mlx5-datapath-c $(CARGOFLAGS)
 	cargo b --package tapir $(CARGOFLAGS)
-	cd $(PWD)/tapir/c/tapir-cf && make
-	cd ../../..
+	CORNFLAKES_PATH=$(PWD) make -C tapir/c/tapir-cf
 
 redis: mlx5-datapath
 	cargo b --package mlx5-datapath-c $(CARGOFLAGS)
