@@ -616,6 +616,8 @@ fn add_header_repr(
     // add scatter-gather array iterate function
     add_sga_func(fd, compiler, msg_info)?;
 
+    add_serialize_into_bytes_func(fd, compiler, msg_info)?;
+
     // add iterate over entries
     add_iterate_func(fd, compiler, msg_info)?;
     compiler.add_newline()?;
@@ -631,6 +633,78 @@ fn add_header_repr(
     // pop out of trait
     compiler.pop_context()?;
 
+    Ok(())
+}
+
+fn add_serialize_into_bytes_func(
+    fd: &ProtoReprInfo,
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+) -> Result<()> {
+    let func_context = FunctionContext::new(
+        "iterate_and_fill_in_bytes_with_copy",
+        false,
+        vec![
+            FunctionArg::SelfArg,
+            FunctionArg::new_arg(
+                "serialization_info",
+                ArgInfo::ref_arg("SerializationInfo", None),
+            ),
+            FunctionArg::new_arg("buffer", ArgInfo::ref_mut_arg("[u8]", None)),
+            FunctionArg::new_arg("constant_header_offset", ArgInfo::owned("usize")),
+            FunctionArg::new_arg("dynamic_header_offset", ArgInfo::owned("usize")),
+            FunctionArg::new_arg("cur_copy_offset", ArgInfo::ref_mut_arg("usize", None)),
+            FunctionArg::new_arg("cur_zero_copy_offset", ArgInfo::ref_mut_arg("usize", None)),
+        ],
+        "Result<()>",
+    );
+
+    compiler.add_context(Context::Function(func_context))?;
+    // copy bitmap
+    compiler.add_line("let header_buffer = &mut buffer[0..serialization_info.header_size];")?;
+    compiler.add_func_call(
+        Some("self".to_string()),
+        "serialize_bitmap",
+        vec![
+            "header_buffer".to_string(),
+            "constant_header_offset".to_string(),
+        ],
+        false,
+    )?;
+    let constant_off_mut = msg_info.constant_fields_left(-1) > 1;
+    compiler.add_def_with_let(
+        constant_off_mut,
+        None,
+        "cur_constant_offset",
+        "constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length()",
+    )?;
+
+    compiler.add_newline()?;
+
+    let dynamic_fields_off_mut = msg_info.dynamic_fields_left(-1, true, fd.get_message_map())? > 1;
+    compiler.add_def_with_let(
+        dynamic_fields_off_mut,
+        None,
+        "cur_dynamic_offset",
+        "dynamic_header_offset",
+    )?;
+
+    for field_idx in 0..msg_info.num_fields() {
+        let field_info = msg_info.get_field_from_id(field_idx as i32)?;
+        compiler.add_newline()?;
+        let loop_context = LoopContext::new(vec![LoopBranch::ifbranch(&format!(
+            "self.get_bitmap_field({}, {})",
+            field_info.get_bitmap_idx_str(true),
+            field_info.get_u32_bitmap_offset_str(true),
+        ))]);
+        compiler.add_context(Context::Loop(loop_context))?;
+        add_serialization_bytes_iteration_for_field(fd, compiler, msg_info, &field_info)?;
+        compiler.pop_context()?;
+        compiler.add_newline()?;
+    }
+
+    compiler.add_return_val("Ok(())", false)?;
+    compiler.pop_context()?; // function context for serialize
     Ok(())
 }
 
@@ -806,6 +880,124 @@ fn add_iterate_func(
     Ok(())
 }
 
+fn add_serialization_bytes_iteration_for_field(
+    fd: &ProtoReprInfo,
+    compiler: &mut SerializationCompiler,
+    msg_info: &MessageInfo,
+    field_info: &FieldInfo,
+) -> Result<()> {
+    if field_info.is_list() {
+        match &field_info.0.typ {
+            FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint32
+            | FieldType::Uint64
+            | FieldType::Float => {
+                bail!("List<int or float> not implemented yet");
+            }
+            FieldType::String | FieldType::Bytes | FieldType::MessageOrEnum(_) => {
+                compiler.add_func_call(
+                    Some(format!("self.{}", field_info.get_name())),
+                    "iterate_and_fill_in_bytes_with_copy",
+                    vec![
+                        "serialization_info".to_string(),
+                        "buffer".to_string(),
+                        "cur_constant_offset".to_string(),
+                        "cur_dynamic_offset".to_string(),
+                        "cur_copy_offset".to_string(),
+                        "cur_zero_copy_offset".to_string(),
+                    ],
+                    true,
+                )?;
+            }
+            _ => {
+                bail!("Field type not supported: {:?}", &field_info.0.typ);
+            }
+        }
+    } else {
+        match &field_info.0.typ {
+            FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint32
+            | FieldType::Uint64
+            | FieldType::Float => {
+                let rust_type = &field_info.get_base_type_str()?;
+                let field_size = &field_info.get_header_size_str(true, true)?;
+                compiler.add_line(
+                    "let header_buffer = &mut buffer[0..serialization_info.header_size];",
+                )?;
+                compiler.add_line(&format!("LittleEndian::write_{}(&mut header_buffer[cur_constant_offset..(cur_constant_offset + {})], self.{});", rust_type, field_size, &field_info.get_name()))?;
+            }
+            FieldType::String | FieldType::Bytes => {
+                compiler.add_func_call(
+                    Some(format!("self.{}", field_info.get_name())),
+                    "iterate_and_fill_in_bytes_with_copy",
+                    vec![
+                        "serialization_info".to_string(),
+                        "buffer".to_string(),
+                        "cur_constant_offset".to_string(),
+                        "cur_dynamic_offset".to_string(),
+                        "cur_copy_offset".to_string(),
+                        "cur_zero_copy_offset".to_string(),
+                    ],
+                    true,
+                )?;
+            }
+            FieldType::MessageOrEnum(_) => {
+                compiler.add_line(
+                    "let header_buffer = &mut buffer[0..serialization_info.header_size];",
+                )?;
+                compiler.add_func_call(
+                    None,
+                    "write_size_and_offset",
+                    vec![
+                        "cur_constant_offset".to_string(),
+                        "0".to_string(),
+                        "cur_dynamic_offset".to_string(),
+                        "header_buffer".to_string(),
+                    ],
+                    false,
+                )?;
+                compiler.add_func_call(
+                    Some(format!("self.{}", field_info.get_name())),
+                    "iterate_and_fill_in_bytes_with_copy",
+                    vec![
+                        "serialization_info".to_string(),
+                        "header_buffer".to_string(),
+                        "cur_dynamic_offset".to_string(),
+                        format!(
+                            "cur_dynamic_offset + self.{}.dynamic_header_start()",
+                            field_info.get_name()
+                        ),
+                        "cur_copy_offset".to_string(),
+                        "cur_zero_copy_offset".to_string(),
+                    ],
+                    true,
+                )?;
+            }
+            _ => {
+                bail!("Field type not supported: {:?}", &field_info.0.typ);
+            }
+        }
+    }
+    compiler.add_newline()?;
+    if msg_info.constant_fields_left(field_info.get_idx()) > 0 {
+        let field_size = &field_info.get_header_size_str(true, true)?;
+        compiler.add_plus_equals("cur_constant_offset", field_size)?;
+    }
+
+    if msg_info.dynamic_fields_left(field_info.get_idx(), true, fd.get_message_map())? > 0 {
+        if field_info.is_dynamic(true, fd.get_message_map())? {
+            // modify cur_dynamic_ptr and cur_dynamic_offset
+            compiler.add_plus_equals(
+                "cur_dynamic_offset",
+                &format!("self.{}.dynamic_header_size()", &field_info.get_name()),
+            )?;
+        }
+    }
+
+    Ok(())
+}
 fn add_serialization_sga_iteration_for_field(
     fd: &ProtoReprInfo,
     compiler: &mut SerializationCompiler,

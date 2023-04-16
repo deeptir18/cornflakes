@@ -215,6 +215,36 @@ where
 
     fn modify_serialization_info_inner(&self, info: &mut SerializationInfo);
 
+    fn full_serialized_size(&self) -> usize {
+        let serialization_info = self.get_serialization_info();
+        serialization_info.header_size
+            + serialization_info.copy_length
+            + serialization_info.zero_copy_length
+    }
+
+    // serialize into bytes vector, with copies
+    fn serialize_into_bytes(&self, vec: &mut [u8]) -> Result<usize> {
+        let serialization_info = self.get_serialization_info();
+        let full_size = serialization_info.header_size
+            + serialization_info.zero_copy_length
+            + serialization_info.copy_length;
+        ensure!(
+            vec.len() <= full_size,
+            "Vector not large enough to write protobuf"
+        );
+        let mut cur_copy_offset = 0;
+        let mut cur_zero_copy_offset = 0;
+        self.iterate_and_fill_in_bytes_with_copy(
+            &serialization_info,
+            vec,
+            0,
+            self.dynamic_header_start(),
+            &mut cur_copy_offset,
+            &mut cur_zero_copy_offset,
+        )?;
+        Ok(full_size)
+    }
+
     // represents serializing the object into an intermediate SG array
     // can compare performance to plain object API
     fn serialize_into_metadata_vec(&self, datapath: &mut D) -> Result<Vec<D::DatapathMetadata>> {
@@ -255,6 +285,16 @@ where
 
         Ok(metadata_vec)
     }
+
+    fn iterate_and_fill_in_bytes_with_copy(
+        &self,
+        serialization_info: &SerializationInfo,
+        buffer: &mut [u8],
+        constant_header_offset: usize,
+        dynamic_header_offset: usize,
+        cur_copy_offset: &mut usize,
+        cur_zero_copy_offset: &mut usize,
+    ) -> Result<()>;
 
     fn iterate_and_fill_in_metadata_vec(
         &self,
@@ -388,6 +428,12 @@ impl<'arena, D> CFBytes<'arena, D>
 where
     D: Datapath,
 {
+    pub fn new_with_copy(ptr: &[u8], arena: &'arena bumpalo::Bump) -> Self {
+        let mut arr = bumpalo::collections::Vec::with_capacity_zeroed_in(ptr.len(), arena);
+        arr.copy_from_slice(ptr);
+        return CFBytes::Copied(arr);
+    }
+
     pub fn new(ptr: &[u8], datapath: &mut D, arena: &'arena bumpalo::Bump) -> Result<Self> {
         if ptr.len() < datapath.get_copying_threshold() {
             let mut arr = bumpalo::collections::Vec::with_capacity_zeroed_in(ptr.len(), arena);
@@ -474,6 +520,66 @@ where
     #[inline]
     fn is_list(&self) -> bool {
         false
+    }
+
+    fn iterate_and_fill_in_bytes_with_copy(
+        &self,
+        serialization_info: &SerializationInfo,
+        buffer: &mut [u8],
+        constant_header_offset: usize,
+        _dynamic_header_offset: usize,
+        cur_copy_offset: &mut usize,
+        cur_zero_copy_offset: &mut usize,
+    ) -> Result<()> {
+        match self {
+            CFBytes::RefCounted(metadata) => {
+                let object_len = metadata.as_ref().len();
+                let header_buffer = &mut buffer[0..serialization_info.header_size];
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                tracing::debug!(
+                    zero_copy_offset = *cur_zero_copy_offset
+                        + serialization_info.header_size
+                        + serialization_info.copy_length,
+                    len = object_len,
+                    constant_header_offset = constant_header_offset,
+                    "Reached iterate and fill in metadata vec cf bytes"
+                );
+                obj_ref.write_size(object_len as u32);
+                let offset = *cur_zero_copy_offset
+                    + serialization_info.header_size
+                    + serialization_info.copy_length;
+                obj_ref.write_offset(offset as u32);
+                tracing::debug!(len = object_len, ptr =? metadata.as_ref().as_ptr(), "Reached iterate over entries for cf bytes.");
+                // in datapath, check for 0-length entries
+                // copy into bytes at right place
+                let bytes_slice = &mut buffer[offset..(offset + object_len)];
+                bytes_slice.copy_from_slice(metadata.as_ref());
+                *cur_zero_copy_offset += object_len;
+            }
+            CFBytes::Copied(vec) => {
+                let object_len = vec.len();
+                let header_buffer = &mut buffer[0..serialization_info.header_size];
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                tracing::debug!(
+                    copy_offset = *cur_copy_offset + serialization_info.header_size,
+                    len = object_len,
+                    constant_header_offset = constant_header_offset,
+                    "Reached iterate and fill in metadata vec cf bytes"
+                );
+                obj_ref.write_size(object_len as u32);
+                let offset = *cur_copy_offset + serialization_info.header_size;
+                obj_ref.write_offset(offset as u32);
+                tracing::debug!(
+                    len = object_len,
+                    vec =? vec.as_slice().as_ptr(),
+                    "Reached iterate over entries for cf bytes."
+                );
+                let bytes_slice = &mut buffer[offset..(offset + object_len)];
+                bytes_slice.copy_from_slice(vec.as_slice());
+                *cur_copy_offset += object_len;
+            }
+        }
+        Ok(())
     }
 
     fn iterate_and_fill_in_metadata_vec(
@@ -694,6 +800,12 @@ impl<'arena, D> CFString<'arena, D>
 where
     D: Datapath,
 {
+    pub fn new_with_copy(ptr: &[u8], arena: &'arena bumpalo::Bump) -> Self {
+        let mut arr = bumpalo::collections::Vec::with_capacity_zeroed_in(ptr.len(), arena);
+        arr.copy_from_slice(ptr);
+        return CFString::Copied(arr);
+    }
+
     pub fn new(ptr: &[u8], datapath: &mut D, arena: &'arena bumpalo::Bump) -> Result<Self> {
         if ptr.len() < datapath.get_copying_threshold() {
             let mut arr = bumpalo::collections::Vec::with_capacity_zeroed_in(ptr.len(), arena);
@@ -794,6 +906,66 @@ where
     #[inline]
     fn is_list(&self) -> bool {
         false
+    }
+
+    fn iterate_and_fill_in_bytes_with_copy(
+        &self,
+        serialization_info: &SerializationInfo,
+        buffer: &mut [u8],
+        constant_header_offset: usize,
+        _dynamic_header_offset: usize,
+        cur_copy_offset: &mut usize,
+        cur_zero_copy_offset: &mut usize,
+    ) -> Result<()> {
+        match self {
+            CFString::RefCounted(metadata) => {
+                let object_len = metadata.as_ref().len();
+                let header_buffer = &mut buffer[0..serialization_info.header_size];
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                tracing::debug!(
+                    zero_copy_offset = *cur_zero_copy_offset
+                        + serialization_info.header_size
+                        + serialization_info.copy_length,
+                    len = object_len,
+                    constant_header_offset = constant_header_offset,
+                    "Reached iterate and fill in metadata vec cf bytes"
+                );
+                obj_ref.write_size(object_len as u32);
+                let offset = *cur_zero_copy_offset
+                    + serialization_info.header_size
+                    + serialization_info.copy_length;
+                obj_ref.write_offset(offset as u32);
+                tracing::debug!(len = object_len, ptr =? metadata.as_ref().as_ptr(), "Reached iterate over entries for cf bytes.");
+                // in datapath, check for 0-length entries
+                // copy into bytes at right place
+                let bytes_slice = &mut buffer[offset..(offset + object_len)];
+                bytes_slice.copy_from_slice(metadata.as_ref());
+                *cur_zero_copy_offset += object_len;
+            }
+            CFString::Copied(vec) => {
+                let object_len = vec.len();
+                let header_buffer = &mut buffer[0..serialization_info.header_size];
+                let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
+                tracing::debug!(
+                    copy_offset = *cur_copy_offset + serialization_info.header_size,
+                    len = object_len,
+                    constant_header_offset = constant_header_offset,
+                    "Reached iterate and fill in metadata vec cf bytes"
+                );
+                obj_ref.write_size(object_len as u32);
+                let offset = *cur_copy_offset + serialization_info.header_size;
+                obj_ref.write_offset(offset as u32);
+                tracing::debug!(
+                    len = object_len,
+                    vec =? vec.as_slice().as_ptr(),
+                    "Reached iterate over entries for cf bytes."
+                );
+                let bytes_slice = &mut buffer[offset..(offset + object_len)];
+                bytes_slice.copy_from_slice(vec.as_slice());
+                *cur_copy_offset += object_len;
+            }
+        }
+        Ok(())
     }
 
     fn iterate_and_fill_in_metadata_vec(
@@ -1230,6 +1402,68 @@ where
                 elt.inner_deserialize_from_raw(buf, dynamic_off, buffer_offset, arena)?;
             }
         }
+        Ok(())
+    }
+
+    fn iterate_and_fill_in_bytes_with_copy(
+        &self,
+        serialization_info: &SerializationInfo,
+        buffer: &mut [u8],
+        constant_header_offset: usize,
+        dynamic_header_offset: usize,
+        cur_copy_offset: &mut usize,
+        cur_zero_copy_offset: &mut usize,
+    ) -> Result<()> {
+        {
+            let header_buffer = &mut buffer[0..serialization_info.header_size];
+            let mut forward_pointer = MutForwardPointer(header_buffer, constant_header_offset);
+            forward_pointer.write_size(self.num_set as u32);
+            forward_pointer.write_offset(dynamic_header_offset as u32);
+        }
+
+        tracing::debug!(
+            num_set = self.num_set,
+            dynamic_offset = dynamic_header_offset,
+            num_set = self.num_set,
+            "Writing in forward pointer at position {}",
+            constant_header_offset
+        );
+
+        let mut cur_dynamic_off = dynamic_header_offset + self.dynamic_header_start();
+        for (i, elt) in self.elts.iter().take(self.num_set).enumerate() {
+            if elt.dynamic_header_size() != 0 {
+                let mut forward_offset = MutForwardPointer(
+                    &mut buffer[0..serialization_info.header_size],
+                    dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
+                );
+                forward_offset.write_size(elt.dynamic_header_size() as u32);
+                forward_offset.write_offset(cur_dynamic_off as u32);
+                elt.iterate_and_fill_in_bytes_with_copy(
+                    &serialization_info,
+                    buffer,
+                    cur_dynamic_off,
+                    cur_dynamic_off + elt.dynamic_header_start(),
+                    cur_copy_offset,
+                    cur_zero_copy_offset,
+                )?;
+            } else {
+                tracing::debug!(
+                    constant = dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
+                    cur_dynamic_off = cur_dynamic_off,
+                    "Calling inner serialize recursively in list inner iterate over metadata vec"
+                );
+                elt.iterate_and_fill_in_bytes_with_copy(
+                    &serialization_info,
+                    buffer,
+                    dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
+                    cur_dynamic_off + elt.dynamic_header_start(),
+                    cur_copy_offset,
+                    cur_zero_copy_offset,
+                )?;
+            }
+            cur_dynamic_off += elt.dynamic_header_size();
+        }
+
         Ok(())
     }
 

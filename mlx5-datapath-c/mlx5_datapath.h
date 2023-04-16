@@ -9,6 +9,10 @@ void OrderedSga_allocate(uintptr_t size, void **return_ptr);
 
 void *Mlx5Connection_new(const char *config_file, const char *server_ip);
 
+void Mlx5Connection_new_cfbytes_with_copy(void *ptr, uintptr_t len, void *box_arena, void **ret);
+
+void Mlx5Connection_new_cfstring_with_copy(void *ptr, uintptr_t len, void *box_arena, void **ret);
+
 void Mlx5Connection_set_copying_threshold(void *conn, uintptr_t copying_threshold);
 
 void Mlx5Connection_set_inline_mode(void *conn, uintptr_t inline_mode);

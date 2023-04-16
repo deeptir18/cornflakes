@@ -1,3 +1,4 @@
+use bumpalo;
 use cf_kv::{
     retwis::{RetwisServerLoader, RetwisValueSizeGenerator},
     twitter::TwitterServerLoader,
@@ -6,6 +7,7 @@ use cf_kv::{
 use cornflakes_libos::{
     allocator::MempoolID,
     datapath::{Datapath, InlineMode, ReceivedPkt},
+    dynamic_object_arena_hdr::{CFBytes, CFString},
     {ArenaOrderedRcSga, OrderedSga},
 };
 use cornflakes_utils::{global_debug_init_env, AppMode};
@@ -104,6 +106,40 @@ pub extern "C" fn Mlx5Connection_new(
 
     let boxed_connection = Box::new(connection);
     Box::into_raw(boxed_connection) as _
+}
+
+#[no_mangle]
+pub extern "C" fn Mlx5Connection_new_cfbytes_with_copy(
+    ptr: *mut ::std::os::raw::c_void,
+    len: usize,
+    box_arena: *mut ::std::os::raw::c_void,
+    ret: *mut *mut ::std::os::raw::c_void,
+) {
+    let arena = unsafe { Box::from_raw(box_arena as *mut bumpalo::Bump) };
+    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as _, len) };
+    let cfbytes = CFBytes::<Mlx5Connection>::new_with_copy(slice, arena.as_ref());
+    let cfbytes_box = Box::new(cfbytes);
+    unsafe {
+        *ret = Box::into_raw(cfbytes_box) as _;
+    }
+    Box::into_raw(arena);
+}
+
+#[no_mangle]
+pub extern "C" fn Mlx5Connection_new_cfstring_with_copy(
+    ptr: *mut ::std::os::raw::c_void,
+    len: usize,
+    box_arena: *mut ::std::os::raw::c_void,
+    ret: *mut *mut ::std::os::raw::c_void,
+) {
+    let arena = unsafe { Box::from_raw(box_arena as *mut bumpalo::Bump) };
+    let slice = unsafe { std::slice::from_raw_parts_mut(ptr as _, len) };
+    let cfstring = CFString::<Mlx5Connection>::new_with_copy(slice, arena.as_ref());
+    let cfstring_box = Box::new(cfstring);
+    unsafe {
+        *ret = Box::into_raw(cfstring_box) as _;
+    }
+    Box::into_raw(arena);
 }
 
 #[no_mangle]
@@ -423,7 +459,11 @@ pub extern "C" fn Mlx5Connection_prepare_single_buffer_with_udp_header(
         .prepare_single_buffer_with_udp_header((conn_id, msg_id), data_len)
         .unwrap();
     unsafe {
-        *raw_data_ptr = buffer.as_ref().as_ptr().offset(cornflakes_libos::utils::TOTAL_HEADER_SIZE as isize) as _;
+        *raw_data_ptr = buffer
+            .as_ref()
+            .as_ptr()
+            .offset(cornflakes_libos::utils::TOTAL_HEADER_SIZE as isize)
+            as _;
     }
     let boxed_buffer = Box::new(buffer);
     unsafe {

@@ -15,6 +15,7 @@ cornflakes-libos = { path = "../cornflakes-libos" }
 cornflakes-utils = { path = "../cornflakes-utils" }
 mlx5-datapath = { path = "../mlx5-datapath" }
 cf-kv = { path = "../cf-kv/" }
+bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }
 
 [build-dependencies]
 cbindgen = "0.23.0"
