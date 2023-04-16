@@ -423,7 +423,7 @@ pub extern "C" fn Mlx5Connection_prepare_single_buffer_with_udp_header(
         .prepare_single_buffer_with_udp_header((conn_id, msg_id), data_len)
         .unwrap();
     unsafe {
-        *raw_data_ptr = buffer.as_ref().as_ptr() as _;
+        *raw_data_ptr = buffer.as_ref().as_ptr().offset(cornflakes_libos::utils::TOTAL_HEADER_SIZE) as _;
     }
     let boxed_buffer = Box::new(buffer);
     unsafe {
