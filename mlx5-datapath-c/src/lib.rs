@@ -408,6 +408,49 @@ pub extern "C" fn Mlx5Connection_queue_arena_ordered_rcsga(
     0
 }
 
+/// returns box of datapath buffer
+#[no_mangle]
+pub extern "C" fn Mlx5Connection_prepare_single_buffer_with_udp_header(
+    conn: *mut ::std::os::raw::c_void,
+    msg_id: u32,
+    conn_id: usize,
+    data_len: usize,
+    raw_data_ptr: *mut *mut ::std::os::raw::c_void,
+    smart_data_ptr: *mut *mut ::std::os::raw::c_void,
+) {
+    let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
+    let buffer = conn_box
+        .prepare_single_buffer_with_udp_header((conn_id, msg_id), data_len)
+        .unwrap();
+    unsafe {
+        *raw_data_ptr = buffer.as_ref().as_ptr() as _;
+    }
+    let boxed_buffer = Box::new(buffer);
+    unsafe {
+        *smart_data_ptr = Box::into_raw(boxed_buffer) as _;
+    }
+    Box::into_raw(conn_box);
+}
+
+/// Sends boxed buffer, setting it's length
+#[no_mangle]
+pub extern "C" fn Mlx5Connection_transmit_single_datapath_buffer_with_header(
+    conn: *mut ::std::os::raw::c_void,
+    box_buffer: *mut ::std::os::raw::c_void,
+    data_len: usize,
+    end_batch: usize,
+) {
+    let mut conn_box = unsafe { Box::from_raw(conn as *mut Mlx5Connection) };
+    let mut buffer_box = unsafe { Box::from_raw(box_buffer as *mut Mlx5Buffer) };
+    buffer_box
+        .as_mut()
+        .set_len(data_len + cornflakes_libos::utils::TOTAL_HEADER_SIZE);
+    conn_box
+        .transmit_single_datapath_buffer_with_header(buffer_box, end_batch == 1)
+        .unwrap();
+    Box::into_raw(conn_box);
+}
+
 #[no_mangle]
 pub extern "C" fn Mlx5Connection_queue_single_buffer_with_copy(
     conn: *mut ::std::os::raw::c_void,
@@ -602,9 +645,7 @@ pub extern "C" fn Mlx5Connection_load_twitter_db(
 
 #[inline]
 #[no_mangle]
-pub extern "C" fn Mlx5Connection_drop_db(
-    db_ptr: *mut ::std::os::raw::c_void,
-) {
+pub extern "C" fn Mlx5Connection_drop_db(db_ptr: *mut ::std::os::raw::c_void) {
     // loading these objects into boxes will drop them
     let _db_box = unsafe { Box::from_raw(db_ptr as *mut KVServer<Mlx5Connection>) };
 }

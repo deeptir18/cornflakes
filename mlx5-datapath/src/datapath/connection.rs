@@ -132,6 +132,16 @@ impl Mlx5Buffer {
         }
     }
 
+    pub fn get_inner_ref(
+        &self,
+    ) -> (
+        *mut ::std::os::raw::c_void,
+        *mut registered_mempool,
+        usize,
+        usize,
+    ) {
+        (self.data, self.mempool, self.refcnt_index, self.data_len)
+    }
     pub fn get_inner(
         self,
     ) -> (
@@ -249,6 +259,7 @@ impl MbufMetadata {
             len: len,
         }
     }
+
     pub fn from_buf(mut mlx5_buffer: Mlx5Buffer) -> Self {
         mlx5_buffer.update_refcnt(1);
         let (buf, registered_mempool, refcnt_index, data_len) = mlx5_buffer.get_inner();
@@ -3151,6 +3162,98 @@ impl Datapath for Mlx5Connection {
             custom_mlx5_finish_single_transmission(
                 self.thread_context.get_context_ptr(),
                 num_wqes_required as _,
+            );
+        }
+
+        if end_batch {
+            if !self.first_ctrl_seg.is_null() {
+                let _ = self.post_curr_transmissions(Some(self.first_ctrl_seg));
+                self.poll_for_completions()?;
+                self.first_ctrl_seg = ptr::null_mut();
+            }
+        }
+        Ok(())
+    }
+
+    fn prepare_single_buffer_with_udp_header(
+        &mut self,
+        addr: (ConnID, MsgID),
+        data_len: usize,
+    ) -> Result<Self::DatapathBuffer> {
+        let mut data_buffer = {
+            match self.allocator.allocate_tx_buffer()? {
+                Some(buf) => buf,
+                None => {
+                    bail!("No tx mempools to allocate outgoing packet");
+                }
+            }
+        };
+        // copy UDP header with provided data length
+        self.copy_hdr(&mut data_buffer, addr.0, addr.1, data_len)?;
+        // set length on buffer
+        data_buffer.set_len(cornflakes_libos::utils::TOTAL_HEADER_SIZE);
+        Ok(data_buffer)
+    }
+
+    fn transmit_single_datapath_buffer_with_header(
+        &mut self,
+        data_buffer: Box<Self::DatapathBuffer>,
+        end_batch: bool,
+    ) -> Result<()> {
+        // assume no inlining
+        let num_required = 1;
+        let mut curr_available_wqes =
+            unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                as usize;
+
+        while num_required > curr_available_wqes {
+            if self.first_ctrl_seg != ptr::null_mut() {
+                if unsafe {
+                    custom_mlx5_post_transmissions(
+                        self.thread_context.get_context_ptr(),
+                        self.first_ctrl_seg,
+                    ) != 0
+                } {
+                    bail!("Failed to post transmissions so far");
+                } else {
+                    self.first_ctrl_seg = ptr::null_mut();
+                }
+            }
+            self.poll_for_completions()?;
+            curr_available_wqes =
+                unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
+                    as usize;
+        }
+        let inline_len = 0;
+        let num_segs = 1;
+        let num_octowords = unsafe { custom_mlx5_num_octowords(inline_len, num_segs) };
+        let ctrl_seg = unsafe {
+            custom_mlx5_fill_in_hdr_segment(
+                self.thread_context.get_context_ptr(),
+                num_octowords as _,
+                num_required as _,
+                inline_len as _,
+                num_segs as _,
+                MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
+            )
+        };
+        if ctrl_seg.is_null() {
+            bail!("Error posting header segment for sga");
+        }
+
+        if self.first_ctrl_seg == ptr::null_mut() {
+            self.first_ctrl_seg = ctrl_seg;
+        }
+        let dpseg = unsafe { custom_mlx5_dpseg_start(self.thread_context.get_context_ptr(), 0) };
+        let completion =
+            unsafe { custom_mlx5_completion_start(self.thread_context.get_context_ptr()) };
+        let mut metadata_mbuf = MbufMetadata::from_buf(*data_buffer);
+        let _ = self.post_mbuf_metadata(&mut metadata_mbuf, dpseg, completion);
+
+        unsafe {
+            custom_mlx5_finish_single_transmission(
+                self.thread_context.get_context_ptr(),
+                num_required as _,
             );
         }
 

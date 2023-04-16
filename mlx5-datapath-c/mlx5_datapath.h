@@ -54,6 +54,24 @@ uint32_t Mlx5Connection_queue_arena_ordered_rcsga(void *conn,
                                                   void *arena_ordered_rc_sga,
                                                   bool end_batch);
 
+/**
+ * returns box of datapath buffer
+ */
+void Mlx5Connection_prepare_single_buffer_with_udp_header(void *conn,
+                                                          uint32_t msg_id,
+                                                          uintptr_t conn_id,
+                                                          uintptr_t data_len,
+                                                          void **raw_data_ptr,
+                                                          void **smart_data_ptr);
+
+/**
+ * Sends boxed buffer, setting it's length
+ */
+void Mlx5Connection_transmit_single_datapath_buffer_with_header(void *conn,
+                                                                void *box_buffer,
+                                                                uintptr_t data_len,
+                                                                uintptr_t end_batch);
+
 uint32_t Mlx5Connection_queue_single_buffer_with_copy(void *conn,
                                                       uint32_t msg_id,
                                                       uintptr_t conn_id,

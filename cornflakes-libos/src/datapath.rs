@@ -476,6 +476,22 @@ pub trait Datapath {
         unimplemented!();
     }
 
+    fn prepare_single_buffer_with_udp_header(
+        &mut self,
+        _addr: (ConnID, MsgID),
+        _data_len: usize,
+    ) -> Result<Self::DatapathBuffer> {
+        unimplemented!();
+    }
+
+    fn transmit_single_datapath_buffer_with_header(
+        &mut self,
+        _buf: Box<Self::DatapathBuffer>,
+        _end_batch: bool,
+    ) -> Result<()> {
+        unimplemented!();
+    }
+
     fn queue_protobuf_message<O>(
         &mut self,
         _message: (MsgID, ConnID, &O),
