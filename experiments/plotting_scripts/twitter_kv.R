@@ -44,16 +44,16 @@ d <- d[ which(d$distribution == distribution_subset),]
 d <- d[ which(d$percent_achieved_rate > 0.95),]
 
 options(width=10000)
-cr_labels_baselines <- c('capnproto' = 'CP', 
-            'protobuf' = 'PB', 
-            'flatbuffers' = 'FB', 
+cr_labels_baselines <- c('capnproto' = 'Capnproto', 
+            'protobuf' = 'Protobuf', 
+            'flatbuffers' = 'Flatbuffers', 
             'redis' = 'Redis',
-            'cornflakes-dynamic-512' = 'CF')
-anon_labels_baselines <- c('capnproto' = 'CP', 
-            'protobuf' = 'PB', 
-            'flatbuffers' = 'FB', 
+            'cornflakes-dynamic-512' = 'Cornflakes')
+anon_labels_baselines <- c('capnproto' = 'Capnproto', 
+            'protobuf' = 'Protobuf', 
+            'flatbuffers' = 'Flatbuffers', 
             'redis' = 'Redis',
-            'cornflakes-dynamic-512' = 'AS')
+            'cornflakes-dynamic-512' = 'AnonSys')
                   
 cr_labels_cf <- c('cornflakes1c-dynamic' = 'Only Copy',
                   'cornflakes-dynamic-512' = 'Thresh = 512',
@@ -80,17 +80,17 @@ color_values_baselines <- c(
                   'cornflakes-dynamic-512' = '#1b9e77')
 
 shape_values_cf <- c(
-                  'cornflakes1c-dynamic' = 19,
-                  'cornflakes-dynamic-0' = 19,
+                  'cornflakes1c-dynamic' = 0,
+                  'cornflakes-dynamic-0' = 1,
                   'cornflakes-dynamic-256' = 19,
                   'cornflakes-dynamic-512' = 19)
 color_values_cf <- c(
-                  'cornflakes1c-dynamic' = '#a6cee3',
-                  'cornflakes-dynamic-0' = '#1f78b4',
+                  'cornflakes1c-dynamic' = '#92c5de',
+                  'cornflakes-dynamic-0' = '#0571b0',
                   'cornflakes-dynamic-256' = '#b2df8a',
-                  'cornflakes-dynamic-512' = '#33a02c')    
-levels_baselines <- c('cornflakes-dynamic-512', 'redis', 'flatbuffers', 'protobuf', 'capnproto')
-levels_cf <- c('cornflakes-dynamic-512', 'cornflakes-dynamic-256', 'cornflakes-dynamic-0', 'cornflakes1c-dynamic')
+                  'cornflakes-dynamic-512' = '#ca0020')    
+levels_baselines <- c('capnproto', 'redis', 'flatbuffers', 'protobuf', 'cornflakes-dynamic-512')
+levels_cf <- c('cornflakes1c-dynamic', 'cornflakes-dynamic-256', 'cornflakes-dynamic-0', 'cornflakes-dynamic-512')
 # filter the serialization labels based on which are present in data
 unique_serialization_labels <- unique(c(d$serialization))
 subset_flat <- function(original, subset) {
@@ -153,12 +153,12 @@ base_pps_p99_plot <- function(data, x_cutoff) {
     }
 
     plot <- ggplot(data,
-                    aes(x = !!p99_str,
-                        y = !!load_str / 1000,
+                    aes(y = !!p99_str,
+                        x = !!load_str / 1000,
                         color = serialization,
                         shape = serialization)) +
-            coord_cartesian(xlim=c(0, x_cutoff)) +
-    labs(y = "Achieved Load\n(1000 Packets Per Second)", x = "p99 latency (µs)")
+            coord_cartesian(ylim=c(0, x_cutoff)) +
+    labs(x= "Achieved Load (1000 Packets Per Second)", y = "p99 latency (µs)")
     return(plot)
 }
 base_pps_median_plot <- function(data, x_cutoff) {
@@ -173,19 +173,19 @@ base_pps_median_plot <- function(data, x_cutoff) {
     }
 
     plot <- ggplot(data,
-                    aes(x = !!median_str,
-                        y = !!load_str / 1000,
+                    aes(y = !!median_str,
+                        x = !!load_str / 1000,
                         color = serialization,
                         shape = serialization)) +
-            coord_cartesian(xlim=c(0, x_cutoff)) +
-    labs(y = "Achieved Load\n(1000 Packets Per Second)", x = "Median Latency (µs)")
+            coord_cartesian(ylim=c(0, x_cutoff)) +
+    labs(x = "Achieved Load (1000 Packets Per Second)", y = "Median Latency (µs)")
     return(plot)
 }
 
 label_plot <- function(plot, labels, shape_values, color_values, specific_levels) {
     plot <- plot +
             geom_point(size=1.5) +
-            geom_line(linewidth = 0.5, aes(color=serialization), orientation = "y") +
+            geom_line(linewidth = 0.5, aes(color=serialization), orientation = "x") +
             scale_shape_manual(values = shape_values, labels = labels, breaks = specific_levels) +
             scale_color_manual(values = color_values ,labels = labels, breaks = specific_levels) +
             scale_fill_manual(values = color_values, labels = labels, breaks= specific_levels) +
@@ -197,11 +197,11 @@ label_plot <- function(plot, labels, shape_values, color_values, specific_levels
                   legend.title = element_blank(),
                   legend.key.size = unit(2, 'mm'),
                   legend.box="vertical",
-                  legend.spacing.x = unit(0.5, 'cm'),
+                  legend.spacing.x = unit(0.3, 'cm'),
                   legend.spacing.y = unit(0.05, 'cm'),
-                  legend.text=element_text(size=15),
-                  axis.title=element_text(size=15,face="plain", colour="#000000"),
-                  axis.text=element_text(size=15, colour="#000000"),
+                  legend.text=element_text(size=12),
+                  axis.title=element_text(size=12,face="plain", colour="#000000"),
+                  axis.text=element_text(size=12, colour="#000000"),
                   legend.title.align=0.5,
                   legend.margin=margin(0,0,0,0),
                     legend.box.margin=margin(-5,-10,-5,-10)) +
@@ -215,20 +215,20 @@ if (plot_type == "baselines") {
     d <- subset(d, d$serialization %in% levels_baselines)
     d$serialization <- factor(d$serialization, levels = levels_baselines)
     plot <- base_plot(d, metric, cr_labels_baselines, shape_values_baselines, color_values_baselines, levels_baselines)
-    ggsave("tmp.pdf", width = 6, height = 3)
+    ggsave("tmp.pdf", width = 5, height = 2.5)
     embed_fonts("tmp.pdf", outfile =  cr_plot_pdf)
     
     plot <- base_plot(d, metric, anon_labels_baselines, shape_values_baselines, color_values_baselines, levels_baselines)
-    ggsave("tmp.pdf", width = 6, height = 3)
+    ggsave("tmp.pdf", width = 5, height = 2.5)
     embed_fonts("tmp.pdf", outfile =  anon_plot_pdf)
 } else if (plot_type == "cornflakes") {
     d <- subset(d, d$serialization %in% levels_cf)
     d$serialization <- factor(d$serialization, levels = levels_cf)
     plot <- base_plot(d, metric, cr_labels_cf, shape_values_cf, color_values_cf, levels_cf)
-    ggsave("tmp.pdf", width = 6, height = 3)
+    ggsave("tmp.pdf", width = 5, height = 2.5)
     embed_fonts("tmp.pdf", outfile =  cr_plot_pdf)
     
     plot <- base_plot(d, metric, anon_labels_cf, shape_values_cf, color_values_cf, levels_cf)
-    ggsave("tmp.pdf", width = 6, height = 3)
+    ggsave("tmp.pdf", width = 5, height = 2.5)
     embed_fonts("tmp.pdf", outfile =  anon_plot_pdf)
 }
