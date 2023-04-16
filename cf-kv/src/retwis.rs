@@ -316,6 +316,7 @@ pub struct RetwisClient {
     request_generator: WeightedIndex<usize>,
     get_timeline_size_generator: Uniform<usize>,
     keys: Vec<String>,
+    value_counter: u32,
 }
 
 impl Default for RetwisClient {
@@ -360,6 +361,7 @@ impl RetwisClient {
             keys: keys,
             request_generator: retwis_weights.to_weighted_distribution(),
             get_timeline_size_generator: Uniform::from(0..GET_TIMELINE_MAX_SIZE),
+            value_counter: 0,
         })
     }
 
@@ -380,9 +382,17 @@ impl RetwisClient {
         self.value_generator = gen;
     }
 
-    pub fn get_value(&self) -> String {
+    pub fn get_value(&mut self) -> String {
         let value_size = self.value_generator.sample();
-        let char = thread_rng().sample(&Alphanumeric) as char;
+        const RANGE: u32 = 26 + 26 + 10;
+        const GEN_ASCII_STR_CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                abcdefghijklmnopqrstuvwxyz\
+                0123456789";
+        let char = GEN_ASCII_STR_CHARSET[self.value_counter as usize] as char;
+        self.value_counter += 1;
+        if self.value_counter > RANGE {
+            self.value_counter = 0;
+        }
         let ret: String = std::iter::repeat(char).take(value_size).collect();
         ret
     }
