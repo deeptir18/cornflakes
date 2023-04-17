@@ -711,6 +711,18 @@ pub extern "C" fn Reply_get_mut_result<'registered>(
 
 #[inline]
 #[no_mangle]
+pub extern "C" fn Reply_get_result<'registered>(
+    self_: *const ::std::os::raw::c_void,
+    return_ptr: *mut *mut ::std::os::raw::c_void,
+) {
+    let reply = self_ as *const Reply<'registered, Mlx5Connection>;
+    let value: *const TapirReply<'registered, Mlx5Connection> = unsafe { (*reply).get_result() };
+    unsafe { *return_ptr = value as _ };
+}
+
+
+#[inline]
+#[no_mangle]
 pub extern "C" fn Reply_free<'arena>(self_: *const ::std::os::raw::c_void) {
     let _ = unsafe { Box::from_raw(self_ as *mut Reply<'arena, Mlx5Connection>) };
 }
