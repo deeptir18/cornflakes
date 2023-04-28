@@ -94,6 +94,8 @@ void ReplyConsensusMessage_get_mut_opid(void *self_, void **return_ptr);
 
 void ReplyConsensusMessage_get_mut_result(void *self_, void **return_ptr);
 
+void ReplyConsensusMessage_set_result(void *self_, void *result);
+
 uint32_t ReplyConsensusMessage_deserialize(void *self_,
                                            const void *data,
                                            uintptr_t data_len,
@@ -126,6 +128,8 @@ void UnloggedReplyMessage_set_clientreqid(void *self_, uint64_t clientreqid);
 
 void UnloggedReplyMessage_get_mut_reply(void *self_, void **return_ptr);
 
+void UnloggedReplyMessage_set_reply(void *self_, void *reply);
+
 uint32_t UnloggedReplyMessage_deserialize(void *self_,
                                           const void *data,
                                           uintptr_t data_len,
@@ -140,7 +144,13 @@ uint32_t Mlx5Connection_UnloggedReplyMessage_queue_cornflakes_arena_object(void 
 
 void UnloggedReplyMessage_free(const void *self_);
 
+void Reply_new_in(void *arena, void **return_ptr);
+
 void Reply_get_mut_result(void *self_, void **return_ptr);
+
+void Reply_get_result(const void *self_, void **return_ptr);
+
+void Reply_free(const void *self_);
 
 void CFString_new_in(void *arena, void **return_ptr);
 
@@ -154,7 +164,9 @@ void CFString_unpack(const void *self_,
                      const unsigned char **return_ptr,
                      uintptr_t *return_len_ptr);
 
-void TapirReply_get_mut_timestampe(void *self_, void **return_ptr);
+void CFString_refcnt(const void *self_, uint16_t *return_refcnt);
+
+void TapirReply_get_mut_timestamp(void *self_, void **return_ptr);
 
 void TapirReply_get_status(void *self_, int32_t *return_ptr);
 

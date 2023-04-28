@@ -183,6 +183,16 @@ pub extern "C" fn Mlx5Connection_free_datapath_buffer(
         _datapath_buffer_box.as_ref().read_refcnt()
     );
 }
+
+#[no_mangle]
+pub extern "C" fn Mlx5Connection_get_mbuf_refcnt(
+    datapath_buffer: *mut ::std::os::raw::c_void,
+) {
+    let _datapath_buffer_box = unsafe { Box::from_raw(datapath_buffer as *mut Mlx5Buffer) };
+    println!("datapath buffer refcount: {}", _datapath_buffer_box.as_ref().read_refcnt());
+    Box::into_raw(_datapath_buffer_box);
+}
+
 #[no_mangle]
 pub extern "C" fn Mlx5Connection_retrieve_raw_ptr(
     datapath_buffer: *mut ::std::os::raw::c_void,

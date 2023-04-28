@@ -844,6 +844,13 @@ where
         let s = self.to_str()?;
         Ok(s.to_string())
     }
+    
+    pub fn get_refcnt(&self) -> u16 {
+        match self {
+            CFString::Copied(_) => 0,
+            CFString::RefCounted(m) => m.get_refcnt(),
+        }
+    }
 }
 
 impl<'arena, D> CornflakesArenaObject<'arena, D> for CFString<'arena, D>

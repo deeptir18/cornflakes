@@ -779,6 +779,17 @@ pub extern "C" fn CFString_unpack(
     Box::into_raw(self_);
 }
 
+#[inline]
+#[no_mangle]
+pub extern "C" fn CFString_refcnt(
+    self_: *const ::std::os::raw::c_void,
+    return_refcnt: *mut u16,
+) {
+    let self_ = unsafe { Box::from_raw(self_ as *mut CFString<Mlx5Connection>) };
+    unsafe { *return_refcnt = self_.get_refcnt() };
+    Box::into_raw(self_);
+}
+
 // TapirReply
 #[inline]
 #[no_mangle]

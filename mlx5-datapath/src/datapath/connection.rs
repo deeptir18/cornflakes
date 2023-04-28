@@ -288,6 +288,10 @@ impl MbufMetadata {
 }
 
 impl MetadataOps for MbufMetadata {
+    fn get_refcnt(&self) -> u16 {
+        unsafe { custom_mlx5_refcnt_read(self.mempool, self.refcnt_index as _) }
+    }
+
     fn offset(&self) -> usize {
         self.offset
     }

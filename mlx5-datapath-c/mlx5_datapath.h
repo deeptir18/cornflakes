@@ -19,6 +19,8 @@ void Mlx5Connection_set_inline_mode(void *conn, uintptr_t inline_mode);
 
 void Mlx5Connection_free_datapath_buffer(void *datapath_buffer);
 
+void Mlx5Connection_get_mbuf_refcnt(void *datapath_buffer);
+
 void Mlx5Connection_retrieve_raw_ptr(void *datapath_buffer, void **return_ptr);
 
 void *Mlx5Connection_allocate_and_copy_into_original_datapath_buffer(void *conn,

@@ -237,6 +237,10 @@ where
 
 /// Functionality accessible to higher level application on top of datapath metadata objects.
 pub trait MetadataOps {
+    fn get_refcnt(&self) -> u16 {
+        unimplemented!();
+    }
+
     fn offset(&self) -> usize;
 
     fn data_len(&self) -> usize;
