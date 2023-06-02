@@ -1,0 +1,22 @@
+[package]
+name = "tapir-client"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+cornflakes-libos = { path = "../cornflakes-libos" }
+cornflakes-utils = { path = "../cornflakes-utils" }
+dpdk-datapath = { path = "../dpdk-datapath", optional = true }
+demikernel = {git = "https://github.com/deeptir18/demikernel", version = "1", branch = "perftools_public", features = ["profiler"], optional = true}
+bytes = "1.0.1"
+rand = "0.7.3"
+rand_distr = "0.3.0"
+
+[features]
+mlx5 = ["dpdk-datapath/mlx5", "dpdk-datapath"]
+
+[[bin]]
+name = "dpdk_tapir_client"
+required-features = ["mlx5"]
