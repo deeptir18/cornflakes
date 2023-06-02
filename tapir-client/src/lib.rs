@@ -25,7 +25,8 @@ where
 {
     server_addr: AddressInfo,
     last_sent_id: usize,
-    received: usize;
+    received: usize,
+    last_sent_bytes: [u8],
 }
 
 impl<D> TapirClient<D>
@@ -46,14 +47,14 @@ where
 
     pub fn get_next_msg() -> Result<Option<(MsgID, &[u8])>> {
         // get the buffer for a given get request
-        let buf = [5, 0, 0, 0, 98, 0, 0, 0, 0, 0, 0, 0, 10, 96, 10, 81, 8, 1, 
+        self.last_sent_bytes = [5, 0, 0, 0, 98, 0, 0, 0, 0, 0, 0, 0, 10, 96, 10, 81, 8, 1, 
             16, 177, 141, 157, 209, 187, 189, 252, 235, 153, 1, 26, 66, 10, 64,
             107, 101, 121, 95, 57, 56, 52, 56, 50, 97, 97, 97, 97, 97, 97, 97, 
             97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 
             97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 
             97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 16, 152, 
-            143, 157, 209, 187, 189, 252, 235, 153, 1, 24, 1]
-        Ok(Some((1 as u32, buf.as_ref())))
+            143, 157, 209, 187, 189, 252, 235, 153, 1, 24, 1];
+        Ok(Some((1 as u32, self.last_sent_bytes.as_ref())))
     }
 
     pub fn process_received_msg(
@@ -119,7 +120,7 @@ where
 
         while let Some((id, msg)) = self.get_next_msg(&datapath)? {
             if spin_timer.done() {
-                tracing::debug!("Total time done");
+                // tracing::debug!("Total time done");
                 break;
             }
 
@@ -171,7 +172,7 @@ where
             })?;
         }
 
-        tracing::debug!("Finished sending");
+        // tracing::debug!("Finished sending");
         Ok(start.elapsed())
     }
 }
