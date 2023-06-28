@@ -417,6 +417,8 @@ def create_and_copy_machine_config(args, machine_conns):
             pyyaml.dump(data, outfile, default_flow_style=False)
 
     # write to config file
+    agenda.subtask(f"[{machine_name}] writing to {config_file}")
+
     yaml_string = pyyaml.dump(yaml, default_flow_style = False)
     for machine_name, conn in machine_conns.items():
         conn.run(f"echo \"{yaml_string}\"", stdout = config_file, quiet = True)
