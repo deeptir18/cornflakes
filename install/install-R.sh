@@ -7,7 +7,4 @@ sudo apt install r-base -y
 sudo apt-get install -y libcurl4-openssl-dev
 sudo apt-get install -y ghostscript
 
-sudo R -e 'install.packages(c("plyr", "tidyr", "ggplot2", "extrafont",
-"sysfonts", "showtext", "curl", "json-lite", "viridis"))'
-
-
+Rscript install-R-packages.R
