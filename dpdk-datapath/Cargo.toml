@@ -31,6 +31,7 @@ structopt-derive="0.2.16"
 [features]
 default = []
 mlx5 = []
+ice = []
 profiler = ["demikernel"]
 
 [[bin]]

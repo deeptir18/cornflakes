@@ -50,7 +50,7 @@ cornflakes-utils = { path = "../cornflakes-utils" }
 [features]
 default = []
 dpdk = ["dpdk-datapath"]
-ice = ["ice-datapath"]
+ice = ["ice-datapath", "dpdk-datapath/ice", "dpdk-datapath"]
 mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath", "dpdk-datapath", "mlx5-datapath/mlx5"]
 profiler = ["cornflakes-libos/profiler", "demikernel", "dpdk-datapath/profiler", "mlx5-datapath/profiler"]
 

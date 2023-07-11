@@ -49,7 +49,7 @@ default = []
 dpdk = ["dpdk-datapath"]
 mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath/mlx5", "mlx5-datapath", "dpdk-datapath"]
 profiler = ["cornflakes-libos/profiler", "demikernel", "dpdk-datapath/profiler", "mlx5-datapath/profiler"]
-ice = ["ice-datapath"]
+ice = ["ice-datapath", "dpdk-datapath/ice", "dpdk-datapath"]
 
 [[bin]]
 name = "ds_echo_dpdk"
