@@ -16,12 +16,14 @@ space:= $(empty) $(empty)
 
 CARGOFLAGS ?=
 CARGOFEATURES =
+datapath =
 ifneq ($(DEBUG), y)
 	CARGOFLAGS += --release
 endif
 
 ifeq ($(CONFIG_MLX5), y)
 	CARGOFEATURES +=mlx5
+	datapath += mlx5-datapath
 endif
 
 ifeq ($(CONFIG_DPDK), y)
@@ -30,6 +32,7 @@ endif
 
 ifeq ($(CONFIG_ICE), y)
 	CARGOFEATURES +=ice
+	datapath += ice-datapath
 endif
 
 ifeq ($(PROFILER), y)
@@ -50,13 +53,13 @@ redis: mlx5-datapath
 	cd ../../..
 	CORNFLAKES_PATH=$(PWD) make -C redis -j
 
-kv: mlx5-datapath
+kv:$(datapath)
 	cargo b --package cf-kv $(CARGOFLAGS) --features $(CARGOFEATURES)
 
-ds-echo: mlx5-datapath
+ds-echo: $(datapath)
 	cargo b --package ds-echo $(CARGOFLAGS) --features $(CARGOFEATURES)
 
-sg-bench:
+sg-bench: $(datapath)
 	cargo b --package sg-bench-client $(CARGOFLAGS) --features $(CARGOFEATURES)
 	
 build: mlx5-datapath
@@ -100,8 +103,6 @@ submodules:
 	# build rdma-core
 	git submodule init
 	git submodule update --init -f --recursive
-	$(MAKE) submodules -C mlx5-datapath/mlx5-wrapper
-	$(MAKE) submodules -C mlx5-netperf
 	# apply DPDK patch to dpdk datapath submodule
 	git -C dpdk-datapath/3rdparty/dpdk apply ../dpdk-mlx.patch
 	# build dpdk datapath submodule
