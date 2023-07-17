@@ -81,10 +81,12 @@ ice-datapath:
 	$(MAKE) -C ice-datapath/ice-wrapper DPDK_PATH=$(mkfile_dir)dpdk-datapath/3rdparty/dpdk
 
 mlx5-datapath:
+	$(MAKE) submodules -C mlx5-datapath/mlx5-wrapper
 	$(MAKE) -C mlx5-datapath/mlx5-wrapper CONFIG_MLX5=$(CONFIG_MLX5) DEBUG=$(DEBUG) GDB=$(GDB)
 
 # mlx5 netperf microbenchmark
 mlx5-netperf:
+	$(MAKE) submodules -C mlx5-datapath/mlx5-wrapper
 	$(MAKE) -C mlx5-netperf CONFIG_MLX5=$(CONFIG_MLX5) DEBUG=$(DEBUG)
 
 # clean up the system and components
