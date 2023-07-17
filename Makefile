@@ -101,8 +101,6 @@ clean:
 # initialize all of the submodules
 submodules:
 	# build rdma-core
-	git submodule init
-	git submodule update --init -f --recursive
 ifeq ($(CONFIG_MLX5), y)
 	$(MAKE) submodules -C mlx5-datapath/mlx5-wrapper
 	$(MAKE) submodules -C mlx5-netperf
