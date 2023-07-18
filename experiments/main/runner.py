@@ -756,7 +756,9 @@ class Iteration(metaclass=abc.ABCMeta):
         for host in program_host_list:
             host_tmp = machine_config["hosts"][host]["tmp_folder"]
             host_addr = machine_config["hosts"][host]["addr"]
-            key = machine_config["key"]
+            key = None
+            if "key" in machine_config:
+                key = machine_config["key"]
             user = machine_config["user"]               
             try:
                 connection_wrapper = connection.ConnectionWrapper(
