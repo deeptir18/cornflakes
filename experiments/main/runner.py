@@ -760,17 +760,23 @@ class Iteration(metaclass=abc.ABCMeta):
             if "key" in machine_config:
                 key = machine_config["key"]
             user = machine_config["user"]               
-            try:
-                connection_wrapper = connection.ConnectionWrapper(
-                                        addr = host_addr,
+            cxn_count = 0
+            connected = False
+            while cxn_count < 5 and not connected:
+                time.sleep
+                try:
+                    connection_wrapper = connection.ConnectionWrapper(
+                                         addr = host_addr,
                                         user = user,
                                         port = 22,
                                         key = key)
-                connections[host] = connection_wrapper
-            except:
-                utils.warn("Failed to ssh")
-                time.sleep(60)
+                    connected = True
+                except Exception as e: 
+                    utils.warn(f"Failed to ssh with host {host_addr}, user {user}, port 22, key {key}, err: {e}")
+                    time.sleep(60)
+            if not connected:
                 return False
+            connections[host] = connection_wrapper
                 
             # for this host, create the remote temporary folder
             remote_tmp_path = self.get_folder_name(machine_config["hosts"][host]["tmp_folder"])
