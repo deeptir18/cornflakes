@@ -1,33 +1,42 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT license.
-
+client_port: 12345
+cornflakes_dir: /mydata/USER/cornflakes
 dpdk:
-    # removing -c 0xff
-    eal_init: ["-n", "4", "-w", "XXXX:XX:XX.X,txq_inline_mpw=256,txqs_min_inline=0","--proc-type=auto"]
-    pci_addr: "XXXX:XX:XX.X"
-    port: 0
-mlx5:
-    pci_addr: "XXXX:XX:XX.X"
-
+  eal_init:
+  - -c
+  - '0xff'
+  - -n
+  - '8'
+  - -a
+  - '0000:41:00.1'
+  - --proc-type=auto
+  pci_addr: '0000:41:00.1'
+  port: '1'
+host_types:
+  client:
+  - client1
+  server:
+  - server
+hosts:
+  client1:
+    addr: 128.XXX.XXX.XX
+    config_file: /mydata/USER/config/cluster_config.yaml
+    cornflakes_dir: /mydata/USER/cornflakes
+    ip: 192.168.1.2
+    mac: XX:XX:XX:XX:XX:XX
+    tmp_folder: /mydata/USER/cornflakes_tmp
+  server:
+    addr: 128.XXX.XXX.XX
+    config_file: /mydata/USER/config/cluster_config.yaml
+    cornflakes_dir: /mydata/USER/cornflakes
+    ip: 192.168.1.1
+    mac: XX:XX:XX:XX:XX:XX
+    tmp_folder: /mydata/USER/cornflakes_tmp
 lwip:
   known_hosts:
-    "ff:ff:ff:ff:ff:ff": 127.0.0.1
-    "ff:ff:ff:ff:ff:fe": 127.0.0.2
-
-port: 54323 # for the server
-client_port: 12345
-
-hosts:
-    server:
-        addr: localhost
-        ip: 127.0.0.1
-        mac: "ff:ff:ff:ff:ff:ff"
-    client1:
-        addr: machine2.machine
-        ip: 127.0.0.2
-        mac: "ff:ff:ff:ff:ff:fe"
-cornflakes_dir: $HOME/cornflakes
+    XX:XX:XX:XX:XX:XX: 192.168.1.1
+    XX:XX:XX:XX:XX:XX: 192.168.1.2
 max_clients: 1
-key: <$HOME/.ssh/id_rsa>
-user: <username>
-config_file: $HOME/cornflakes/example_config.yaml
+mlx5:
+  pci_addr: '0000:41:00.1'
+port: 54321
+user: USER
