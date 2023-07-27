@@ -6,6 +6,6 @@ wget https://content.mellanox.com/ofed/MLNX_OFED-5.6-2.0.9.0/MLNX_OFED_LINUX-5.6
 tar -xzf MLNX_OFED_LINUX-5.6-2.0.9.0-ubuntu20.04-x86_64.tgz 
 pushd MLNX_OFED_LINUX-5.6-2.0.9.0-ubuntu20.04-x86_64
 sudo ./mlnxofedinstall --upstream-libs --dpdk
-sudo /etc/init.d/openibd restart
+# sudo /etc/init.d/openibd restart
 popd
 popd
