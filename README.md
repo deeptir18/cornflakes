@@ -131,7 +131,7 @@ such, use the following LD_LIBRARY_PATH when running any binaries:
 export LD_LIBRARY_PATH=$CORNFLAKES/dpdk-datapath/3rdparty/dpdk/build/lib/x86_64-linux-gnu
 ```
 
-The [cornflakes-scripts](https://github.com/deeptir18/cornflakes-scripts)
+The [cornflakes-scripts repo](https://github.com/deeptir18/cornflakes-scripts)
 contains some instructions for actually running Python scripts to run Cornflakes
 and compare it to other libraries.
 
