@@ -1,0 +1,15 @@
+[package]
+name = "timetrace"
+version = "0.1.0"
+edition = "2021"
+authors = ["deeptir <deeptir@cs.stanford.edu>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+color-eyre = "0.5"
+tracing = "*"
+tracing-subscriber = "0.2.17"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.*"
+quanta = "0.12.2"

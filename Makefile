@@ -39,6 +39,10 @@ ifeq ($(PROFILER), y)
 	CARGOFEATURES +=profiler
 endif
 
+ifeq ($(TIMETRACE), y)
+	CARGOFEATURES += timetrace
+endif
+
 CARGOFEATURES := $(subst $(space),$(comma),$(CARGOFEATURES))
 
 tapir: mlx5-datapath

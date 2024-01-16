@@ -30,13 +30,17 @@ itertools = "0.10.2"
 bitmaps = "3.2.0"
 bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }
 ahash = "0.7.6"
+timetrace = { path = "../timetrace", optional = true }
+ctrlc = "3.4.2"
 
 [dev-dependencies]
 libc = "0.2.81"
 tracing-error = "*"
 rand = "0.7.3"
 
+
 [features]
 default = []
 profiler = ["demikernel"]
+timetrace = ["dep:timetrace"]
 

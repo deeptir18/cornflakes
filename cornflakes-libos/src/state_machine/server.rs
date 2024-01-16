@@ -6,8 +6,17 @@ use super::super::{
     datapath::{Datapath, PushBufType, ReceivedPkt},
     ArenaOrderedSga,
 };
+
 use color_eyre::eyre::Result;
+#[cfg(feature = "timetrace")]
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::{fs::File, io::Write, time::Instant};
+#[cfg(feature = "timetrace")]
+use timetrace;
+
 pub trait ServerSM {
     type Datapath: Datapath;
 
@@ -109,6 +118,16 @@ pub trait ServerSM {
     }
 
     fn run_state_machine_baseline(&mut self, datapath: &mut Self::Datapath) -> Result<()> {
+        #[cfg(feature = "timetrace")]
+        let running = {
+            let running = Arc::new(AtomicBool::new(true));
+            let r = running.clone();
+
+            ctrlc::set_handler(move || {
+                r.store(false, Ordering::SeqCst);
+            })?;
+            running
+        };
         // run profiler from here
         #[cfg(feature = "profiler")]
         perftools::profiler::reset();
@@ -116,6 +135,15 @@ pub trait ServerSM {
         let mut _requests_processed = 0;
 
         loop {
+            // check ctrl-c handler
+            #[cfg(feature = "timetrace")]
+            {
+                if !running.load(Ordering::SeqCst) {
+                    timetrace::print();
+                    return Ok(());
+                }
+            }
+
             #[cfg(feature = "profiler")]
             demikernel::timer!("Run state machine loop");
 
@@ -141,7 +169,18 @@ pub trait ServerSM {
                 demikernel::timer!("Datapath pop");
                 datapath.pop()?
             };
+
             if pkts.len() > 0 {
+                #[cfg(feature = "timetrace")]
+                {
+                    for pkt in pkts.iter() {
+                        timetrace::record!(
+                            "Beginning state machine loop to process batch",
+                            pkt.msg_id()
+                        );
+                    }
+                }
+
                 match self.push_buf_type() {
                     PushBufType::SingleBuf => {
                         #[cfg(feature = "profiler")]
@@ -160,6 +199,16 @@ pub trait ServerSM {
     }
 
     fn run_state_machine(&mut self, datapath: &mut Self::Datapath) -> Result<()> {
+        #[cfg(feature = "timetrace")]
+        let running = {
+            let running = Arc::new(AtomicBool::new(true));
+            let r = running.clone();
+
+            ctrlc::set_handler(move || {
+                r.store(false, Ordering::SeqCst);
+            })?;
+            running
+        };
         // run profiler from here
         #[cfg(feature = "profiler")]
         perftools::profiler::reset();
@@ -175,6 +224,15 @@ pub trait ServerSM {
         );
 
         loop {
+            // check ctrl-c handler
+            #[cfg(feature = "timetrace")]
+            {
+                if !running.load(Ordering::SeqCst) {
+                    timetrace::print();
+                    return Ok(());
+                }
+            }
+
             #[cfg(feature = "profiler")]
             demikernel::timer!("Run state machine loop");
 
@@ -201,6 +259,16 @@ pub trait ServerSM {
                 datapath.pop()?
             };
             if pkts.len() > 0 {
+                #[cfg(feature = "timetrace")]
+                {
+                    for pkt in pkts.iter() {
+                        timetrace::record!(
+                            "Beginning state machine loop to process batch",
+                            pkt.msg_id()
+                        );
+                    }
+                }
+
                 match self.push_buf_type() {
                     PushBufType::SingleBuf => {
                         self.process_requests_single_buf(pkts, datapath)?;

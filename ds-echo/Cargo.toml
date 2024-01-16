@@ -31,6 +31,7 @@ cxx = "1.0"
 demikernel = {git = "https://github.com/deeptir18/demikernel", branch = "perftools_public", version = "1", features = ["profiler"], optional = true}
 bitmaps = "3.2.0"
 bumpalo = { git = "https://github.com/deeptir18/bumpalo", features = ["collections"] }
+timetrace = { path = "../timetrace", optional = true }
 
 
 [build-dependencies]
@@ -50,6 +51,7 @@ dpdk = ["dpdk-datapath"]
 mlx5 = ["dpdk-datapath/mlx5", "mlx5-datapath/mlx5", "mlx5-datapath", "dpdk-datapath"]
 profiler = ["cornflakes-libos/profiler", "demikernel", "dpdk-datapath/profiler", "mlx5-datapath/profiler"]
 ice = ["ice-datapath", "dpdk-datapath/ice", "dpdk-datapath"]
+timetrace = ["dep:timetrace", "cornflakes-libos/timetrace", "mlx5-datapath/timetrace"]
 
 [[bin]]
 name = "ds_echo_dpdk"
