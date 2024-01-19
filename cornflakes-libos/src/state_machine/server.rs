@@ -139,7 +139,7 @@ pub trait ServerSM {
             #[cfg(feature = "timetrace")]
             {
                 if !running.load(Ordering::SeqCst) {
-                    timetrace::print();
+                    timetrace::print()?;
                     return Ok(());
                 }
             }
@@ -172,14 +172,7 @@ pub trait ServerSM {
 
             if pkts.len() > 0 {
                 #[cfg(feature = "timetrace")]
-                {
-                    for pkt in pkts.iter() {
-                        timetrace::record!(
-                            "Beginning state machine loop to process batch",
-                            pkt.msg_id()
-                        );
-                    }
-                }
+                timetrace::record_event!("Beginning state machine loop to process batch", None);
 
                 match self.push_buf_type() {
                     PushBufType::SingleBuf => {
@@ -228,7 +221,7 @@ pub trait ServerSM {
             #[cfg(feature = "timetrace")]
             {
                 if !running.load(Ordering::SeqCst) {
-                    timetrace::print();
+                    timetrace::print()?;
                     return Ok(());
                 }
             }
@@ -260,14 +253,7 @@ pub trait ServerSM {
             };
             if pkts.len() > 0 {
                 #[cfg(feature = "timetrace")]
-                {
-                    for pkt in pkts.iter() {
-                        timetrace::record!(
-                            "Beginning state machine loop to process batch",
-                            pkt.msg_id()
-                        );
-                    }
-                }
+                timetrace::record_event!("Beginning state machine loop to process batch", None);
 
                 match self.push_buf_type() {
                     PushBufType::SingleBuf => {

@@ -14,6 +14,9 @@ use cornflakes_libos::{
     OrderedSga, RcSga, RcSge, SerializationInfo, Sga,
 };
 
+#[cfg(feature = "timetrace")]
+use timetrace;
+
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use cornflakes_utils::{parse_yaml_map, AppMode};
 use eui48::MacAddress;
@@ -3710,6 +3713,12 @@ impl Datapath for Mlx5Connection {
         #[cfg(feature = "profiler")]
         demikernel::timer!("queue cornflakes hybrid obj");
         tracing::debug!(msg_id, conn_id, end_batch, "Queue cornflakes hybrid obj");
+
+        #[cfg(feature = "timetrace")]
+        timetrace::record_start!(
+            "Wait for available wqes, set up transmission, advance ring buffer state and define callback",
+            Some((conn_id, msg_id))
+        );
         let mut curr_available_wqes: usize =
             unsafe { custom_mlx5_num_wqes_available(self.thread_context.get_context_ptr()) }
                 as usize;
@@ -3803,12 +3812,19 @@ impl Datapath for Mlx5Connection {
             }
             Ok(())
         };
+        #[cfg(feature = "timetrace")]
+        timetrace::record_end!(
+            "Wait for available wqes, set up transmission, advance ring buffer state and define callback",
+            Some((conn_id, msg_id))
+        );
 
         // call  iterate on entries and allocate extra buffer space based on inline mode
         match self.inline_mode {
             InlineMode::Nothing => {
                 // allocate buffer for packet header, object header and copied data
                 let mut allocated_header_buffer = {
+                    #[cfg(feature = "timetrace")]
+                    timetrace::record_start!("Allocate header buffer", Some((conn_id, msg_id)));
                     match self.allocator.allocate_tx_buffer()? {
                         Some(buf) => buf,
                         None => {
@@ -3816,11 +3832,17 @@ impl Datapath for Mlx5Connection {
                         }
                     }
                 };
+                #[cfg(feature = "timetrace")]
+                timetrace::record_end!("Allocate header buffer", Some((conn_id, msg_id)));
                 let data_len = serialization_info.header_size
                     + serialization_info.copy_length
                     + serialization_info.zero_copy_length;
                 // copy header
+                #[cfg(feature = "timetrace")]
+                timetrace::record_start!("Copy udp header", Some((conn_id, msg_id)));
                 self.copy_hdr(&mut allocated_header_buffer, conn_id, msg_id, data_len)?;
+                #[cfg(feature = "timetrace")]
+                timetrace::record_end!("Copy udp header", Some((conn_id, msg_id)));
 
                 let header_buffer = allocated_header_buffer.mutable_slice(
                     cornflakes_libos::utils::TOTAL_HEADER_SIZE,
@@ -3831,6 +3853,11 @@ impl Datapath for Mlx5Connection {
                 let mut copy_buffer: Option<&mut [u8]> = None;
                 let mut cur_copy_offset = 0;
                 let mut cur_zero_copy_offset = 0;
+                #[cfg(feature = "timetrace")]
+                timetrace::record_start!(
+                    "Cornflakes serialization iteration",
+                    Some((conn_id, msg_id))
+                );
                 cornflakes_obj.iterate_over_entries(
                     &serialization_info,
                     header_buffer,
@@ -3842,6 +3869,11 @@ impl Datapath for Mlx5Connection {
                     &mut callback,
                     &mut ring_buffer_state,
                 )?;
+                #[cfg(feature = "timetrace")]
+                timetrace::record_end!(
+                    "Cornflakes serialization iteration",
+                    Some((conn_id, msg_id))
+                );
                 // set length of copied segment with udp header size + object header + copied data
                 allocated_header_buffer.set_len(
                     cornflakes_libos::utils::TOTAL_HEADER_SIZE
@@ -3963,8 +3995,20 @@ impl Datapath for Mlx5Connection {
             }
         }
 
+        #[cfg(feature = "timetrace")]
+        timetrace::record_start!(
+            "Finish transmission, end batch {}",
+            Some((conn_id, msg_id)),
+            end_batch as u32
+        );
         // finish transmission
         self.finish_transmission(num_required, end_batch)?;
+        #[cfg(feature = "timetrace")]
+        timetrace::record_end!(
+            "Finish transmission, end batch {}",
+            Some((conn_id, msg_id)),
+            end_batch as u32
+        );
         Ok(())
     }
 

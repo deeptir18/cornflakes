@@ -1796,6 +1796,12 @@ where
                 MsgType::GetList(_) => {
                     #[cfg(feature = "profiler")]
                     demikernel::timer!("handle getlist hybrid arena object");
+
+                    #[cfg(feature = "timetrace")]
+                    timetrace::record_start!(
+                        "Initialize and deserialize getlist request",
+                        Some((pkt.conn_id(), pkt.msg_id()))
+                    );
                     let mut getlist_req =
                         kv_serializer_hybrid_arena_object::GetListReq::new_in(arena);
                     {
@@ -1803,6 +1809,11 @@ where
                         demikernel::timer!("deserialize");
                         getlist_req.deserialize(&pkt, REQ_TYPE_SIZE, arena)?;
                     }
+                    timetrace::record_end!(
+                        "Initialize and deserialize getlist request",
+                        Some((pkt.conn_id(), pkt.msg_id()))
+                    );
+
                     let mut getlist_resp =
                         kv_serializer_hybrid_arena_object::GetListResp::new_in(arena);
                     getlist_resp.set_id(getlist_req.get_id());
@@ -1810,12 +1821,21 @@ where
                     if self.serializer.use_linked_list() {
                         let range_start = getlist_req.get_range_start();
                         let range_end = getlist_req.get_range_end();
+                        #[cfg(feature = "timetrace")]
+                        timetrace::record_start!("Get key 1", Some((pkt.conn_id(), pkt.msg_id())));
                         let mut node_option = {
                             #[cfg(feature = "profiler")]
                             demikernel::timer!("get key # 1");
                             self.linked_list_kv_server
                                 .get(getlist_req.get_key().to_str()?)
                         };
+                        #[cfg(feature = "timetrace")]
+                        timetrace::record_end!("Get key 1", Some((pkt.conn_id(), pkt.msg_id())));
+                        #[cfg(feature = "timetrace")]
+                        timetrace::record_start!(
+                            "Find range length and init list",
+                            Some((pkt.conn_id(), pkt.msg_id()))
+                        );
                         let range_len = {
                             if range_end == -1 {
                                 let mut len = 0;
@@ -1838,13 +1858,26 @@ where
                             demikernel::timer!("init val list arena");
                             getlist_resp.init_val_list(range_len, arena);
                         }
+                        #[cfg(feature = "timetrace")]
+                        timetrace::record_end!(
+                            "Find range length and init list",
+                            Some((pkt.conn_id(), pkt.msg_id()))
+                        );
                         let list = getlist_resp.get_mut_val_list();
+
+                        #[cfg(feature = "timetrace")]
+                        timetrace::record_start!(
+                            "Get key # 2",
+                            Some((pkt.conn_id(), pkt.msg_id()))
+                        );
                         let mut node_option = {
                             #[cfg(feature = "profiler")]
                             demikernel::timer!("get key # 2");
                             self.linked_list_kv_server
                                 .get(getlist_req.get_key().to_str()?)
                         };
+                        #[cfg(feature = "timetrace")]
+                        timetrace::record_end!("Get key # 2", Some((pkt.conn_id(), pkt.msg_id())));
 
                         let mut idx = 0;
                         while let Some(node) = node_option {
@@ -1861,6 +1894,12 @@ where
                                 node.get_data().len()
                             );
                             {
+                                #[cfg(feature = "timetrace")]
+                                timetrace::record_start!(
+                                    "List append # {}",
+                                    Some((pkt.conn_id(), pkt.msg_id())),
+                                    idx as u32
+                                );
                                 #[cfg(feature = "profiler")]
                                 demikernel::timer!("append to list");
                                 list.append(dynamic_object_arena_hdr::CFBytes::new(
@@ -1868,7 +1907,14 @@ where
                                     datapath,
                                     arena,
                                 )?);
+                                #[cfg(feature = "timetrace")]
+                                timetrace::record_end!(
+                                    "List append # {}",
+                                    Some((pkt.conn_id(), pkt.msg_id())),
+                                    idx as u32
+                                );
                             }
+
                             node_option = node.get_next();
                             idx += 1;
                         }
@@ -1895,12 +1941,16 @@ where
                         }
                     }
 
+                    #[cfg(feature = "timetrace")]
+                    timetrace::record_start!("Queue object", Some((pkt.conn_id(), pkt.msg_id())));
                     datapath.queue_cornflakes_arena_object(
                         pkt.msg_id(),
                         pkt.conn_id(),
                         getlist_resp,
                         end_batch,
                     )?;
+                    #[cfg(feature = "timetrace")]
+                    timetrace::record_end!("Queue object", Some((pkt.conn_id(), pkt.msg_id())));
                 }
                 MsgType::Put => {
                     let mut put_req = kv_serializer_hybrid_arena_object::PutReq::new_in(arena);
